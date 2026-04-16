@@ -173,7 +173,7 @@ class FlowClient:
     def __init__(
         self,
         profile_name: str,
-        profile_base_dir: str = "./profiles",
+        profile_base_dir: str = "./chrome-profiles",
         headless: bool = False,
         real_chrome: bool | None = None,
         debug_port: int = 19300,

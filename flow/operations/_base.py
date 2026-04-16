@@ -42,9 +42,14 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             f"Cannot navigate: no edit_url, project_url={project_url_val}, media_id={media_id}"
         )
 
-    logger.info("Navigating to edit page: %s", edit_url_val[:100])
-    await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(2)  # Let video load
+    # Strategy: navigate to PROJECT URL first (more reliable), then click
+    # into the video tile to enter edit mode.  Direct /edit/ URLs often fail
+    # because the Flow SPA needs the project context loaded first.
+    project_url_val = job.get("project_url") or ""
+    target_url = project_url_val or edit_url_val
+    logger.info("Navigating to: %s", target_url[:100])
+    await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+    await asyncio.sleep(3)
 
     # Handle login redirect if needed
     current = page.url
@@ -56,17 +61,35 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
         )
         if not login_ok:
             raise RuntimeError("Google login required — session expired")
-        # Re-navigate to edit URL after login
-        await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
-        current = page.url
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(3)
 
-    # Verify we're on the right page
-    if "/edit/" not in current:
-        logger.warning("Not on edit page after navigation: %s", current[:100])
+    # Detect homepage redirect — means project doesn't belong to this account
+    current = page.url
+    if "/project/" not in current and "/edit/" not in current:
+        # Landed on Flow homepage instead of project page
+        logger.error(
+            "Project not accessible — redirected to homepage. "
+            "URL: %s  profile: %s  target: %s",
+            current[:100], getattr(client, "profile_name", "?"), target_url[:100],
+        )
+        raise RuntimeError(
+            f"Project not accessible for profile {getattr(client, 'profile_name', '?')} "
+            f"— wrong account or project deleted"
+        )
 
-    locale = detect_locale(current)
-    project_id = extract_project_id(current) or ""
+    # If we're on the project page (not edit), click a video tile
+    if "/edit/" not in page.url:
+        logger.info("On project view — clicking video tile to enter edit mode")
+        entered = await _click_video_tile(page, job.get("media_id", ""))
+        if not entered:
+            # Last resort: try direct edit URL
+            logger.info("Tile click failed — trying direct edit URL: %s", edit_url_val[:80])
+            await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(5)
+
+    locale = detect_locale(page.url)
+    project_id = extract_project_id(page.url) or ""
 
     return edit_url_val, project_id, locale
 
@@ -97,6 +120,94 @@ async def click_action_button(page, button_texts: list[str], timeout_ms: int = 5
                 return True
         except Exception:
             continue
+
+    return False
+
+
+async def _click_video_tile(page, media_id: str = "", timeout_sec: float = 10.0) -> bool:
+    """Click a video tile in the project view to enter edit mode.
+
+    When direct /edit/ URL navigation fails, the project view shows media
+    tiles.  Clicking a video tile enters the edit view with action buttons
+    (Extend, Insert, Remove, Camera).
+
+    Tries:
+    1. Click video element directly
+    2. Click tile container with matching data-tile-id
+    3. Click first visible video card / thumbnail
+    """
+    await asyncio.sleep(2)  # let project view render
+
+    # Try clicking a <video> element (most reliable for video projects)
+    try:
+        video = page.locator("video").first
+        if await video.is_visible(timeout=3000):
+            await video.click(timeout=3000)
+            logger.info("Clicked video element to enter edit mode")
+            await asyncio.sleep(3)
+            if "/edit/" in page.url:
+                logger.info("Edit mode entered: %s", page.url[:100])
+                return True
+    except Exception:
+        pass
+
+    # Try clicking tile container
+    TILE_SELECTORS = [
+        "[data-tile-id]",
+        "[class*='tile']",
+        "[class*='card'] video",
+        "[class*='thumbnail']",
+        "img[src*='googleusercontent']",
+    ]
+    for sel in TILE_SELECTORS:
+        try:
+            tile = page.locator(sel).first
+            if await tile.is_visible(timeout=2000):
+                await tile.click(timeout=3000)
+                logger.info("Clicked tile via: %s", sel)
+                await asyncio.sleep(3)
+                if "/edit/" in page.url:
+                    logger.info("Edit mode entered: %s", page.url[:100])
+                    return True
+        except Exception:
+            continue
+
+    # JS fallback: click first clickable media element in main area
+    try:
+        clicked = await page.evaluate("""() => {
+            // Find video elements or large images
+            const videos = document.querySelectorAll('video');
+            for (const v of videos) {
+                const r = v.getBoundingClientRect();
+                if (r.width > 50 && r.height > 50) {
+                    v.click();
+                    return 'video';
+                }
+                // Try clicking parent
+                if (v.parentElement) {
+                    v.parentElement.click();
+                    return 'video-parent';
+                }
+            }
+            // Try large image thumbnails
+            const imgs = document.querySelectorAll('img[src*="googleusercontent"], img[src*="ggpht"]');
+            for (const img of imgs) {
+                const r = img.getBoundingClientRect();
+                if (r.width > 80 && r.height > 80) {
+                    img.click();
+                    return 'img';
+                }
+            }
+            return null;
+        }""")
+        if clicked:
+            logger.info("Clicked media via JS: %s", clicked)
+            await asyncio.sleep(3)
+            if "/edit/" in page.url:
+                logger.info("Edit mode entered: %s", page.url[:100])
+                return True
+    except Exception:
+        pass
 
     return False
 

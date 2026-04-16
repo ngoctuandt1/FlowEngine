@@ -20,10 +20,16 @@ from flow.operations._base import (
 logger = logging.getLogger(__name__)
 
 # Extend button texts (EN + VI)
-EXTEND_BUTTONS = ["Extend", "Mo rong"]
+EXTEND_BUTTONS = ["Extend", "Mở rộng", "Mo rong", "extend"]
 
-# Extend icon fallback
-EXTEND_ICON_SELECTOR = "button:has(span:has-text('keyboard_double_arrow_right'))"
+# Extend icon/selector fallbacks
+EXTEND_ICON_SELECTORS = [
+    "button:has(span:has-text('keyboard_double_arrow_right'))",
+    "button:has(i:has-text('keyboard_double_arrow_right'))",
+    "[aria-label*='Extend' i]",
+    "[aria-label*='extend' i]",
+    "button:has-text('keyboard_double_arrow_right')",
+]
 
 
 async def extend_video(
@@ -62,20 +68,59 @@ async def extend_video(
     await wait_for_video_loaded(page)
 
     # Step 3: Click Extend button
+    # Wait for action buttons to render after entering edit mode
+    await asyncio.sleep(2)
+
     clicked = await click_action_button(page, EXTEND_BUTTONS)
     if not clicked:
-        # Try icon-based fallback
+        # Try icon-based fallbacks
+        for sel in EXTEND_ICON_SELECTORS:
+            try:
+                icon_btn = page.locator(sel).first
+                if await icon_btn.is_visible(timeout=2000):
+                    await icon_btn.click(timeout=3000)
+                    clicked = True
+                    logger.info("Clicked Extend via icon: %s", sel)
+                    await asyncio.sleep(0.5)
+                    break
+            except Exception:
+                continue
+
+    if not clicked:
+        # JS fallback: scan for extend-like buttons
         try:
-            icon_btn = page.locator(EXTEND_ICON_SELECTOR).first
-            if await icon_btn.is_visible(timeout=2000):
-                await icon_btn.click(timeout=3000)
-                clicked = True
-                logger.info("Clicked Extend via icon fallback")
+            clicked = await page.evaluate("""() => {
+                const btns = document.querySelectorAll('button, [role="button"]');
+                for (const btn of btns) {
+                    const text = (btn.innerText || '').toLowerCase();
+                    if (text.includes('extend') || text.includes('mở rộng')
+                        || text.includes('keyboard_double_arrow_right')) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""")
+            if clicked:
+                logger.info("Clicked Extend via JS fallback")
                 await asyncio.sleep(0.5)
         except Exception:
             pass
 
     if not clicked:
+        # Debug: log visible buttons to help diagnose
+        try:
+            buttons = await page.evaluate("""() => {
+                const btns = document.querySelectorAll('button, [role="button"]');
+                return Array.from(btns).slice(0, 30).map(b => ({
+                    text: (b.innerText || '').trim().substring(0, 60),
+                    w: Math.round(b.getBoundingClientRect().width),
+                    vis: getComputedStyle(b).display !== 'none',
+                })).filter(b => b.vis && b.w > 30);
+            }""")
+            logger.error("Extend button not found. Visible buttons: %s", buttons)
+        except Exception:
+            pass
         raise RuntimeError("Failed to find Extend button")
 
     # Step 4: Type prompt (optional)
@@ -108,23 +153,47 @@ async def extend_video(
 
 
 async def _type_extend_prompt(page, prompt: str):
-    """Type into the extend prompt field.
+    """Type into the extend prompt field inside the extend panel.
 
-    Placeholder: "What happens next?" (EN) / "Tiep theo la gi?" (VI)
+    The extend panel is a dialog/overlay opened by clicking "Extend"/"Mở rộng".
+    Its textbox has placeholder "What happens next?" (EN) / "Tiếp theo là gì?" (VI).
+    Must NOT type into the main composer textbox at the bottom of the page.
     """
-    SELECTORS = [
-        "[role='textbox']",
-        "textarea",
-        "[contenteditable='true']",
-        "[placeholder*='next' i]",
-        "[placeholder*='tiep' i]",
-        "[aria-label*='prompt' i]",
-    ]
+    # The extend panel has a Slate.js editor (data-slate-editor="true").
+    # The main composer ALSO has one, so we must pick the LAST one
+    # (extend panel renders after composer in DOM).
+    try:
+        editors = page.locator("[data-slate-editor='true']")
+        count = await editors.count()
+        if count >= 2:
+            # Last slate editor = extend panel (rendered after main composer)
+            el = editors.nth(count - 1)
+        elif count == 1:
+            el = editors.first
+        else:
+            el = None
 
-    for sel in SELECTORS:
+        if el and await el.is_visible(timeout=2000):
+            await el.click(timeout=2000)
+            await asyncio.sleep(0.3)
+            await page.keyboard.press("Control+a")
+            await asyncio.sleep(0.1)
+            await page.keyboard.type(prompt, delay=20)
+            logger.info("Extend prompt typed via slate editor (%d editors found)", count)
+            return
+    except Exception as e:
+        logger.debug("Slate editor approach failed: %s", e)
+
+    # Fallback: placeholder-based selectors
+    for sel in [
+        "[placeholder*='next' i]",
+        "[placeholder*='tiếp' i]",
+        "[placeholder*='tiep' i]",
+        "[aria-label*='extend' i]",
+    ]:
         try:
             el = page.locator(sel).first
-            if await el.is_visible(timeout=2000):
+            if await el.is_visible(timeout=1500):
                 await el.click(timeout=2000)
                 await asyncio.sleep(0.3)
                 await page.keyboard.press("Control+a")

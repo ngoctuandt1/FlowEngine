@@ -125,7 +125,7 @@ async def select_model(
     # After Video tab switch, the panel shows the current model as:
     #   "Veo 3.1 - Fast arrow_drop_down" (button with dropdown arrow)
     # Must click this button to reveal the LP model options.
-    await _open_model_dropdown(page)
+    dropdown_opened = await _open_model_dropdown(page)
 
     # Step 3: Find and click the target model
     # Use broad selectors: menuitem, button, [role] — and retry up to 3 times.
@@ -163,19 +163,21 @@ async def select_model(
                 for i in range(count):
                     item_text = await items.nth(i).inner_text()
                     if base_name.lower() in item_text.lower():
-                        await items.nth(i).click(timeout=3000)
+                        await items.nth(i).click(timeout=3000, force=True)
                         logger.info("Selected LP model: %s", item_text.strip()[:80])
                         await asyncio.sleep(0.5)
-                        await _close_model_panel(page)
-                        return await _verify_credits(page, expected=0)
+                        ok = await _verify_credits(page, expected=0)
+                        await _close_model_panel(page, dropdown_opened)
+                        return ok
 
                 # Fallback: click first LP model found
                 text = await items.first.inner_text()
-                await items.first.click(timeout=3000)
+                await items.first.click(timeout=3000, force=True)
                 logger.info("Selected first LP model: %s", text.strip()[:80])
                 await asyncio.sleep(0.5)
-                await _close_model_panel(page)
-                return await _verify_credits(page, expected=0)
+                ok = await _verify_credits(page, expected=0)
+                await _close_model_panel(page, dropdown_opened)
+                return ok
 
             else:
                 # Non-LP: match base model name
@@ -183,10 +185,10 @@ async def select_model(
                     has_text=re.compile(re.escape(base_name), re.IGNORECASE)
                 )
                 if await items.first.is_visible(timeout=2000):
-                    await items.first.click(timeout=3000)
+                    await items.first.click(timeout=3000, force=True)
                     logger.info("Selected model: %s", target_text)
                     await asyncio.sleep(0.5)
-                    await _close_model_panel(page)
+                    await _close_model_panel(page, dropdown_opened)
                     return True
 
         except Exception as e:
@@ -196,11 +198,12 @@ async def select_model(
     logger.warning("Playwright selectors failed — trying JS fallback for model selection")
     js_ok = await _select_model_js(page, base_name, is_lp)
     if js_ok:
-        await _close_model_panel(page)
-        return await _verify_credits(page, expected=0) if is_lp else True
+        ok = await _verify_credits(page, expected=0) if is_lp else True
+        await _close_model_panel(page, dropdown_opened)
+        return ok
 
     # Close menu
-    await _close_model_panel(page)
+    await _close_model_panel(page, dropdown_opened)
 
     logger.error("Failed to select model after all attempts")
     return False
@@ -209,24 +212,38 @@ async def select_model(
 async def _verify_credits(page, expected: int = 0) -> bool:
     """Verify credit cost matches expected value."""
     try:
-        # Look for credit text:
-        #   EN: "Generating will use X credits"
-        #   VI: "Qua trinh tao se ton X tin dung"
-        text = await page.evaluate(
-            """() => {
+        result = await page.evaluate(
+            """(expected) => {
             const body = document.body.innerText || '';
+
+            // Pattern 1: "will use X credits" / "tốn X tín dụng"
             const en = body.match(/will use (\\d+) credits?/i);
+            if (en) return { cost: parseInt(en[1]), source: 'en_will_use' };
             const vi = body.match(/tốn (\\d+) tín dụng/i);
-            return en ? en[1] : (vi ? vi[1] : null);
-        }"""
+            if (vi) return { cost: parseInt(vi[1]), source: 'vi_ton' };
+
+            // Pattern 2: "X credits" / "X tín dụng" near model text
+            const credits = body.match(/(\\d+)\\s*credits?/i);
+            if (credits) return { cost: parseInt(credits[1]), source: 'en_credits' };
+            const tinDung = body.match(/(\\d+)\\s*tín dụng/i);
+            if (tinDung) return { cost: parseInt(tinDung[1]), source: 'vi_tin_dung' };
+
+            // Pattern 3: LP model selected = 0 credits (check for text indicator)
+            if (expected === 0 && /lower priority/i.test(body)) {
+                return { cost: 0, source: 'lp_text' };
+            }
+
+            return null;
+        }""",
+            expected,
         )
 
-        if text is not None:
-            cost = int(text)
+        if result is not None:
+            cost = result["cost"]
             if cost == expected:
-                logger.info("Credit verification OK: %d credits", cost)
+                logger.info("Credit verification OK: %d credits (via %s)", cost, result["source"])
                 return True
-            logger.warning("Credit mismatch: expected %d, got %d", expected, cost)
+            logger.warning("Credit mismatch: expected %d, got %d (via %s)", expected, cost, result["source"])
             return False
 
         logger.warning("Could not find credit text -- assuming OK")
@@ -320,16 +337,21 @@ async def _has_dropdown_arrow(btn) -> bool:
         return False
 
 
-async def _close_model_panel(page) -> None:
+async def _close_model_panel(page, dropdown_was_opened: bool = True) -> None:
     """Close model selector panel/dropdown by pressing Escape.
 
     After selecting a model, the panel or dropdown may remain open.
     This blocks subsequent interactions (prompt typing, submit).
-    Press Escape twice: once to close dropdown, once to close panel.
+
+    Args:
+        dropdown_was_opened: If True, press Escape twice (dropdown + panel).
+            If False, press once (panel only). This prevents accidentally
+            closing the parent overlay (e.g. extend/insert panel).
     """
     try:
-        await page.keyboard.press("Escape")
-        await asyncio.sleep(0.3)
+        if dropdown_was_opened:
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.3)
         await page.keyboard.press("Escape")
         await asyncio.sleep(0.3)
     except Exception:

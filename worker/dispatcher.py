@@ -14,7 +14,7 @@ from worker.project_lock import ProjectLock
 
 logger = logging.getLogger(__name__)
 
-PROFILE_BASE_DIR = os.environ.get("CHROME_USER_DATA_DIR", "./profiles")
+PROFILE_BASE_DIR = os.environ.get("CHROME_USER_DATA_DIR", "./chrome-profiles")
 DOWNLOAD_DIR = os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")
 
 
