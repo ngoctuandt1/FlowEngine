@@ -1,10 +1,8 @@
 """Job dispatcher -- routes job type to the correct handler.
 
-text-to-video uses the real flow automation (Phase 2).
-extend/insert/remove/camera are stubs until Phase 3.
+All 5 operations use real Flow automation via Playwright.
 """
 
-import asyncio
 import logging
 import os
 from typing import Callable, Coroutine
@@ -14,18 +12,30 @@ from worker.project_lock import ProjectLock
 
 logger = logging.getLogger(__name__)
 
-SIMULATE_WORK_SEC = 2.0
 PROFILE_BASE_DIR = os.environ.get("CHROME_USER_DATA_DIR", "./profiles")
 DOWNLOAD_DIR = os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")
 
 
 # ======================================================================
-# Real handler: text-to-video
+# Shared: create FlowClient context for a job
+# ======================================================================
+
+def _make_client(profile: str):
+    """Create a FlowClient for the given profile (use as async context manager)."""
+    from flow.client import FlowClient
+    return FlowClient(
+        profile_name=profile,
+        profile_base_dir=PROFILE_BASE_DIR,
+        download_dir=DOWNLOAD_DIR,
+    )
+
+
+# ======================================================================
+# Handlers — all use real Flow automation
 # ======================================================================
 
 async def handle_text_to_video(job: dict) -> dict:
-    """Real text-to-video handler using FlowClient + Playwright."""
-    from flow.client import FlowClient
+    """Text-to-video: create new project, generate video from prompt."""
     from flow.operations.generate import text_to_video
 
     profile = job.get("profile", "")
@@ -34,16 +44,10 @@ async def handle_text_to_video(job: dict) -> dict:
 
     logger.info(
         "text-to-video START | prompt=%r model=%s profile=%s",
-        (job.get("prompt", ""))[:60],
-        job.get("model"),
-        profile,
+        (job.get("prompt", ""))[:60], job.get("model"), profile,
     )
 
-    async with FlowClient(
-        profile_name=profile,
-        profile_base_dir=PROFILE_BASE_DIR,
-        download_dir=DOWNLOAD_DIR,
-    ) as client:
+    async with _make_client(profile) as client:
         result = await text_to_video(
             client,
             prompt=job.get("prompt", ""),
@@ -52,80 +56,112 @@ async def handle_text_to_video(job: dict) -> dict:
             free_mode=True,
         )
 
-    logger.info(
-        "text-to-video DONE | files=%d media_id=%s",
-        len(result.get("output_files", [])),
-        result.get("media_id"),
-    )
+    logger.info("text-to-video DONE | files=%d media_id=%s",
+                len(result.get("output_files", [])), result.get("media_id"))
     return result
 
 
-# ======================================================================
-# Stubs: extend / insert / remove / camera (Phase 3)
-# ======================================================================
-
 async def handle_extend(job: dict) -> dict:
-    """Stub: extend-video — will use flow.operations.extend in Phase 3."""
+    """Extend-video: navigate to edit URL, extend with prompt + LP model."""
+    from flow.operations.extend import extend_video
+
+    profile = job.get("profile", "")
+    if not profile:
+        raise RuntimeError("No profile assigned for extend-video job")
+
     logger.info(
-        "[STUB] extend-video | edit_url=%s profile=%s",
-        job.get("edit_url") or job.get("project_url"), job.get("profile"),
+        "extend-video START | edit_url=%s profile=%s",
+        (job.get("edit_url") or job.get("project_url", ""))[:80], profile,
     )
-    await asyncio.sleep(SIMULATE_WORK_SEC)
-    return {
-        "project_url": job.get("project_url", ""),
-        "media_id": job.get("media_id", "stub-media-ext-001"),
-        "edit_url": job.get("edit_url", ""),
-        "output_files": ["/output/stub_extend.mp4"],
-        "generation_id": "gen-stub-ext-001",
-    }
+
+    async with _make_client(profile) as client:
+        result = await extend_video(
+            client,
+            job=job,
+            prompt=job.get("prompt", ""),
+            model=job.get("model", "veo-3.1-fast-lp"),
+            free_mode=True,
+        )
+
+    logger.info("extend-video DONE | files=%d media_id=%s",
+                len(result.get("output_files", [])), result.get("media_id"))
+    return result
 
 
 async def handle_insert(job: dict) -> dict:
-    """Stub: insert-object — will use flow.operations.insert in Phase 3."""
+    """Insert-object: navigate to edit URL, draw bbox, type prompt."""
+    from flow.operations.insert import insert_object
+
+    profile = job.get("profile", "")
+    if not profile:
+        raise RuntimeError("No profile assigned for insert-object job")
+
     logger.info(
-        "[STUB] insert-object | bbox=%s prompt=%r profile=%s",
-        job.get("bbox"), job.get("prompt", ""), job.get("profile"),
+        "insert-object START | bbox=%s prompt=%r profile=%s",
+        job.get("bbox"), (job.get("prompt", ""))[:40], profile,
     )
-    await asyncio.sleep(SIMULATE_WORK_SEC)
-    return {
-        "project_url": job.get("project_url", ""),
-        "media_id": job.get("media_id", "stub-media-ins-001"),
-        "edit_url": job.get("edit_url", ""),
-        "output_files": ["/output/stub_insert.mp4"],
-        "generation_id": "gen-stub-ins-001",
-    }
+
+    async with _make_client(profile) as client:
+        result = await insert_object(
+            client,
+            job=job,
+            prompt=job.get("prompt", ""),
+            bbox=job.get("bbox"),
+        )
+
+    logger.info("insert-object DONE | files=%d media_id=%s",
+                len(result.get("output_files", [])), result.get("media_id"))
+    return result
 
 
 async def handle_remove(job: dict) -> dict:
-    """Stub: remove-object — will use flow.operations.remove in Phase 3."""
+    """Remove-object: navigate to edit URL, draw bbox, no prompt."""
+    from flow.operations.remove import remove_object
+
+    profile = job.get("profile", "")
+    if not profile:
+        raise RuntimeError("No profile assigned for remove-object job")
+
     logger.info(
-        "[STUB] remove-object | bbox=%s profile=%s",
-        job.get("bbox"), job.get("profile"),
+        "remove-object START | bbox=%s profile=%s",
+        job.get("bbox"), profile,
     )
-    await asyncio.sleep(SIMULATE_WORK_SEC)
-    return {
-        "project_url": job.get("project_url", ""),
-        "media_id": job.get("media_id", "stub-media-rm-001"),
-        "edit_url": job.get("edit_url", ""),
-        "output_files": ["/output/stub_remove.mp4"],
-        "generation_id": "gen-stub-rm-001",
-    }
+
+    async with _make_client(profile) as client:
+        result = await remove_object(
+            client,
+            job=job,
+            bbox=job.get("bbox"),
+        )
+
+    logger.info("remove-object DONE | files=%d media_id=%s",
+                len(result.get("output_files", [])), result.get("media_id"))
+    return result
 
 
 async def handle_camera(job: dict) -> dict:
-    """Stub: camera-move — will use flow.operations.camera in Phase 3."""
+    """Camera-move: navigate to edit URL, pick camera preset."""
+    from flow.operations.camera import camera_move
+
+    profile = job.get("profile", "")
+    if not profile:
+        raise RuntimeError("No profile assigned for camera-move job")
+
     logger.info(
-        "[STUB] camera-move | direction=%s profile=%s",
-        job.get("direction"), job.get("profile"),
+        "camera-move START | direction=%s profile=%s",
+        job.get("direction"), profile,
     )
-    await asyncio.sleep(SIMULATE_WORK_SEC)
-    return {
-        "project_url": job.get("project_url", ""),
-        "media_id": job.get("media_id", "stub-media-cam-001"),
-        "edit_url": job.get("edit_url", ""),
-        "output_files": ["/output/stub_camera.mp4"],
-        "generation_id": "gen-stub-cam-001",
-    }
+
+    async with _make_client(profile) as client:
+        result = await camera_move(
+            client,
+            job=job,
+            direction=job.get("direction", "Dolly in"),
+        )
+
+    logger.info("camera-move DONE | files=%d media_id=%s",
+                len(result.get("output_files", [])), result.get("media_id"))
+    return result
 
 
 # ======================================================================
