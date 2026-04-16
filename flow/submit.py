@@ -93,6 +93,10 @@ async def submit_with_confirmation(
     """
     page = client.page
 
+    # Snapshot call count BEFORE submit so we only check NEW calls
+    calls_before = len(getattr(client, "_calls", []))
+    gen_id_before = getattr(client, "_gen_id", None)
+
     clicked = await click_submit(page)
     if not clicked:
         logger.error("Failed to find/click submit button")
@@ -102,15 +106,21 @@ async def submit_with_confirmation(
     deadline = asyncio.get_event_loop().time() + timeout_sec
 
     while asyncio.get_event_loop().time() < deadline:
-        # Signal 1: gen_id captured from network intercept
-        if getattr(client, "_gen_id", None):
-            logger.info("Submit confirmed: gen_id=%s", client._gen_id)
+        # Signal 1: gen_id captured from network intercept (NEW since submit)
+        gen_id = getattr(client, "_gen_id", None)
+        if gen_id and gen_id != gen_id_before:
+            logger.info("Submit confirmed: gen_id=%s", gen_id)
             return True
 
-        # Signal 2: operations API call detected
+        # Signal 2: NEW operations API call detected (after submit)
         calls = getattr(client, "_calls", [])
-        if any("operations/" in c.get("url", "") for c in calls):
-            logger.info("Submit confirmed: operations API call detected")
+        new_calls = calls[calls_before:]
+        ops_calls = [c for c in new_calls if "operations/" in c.get("url", "")]
+        if ops_calls:
+            logger.info(
+                "Submit confirmed: operations API call detected (%d new calls)",
+                len(ops_calls),
+            )
             return True
 
         # Signal 3: card count increased
@@ -130,12 +140,19 @@ async def submit_with_confirmation(
 
         await asyncio.sleep(poll_interval)
 
-    # Timeout -- assume optimistically that the job was accepted.
-    # The wait module will catch genuine failures later.
-    logger.warning(
-        "Submit confirmation timeout (%.0fs) -- assuming submitted", timeout_sec
+    # Timeout -- submit NOT confirmed. Log diagnostic info.
+    calls = getattr(client, "_calls", [])
+    new_calls = calls[calls_before:]
+    logger.error(
+        "Submit NOT confirmed after %.0fs — "
+        "new_api_calls=%d, gen_id=%s, cards=%d, url=%s",
+        timeout_sec,
+        len(new_calls),
+        getattr(client, "_gen_id", None),
+        await _count_cards(page),
+        page.url[:100],
     )
-    return True
+    return False
 
 
 # ------------------------------------------------------------------
