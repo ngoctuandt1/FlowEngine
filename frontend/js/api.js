@@ -104,6 +104,13 @@ const API = {
     async counts() {
       return API.fetch('/api/jobs/counts');
     },
+
+    /**
+     * Recover stale jobs stuck in claimed/running.
+     */
+    async recover() {
+      return API.fetch('/api/jobs/recover', { method: 'POST' });
+    },
   },
 
   // ---- Chains ----

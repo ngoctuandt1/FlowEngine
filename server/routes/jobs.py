@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from server.models.job import Job, JobCreate, JobStatus, ChainCreate
-from server.db.job_store import create_job, get_job, list_jobs, get_children, delete_job, get_job_counts
+from server.db.job_store import create_job, get_job, list_jobs, get_children, delete_job, get_job_counts, recover_stale_jobs
 from server.routes.ws import broadcast_job_update
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -93,6 +93,21 @@ async def create_chain(req: ChainCreate):  # POST /api/chains
 async def job_counts():
     """Return job counts grouped by status."""
     return await get_job_counts()
+
+
+@router.post("/jobs/recover")
+async def recover_stale():
+    """Recover jobs stuck in claimed/running state.
+
+    Resets stale jobs back to pending so they can be re-claimed.
+    """
+    recovered = await recover_stale_jobs()
+    for job in recovered:
+        await broadcast_job_update(job)
+    return {
+        "recovered": len(recovered),
+        "jobs": [{"id": j.id, "type": j.type.value, "status": "pending"} for j in recovered],
+    }
 
 
 @router.get("/jobs")

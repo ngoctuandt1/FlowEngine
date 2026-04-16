@@ -48,15 +48,8 @@ LOG_DATE_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format=LOG_FORMAT,
-        datefmt=LOG_DATE_FMT,
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
-    # Quieten noisy libraries
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    from server.config import setup_logging as _setup
+    _setup("worker")
 
 
 logger = logging.getLogger("worker")

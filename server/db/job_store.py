@@ -1,7 +1,7 @@
 """Job CRUD operations (async, aiosqlite)."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from server.db.database import get_db
@@ -306,6 +306,54 @@ async def get_job_counts() -> dict[str, int]:
         for row in rows:
             counts[row["status"]] = row["cnt"]
         return counts
+
+
+async def recover_stale_jobs(stale_minutes: int = 30) -> list[Job]:
+    """Find and reset jobs stuck in 'claimed' or 'running' for too long.
+
+    These are jobs where the worker died or lost connection without
+    reporting back. Reset them to 'pending' so they can be re-claimed.
+
+    Returns list of recovered jobs.
+    """
+    cutoff = (datetime.utcnow() - timedelta(minutes=stale_minutes)).isoformat()
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT * FROM jobs
+            WHERE status IN ('claimed', 'running')
+              AND updated_at < ?
+            ORDER BY created_at ASC
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+
+        if not rows:
+            return []
+
+        recovered = []
+        now = _now_iso()
+        for row in rows:
+            job = _row_to_job(row)
+            await db.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    worker_id = NULL,
+                    claimed_at = NULL,
+                    error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (f"Recovered from stale {job.status} (was stuck since {job.updated_at})", now, job.id),
+            )
+            job.status = JobStatus.PENDING
+            recovered.append(job)
+
+        await db.commit()
+        return recovered
 
 
 async def delete_job(job_id: str) -> bool:

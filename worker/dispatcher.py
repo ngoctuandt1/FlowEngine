@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Callable, Coroutine
 
+from flow.retry import with_retry, is_transient
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
 
@@ -226,7 +227,7 @@ async def dispatch_job(
         logger.info(
             "Dispatching job %s [%s] on profile %s", job_id, job_type, profile
         )
-        result = await handler(job)
+        result = await with_retry(handler, job, max_retries=2, job_id=job_id)
 
         # Attach common fields to result
         result["status"] = "completed"

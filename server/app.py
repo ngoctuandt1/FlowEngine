@@ -19,6 +19,8 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 async def lifespan(app: FastAPI):
     """Startup / shutdown hooks."""
     # --- startup ---
+    from server.config import setup_logging
+    setup_logging("server")
     from server.db import init_db
     await init_db()
     yield

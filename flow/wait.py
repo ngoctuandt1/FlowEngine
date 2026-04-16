@@ -8,6 +8,8 @@ import asyncio
 import logging
 import time
 
+from flow.recaptcha import detect_recaptcha, detect_recaptcha_in_network, RecaptchaError
+
 logger = logging.getLogger(__name__)
 
 # Default timeouts per job type (seconds)
@@ -67,6 +69,7 @@ async def wait_for_completion(
     start = time.monotonic()
     last_progress = 0
     last_signal_time = start
+    last_recaptcha_check = 0.0  # epoch-relative; check immediately on first pass
 
     while True:
         elapsed = time.monotonic() - start
@@ -87,6 +90,13 @@ async def wait_for_completion(
         if api["progress"] > last_progress:
             last_progress = api["progress"]
             last_signal_time = time.monotonic()
+
+        # --- reCAPTCHA check (throttled to every ~10s) ---
+        now = time.monotonic()
+        if now - last_recaptcha_check >= 10:
+            last_recaptcha_check = now
+            if await detect_recaptcha(page) or await detect_recaptcha_in_network(client):
+                raise RecaptchaError("reCAPTCHA detected during generation wait")
 
         # --- Method 2: network video captures ---
         video_urls = getattr(client, "_video_urls", [])
