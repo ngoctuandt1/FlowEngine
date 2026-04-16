@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlowEngine Dashboard</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+</head>
+<body>
+  <div id="app">
+    <nav id="sidebar">
+      <div class="sidebar-header">
+        <span class="material-icons logo-icon">movie_filter</span>
+        <h1 class="logo-text">FlowEngine</h1>
+      </div>
+      <ul class="nav-links">
+        <li>
+          <a href="#dashboard" class="nav-link active" data-page="dashboard">
+            <span class="material-icons">dashboard</span>
+            <span class="nav-label">Dashboard</span>
+          </a>
+        </li>
+        <li>
+          <a href="#create" class="nav-link" data-page="create">
+            <span class="material-icons">add_circle</span>
+            <span class="nav-label">Create Job</span>
+          </a>
+        </li>
+        <li>
+          <a href="#chains" class="nav-link" data-page="chains">
+            <span class="material-icons">link</span>
+            <span class="nav-label">Chains</span>
+          </a>
+        </li>
+        <li>
+          <a href="#profiles" class="nav-link" data-page="profiles">
+            <span class="material-icons">people</span>
+            <span class="nav-label">Profiles</span>
+          </a>
+        </li>
+      </ul>
+      <div class="sidebar-footer">
+        <div id="ws-status" class="ws-indicator disconnected">
+          <span class="ws-dot"></span>
+          <span class="ws-label">Disconnected</span>
+        </div>
+      </div>
+    </nav>
+
+    <main id="content">
+      <header id="top-bar">
+        <button id="menu-toggle" class="icon-btn">
+          <span class="material-icons">menu</span>
+        </button>
+        <h2 id="page-title">Dashboard</h2>
+        <div class="top-bar-actions">
+          <button id="refresh-btn" class="icon-btn" title="Refresh">
+            <span class="material-icons">refresh</span>
+          </button>
+        </div>
+      </header>
+      <div id="page-container">
+        <!-- Pages load here -->
+      </div>
+    </main>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container"></div>
+
+  <!-- Job detail modal -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-title">Job Details</h3>
+        <button class="modal-close icon-btn">
+          <span class="material-icons">close</span>
+        </button>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/ws.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/pages/dashboard.js"></script>
+  <script src="js/pages/create-job.js"></script>
+  <script src="js/pages/chain-builder.js"></script>
+  <script src="js/pages/profiles.js"></script>
+</body>
+</html>
