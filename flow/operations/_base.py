@@ -50,7 +50,10 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     current = page.url
     if is_login_page(current):
         logger.warning("Login redirect on edit navigation — resolving")
-        login_ok = await handle_login_redirect(page, timeout=120)
+        profile_name = getattr(client, "profile_name", "") or ""
+        login_ok = await handle_login_redirect(
+            page, timeout=60, profile_name=profile_name,
+        )
         if not login_ok:
             raise RuntimeError("Google login required — session expired")
         # Re-navigate to edit URL after login

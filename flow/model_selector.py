@@ -51,13 +51,26 @@ async def select_model(
     logger.info("Selecting model: %s", target_text)
 
     # Step 1: Open model dropdown
-    # The model chip button contains text like "Video x1" or model name
+    # The model chip is a button near the composer showing current model.
+    # EN: "Video 🖥️ x1" or "Videox1"
+    # VI: "🍌 Nano Banana Pro 📱 x1" or similar model name
+    # It may also show "Veo" or "Imagen" depending on selection.
     chip_selectors = [
+        # Direct model name matches
         "button:has-text('Veo')",
         "button:has-text('Video')",
         "button:has-text('Videox1')",
+        "button:has-text('Imagen')",
+        "button:has-text('Nano')",
+        "button:has-text('Banana')",
         "[role='button']:has-text('Veo')",
+        "[role='button']:has-text('Video')",
+        "[role='button']:has-text('Imagen')",
+        "[role='button']:has-text('Nano')",
         "[role='listbox']",
+        # Chip contains "x1" or "x4" (generation count)
+        "button:has-text('x1')",
+        "button:has-text('x4')",
     ]
 
     opened = False
@@ -66,71 +79,130 @@ async def select_model(
             chip = page.locator(sel).first
             if await chip.is_visible(timeout=2000):
                 await chip.click(timeout=2000)
+                logger.info("Opened model dropdown via: %s", sel)
                 opened = True
                 break
         except Exception:
             continue
 
     if not opened:
-        logger.warning("Could not find model selector chip")
+        # JS fallback: find the model chip by position (near composer, bottom half)
+        try:
+            opened = await page.evaluate("""() => {
+                // Model chip is a button near the composer with 'x1' or 'x4' text
+                const btns = document.querySelectorAll('button, [role="button"]');
+                for (const btn of btns) {
+                    const text = (btn.innerText || '').trim();
+                    const rect = btn.getBoundingClientRect();
+                    // Must be in bottom half, not too large, contains x1/x4 or model keywords
+                    if (rect.top > window.innerHeight * 0.5 && rect.width < 300
+                        && (text.match(/x[1-4]$/i) || /veo|video|imagen|nano/i.test(text))) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }""")
+            if opened:
+                logger.info("Opened model dropdown via JS fallback")
+        except Exception:
+            pass
+
+    if not opened:
+        logger.warning("Could not find model selector chip — will proceed with default model")
         return False
 
-    # Step 2: Wait for menu to appear
+    # Step 2: Wait for panel to appear
     await asyncio.sleep(0.5)
 
-    # Step 3: Find target model in menu
-    try:
-        # Look for menuitem containing the target text
-        menu_item = page.locator(
-            "menuitem, [role='menuitem'], [role='option']"
-        ).filter(
-            has_text=re.compile(
-                re.escape(target_text.split("[")[0].strip()), re.IGNORECASE
-            )
-        )
+    # Step 2.5: Switch to Video tab
+    # The model panel has TWO tabs: "Hình ảnh"/"Image" and "Video".
+    # Veo models only appear under the Video tab.
+    if any(kw in target_text.lower() for kw in ("veo", "video")):
+        await _switch_to_video_tab(page)
 
-        # If looking for LP, specifically look for "Lower Priority"
-        if "Lower Priority" in target_text:
-            menu_item = page.locator(
-                "menuitem, [role='menuitem'], [role='option']"
-            ).filter(has_text=re.compile(r"Lower Priority", re.IGNORECASE))
+    # Step 2.7: Open the MODEL DROPDOWN within the panel
+    # After Video tab switch, the panel shows the current model as:
+    #   "Veo 3.1 - Fast arrow_drop_down" (button with dropdown arrow)
+    # Must click this button to reveal the LP model options.
+    await _open_model_dropdown(page)
 
-            # If multiple LP models, pick the one matching our base model name
-            base_name = target_text.split(" [")[0]  # "Veo 3.1 - Fast"
-            items = menu_item
-            count = await items.count()
-            for i in range(count):
-                item_text = await items.nth(i).inner_text()
-                if base_name.lower() in item_text.lower():
-                    await items.nth(i).click(timeout=2000)
-                    logger.info("Selected LP model: %s", item_text.strip())
-                    await asyncio.sleep(0.5)
-                    return await _verify_credits(page, expected=0)
+    # Step 3: Find and click the target model
+    # Use broad selectors: menuitem, button, [role] — and retry up to 3 times.
+    MODEL_ITEM_SELECTORS = (
+        "menuitem, [role='menuitem'], [role='option'], "
+        "button, [role='button'], [role='listbox'] button"
+    )
 
-            # Fallback: just click first LP model
-            if count > 0:
+    is_lp = "Lower Priority" in target_text
+    base_name = target_text.split(" [")[0].strip()  # "Veo 3.1 - Fast"
+
+    for attempt in range(3):
+        if attempt > 0:
+            logger.info("Model select retry %d, waiting 1.5s...", attempt + 1)
+            await asyncio.sleep(1.5)
+
+        try:
+            if is_lp:
+                # Look for any element with "Lower Priority" text
+                items = page.locator(MODEL_ITEM_SELECTORS).filter(
+                    has_text=re.compile(r"Lower Priority", re.IGNORECASE)
+                )
+                count = await items.count()
+                logger.info(
+                    "LP model search (attempt %d): found %d items matching 'Lower Priority'",
+                    attempt + 1, count,
+                )
+
+                if count == 0:
+                    # Debug: log what model options are visible
+                    await _debug_model_options(page)
+                    continue
+
+                # Pick the one matching our base model name
+                for i in range(count):
+                    item_text = await items.nth(i).inner_text()
+                    if base_name.lower() in item_text.lower():
+                        await items.nth(i).click(timeout=3000)
+                        logger.info("Selected LP model: %s", item_text.strip()[:80])
+                        await asyncio.sleep(0.5)
+                        await _close_model_panel(page)
+                        return await _verify_credits(page, expected=0)
+
+                # Fallback: click first LP model found
                 text = await items.first.inner_text()
-                await items.first.click(timeout=2000)
-                logger.info("Selected first LP model: %s", text.strip())
+                await items.first.click(timeout=3000)
+                logger.info("Selected first LP model: %s", text.strip()[:80])
                 await asyncio.sleep(0.5)
+                await _close_model_panel(page)
                 return await _verify_credits(page, expected=0)
-        else:
-            # Non-LP model
-            if await menu_item.first.is_visible(timeout=2000):
-                await menu_item.first.click(timeout=2000)
-                logger.info("Selected model: %s", target_text)
-                await asyncio.sleep(0.5)
-                return True
 
-    except Exception as e:
-        logger.error("Failed to select model: %s", e)
+            else:
+                # Non-LP: match base model name
+                items = page.locator(MODEL_ITEM_SELECTORS).filter(
+                    has_text=re.compile(re.escape(base_name), re.IGNORECASE)
+                )
+                if await items.first.is_visible(timeout=2000):
+                    await items.first.click(timeout=3000)
+                    logger.info("Selected model: %s", target_text)
+                    await asyncio.sleep(0.5)
+                    await _close_model_panel(page)
+                    return True
+
+        except Exception as e:
+            logger.warning("Model select attempt %d failed: %s", attempt + 1, e)
+
+    # All attempts exhausted — try JS fallback
+    logger.warning("Playwright selectors failed — trying JS fallback for model selection")
+    js_ok = await _select_model_js(page, base_name, is_lp)
+    if js_ok:
+        await _close_model_panel(page)
+        return await _verify_credits(page, expected=0) if is_lp else True
 
     # Close menu
-    try:
-        await page.keyboard.press("Escape")
-    except Exception:
-        pass
+    await _close_model_panel(page)
 
+    logger.error("Failed to select model after all attempts")
     return False
 
 
@@ -162,6 +234,258 @@ async def _verify_credits(page, expected: int = 0) -> bool:
     except Exception as e:
         logger.warning("Credit verify error: %s", e)
         return True
+
+
+async def _open_model_dropdown(page) -> bool:
+    """Click the model name button inside the panel to open model list.
+
+    After switching to Video tab, the panel shows the current model:
+      "Veo 3.1 - Fast arrow_drop_down" (264px wide button)
+    OR if LP was previously selected:
+      "Veo 3.1 - Fast [Lower Priority] arrow_drop_down"
+
+    Clicking this opens the actual dropdown with LP model options.
+    """
+    # Playwright: find button with "Veo" text + "arrow_drop_down" (the model name button)
+    # First pass: prefer non-LP button (standard model name).
+    # Second pass: accept LP button too (account remembered LP selection).
+    try:
+        veo_btns = page.locator("button").filter(has_text="Veo")
+        count = await veo_btns.count()
+
+        # First pass: non-LP Veo button
+        for i in range(count):
+            btn = veo_btns.nth(i)
+            try:
+                txt = await btn.inner_text()
+                if "Lower Priority" in txt:
+                    continue
+                if "arrow_drop_down" in txt or await _has_dropdown_arrow(btn):
+                    await btn.click(timeout=3000)
+                    logger.info("Opened model dropdown via Veo button: %s", txt.strip()[:60])
+                    await asyncio.sleep(1.0)
+                    return True
+            except Exception:
+                continue
+
+        # Second pass: LP Veo button (account remembered LP from previous project)
+        for i in range(count):
+            btn = veo_btns.nth(i)
+            try:
+                txt = await btn.inner_text()
+                if "Lower Priority" in txt and ("arrow_drop_down" in txt or await _has_dropdown_arrow(btn)):
+                    await btn.click(timeout=3000)
+                    logger.info("Opened model dropdown via LP Veo button: %s", txt.strip()[:60])
+                    await asyncio.sleep(1.0)
+                    return True
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug("Veo button search failed: %s", e)
+
+    # JS fallback: find button with "Veo" + arrow_drop_down, accept LP too
+    try:
+        clicked = await page.evaluate("""() => {
+            const btns = document.querySelectorAll('button, [role="button"]');
+            for (const btn of btns) {
+                const text = (btn.innerText || '').trim();
+                const lower = text.toLowerCase();
+                if (lower.includes('veo') && lower.includes('arrow_drop_down')) {
+                    const rect = btn.getBoundingClientRect();
+                    if (rect.width > 100 && rect.height > 20) {
+                        btn.click();
+                        return text.substring(0, 60);
+                    }
+                }
+            }
+            return null;
+        }""")
+        if clicked:
+            logger.info("Opened model dropdown via JS: %s", clicked)
+            await asyncio.sleep(1.0)
+            return True
+    except Exception:
+        pass
+
+    logger.warning("Could not find model dropdown button inside panel")
+    return False
+
+
+async def _has_dropdown_arrow(btn) -> bool:
+    """Check if a button contains a dropdown arrow icon."""
+    try:
+        arrow = btn.locator("i:has-text('arrow_drop_down'), span:has-text('arrow_drop_down')")
+        return await arrow.count() > 0
+    except Exception:
+        return False
+
+
+async def _close_model_panel(page) -> None:
+    """Close model selector panel/dropdown by pressing Escape.
+
+    After selecting a model, the panel or dropdown may remain open.
+    This blocks subsequent interactions (prompt typing, submit).
+    Press Escape twice: once to close dropdown, once to close panel.
+    """
+    try:
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.3)
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.3)
+    except Exception:
+        pass
+
+
+async def _debug_model_options(page) -> None:
+    """Log visible model-like elements for debugging."""
+    try:
+        info = await page.evaluate("""() => {
+            const sels = [
+                'menuitem', '[role="menuitem"]', '[role="option"]',
+                'button', '[role="button"]'
+            ];
+            const seen = new Set();
+            const results = [];
+            for (const s of sels) {
+                for (const el of document.querySelectorAll(s)) {
+                    const text = (el.innerText || '').trim().substring(0, 80);
+                    const rect = el.getBoundingClientRect();
+                    const key = text + '|' + s;
+                    if (seen.has(key) || !text || rect.width === 0) continue;
+                    seen.add(key);
+                    // Only log elements related to models (Veo, LP, credits, etc.)
+                    const lower = text.toLowerCase();
+                    if (lower.includes('veo') || lower.includes('lower')
+                        || lower.includes('priority') || lower.includes('credit')
+                        || lower.includes('lite') || lower.includes('fast')
+                        || lower.includes('quality') || lower.includes('video')
+                        || lower.includes('imagen') || lower.includes('nano')) {
+                        results.push({sel: s, text: text, w: Math.round(rect.width), h: Math.round(rect.height)});
+                    }
+                }
+            }
+            return results;
+        }""")
+        logger.info("Model-related elements on page: %s", info)
+    except Exception as e:
+        logger.debug("Debug model options failed: %s", e)
+
+
+async def _select_model_js(page, base_name: str, is_lp: bool) -> bool:
+    """JS fallback: click model option by scanning visible text.
+
+    Searches all clickable elements for 'Lower Priority' (LP mode)
+    or the base model name, then clicks the matching one.
+    """
+    try:
+        target_lp = "lower priority" if is_lp else ""
+        clicked = await page.evaluate("""(args) => {
+            const baseName = args.baseName.toLowerCase();
+            const targetLP = args.targetLP;
+            const clickable = document.querySelectorAll(
+                'menuitem, [role="menuitem"], [role="option"], button, [role="button"]'
+            );
+            let bestMatch = null;
+            for (const el of clickable) {
+                const text = (el.innerText || '').toLowerCase();
+                const rect = el.getBoundingClientRect();
+                if (rect.width < 30 || rect.height < 20) continue;
+
+                if (targetLP && text.includes(targetLP) && text.includes(baseName)) {
+                    // Perfect match: LP + base name
+                    el.click();
+                    return text.trim().substring(0, 80);
+                }
+                if (targetLP && text.includes(targetLP)) {
+                    bestMatch = el;  // LP match without base name
+                }
+                if (!targetLP && text.includes(baseName)) {
+                    el.click();
+                    return text.trim().substring(0, 80);
+                }
+            }
+            if (bestMatch) {
+                bestMatch.click();
+                return (bestMatch.innerText || '').trim().substring(0, 80);
+            }
+            return null;
+        }""", {"baseName": base_name, "targetLP": target_lp})
+
+        if clicked:
+            logger.info("Selected model via JS fallback: %s", clicked)
+            await asyncio.sleep(0.5)
+            return True
+    except Exception as e:
+        logger.warning("JS model select failed: %s", e)
+
+    return False
+
+
+async def _switch_to_video_tab(page) -> bool:
+    """Click the 'Video' tab in the model selector panel.
+
+    The model selector panel has two tabs:
+    - "Hình ảnh" / "Image" — image models (Imagen, Nano Banana)
+    - "Video" — video models (Veo 3.1 variants)
+
+    Must click "Video" tab before selecting a Veo model.
+    Uses the same approach as the old engine (flow_model_steps_v2.py):
+      panel.locator("button,[role='tab']").filter(has_text=r"videocam|video")
+    """
+    # Priority: [role='tab'] first (most specific), then button with icon text
+    TAB_SELECTORS = [
+        "[role='tab']:has-text('Video')",
+        "[role='tab']:has-text('videocam')",
+        # Buttons that look like tabs (Material UI sometimes uses button for tabs)
+        "button:has-text('videocam')",
+    ]
+
+    for sel in TAB_SELECTORS:
+        try:
+            tab = page.locator(sel).first
+            if await tab.is_visible(timeout=2000):
+                await tab.click(timeout=2000)
+                logger.info("Switched to Video tab via: %s", sel)
+                # Wait for model list to re-render after tab switch
+                await asyncio.sleep(1.5)
+                return True
+        except Exception:
+            continue
+
+    # JS fallback: find tab-like element with "Video" or "videocam" text
+    # Must NOT match the model chip itself (which has "Video x1" or "Videox1")
+    try:
+        clicked = await page.evaluate("""() => {
+            const candidates = document.querySelectorAll(
+                '[role="tab"], button, [role="button"]'
+            );
+            for (const el of candidates) {
+                const text = (el.innerText || '').trim();
+                const lower = text.toLowerCase();
+                const rect = el.getBoundingClientRect();
+                // Match "Video" or "videocam" tab button
+                // Exclude the chip: chip text contains "x1"/"x4" or is wider
+                if ((lower === 'video' || lower === 'videocam'
+                     || lower.includes('videocam'))
+                    && !lower.match(/x[1-4]/i)
+                    && rect.width > 20 && rect.height > 20
+                    && rect.width < 200) {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if clicked:
+            logger.info("Switched to Video tab via JS fallback")
+            # Wait for model list to re-render
+            await asyncio.sleep(1.5)
+            return True
+    except Exception:
+        pass
+
+    logger.warning("Could not find Video tab — panel may already show video models")
+    return False
 
 
 async def get_current_model(page) -> str | None:

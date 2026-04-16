@@ -3,6 +3,7 @@
 All 5 operations use real Flow automation via Playwright.
 """
 
+import asyncio
 import logging
 import os
 from typing import Callable, Coroutine
@@ -29,6 +30,38 @@ def _make_client(profile: str):
         profile_base_dir=PROFILE_BASE_DIR,
         download_dir=DOWNLOAD_DIR,
     )
+
+
+def _kill_chrome_for_profile(profile: str):
+    """Kill any Chrome processes using this profile (Windows wmic).
+
+    Called between AIgglog login and job retry to ensure profile is unlocked
+    and cookies are flushed to disk.
+    """
+    import subprocess
+    from pathlib import Path
+
+    profile_dir = os.path.join(PROFILE_BASE_DIR, profile)
+
+    try:
+        subprocess.run(
+            ["wmic", "process", "where",
+             f"commandline like '%{profile}%' and name='chrome.exe'",
+             "call", "terminate"],
+            capture_output=True, timeout=10,
+        )
+    except Exception as e:
+        logger.debug("Chrome kill for %s: %s", profile, e)
+
+    # Remove lock files
+    for lock_name in ("SingletonLock", "SingletonCookie"):
+        lock = Path(profile_dir) / lock_name
+        try:
+            lock.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    logger.info("Chrome cleanup done for profile %s", profile)
 
 
 # ======================================================================
@@ -235,6 +268,39 @@ async def dispatch_job(
         return result
 
     except Exception as exc:
+        # --- Auto-login via AIgglog when session expired ---
+        from flow.login import NeedAutoLogin, run_aigglog_sync
+        if isinstance(exc, NeedAutoLogin) and profile:
+            logger.warning(
+                "Job %s needs auto-login for profile %s — running AIgglog.py",
+                job_id, profile,
+            )
+            login_ok = await asyncio.to_thread(run_aigglog_sync, profile)
+            if login_ok:
+                # Kill any Chrome zombies left by AIgglog before retry.
+                # AIgglog may not fully close Chrome → profile still locked.
+                logger.info("AIgglog login OK — cleaning Chrome before retry")
+                await asyncio.to_thread(_kill_chrome_for_profile, profile)
+                await asyncio.sleep(3)  # Let Chrome fully exit and flush cookies
+
+                logger.info("Retrying job %s after AIgglog login", job_id)
+                try:
+                    result = await with_retry(handler, job, max_retries=1, job_id=job_id)
+                    result["status"] = "completed"
+                    result.setdefault("profile", profile)
+                    return result
+                except Exception as retry_exc:
+                    logger.exception("Retry after AIgglog failed for job %s", job_id)
+                    return {
+                        "status": "failed",
+                        "error": f"Failed after AIgglog login: {retry_exc}",
+                    }
+            else:
+                return {
+                    "status": "failed",
+                    "error": "AIgglog auto-login failed — manual login needed",
+                }
+
         logger.exception("Handler %s failed for job %s", job_type, job_id)
         return {
             "status": "failed",

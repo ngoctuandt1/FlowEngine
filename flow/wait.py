@@ -21,8 +21,15 @@ TIMEOUTS: dict[str, int] = {
     "camera-move": 300,
 }
 
-# Abort if zero progress signals for this many seconds
-NO_SIGNAL_TIMEOUT = 180
+# Abort if zero progress signals for this many seconds (per job type)
+NO_SIGNAL_TIMEOUTS: dict[str, int] = {
+    "text-to-video": 300,   # 5 min — video gen can stall at certain %
+    "extend-video": 300,    # 5 min
+    "insert-object": 180,   # 3 min
+    "remove-object": 180,
+    "camera-move": 180,
+}
+NO_SIGNAL_TIMEOUT_DEFAULT = 180
 
 
 # ------------------------------------------------------------------
@@ -61,6 +68,7 @@ async def wait_for_completion(
     if timeout is None:
         timeout = TIMEOUTS.get(job_type, 300)
 
+    no_signal_timeout = NO_SIGNAL_TIMEOUTS.get(job_type, NO_SIGNAL_TIMEOUT_DEFAULT)
     page = client.page
 
     await _inject_observer(page)
@@ -120,9 +128,11 @@ async def wait_for_completion(
         if dom["error"]:
             logger.error("DOM error: %s", dom["error"])
             return _result(False, error=dom["error"])
-        if dom["progress"] >= 100 and dom["new_video"]:
+        # New <video> element detected at any progress level = done
+        if dom["new_video"]:
             logger.info(
-                "Completion via DOM (100%% + new video) after %.0fs", elapsed
+                "Completion via DOM (new video at %d%%) after %.0fs",
+                dom["progress"], elapsed,
             )
             await asyncio.sleep(2)  # let media settle
             return _result(
@@ -131,11 +141,45 @@ async def wait_for_completion(
                 video_urls=video_urls[initial_video_count:],
             )
 
+        # Progress stalled for a while — check for new media cards as
+        # fallback.  Video gen may complete without DOM % reaching 100
+        # (e.g. progress stops at 69% then video renders directly).
+        silence_so_far = time.monotonic() - last_signal_time
+        if silence_so_far > 30 and last_progress > 0:
+            new_cards = await _check_new_media_cards(page)
+            if new_cards:
+                logger.info(
+                    "Completion via DOM (stalled at %d%% & new media card) after %.0fs",
+                    last_progress, elapsed,
+                )
+                await asyncio.sleep(3)
+                return _result(
+                    True,
+                    media_ids=_collect_media_ids(client),
+                )
+
         # --- No-signal watchdog ---
         silence = time.monotonic() - last_signal_time
-        if silence > NO_SIGNAL_TIMEOUT:
-            logger.error("No signal for %ds, aborting", NO_SIGNAL_TIMEOUT)
+        if silence > no_signal_timeout:
+            # Debug: log what signals were captured before aborting
+            n_calls = len(getattr(client, "_calls", []))
+            n_videos = len(getattr(client, "_video_urls", []))
+            n_media = len(getattr(client, "_media_id_events", []))
+            logger.error(
+                "No signal for %ds, aborting  "
+                "(api_calls=%d, video_urls=%d, media_ids=%d, dom_progress=%d%%)",
+                no_signal_timeout, n_calls, n_videos, n_media, last_progress,
+            )
             return _result(False, error="no_signal_timeout")
+        # Debug: log signal counts periodically when stalled
+        if silence > 60 and int(elapsed) % 60 == 0 and elapsed > 0:
+            n_calls = len(getattr(client, "_calls", []))
+            n_videos = len(getattr(client, "_video_urls", []))
+            logger.info(
+                "Stalled debug: %.0fs elapsed, %ds silent, "
+                "api_calls=%d, video_urls=%d, dom=%s",
+                elapsed, int(silence), n_calls, n_videos, dom,
+            )
 
         # Periodic progress log (every ~30s)
         if int(elapsed) % 30 == 0 and elapsed > 0:
@@ -211,7 +255,7 @@ def _collect_media_ids(client) -> list[str]:
     """Collect all known media IDs from client state."""
     ids: set[str] = set()
     for evt in getattr(client, "_media_id_events", []):
-        mid = evt.get("media_id")
+        mid = evt.get("mid") or evt.get("media_id")
         if mid:
             ids.add(mid)
     return list(ids)
@@ -220,6 +264,23 @@ def _collect_media_ids(client) -> list[str]:
 # ------------------------------------------------------------------
 # DOM observer (injected JS)
 # ------------------------------------------------------------------
+
+async def _check_new_media_cards(page) -> bool:
+    """Check if new media cards appeared (video or image tiles)."""
+    try:
+        return await page.evaluate("""() => {
+            const videos = document.querySelectorAll('video');
+            const tiles = document.querySelectorAll('[data-tile-id]');
+            const imgs = document.querySelectorAll(
+                'img[src*="googleusercontent"], img[src*="ggpht"]'
+            );
+            // Observer baseline was set when injection ran
+            const baseV = window.__flowVideoCount || 0;
+            return videos.length > baseV || tiles.length > 0 || imgs.length > baseV;
+        }""")
+    except Exception:
+        return False
+
 
 _OBSERVER_JS = """() => {
     if (window.__flowObserverActive) return;

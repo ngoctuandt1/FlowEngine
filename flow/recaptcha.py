@@ -17,22 +17,28 @@ async def detect_recaptcha(page) -> bool:
     """
     try:
         result = await page.evaluate("""() => {
-            // Check iframes
+            // Check iframes — only count as challenge if large enough
+            // (reCAPTCHA v3 badge iframes are tiny ~0x0 or ~32x32)
             const iframes = document.querySelectorAll('iframe');
             for (const iframe of iframes) {
                 const src = (iframe.src || '').toLowerCase();
                 if (src.includes('recaptcha') || src.includes('captcha') || src.includes('hcaptcha')) {
-                    return {detected: true, type: 'iframe', src: src.substring(0, 100)};
+                    const rect = iframe.getBoundingClientRect();
+                    // Only a real challenge if iframe is visible and reasonably sized
+                    if (rect.width > 100 && rect.height > 100) {
+                        return {detected: true, type: 'iframe_challenge', src: src.substring(0, 100), w: rect.width, h: rect.height};
+                    }
+                    // Small iframe = just a badge, not blocking
                 }
             }
 
             // Check body text for captcha/bot signals
             const bodyText = document.body.innerText || '';
+            // Only match text that indicates an ACTIVE challenge, not passive mentions
             const captchaPatterns = [
                 /i'm not a robot/i,
-                /unusual traffic/i,
-                /verify you.*human/i,
-                /captcha/i,
+                /unusual traffic from your computer/i,
+                /verify you('re| are) (not a bot|a human|human)/i,
             ];
 
             for (const pattern of captchaPatterns) {
@@ -41,10 +47,16 @@ async def detect_recaptcha(page) -> bool:
                 }
             }
 
-            // Check for recaptcha elements
-            const recaptchaEl = document.querySelector('[class*="recaptcha"], [id*="recaptcha"], .g-recaptcha');
-            if (recaptchaEl) {
-                return {detected: true, type: 'element'};
+            // Check for recaptcha elements — only if they are visible and large
+            // (hidden/invisible reCAPTCHA v3 badges don't count as challenges)
+            const recaptchaEls = document.querySelectorAll('[class*="recaptcha"], [id*="recaptcha"], .g-recaptcha');
+            for (const el of recaptchaEls) {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                if (style.display !== 'none' && style.visibility !== 'hidden'
+                    && rect.width > 100 && rect.height > 60) {
+                    return {detected: true, type: 'element_challenge', w: rect.width, h: rect.height};
+                }
             }
 
             return {detected: false};
