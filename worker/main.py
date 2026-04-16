@@ -26,7 +26,7 @@ load_dotenv()
 # Configuration
 # ======================================================================
 
-SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
+SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8080")
 WORKER_ID = os.getenv("WORKER_ID", "worker-1")
 API_KEY = os.getenv("API_KEY", "")
 CHROME_USER_DATA_DIR = os.getenv("CHROME_USER_DATA_DIR", "./chrome-profiles")

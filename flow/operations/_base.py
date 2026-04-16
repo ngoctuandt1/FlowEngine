@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from flow.navigation import flow_url, extract_project_id, extract_media_id, detect_locale
+from flow.login import is_login_page, handle_login_redirect
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.download import download_video
@@ -45,8 +46,19 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(2)  # Let video load
 
-    # Verify we're on the right page
+    # Handle login redirect if needed
     current = page.url
+    if is_login_page(current):
+        logger.warning("Login redirect on edit navigation — resolving")
+        login_ok = await handle_login_redirect(page, timeout=120)
+        if not login_ok:
+            raise RuntimeError("Google login required — session expired")
+        # Re-navigate to edit URL after login
+        await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(2)
+        current = page.url
+
+    # Verify we're on the right page
     if "/edit/" not in current:
         logger.warning("Not on edit page after navigation: %s", current[:100])
 

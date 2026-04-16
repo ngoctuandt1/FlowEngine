@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from flow.navigation import flow_url, extract_project_id, extract_media_id
+from flow.login import is_login_page, handle_login_redirect
 from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
@@ -51,8 +52,16 @@ async def text_to_video(
     await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(2)  # Let page settle
 
-    # Detect locale from redirected URL
+    # Handle Google login redirect if needed
     current = page.url
+    if is_login_page(current):
+        logger.warning("Redirected to Google login — attempting auto-resolve")
+        login_ok = await handle_login_redirect(page, timeout=120)
+        if not login_ok:
+            raise RuntimeError("Google login required — profile session expired. Log in manually and retry.")
+        current = page.url
+
+    # Detect locale from final URL
     if "/vi/" in current:
         locale = "vi"
     logger.info(f"On Flow homepage: {current}, locale={locale or 'en'}")
