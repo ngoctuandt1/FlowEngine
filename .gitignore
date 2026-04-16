@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data & Output
+data/*.db
+data/*.sqlite
+output/
+flow_output/
+logs/*.log
+*.log
+
+# Chrome profiles (NEVER commit)
+chrome-profiles/
+
+# Environment
+.env
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp
+tmp_*
+*.tmp
