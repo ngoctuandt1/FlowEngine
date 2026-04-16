@@ -265,6 +265,24 @@ async def dispatch_job(
         # Attach common fields to result
         result["status"] = "completed"
         result.setdefault("profile", profile)
+
+        # Invariant: every completed job MUST have a non-empty media_id so
+        # child jobs in a chain can target the right video (see PRD Bug 1 /
+        # flow-bugs issue #2).  If extraction failed everywhere, refuse to
+        # mark the job completed.
+        if not result.get("media_id"):
+            logger.error(
+                "Job %s [%s] finished but media_id could not be extracted — "
+                "marking as failed to preserve invariant",
+                job_id, job_type,
+            )
+            return {
+                "status": "failed",
+                "error": "media_id not extracted after operation",
+                "output_files": result.get("output_files", []),
+                "profile": profile,
+            }
+
         return result
 
     except Exception as exc:
