@@ -338,20 +338,26 @@ async def _has_dropdown_arrow(btn) -> bool:
 
 
 async def _close_model_panel(page, dropdown_was_opened: bool = True) -> None:
-    """Close model selector panel/dropdown by pressing Escape.
+    """Dismiss model selector panel/dropdown.
 
-    After selecting a model, the panel or dropdown may remain open.
-    This blocks subsequent interactions (prompt typing, submit).
-
-    Args:
-        dropdown_was_opened: If True, press Escape twice (dropdown + panel).
-            If False, press once (panel only). This prevents accidentally
-            closing the parent overlay (e.g. extend/insert panel).
+    Uses click-outside (on the Slate editor / prompt textbox) instead of
+    Escape, because Escape can accidentally close parent overlays
+    (extend/insert/remove panels).
     """
+    # Click on the prompt editor to dismiss model panel (click-outside)
     try:
-        if dropdown_was_opened:
-            await page.keyboard.press("Escape")
+        editors = page.locator("[data-slate-editor='true']")
+        count = await editors.count()
+        if count > 0:
+            await editors.last.click(timeout=2000)
             await asyncio.sleep(0.3)
+            logger.debug("Dismissed model panel by clicking editor")
+            return
+    except Exception:
+        pass
+
+    # Fallback: single Escape (safer than double)
+    try:
         await page.keyboard.press("Escape")
         await asyncio.sleep(0.3)
     except Exception:
