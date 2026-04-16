@@ -6,6 +6,22 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Credit-leak guard (bug #8)
+# ---------------------------------------------------------------------------
+
+# Pattern that matches credit-consuming generation API URLs.
+# In extend mode the Flow UI may fire a hidden /operations/ request when the
+# model panel is opened or a model option is clicked.  We abort these calls
+# while the model panel is open so that only an explicit submit can consume
+# credits.
+_GENERATION_URL_RE = re.compile(r"operations/|/generate\b", re.IGNORECASE)
+
+
+def _is_generation_url(url: str) -> bool:
+    """Return True if *url* is a credit-consuming generation API endpoint."""
+    return bool(_GENERATION_URL_RE.search(url))
+
 # Model name mapping (user-facing -> what to look for in DOM)
 MODEL_MAP = {
     "veo-3.1-lite-lp": "Veo 3.1 - Lite [Lower Priority]",
@@ -49,6 +65,44 @@ async def select_model(
 
     target_text = MODEL_MAP.get(model, MODEL_MAP[DEFAULT_MODEL])
     logger.info("Selecting model: %s", target_text)
+
+    # ---------------------------------------------------------------------------
+    # Bug #8 — LP credit-leak guard
+    # In extend mode the Flow UI can fire a hidden /operations/ generation request
+    # when the model panel is opened or a model option is clicked.  We install a
+    # Playwright route handler that aborts those requests for the duration of
+    # model selection so that only an explicit submit can consume credits.
+    # ---------------------------------------------------------------------------
+    _blocked_urls: list[str] = []
+
+    async def _generation_guard(route) -> None:
+        if _is_generation_url(route.request.url):
+            _blocked_urls.append(route.request.url)
+            logger.warning(
+                "LP credit-leak guard: blocked generation request during "
+                "model selection: %s",
+                route.request.url[:120],
+            )
+            await route.abort("aborted")
+        else:
+            await route.continue_()
+
+    await page.route("**/*", _generation_guard)
+    try:
+        result = await _select_model_inner(page, target_text)
+    finally:
+        await page.unroute("**/*", _generation_guard)
+        if _blocked_urls:
+            logger.info(
+                "LP credit-leak guard: suppressed %d hidden generation "
+                "request(s) during model selection",
+                len(_blocked_urls),
+            )
+    return result
+
+
+async def _select_model_inner(page, target_text: str) -> bool:
+    """Core model-selection logic, called inside the credit-leak guard."""
 
     # Step 1: Open model dropdown
     # The model chip is a button near the composer showing current model.
