@@ -1,13 +1,12 @@
 """Job dispatcher -- routes job type to the correct handler.
 
-Each handler is currently a STUB that logs what it would do,
-sleeps briefly to simulate work, and returns a mock result dict.
-Real handlers will call into ``flow.operations.*`` once that
-layer is built.
+text-to-video uses the real flow automation (Phase 2).
+extend/insert/remove/camera are stubs until Phase 3.
 """
 
 import asyncio
 import logging
+import os
 from typing import Callable, Coroutine
 
 from worker.profile_manager import ProfileManager
@@ -16,30 +15,57 @@ from worker.project_lock import ProjectLock
 logger = logging.getLogger(__name__)
 
 SIMULATE_WORK_SEC = 2.0
+PROFILE_BASE_DIR = os.environ.get("CHROME_USER_DATA_DIR", "./profiles")
+DOWNLOAD_DIR = os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")
 
 
 # ======================================================================
-# Stub handlers
+# Real handler: text-to-video
 # ======================================================================
 
 async def handle_text_to_video(job: dict) -> dict:
-    """Stub: text-to-video generation."""
-    logger.info(
-        "[STUB] text-to-video | prompt=%r model=%s profile=%s",
-        job.get("prompt", ""), job.get("model"), job.get("profile"),
-    )
-    await asyncio.sleep(SIMULATE_WORK_SEC)
-    return {
-        "project_url": "https://flow.example.com/project/stub-001",
-        "media_id": "stub-media-t2v-001",
-        "edit_url": "https://flow.example.com/project/stub-001/edit/stub-media-t2v-001",
-        "output_files": ["/output/stub_t2v.mp4"],
-        "generation_id": "gen-stub-t2v-001",
-    }
+    """Real text-to-video handler using FlowClient + Playwright."""
+    from flow.client import FlowClient
+    from flow.operations.generate import text_to_video
 
+    profile = job.get("profile", "")
+    if not profile:
+        raise RuntimeError("No profile assigned for text-to-video job")
+
+    logger.info(
+        "text-to-video START | prompt=%r model=%s profile=%s",
+        (job.get("prompt", ""))[:60],
+        job.get("model"),
+        profile,
+    )
+
+    async with FlowClient(
+        profile_name=profile,
+        profile_base_dir=PROFILE_BASE_DIR,
+        download_dir=DOWNLOAD_DIR,
+    ) as client:
+        result = await text_to_video(
+            client,
+            prompt=job.get("prompt", ""),
+            model=job.get("model", "veo-3.1-fast-lp"),
+            aspect_ratio=job.get("aspect_ratio", "16:9"),
+            free_mode=True,
+        )
+
+    logger.info(
+        "text-to-video DONE | files=%d media_id=%s",
+        len(result.get("output_files", [])),
+        result.get("media_id"),
+    )
+    return result
+
+
+# ======================================================================
+# Stubs: extend / insert / remove / camera (Phase 3)
+# ======================================================================
 
 async def handle_extend(job: dict) -> dict:
-    """Stub: extend-video."""
+    """Stub: extend-video — will use flow.operations.extend in Phase 3."""
     logger.info(
         "[STUB] extend-video | edit_url=%s profile=%s",
         job.get("edit_url") or job.get("project_url"), job.get("profile"),
@@ -55,7 +81,7 @@ async def handle_extend(job: dict) -> dict:
 
 
 async def handle_insert(job: dict) -> dict:
-    """Stub: insert-object."""
+    """Stub: insert-object — will use flow.operations.insert in Phase 3."""
     logger.info(
         "[STUB] insert-object | bbox=%s prompt=%r profile=%s",
         job.get("bbox"), job.get("prompt", ""), job.get("profile"),
@@ -71,7 +97,7 @@ async def handle_insert(job: dict) -> dict:
 
 
 async def handle_remove(job: dict) -> dict:
-    """Stub: remove-object."""
+    """Stub: remove-object — will use flow.operations.remove in Phase 3."""
     logger.info(
         "[STUB] remove-object | bbox=%s profile=%s",
         job.get("bbox"), job.get("profile"),
@@ -87,7 +113,7 @@ async def handle_remove(job: dict) -> dict:
 
 
 async def handle_camera(job: dict) -> dict:
-    """Stub: camera-move."""
+    """Stub: camera-move — will use flow.operations.camera in Phase 3."""
     logger.info(
         "[STUB] camera-move | direction=%s profile=%s",
         job.get("direction"), job.get("profile"),
@@ -153,8 +179,6 @@ async def dispatch_job(
     needs_lock = job_level >= 2 and project_url
     if needs_lock:
         if not project_lock.acquire(project_url, job_id):
-            # Should not normally happen because the server already checks,
-            # but defend against it anyway.
             if profile:
                 profile_manager.mark_available(profile)
             return {
