@@ -1189,6 +1189,59 @@ tbody tr:hover {
   }
 }
 
+/* ============================================================
+   Settings Page
+   ============================================================ */
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+  max-width: 700px;
+}
+
+.settings-card {
+  background: var(--bg-card, #16213e);
+  border: 1px solid var(--border, #1a1a4e);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.settings-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  font-size: 1.1rem;
+  color: #e0e0e0;
+}
+
+.settings-card h3 .material-icons {
+  font-size: 20px;
+  color: var(--highlight, #e94560);
+}
+
+.settings-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-actions .btn {
+  align-self: flex-start;
+}
+
+.settings-hint {
+  font-size: 0.8rem;
+  color: #888;
+  margin: 0 0 16px 0;
+}
+
+/* Section header actions (dashboard) */
+.section-actions {
+  display: flex;
+  gap: 8px;
+}
+
 @media (max-width: 480px) {
   .stats-grid {
     grid-template-columns: 1fr;

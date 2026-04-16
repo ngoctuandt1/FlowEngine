@@ -162,6 +162,11 @@
         jobsHtml = `
           <div class="section-header">
             <h3 class="section-title">Recent Jobs</h3>
+            <div class="section-actions">
+              <button class="btn btn-sm btn-outline" id="recover-btn" title="Reset stale claimed/running jobs back to pending">
+                <span class="material-icons" style="font-size:16px">healing</span> Recover Stale
+              </button>
+            </div>
           </div>
           <div class="jobs-grid" id="jobs-grid">
             ${jobs.map(renderJobCard).join('')}
@@ -181,6 +186,29 @@
           if (!card) return;
           const jobId = card.dataset.jobId;
           if (jobId) DashboardPage._showJobDetail(jobId);
+        });
+      }
+
+      // Recover stale jobs button
+      const recoverBtn = document.getElementById('recover-btn');
+      if (recoverBtn) {
+        recoverBtn.addEventListener('click', async () => {
+          try {
+            recoverBtn.disabled = true;
+            recoverBtn.textContent = 'Recovering...';
+            const result = await API.jobs.recover();
+            const count = result.recovered || 0;
+            App.toast(
+              count > 0 ? `Recovered ${count} stale job(s)` : 'No stale jobs found',
+              count > 0 ? 'success' : 'info'
+            );
+            if (count > 0) App._loadPage('dashboard');
+          } catch (err) {
+            App.toast('Recovery failed: ' + err.message, 'error');
+          } finally {
+            recoverBtn.disabled = false;
+            recoverBtn.innerHTML = '<span class="material-icons" style="font-size:16px">healing</span> Recover Stale';
+          }
         });
       }
 

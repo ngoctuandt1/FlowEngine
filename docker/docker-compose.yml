@@ -1,0 +1,38 @@
+version: "3.8"
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server
+    ports:
+      - "8080:8080"
+    volumes:
+      - flowengine-data:/app/data
+      - flowengine-logs:/app/logs
+    environment:
+      - SERVER_PORT=8080
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    depends_on:
+      - server
+    volumes:
+      - flowengine-downloads:/app/downloads
+      - flowengine-logs:/app/logs
+      - ./profiles:/app/profiles  # Mount Chrome profiles from host
+    environment:
+      - SERVER_URL=http://server:8080
+      - WORKER_ID=worker-1
+      - POLL_INTERVAL_SEC=5
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+
+volumes:
+  flowengine-data:
+  flowengine-downloads:
+  flowengine-logs:

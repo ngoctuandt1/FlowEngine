@@ -1,6 +1,8 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyo
 *.egg-info/
 .eggs/
 dist/
@@ -18,15 +20,23 @@ env/
 *.swp
 *.swo
 
-# Data & Output
-data/*.db
-data/*.sqlite
-output/
-flow_output/
-logs/*.log
+# Data
+data/
+*.db
+
+# Logs
+logs/
 *.log
 
-# Chrome profiles (NEVER commit)
+# Downloads
+downloads/
+
+# Output
+output/
+flow_output/
+
+# Chrome profiles (contain login cookies!)
+profiles/
 chrome-profiles/
 
 # Environment
