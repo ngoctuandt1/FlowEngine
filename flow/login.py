@@ -38,6 +38,8 @@ async def handle_login_redirect(page, timeout: int = LOGIN_TIMEOUT) -> bool:
     1. If on account chooser → click the first listed account
     2. If on consent page → click 'Allow' / 'Continue'
     3. Wait until URL returns to labs.google/fx
+    4. Detect password page → abort early (needs manual login)
+    5. Detect loop (same URL 4+ times) → abort early
 
     Returns True if successfully returned to Flow, False if timed out.
     """
@@ -54,6 +56,11 @@ async def handle_login_redirect(page, timeout: int = LOGIN_TIMEOUT) -> bool:
     deadline = asyncio.get_event_loop().time() + timeout
     check_interval = 3.0
 
+    # Loop detection — if same URL repeats too many times, we're stuck
+    last_url = ""
+    same_url_count = 0
+    MAX_SAME_URL = 4  # Abort after seeing same URL 4 times in a row
+
     while asyncio.get_event_loop().time() < deadline:
         current = page.url
 
@@ -63,6 +70,27 @@ async def handle_login_redirect(page, timeout: int = LOGIN_TIMEOUT) -> bool:
             await asyncio.sleep(2)  # Let page settle
             return True
 
+        # Password page detection — we can't enter passwords
+        if await _is_password_page(page):
+            logger.error(
+                "Password entry required — cannot auto-login. "
+                "Please log in manually with this Chrome profile first."
+            )
+            return False
+
+        # Loop detection — same URL repeating means we're stuck
+        if current == last_url:
+            same_url_count += 1
+            if same_url_count >= MAX_SAME_URL:
+                logger.error(
+                    "Login stuck in loop (same page %d times): %s — aborting",
+                    same_url_count, current[:100],
+                )
+                return False
+        else:
+            same_url_count = 1
+            last_url = current
+
         # Still on Google auth — try clicking buttons
         await _try_click_consent(page)
         await _try_click_account(page)
@@ -71,6 +99,28 @@ async def handle_login_redirect(page, timeout: int = LOGIN_TIMEOUT) -> bool:
         await asyncio.sleep(check_interval)
 
     logger.error("Login not resolved after %ds — manual intervention needed", timeout)
+    return False
+
+
+async def _is_password_page(page) -> bool:
+    """Detect if we're on a Google password entry page."""
+    try:
+        # Check for password input field
+        pwd_input = page.locator("input[type='password']")
+        if await pwd_input.count() > 0 and await pwd_input.first.is_visible(timeout=500):
+            return True
+    except Exception:
+        pass
+
+    try:
+        # Check for "Enter your password" text
+        for text in ["Enter your password", "Nhập mật khẩu"]:
+            el = page.locator(f"text='{text}'")
+            if await el.count() > 0:
+                return True
+    except Exception:
+        pass
+
     return False
 
 
