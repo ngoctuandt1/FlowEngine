@@ -88,6 +88,22 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(5)
 
+    # Verify we're in edit mode for the right media
+    current = page.url
+    if "/edit/" not in current:
+        logger.error("Failed to enter edit mode. URL: %s", current[:100])
+        raise RuntimeError("Failed to enter edit mode")
+
+    # Log if we landed on a different media than requested (but proceed —
+    # Flow SPA often redirects edit URLs; the important thing is being in
+    # edit mode for *some* video in the correct project).
+    current_media = extract_media_id(current)
+    if media_id and current_media and current_media != media_id:
+        logger.warning(
+            "Edit mode entered for different media: requested=%s actual=%s — proceeding",
+            media_id[:20], current_media[:20],
+        )
+
     locale = detect_locale(page.url)
     project_id = extract_project_id(page.url) or ""
 
@@ -128,22 +144,62 @@ async def _click_video_tile(page, media_id: str = "", timeout_sec: float = 10.0)
     """Click a video tile in the project view to enter edit mode.
 
     When direct /edit/ URL navigation fails, the project view shows media
-    tiles.  Clicking a video tile enters the edit view with action buttons
-    (Extend, Insert, Remove, Camera).
+    tiles.  Clicking a tile navigates to /edit/{media_id}.
 
-    Tries:
-    1. Click video element directly
-    2. Click tile container with matching data-tile-id
-    3. Click first visible video card / thumbnail
+    Priority:
+    1. If media_id given: JS click on tile whose link/data contains media_id
+    2. First [data-tile-id] tile
+    3. First video element
     """
     await asyncio.sleep(2)  # let project view render
 
-    # Try clicking a <video> element (most reliable for video projects)
+    # Priority 1: click tile matching media_id via JS
+    if media_id:
+        try:
+            clicked = await page.evaluate("""(targetId) => {
+                // Look for links containing the media_id
+                const links = document.querySelectorAll('a[href*="/edit/"]');
+                for (const a of links) {
+                    if (a.href.includes(targetId)) {
+                        a.click();
+                        return 'link:' + targetId.substring(0, 12);
+                    }
+                }
+                // Look for tiles with data attributes matching media_id
+                const tiles = document.querySelectorAll('[data-tile-id]');
+                for (const tile of tiles) {
+                    const tileId = tile.getAttribute('data-tile-id') || '';
+                    if (tileId.includes(targetId) || targetId.includes(tileId)) {
+                        tile.click();
+                        return 'tile:' + tileId.substring(0, 12);
+                    }
+                }
+                // Look for any element with media_id in attributes
+                const all = document.querySelectorAll('[data-media-id], [data-id]');
+                for (const el of all) {
+                    const id = el.getAttribute('data-media-id') || el.getAttribute('data-id') || '';
+                    if (id.includes(targetId)) {
+                        el.click();
+                        return 'data-id:' + id.substring(0, 12);
+                    }
+                }
+                return null;
+            }""", media_id)
+            if clicked:
+                logger.info("Clicked tile for media_id via JS: %s", clicked)
+                await asyncio.sleep(3)
+                if "/edit/" in page.url:
+                    logger.info("Edit mode entered: %s", page.url[:100])
+                    return True
+        except Exception:
+            pass
+
+    # Priority 2: click first [data-tile-id] tile
     try:
-        video = page.locator("video").first
-        if await video.is_visible(timeout=3000):
-            await video.click(timeout=3000)
-            logger.info("Clicked video element to enter edit mode")
+        tile = page.locator("[data-tile-id]").first
+        if await tile.is_visible(timeout=3000):
+            await tile.click(timeout=3000)
+            logger.info("Clicked first [data-tile-id] tile")
             await asyncio.sleep(3)
             if "/edit/" in page.url:
                 logger.info("Edit mode entered: %s", page.url[:100])
@@ -151,57 +207,12 @@ async def _click_video_tile(page, media_id: str = "", timeout_sec: float = 10.0)
     except Exception:
         pass
 
-    # Try clicking tile container
-    TILE_SELECTORS = [
-        "[data-tile-id]",
-        "[class*='tile']",
-        "[class*='card'] video",
-        "[class*='thumbnail']",
-        "img[src*='googleusercontent']",
-    ]
-    for sel in TILE_SELECTORS:
-        try:
-            tile = page.locator(sel).first
-            if await tile.is_visible(timeout=2000):
-                await tile.click(timeout=3000)
-                logger.info("Clicked tile via: %s", sel)
-                await asyncio.sleep(3)
-                if "/edit/" in page.url:
-                    logger.info("Edit mode entered: %s", page.url[:100])
-                    return True
-        except Exception:
-            continue
-
-    # JS fallback: click first clickable media element in main area
+    # Priority 3: click first video element
     try:
-        clicked = await page.evaluate("""() => {
-            // Find video elements or large images
-            const videos = document.querySelectorAll('video');
-            for (const v of videos) {
-                const r = v.getBoundingClientRect();
-                if (r.width > 50 && r.height > 50) {
-                    v.click();
-                    return 'video';
-                }
-                // Try clicking parent
-                if (v.parentElement) {
-                    v.parentElement.click();
-                    return 'video-parent';
-                }
-            }
-            // Try large image thumbnails
-            const imgs = document.querySelectorAll('img[src*="googleusercontent"], img[src*="ggpht"]');
-            for (const img of imgs) {
-                const r = img.getBoundingClientRect();
-                if (r.width > 80 && r.height > 80) {
-                    img.click();
-                    return 'img';
-                }
-            }
-            return null;
-        }""")
-        if clicked:
-            logger.info("Clicked media via JS: %s", clicked)
+        video = page.locator("video").first
+        if await video.is_visible(timeout=3000):
+            await video.click(timeout=3000)
+            logger.info("Clicked video element")
             await asyncio.sleep(3)
             if "/edit/" in page.url:
                 logger.info("Edit mode entered: %s", page.url[:100])

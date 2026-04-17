@@ -1222,9 +1222,9 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 ---
 
-## D.4 — Known bugs trong code hiện tại (B1-B13)
+## D.4 — Known bugs trong code hiện tại (B1-B14)
 
-> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17).
+> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14 là stash-triage cherry-pick (2026-04-17).
 
 ### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17)
 - File: `flow/operations/generate.py` → `_set_aspect_ratio()`
@@ -1337,6 +1337,33 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - After B11 ships: document canvas element selection + pixel-sampling verify pattern in §Bbox Overlay UI.
 - After B12 ships: document `getComputedStyle(label).color` as the semantic state signal in §Camera Preset Selection & Active State; note that strategy #1 (`aria-label`) and #2 (CSS `[role='button']`) find 0 elements on the live DOM and exist only as defense layers.
 - Queue position: bundled with each respective code fix (not standalone).
+
+### ~~B14 — L2+ nav can click wrong tile + enter edit mode silently on wrong media (P1)~~ ✅ FIXED (commit `<B14-COMMIT>`)
+- Cherry-picked from `stash@{0}` via triage `docs/session-reports/2026-04-17_stash-triage_flow-refinements.md` §7 KEEP-2 + KEEP-3. Two orthogonal hardening hunks on `flow/operations/_base.py`.
+- File: `flow/operations/_base.py` — `navigate_to_edit` (post-nav verify block added) + `_click_video_tile` (body rewritten).
+- Two independent problems:
+  1. **Silent nav failure.** Master's `navigate_to_edit` returns normally even if the last-resort `page.goto(edit_url)` leaves the page on `/project/...` (not `/edit/...`) — the caller then submits an op against the project grid, which clicks the wrong button (e.g. "New video" instead of "Extend"). No exception, no log.
+  2. **Wrong-tile click in multi-video projects.** `_click_video_tile` iterated generic selectors (`video`, `[data-tile-id]`, `[class*='tile']`, `[class*='thumbnail']`, `img[src*='googleusercontent']`) and clicked `.first`. In a project with ≥ 2 videos the "first" match is DOM-order dependent, not media_id-targeted → clicking an unrelated video enters edit mode for the wrong media_id, silently violating INV-5 (media_id stable across the chain).
+- Runtime effect (pre-fix): L2+ jobs on multi-video projects could extend/insert/remove/camera against a sibling video; chain state (parent.media_id) and page state diverge with no warning.
+- **Resolution (commit `<B14-COMMIT>`):**
+  - **KEEP-2 (post-nav verify).** After the tile-click-or-goto attempts, `navigate_to_edit` now reads `page.url` and raises `RuntimeError("Failed to enter edit mode")` if `/edit/` is absent. If `/edit/` is present but the URL's media_id differs from the requested `job["media_id"]`, log a WARNING and proceed — Flow's SPA sometimes redirects to a sibling video in the same project, which is acceptable (the important invariant is being in edit mode for some video in the correct project; `finalize_operation` will re-extract the actual media_id from the final URL).
+  - **KEEP-3 (media_id-aware tile click).** `_click_video_tile` body rewritten to a 3-priority chain:
+    1. If `media_id` is given, `page.evaluate` walks `a[href*="/edit/"]`, `[data-tile-id]`, and `[data-media-id], [data-id]` in turn, clicks the first element whose href/attribute contains the target `media_id`, and returns a short debug tag (`link:…` / `tile:…` / `data-id:…`).
+    2. If JS finds no match (or `media_id` is empty), click `page.locator("[data-tile-id]").first`.
+    3. Otherwise click `page.locator("video").first`.
+  - Explicit rejections from the stash (supervisor decision per triage §7):
+    - **H1 (nav strategy reversal)** — REJECTED. Master's "project URL first, tile click, then direct edit URL as last resort" strategy has a written rationale ("Direct /edit/ URLs often fail because the Flow SPA needs the project context loaded first") and passed Phase A validation. Stash's reversal lacked counter-evidence.
+    - **H4 (`_click_storyboard_video` helper)** — REJECTED. Defined but never called anywhere in the stash — dead code.
+  - `draw_bbox_on_video` and the bbox canvas logic (B11, commit `ce6683a`) are in the same file but untouched.
+- Guard: `tests/test_base.py` — 7 cases (separate file from `test_bbox.py` which covers the orthogonal `draw_bbox_on_video`):
+  - `test_navigate_warns_on_media_id_mismatch` — requested A, landed on B → WARNING contains both ids, function returns normally.
+  - `test_navigate_no_warning_on_media_id_match` — URL media_id = requested → no mismatch WARNING.
+  - `test_navigate_raises_when_not_in_edit_mode` — tile click fails, last-resort goto doesn't change URL → `RuntimeError("Failed to enter edit mode")`.
+  - `test_click_tile_priority1_js_receives_media_id` — `page.evaluate` receives the media_id as its second arg (proves media_id-filter, not generic `.first` click).
+  - `test_click_tile_js_script_matches_media_id_selectors` — contract trip-wire: JS source contains `a[href*="/edit/"]`, `data-tile-id`, `data-media-id`. Prevents silent regression to a generic-first click.
+  - `test_click_tile_priority2_falls_back_to_data_tile_id` — JS returns None → `[data-tile-id].first` clicked, not `video.first`.
+  - `test_click_tile_no_media_id_skips_js_priority` — no media_id → `page.evaluate` never called; goes straight to locator fallback. Keeps legacy L1-only call sites working.
+- Session report: `docs/session-reports/2026-04-17_B14_base-nav-verify.md`.
 
 ---
 
