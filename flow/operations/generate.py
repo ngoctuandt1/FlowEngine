@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 
 from flow.navigation import flow_url, extract_project_id, extract_media_id
 from flow.login import is_login_page, handle_login_redirect
@@ -480,25 +481,90 @@ async def _type_prompt(page, prompt: str):
     raise RuntimeError("Failed to find prompt editor after %d rounds" % MAX_ROUNDS)
 
 
-async def _set_aspect_ratio(page, ratio: str):
-    """Set aspect ratio in the model options panel.
+# Flow Video aspect ratios map to Radix trigger id suffixes.
+# 16:9 is the panel default; 1:1 / 4:3 / 3:4 exist only in image mode.
+RATIO_IDS = {"9:16": "PORTRAIT", "16:9": "LANDSCAPE"}
 
-    Common ratios: "16:9", "9:16", "1:1"
+
+async def _set_aspect_ratio(page, ratio: str):
+    """Set video aspect ratio via the Radix chip panel.
+
+    Flow Video exposes only 9:16 (PORTRAIT) and 16:9 (LANDSCAPE). 16:9 is
+    the default, so the only case that actually opens the panel is 9:16.
+    Any other value (incl. ``"1:1"``, which is image-only) is logged and
+    ignored — the video generates at the default 16:9.
+
+    Selector reference: ``docs/FLOW_UI_REFERENCE.md`` §Aspect Ratio UI.
+    B1a research: ``docs/session-reports/2026-04-17_B1a_aspect-ratio-research.md``.
+
+    Flow (per B1a):
+      1. click chip button ``button[aria-haspopup="menu"]`` (text like "Video … xN")
+      2. wait for ``[role="menu"][data-state="open"]``
+      3. ensure Video tab is active (``[id$="-trigger-VIDEO"]``)
+      4. click the ratio trigger ``[id$="-trigger-{PORTRAIT|LANDSCAPE}"]``
+         using ``Locator.click`` — JS ``el.click()`` does NOT fire Radix
+         pointerdown and leaves data-state unchanged.
+      5. wait for data-state="active" on that trigger
+      6. dismiss the panel via click-outside (Escape would close the whole
+         composer — see B8 LP model-selector fix for the same lesson)
+      7. verify by re-reading the chip innerText — it updates to contain
+         ``crop_9_16`` / ``crop_16_9`` and is the canonical post-close truth.
     """
     if not ratio or ratio == "16:9":
-        return  # 16:9 is often default
+        logger.info("Using default aspect ratio 16:9 (no panel interaction)")
+        return
 
-    try:
-        # Look for ratio button/selector
-        ratio_btn = page.locator(
-            f"button:has-text('{ratio}'), [role='button']:has-text('{ratio}')"
-        ).first
-        if await ratio_btn.is_visible(timeout=2000):
-            await ratio_btn.click(timeout=2000)
-            logger.info(f"Aspect ratio set to {ratio}")
-            await asyncio.sleep(0.5)
-    except Exception:
-        logger.warning(f"Could not set aspect ratio {ratio} — using default")
+    if ratio not in RATIO_IDS:
+        logger.warning(
+            "Aspect ratio %r unsupported for video (only 9:16 / 16:9). "
+            "Falling back to default 16:9.",
+            ratio,
+        )
+        return
+
+    suffix = RATIO_IDS[ratio]
+
+    chip_btn = page.locator('button[aria-haspopup="menu"]').filter(
+        has_text=re.compile(r"video.*x\d", re.IGNORECASE),
+    ).first
+    await chip_btn.click(timeout=3000)
+
+    await page.locator('[role="menu"][data-state="open"]').wait_for(
+        state="visible", timeout=3000,
+    )
+
+    video_tab = page.locator('[id$="-trigger-VIDEO"]').first
+    if await video_tab.get_attribute("data-state") != "active":
+        await video_tab.click(timeout=2000)
+        await page.wait_for_function(
+            '() => document.querySelector(\'[id$="-trigger-VIDEO"]\')?.dataset.state === "active"',
+            timeout=2000,
+        )
+
+    trigger = page.locator(f'[id$="-trigger-{suffix}"]').first
+    await trigger.click(timeout=3000)
+
+    await page.wait_for_function(
+        f'() => document.querySelector(\'[id$="-trigger-{suffix}"]\')?.dataset.state === "active"',
+        timeout=3000,
+    )
+
+    # Click-outside to close. Top-left viewport is a safe dead zone outside
+    # both the bottom-center composer and the bottom-right chip panel.
+    await page.mouse.click(10, 10)
+    await page.locator('[role="menu"][data-state="open"]').wait_for(
+        state="hidden", timeout=2000,
+    )
+
+    expected_icon = "crop_9_16" if ratio == "9:16" else "crop_16_9"
+    chip_text = await chip_btn.inner_text(timeout=2000)
+    if expected_icon not in chip_text:
+        logger.warning(
+            "Aspect ratio set to %s but chip verify failed: chip_text=%r expected substring %r",
+            ratio, chip_text, expected_icon,
+        )
+    else:
+        logger.info("Aspect ratio set to %s (chip verified: %s)", ratio, expected_icon)
 
 
 async def _count_visible_cards(page) -> int:
