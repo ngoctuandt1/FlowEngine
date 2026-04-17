@@ -50,9 +50,12 @@ async def create_single_job(req: JobCreate):
         if parent is None:
             raise HTTPException(404, f"Parent job {req.parent_job_id} not found")
         job_level = parent.job_level + 1
-        # Inherit context from completed parent
-        if parent.status == JobStatus.COMPLETED:
+        # Always inherit profile from parent (account binding — profile is set
+        # as soon as the parent is claimed, not just when it completes).
+        if parent.profile is not None:
             profile = parent.profile
+        # Only inherit URL context once the parent has actually completed.
+        if parent.status == JobStatus.COMPLETED:
             if req.project_url is None:
                 req.project_url = parent.project_url
             if req.media_id is None:
