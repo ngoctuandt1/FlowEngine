@@ -1338,14 +1338,14 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - After B12 ships: document `getComputedStyle(label).color` as the semantic state signal in §Camera Preset Selection & Active State; note that strategy #1 (`aria-label`) and #2 (CSS `[role='button']`) find 0 elements on the live DOM and exist only as defense layers.
 - Queue position: bundled with each respective code fix (not standalone).
 
-### ~~B14 — L2+ nav can click wrong tile + enter edit mode silently on wrong media (P1)~~ ✅ FIXED (commit `<B14-COMMIT>`)
+### ~~B14 — L2+ nav can click wrong tile + enter edit mode silently on wrong media (P1)~~ ✅ FIXED (commit `72e056b`)
 - Cherry-picked from `stash@{0}` via triage `docs/session-reports/2026-04-17_stash-triage_flow-refinements.md` §7 KEEP-2 + KEEP-3. Two orthogonal hardening hunks on `flow/operations/_base.py`.
 - File: `flow/operations/_base.py` — `navigate_to_edit` (post-nav verify block added) + `_click_video_tile` (body rewritten).
 - Two independent problems:
   1. **Silent nav failure.** Master's `navigate_to_edit` returns normally even if the last-resort `page.goto(edit_url)` leaves the page on `/project/...` (not `/edit/...`) — the caller then submits an op against the project grid, which clicks the wrong button (e.g. "New video" instead of "Extend"). No exception, no log.
   2. **Wrong-tile click in multi-video projects.** `_click_video_tile` iterated generic selectors (`video`, `[data-tile-id]`, `[class*='tile']`, `[class*='thumbnail']`, `img[src*='googleusercontent']`) and clicked `.first`. In a project with ≥ 2 videos the "first" match is DOM-order dependent, not media_id-targeted → clicking an unrelated video enters edit mode for the wrong media_id, silently violating INV-5 (media_id stable across the chain).
 - Runtime effect (pre-fix): L2+ jobs on multi-video projects could extend/insert/remove/camera against a sibling video; chain state (parent.media_id) and page state diverge with no warning.
-- **Resolution (commit `<B14-COMMIT>`):**
+- **Resolution (commit `72e056b`):**
   - **KEEP-2 (post-nav verify).** After the tile-click-or-goto attempts, `navigate_to_edit` now reads `page.url` and raises `RuntimeError("Failed to enter edit mode")` if `/edit/` is absent. If `/edit/` is present but the URL's media_id differs from the requested `job["media_id"]`, log a WARNING and proceed — Flow's SPA sometimes redirects to a sibling video in the same project, which is acceptable (the important invariant is being in edit mode for some video in the correct project; `finalize_operation` will re-extract the actual media_id from the final URL).
   - **KEEP-3 (media_id-aware tile click).** `_click_video_tile` body rewritten to a 3-priority chain:
     1. If `media_id` is given, `page.evaluate` walks `a[href*="/edit/"]`, `[data-tile-id]`, and `[data-media-id], [data-id]` in turn, clicks the first element whose href/attribute contains the target `media_id`, and returns a short debug tag (`link:…` / `tile:…` / `data-id:…`).
