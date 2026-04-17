@@ -1,6 +1,6 @@
 # Google Flow UI Reference (VI + EN) — VERIFIED on Both Locales
 
-> Last updated: 2026-04-16 (v4 — EN labels VERIFIED on English Chrome profile)
+> Last updated: 2026-04-17 (v5 — Aspect Ratio UI added via B1a research)
 > Source: hands-on testing on BOTH Vietnamese + English Chrome profiles
 > IMPORTANT: All labels marked ✅ are verified in browser. DOM selectors included for engine use.
 
@@ -203,6 +203,163 @@ menu
   menuitem → button → generic "volume_up" + generic "Veo 3.1 - Lite [Lower Priority]"
   menuitem → button → generic "volume_up" + generic "Veo 3.1 - Fast [Lower Priority] (leaving 5/10)"
   generic "Generating will use" → link "5 credits"
+```
+
+## Model Chip Panel (Composer — project-level T2V)
+
+> Verified 2026-04-17 on EN profile. See B1a session report.
+
+Clicking the model chip at the bottom-right of the composer opens a **single Radix `DropdownMenuContent`** panel that bundles ALL generation options: media type, source type, aspect ratio, quantity, model, credits.
+
+### Chip button (trigger)
+
+| Attr | Value |
+|---|---|
+| Tag | `button` |
+| `aria-haspopup` | `"menu"` |
+| `aria-expanded` | `"true"` when panel open, `"false"` when closed |
+| `data-state` | `"open"` / `"closed"` |
+| `id` | `radix-:rXX:` (dynamic hash — NEVER hardcode full id) |
+| Text pattern | `"<MediaType> <aspect-icon> x<qty>"` e.g. `"Video crop_16_9 x1"` |
+
+**Engine MUST read chip text AFTER closing panel** to verify aspect ratio was set. The icon substring (`crop_9_16` vs `crop_16_9`) is the canonical confirmation.
+
+### Panel container (opened)
+
+| Attr | Value |
+|---|---|
+| Selector | `div[role="menu"][data-state="open"].DropdownMenuContent` |
+| `aria-labelledby` | references chip id |
+
+Panel contains 4 Radix `tablist` rows + 1 model dropdown button + 1 credits link, in this exact order:
+
+1. Media Type tablist (`IMAGE` / `VIDEO`)
+2. Source Type tablist (`VIDEO_FRAMES` / `VIDEO_REFERENCES`) — only in Video mode
+3. **Aspect Ratio tablist** — contents differ by media type (see §Aspect Ratio UI)
+4. Quantity tablist (`1` / `2` / `3` / `4`)
+5. Model dropdown (`button[aria-haspopup="menu"]` with text like `"Veo 3.1 - Lite [Lower Priority] arrow_drop_down"`)
+6. Credits link (`a[href*="googleone"]` with text `"N credits"`)
+
+All tablists share class `flow_tab_slider_trigger` on tab buttons and `sc-eb68e7f-1 boDrty` on the tablist wrapper. Distinguish by `id` suffix only.
+
+## Aspect Ratio UI
+
+> Verified 2026-04-17 on EN profile. DOM-level B1a research. See `docs/session-reports/2026-04-17_B1a_aspect-ratio-research.md`.
+
+### Where it lives
+
+Aspect ratio is a Radix `tablist` INSIDE the Model Chip Panel (see above). There is **no standalone aspect-ratio button on the main toolbar** — the engine must open the model chip panel first.
+
+Only present in **project-level T2V composer** (homepage → New project). **NOT available in extend/insert/remove/camera modes** (those inherit aspect ratio from the source media — ratio is fixed once video generated).
+
+### DOM structure (open panel)
+
+```
+div[role="menu"][data-state="open"].DropdownMenuContent
+└── … (other rows)
+    └── div[role="tablist"].sc-eb68e7f-1.boDrty
+        ├── button[role="tab"][id$="-trigger-PORTRAIT"]
+        │     data-state="active"|"inactive"  aria-selected="true"|"false"
+        │     innerText: "crop_9_16\n9:16"
+        └── button[role="tab"][id$="-trigger-LANDSCAPE"]
+              data-state="active"|"inactive"
+              innerText: "crop_16_9\n16:9"
+```
+
+### Video mode — 2 options
+
+| Ratio | `id` suffix | Icon name | Default in Video |
+|---|---|---|---|
+| 9:16 (portrait) | `PORTRAIT` | `crop_9_16` | ❌ |
+| 16:9 (landscape) | `LANDSCAPE` | `crop_16_9` | ✅ **default** |
+
+### Image mode — 5 options
+
+Switching the Media Type tab to `IMAGE` replaces the aspect tablist with a 5-option variant:
+
+| Ratio | `id` suffix | Icon name |
+|---|---|---|
+| 16:9 | `LANDSCAPE` | `crop_16_9` |
+| 4:3 | `LANDSCAPE_4_3` | `crop_landscape` |
+| 1:1 | `SQUARE` | `crop_square` |
+| 3:4 | `PORTRAIT_3_4` | `crop_portrait` |
+| 9:16 | `PORTRAIT` | `crop_9_16` |
+
+### Active state — verify signal
+
+For any ratio tab:
+
+| Attribute | Active | Inactive |
+|---|---|---|
+| `data-state` | `"active"` | `"inactive"` |
+| `aria-selected` | `"true"` | `"false"` |
+
+**Locale-independent:** icon names and `id` suffixes are English-only but stable code tokens — they do NOT change on VI profile.
+
+### Interaction flow (T2V only)
+
+```
+1. Open composer chip (click element with class flow_video_chip / aria-haspopup="menu" at bottom-right)
+   → wait for [role="menu"][data-state="open"]
+2. Ensure Video tab is active: check [id$="trigger-VIDEO"][data-state="active"]
+   If not, click [id$="trigger-VIDEO"] and wait 100ms
+3. Click target ratio tab:
+   - "9:16" → click [id$="trigger-PORTRAIT"]
+   - "16:9" → click [id$="trigger-LANDSCAPE"]
+   - "1:1" → **NOT SUPPORTED IN VIDEO** — log warning, keep default 16:9
+4. Verify: re-read target tab, assert data-state="active"
+5. Close panel: click outside (e.g. page.click on composer area, NOT Escape)
+6. Post-close verify: read chip innerText, assert substring "crop_9_16" (9:16) or "crop_16_9" (16:9)
+```
+
+### Pitfalls / Gotchas
+
+1. **Playwright `.click()` via `page.evaluate(el => el.click())` does NOT trigger Radix state change** — Radix uses pointerdown events. Use `Locator.click()` (real mouse event) only.
+2. **Radix id prefix `radix-:rXX:` is per-render hash** — NEVER hardcode `radix-:r2f:-trigger-PORTRAIT`. Always use attribute-ends-with selector: `[id$="-trigger-PORTRAIT"]` or contains: `[id*="trigger-PORTRAIT"]`.
+3. **State resets on Media Type switch** — switching IMAGE→VIDEO reverts aspect ratio to 16:9 default. Set ratio AFTER ensuring Video tab is active.
+4. **State persists across panel close/reopen** — same page, same media type → ratio stays.
+5. **Escape closes too much** — pressing Escape dismisses the composer itself in some modes. Use click-outside (click on empty canvas area) to dismiss the chip panel.
+6. **No 1:1 for video** — Flow Video does NOT offer square aspect. Engine should reject `aspect_ratio="1:1"` or log warning and default to 16:9.
+7. **Chip icon is the ground truth post-close** — the chip innerText updates to reflect current ratio (`crop_9_16` / `crop_16_9`). Use it as the single source of truth for verification.
+8. **No aspect ratio in L2+ modes** — extend/insert/remove/camera inherit from source video. Do not attempt `_set_aspect_ratio` on L2+ jobs.
+
+### Recommended engine selectors (locale-independent)
+
+```python
+# Open chip panel
+chip = page.locator('button[aria-haspopup="menu"][data-state="closed"]').filter(
+    has_text=re.compile(r"video.*x\d", re.IGNORECASE)
+).first
+await chip.click()
+await page.locator('[role="menu"][data-state="open"]').wait_for(timeout=3000)
+
+# Ensure Video tab is active (avoid setting image ratios on video)
+video_tab = page.locator('[id$="-trigger-VIDEO"]').first
+if await video_tab.get_attribute("data-state") != "active":
+    await video_tab.click()
+
+# Click target ratio (video mode)
+RATIO_IDS = {"9:16": "PORTRAIT", "16:9": "LANDSCAPE"}
+suffix = RATIO_IDS.get(ratio)
+if not suffix:
+    logger.warning("Aspect ratio %r not supported for video — using default", ratio)
+    return
+tab = page.locator(f'[id$="-trigger-{suffix}"]').first
+await tab.click()
+
+# Verify active state
+await page.wait_for_function(
+    f"""() => document.querySelector('[id$="-trigger-{suffix}"]')?.getAttribute("data-state") === "active" """,
+    timeout=2000,
+)
+
+# Close panel (click-outside)
+await page.locator("body").click(position={"x": 100, "y": 100})
+
+# Post-close verify via chip text
+chip_text = await page.locator('button[aria-haspopup="menu"]').first.inner_text()
+expected_icon = "crop_9_16" if ratio == "9:16" else "crop_16_9"
+assert expected_icon in chip_text, f"Chip did not reflect ratio: {chip_text!r}"
 ```
 
 ## History Panel
