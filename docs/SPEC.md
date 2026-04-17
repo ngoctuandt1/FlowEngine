@@ -1256,7 +1256,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Triệu chứng: cột NULL sau khi complete — không caller nào từng set timestamp này
 - Fix: `update_job` tự stamp `completed_at = _now_iso()` khi `status` ∈ {completed, failed, cancelled} và caller không set explicit. `JobUpdate` mở rộng thêm field `completed_at` (optional) để caller vẫn có thể override. Guard: `tests/test_job_store.py` (4 cases: auto-set on completed / failed, explicit wins, non-terminal no-op).
 
-### ~~B6 — Profile.current_job_id không reset (P1)~~ ✅ FIXED (commit `<this-commit>`)
+### ~~B6 — Profile.current_job_id không reset (P1)~~ ✅ FIXED (commit `0118e6d`)
 - File: `server/db/job_store.py:claim_next_job` + `update_job`
 - Triệu chứng: cột `profiles.current_job_id` NULL vĩnh viễn — không caller server-side nào từng set/clear field này. Worker-side `ProfileManager.mark_available` có clear in-memory nhưng không sync ra DB → dashboard không biết profile nào đang chạy job gì.
 - Fix: `claim_next_job` stamp `profiles.current_job_id = <job.id>` (kèm `worker_id`, `last_used_at`) trong cùng transaction với UPDATE jobs — áp dụng cho cả 2 priority branch (L2+ parent-bound và L1 available-pool). `update_job` clear `current_job_id = NULL WHERE current_job_id = job_id` khi status ∈ TERMINAL_STATES (module-level constant hoisted from B5 inline set). Non-terminal transition (running) không đụng pointer. Guard: `tests/test_profile_store.py` (3 cases: set-on-claim, cleared-on-completion, not-cleared-on-running).
