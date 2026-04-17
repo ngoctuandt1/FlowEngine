@@ -13,6 +13,7 @@ from flow.operations._base import (
     wait_for_video_loaded,
     click_action_button,
     count_visible_cards,
+    draw_bbox_on_video,
     finalize_operation,
 )
 
@@ -77,7 +78,11 @@ async def remove_object(
         bbox = {"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5}
         logger.warning("No bbox provided for remove — using center default")
 
-    await _draw_bbox(page, bbox)
+    drew = await draw_bbox_on_video(page, bbox)
+    if not drew:
+        logger.warning(
+            "Bbox drawing failed or unverified — Flow may fall back to default region"
+        )
 
     # Step 5: Submit (no prompt for remove)
     before_cards = await count_visible_cards(page)
@@ -98,53 +103,3 @@ async def remove_object(
         locale=locale,
         download_prefix="rm",
     )
-
-
-async def _draw_bbox(page, bbox: dict):
-    """Draw a bounding box on the video canvas by mouse drag.
-
-    bbox: {x, y, w, h} — normalized 0-1 coordinates.
-    """
-    try:
-        video_rect = await page.evaluate("""() => {
-            const video = document.querySelector('video');
-            if (!video) return null;
-            const rect = video.getBoundingClientRect();
-            return {left: rect.left, top: rect.top, width: rect.width, height: rect.height};
-        }""")
-
-        if not video_rect:
-            logger.warning("No video element found for bbox drawing")
-            return
-
-        vl = video_rect["left"]
-        vt = video_rect["top"]
-        vw = video_rect["width"]
-        vh = video_rect["height"]
-
-        x = bbox.get("x", 0.25)
-        y = bbox.get("y", 0.25)
-        w = bbox.get("w", 0.5)
-        h = bbox.get("h", 0.5)
-
-        start_x = vl + x * vw
-        start_y = vt + y * vh
-        end_x = vl + (x + w) * vw
-        end_y = vt + (y + h) * vh
-
-        await page.mouse.move(start_x, start_y)
-        await page.mouse.down()
-        await asyncio.sleep(0.1)
-        steps = 5
-        for i in range(1, steps + 1):
-            px = start_x + (end_x - start_x) * i / steps
-            py = start_y + (end_y - start_y) * i / steps
-            await page.mouse.move(px, py)
-            await asyncio.sleep(0.05)
-        await page.mouse.up()
-
-        logger.info("Drew remove bbox: x=%.2f y=%.2f w=%.2f h=%.2f", x, y, w, h)
-        await asyncio.sleep(0.5)
-
-    except Exception as e:
-        logger.warning("Failed to draw bbox: %s", e)

@@ -13,6 +13,7 @@ from flow.operations._base import (
     wait_for_video_loaded,
     click_action_button,
     count_visible_cards,
+    draw_bbox_on_video,
     finalize_operation,
 )
 
@@ -76,7 +77,11 @@ async def insert_object(
 
     # Step 4: Draw bbox (optional)
     if bbox:
-        await _draw_bbox(page, bbox)
+        drew = await draw_bbox_on_video(page, bbox)
+        if not drew:
+            logger.warning(
+                "Bbox drawing failed or unverified — Flow may fall back to default region"
+            )
 
     # Step 5: Type prompt (optional)
     if prompt:
@@ -102,61 +107,6 @@ async def insert_object(
         locale=locale,
         download_prefix="ins",
     )
-
-
-async def _draw_bbox(page, bbox: dict):
-    """Draw a bounding box on the video canvas by mouse drag.
-
-    bbox: {x, y, w, h} -- normalized 0-1 coordinates.
-    The actual pixel coordinates are computed from the video element's dimensions.
-    """
-    try:
-        # Find the video element to get its bounding rect
-        video_rect = await page.evaluate("""() => {
-            const video = document.querySelector('video');
-            if (!video) return null;
-            const rect = video.getBoundingClientRect();
-            return {left: rect.left, top: rect.top, width: rect.width, height: rect.height};
-        }""")
-
-        if not video_rect:
-            logger.warning("No video element found for bbox drawing")
-            return
-
-        # Convert normalized coords to pixel coords
-        vl = video_rect["left"]
-        vt = video_rect["top"]
-        vw = video_rect["width"]
-        vh = video_rect["height"]
-
-        x = bbox.get("x", 0.3)
-        y = bbox.get("y", 0.3)
-        w = bbox.get("w", 0.4)
-        h = bbox.get("h", 0.4)
-
-        start_x = vl + x * vw
-        start_y = vt + y * vh
-        end_x = vl + (x + w) * vw
-        end_y = vt + (y + h) * vh
-
-        # Mouse drag to draw bbox
-        await page.mouse.move(start_x, start_y)
-        await page.mouse.down()
-        await asyncio.sleep(0.1)
-        # Move in small steps for more realistic drag
-        steps = 5
-        for i in range(1, steps + 1):
-            px = start_x + (end_x - start_x) * i / steps
-            py = start_y + (end_y - start_y) * i / steps
-            await page.mouse.move(px, py)
-            await asyncio.sleep(0.05)
-        await page.mouse.up()
-
-        logger.info("Drew bbox: x=%.2f y=%.2f w=%.2f h=%.2f", x, y, w, h)
-        await asyncio.sleep(0.5)
-
-    except Exception as e:
-        logger.warning("Failed to draw bbox: %s", e)
 
 
 async def _type_insert_prompt(page, prompt: str):

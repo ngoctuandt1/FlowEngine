@@ -531,6 +531,64 @@ assert expected_icon in chip_text, f"Chip did not reflect ratio: {chip_text!r}"
 - Click-drag on video to define region
 - Normalized coordinates (0-1) → engine sends as `bbox: {x, y, w, h}`
 
+### Bbox Overlay UI
+
+After the user drags on the video canvas, Flow renders a **selection rectangle** over
+the video. The engine uses this overlay as the verification signal that the drag
+landed on the canvas — no overlay means the drag missed (bbox was out of bounds, the
+Insert/Remove panel wasn't active, or the video element moved between measure and
+drag).
+
+**Overlay rendering patterns (common SPA approaches — Flow likely uses one of these):**
+
+| Pattern | Selector candidate | Where it usually appears |
+|---|---|---|
+| SVG rect | `svg rect` (with width/height ≥ some threshold) | Overlay drawn inside an `<svg>` layer above `<video>` |
+| Div with class keyword | `[class*="bbox" i]`, `[class*="selection" i]`, `[class*="region" i]`, `[class*="mask" i]` | CSS-positioned absolute div with keyword in class name |
+| ARIA role | `[role="region"]`, `[aria-label*="selection" i]` | Accessible region annotation |
+
+**Recommended detection strategy (locale-independent, used by `draw_bbox_on_video`):**
+```javascript
+// Union of all three patterns — match any visible rect >= 20x20 px
+const candidates = document.querySelectorAll(
+    'svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]'
+);
+for (const el of candidates) {
+    const r = el.getBoundingClientRect();
+    if (r.width >= 20 && r.height >= 20) {
+        const s = getComputedStyle(el);
+        if (s.display !== 'none' && s.visibility !== 'hidden') return true;
+    }
+}
+return false;
+```
+
+**Threshold rationale:**
+- `20×20 px` minimum — excludes decorative icons/scrollbars that may match SVG `rect` selector but are unrelated to bbox.
+- `display != none && visibility != hidden` — excludes hidden templates.
+
+**Known unknowns (⚠️ needs live E2E validation):**
+- Exact class name Flow uses for the overlay div (candidates listed above are common React/Material patterns, not confirmed from Flow DOM).
+- Whether SVG or div is the primary overlay element.
+- Whether the overlay persists after `mouse.up` or fades quickly.
+
+If the union selector fails in production, extend the candidate list in
+`flow/operations/_base.py::draw_bbox_on_video` Step 4 JS. The function returns
+`False` on missed detection (graceful — Flow tolerates missing bbox by using the
+whole-video default region); callers log a warning but do not raise.
+
+### Bbox Coordinate System (engine-side)
+
+- Input: normalized `{x, y, w, h}` in `[0, 1]` relative to the video's
+  `getBoundingClientRect()`.
+- Validation: any value outside `[0, 1]` → reject (return `False`, log `ERROR`).
+- Clamping: if `x + w > 1` → `w = 1 - x` (same for y/h). Flow's canvas coordinates
+  do not extend past the video rect, so we clip before dragging.
+- Pixel conversion: `start = (rect.left + x*rect.width, rect.top + y*rect.height)`;
+  `end = (rect.left + (x+w)*rect.width, rect.top + (y+h)*rect.height)`.
+- Minimum video size: reject if `width < 50` or `height < 50` (video not loaded or
+  collapsed).
+
 ## Engine Selector Mapping (DOM selectors for automation)
 
 ### Button detection (works for BOTH EN and VI)

@@ -212,6 +212,107 @@ async def _click_video_tile(page, media_id: str = "", timeout_sec: float = 10.0)
     return False
 
 
+async def draw_bbox_on_video(page, bbox: dict) -> bool:
+    """Draw a bounding box on the video canvas via mouse drag, verified by overlay.
+
+    Shared between insert-object and remove-object ops. The caller is expected
+    to have already clicked Insert/Remove so the panel is in bbox-drawing mode.
+
+    Args:
+        bbox: {x, y, w, h} normalized 0-1 relative to the video's bounding rect.
+              Values outside [0, 1] → reject (return False). Overflow
+              (x+w > 1 or y+h > 1) is clamped to the video rect.
+
+    Returns:
+        True if drag landed on canvas AND Flow's overlay rect is visible after.
+        False on: missing/too-small video element, out-of-range bbox, overlay
+        not detected. Caller decides whether to warn-and-continue or abort.
+
+    See docs/FLOW_UI_REFERENCE.md §Bbox Overlay UI for selector strategy and
+    known unknowns.
+    """
+    # Step 1: Read video element rect
+    video_rect = await page.evaluate("""() => {
+        const video = document.querySelector('video');
+        if (!video) return null;
+        const r = video.getBoundingClientRect();
+        return {left: r.left, top: r.top, width: r.width, height: r.height};
+    }""")
+
+    if not video_rect or video_rect.get("width", 0) < 50 or video_rect.get("height", 0) < 50:
+        logger.error("Video element not found or too small: %s", video_rect)
+        return False
+
+    # Step 2: Validate bbox keys in [0, 1]
+    for k in ("x", "y", "w", "h"):
+        v = bbox.get(k, 0)
+        if not (0 <= v <= 1):
+            logger.error("bbox[%s]=%s out of range 0-1", k, v)
+            return False
+
+    x = bbox.get("x", 0.25)
+    y = bbox.get("y", 0.25)
+    w = bbox.get("w", 0.5)
+    h = bbox.get("h", 0.5)
+
+    # Step 3: Clamp overflow so bbox fits within video rect
+    if x + w > 1:
+        w = 1 - x
+    if y + h > 1:
+        h = 1 - y
+
+    vl = video_rect["left"]
+    vt = video_rect["top"]
+    vw = video_rect["width"]
+    vh = video_rect["height"]
+
+    start_x = vl + x * vw
+    start_y = vt + y * vh
+    end_x = vl + (x + w) * vw
+    end_y = vt + (y + h) * vh
+
+    # Step 4: Mouse drag (small interpolation steps — Flow requires real drag)
+    await page.mouse.move(start_x, start_y)
+    await page.mouse.down()
+    await asyncio.sleep(0.1)
+    steps = 5
+    for i in range(1, steps + 1):
+        px = start_x + (end_x - start_x) * i / steps
+        py = start_y + (end_y - start_y) * i / steps
+        await page.mouse.move(px, py)
+        await asyncio.sleep(0.05)
+    await page.mouse.up()
+    await asyncio.sleep(0.5)
+
+    # Step 5: VERIFY — overlay rect visible after drag
+    overlay_visible = await page.evaluate("""() => {
+        const candidates = document.querySelectorAll(
+            'svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]'
+        );
+        for (const el of candidates) {
+            const r = el.getBoundingClientRect();
+            if (r.width >= 20 && r.height >= 20) {
+                const s = getComputedStyle(el);
+                if (s.display !== 'none' && s.visibility !== 'hidden') return true;
+            }
+        }
+        return false;
+    }""")
+
+    if not overlay_visible:
+        logger.warning(
+            "Bbox drag completed but no overlay detected — bbox=%s video_rect=%s",
+            bbox, video_rect,
+        )
+        return False
+
+    logger.info(
+        "Drew bbox (verified): x=%.2f y=%.2f w=%.2f h=%.2f on video %dx%d",
+        x, y, w, h, int(vw), int(vh),
+    )
+    return True
+
+
 async def count_visible_cards(page) -> int:
     """Count visible media cards on page."""
     try:

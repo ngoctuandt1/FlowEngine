@@ -595,11 +595,7 @@ OUTPUT: same shape as extend
 1. navigate_to_edit(job)  — như B.5
 2. click_action_button("Insert" / "Chèn" / [class*="add_box"])
 3. Wait composer placeholder: "Describe what you'd like to add..."
-4. Nếu bbox:
-   a. Get video canvas bounding rect
-   b. Convert normalized (0-1) → pixel coords
-   c. mouse.move(start) → mouse.down → mouse.move(end) → mouse.up
-   d. ⚠️ HIỆN TẠI KHÔNG VERIFY bbox đã vẽ đúng (B2)
+4. Nếu bbox: gọi `flow.operations._base.draw_bbox_on_video(page, bbox)` (shared với remove). Helper validate range [0,1], clamp overflow, drag, verify overlay rect visible. Return False → log WARNING, continue (Flow fallback default region).
 5. Nếu bbox null → Flow dùng vùng default (thường toàn video)
 6. Click composer → type prompt
 7. submit_with_confirmation()
@@ -1236,10 +1232,10 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Triệu chứng: job có `aspect_ratio="9:16"` nhưng video output luôn 16:9 — stub chỉ tìm `button:has-text('9:16')` (không tồn tại trong DOM Flow) và fallback im lặng.
 - Fix: rewrite theo Radix chip panel flow (B1a research). Mở `button[aria-haspopup="menu"]` chip → đợi `[role="menu"][data-state="open"]` → đảm bảo Video tab active → click `[id$="-trigger-PORTRAIT|LANDSCAPE"]` bằng `Locator.click` (real pointer event — JS `el.click()` KHÔNG trigger Radix state) → wait `data-state="active"` → close bằng click-outside (`page.mouse.click(10, 10)` — Escape sẽ đóng luôn composer per B8 lesson) → verify chip `innerText` chứa `crop_9_16` / `crop_16_9`. Video mode chỉ support 9:16 / 16:9; `1:1` là image-only → log warning + fallback default. Guard: `tests/test_aspect_ratio.py` (3 cases: default early-return, 1:1 warning, 9:16 full flow with mocked Locator chain). Selector reference: `docs/FLOW_UI_REFERENCE.md` §Aspect Ratio UI.
 
-### B2 — Bbox không verify (P0)
-- File: `flow/operations/insert.py`, `remove.py`
-- Triệu chứng: bbox nằm ngoài canvas → Flow dùng vùng default, user không biết
-- Fix: sau drag, verify bằng DOM có hiện overlay rect không; nếu không → retry hoặc fail
+### ~~B2 — Bbox không verify (P0)~~ ✅ FIXED (commit `<this-commit>`)
+- File: `flow/operations/_base.py` (new `draw_bbox_on_video`), `flow/operations/insert.py`, `flow/operations/remove.py`
+- Triệu chứng: `_draw_bbox()` trong insert/remove drag chuột trên video canvas nhưng không validate input range, không clamp overflow, không verify overlay rect xuất hiện → bbox nằm ngoài canvas hoặc drag miss sẽ silent-fallback về vùng default của Flow, user không biết.
+- Fix: extract shared helper `draw_bbox_on_video(page, bbox) -> bool` vào `flow/operations/_base.py`. Helper: (1) đọc video `getBoundingClientRect` — reject nếu `width/height < 50`; (2) validate `x/y/w/h ∈ [0,1]` — out-of-range → log ERROR + return False; (3) clamp overflow (`x+w>1 → w = 1-x`); (4) mouse drag với 5 interpolation steps; (5) verify overlay via union selector `svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]` (bounding rect ≥ 20×20, display/visibility visible). Returns False → caller `insert.py`/`remove.py` log WARNING và continue (Flow tolerates missing bbox). Guard: `tests/test_bbox.py` (5 cases: out-of-range reject, overflow clamp, missing video, success+overlay, no-overlay warning). Selector reference: `docs/FLOW_UI_REFERENCE.md` §Bbox Overlay UI — exact overlay class name chưa verified trên DOM live (defensive union selector cover patterns phổ biến, manual E2E là supervisor task).
 
 ### B3 — Camera preset không verify (P0)
 - File: `flow/operations/camera.py:108`
