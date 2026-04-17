@@ -252,6 +252,40 @@ tests/
 - `server/` + `worker/` ≥ 70%
 - `flow/` — manual E2E acceptable (browser-dependent)
 
+### R-TEST-5: Test commands (post-B9)
+
+Dev deps: `pip install -r requirements-dev.txt` (pytest, pytest-asyncio, httpx).
+Config: `pytest.ini` (asyncio_mode=auto, function-scoped loops, testpaths=tests).
+
+Run full suite:
+```bash
+pytest tests/ -v
+```
+
+Run with coverage (requires `pip install pytest-cov`):
+```bash
+pytest tests/ --cov=server --cov=worker --cov-report=term-missing
+```
+
+Run a single file / test:
+```bash
+pytest tests/test_smoke.py -v
+pytest tests/test_config.py::test_server_port_default_is_8080 -v
+```
+
+Fail on DeprecationWarning (pre-release sanity — used by B8):
+```bash
+pytest tests/ -W error::DeprecationWarning
+```
+
+Fixtures exposed by `tests/conftest.py`:
+- `temp_db_path` — fresh SQLite file under a tempdir; patches both env var and
+  already-imported `DATABASE_PATH` bindings. Prevents tests hitting the dev DB.
+- `db` — runs `init_db()` on the temp DB so schema exists before the test body.
+- `api_client` — httpx `AsyncClient` bound to the FastAPI app via `ASGITransport`
+  (no real socket). Depends on `db` so routes have schema when they run.
+- `sample_job_payload`, `sample_profile` — ready-to-use factories.
+
 ---
 
 ## A.5 — Change Control Rules
