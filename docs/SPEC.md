@@ -1251,7 +1251,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Không ảnh hưởng correctness
 - Defer đến khi cần chain-level analytics
 
-### ~~B5 — `completed_at` không set (P1)~~ ✅ FIXED (commit `<this-commit>`)
+### ~~B5 — `completed_at` không set (P1)~~ ✅ FIXED (commit `4d24c10`)
 - File: `server/db/job_store.py:update_job`
 - Triệu chứng: cột NULL sau khi complete — không caller nào từng set timestamp này
 - Fix: `update_job` tự stamp `completed_at = _now_iso()` khi `status` ∈ {completed, failed, cancelled} và caller không set explicit. `JobUpdate` mở rộng thêm field `completed_at` (optional) để caller vẫn có thể override. Guard: `tests/test_job_store.py` (4 cases: auto-set on completed / failed, explicit wins, non-terminal no-op).
