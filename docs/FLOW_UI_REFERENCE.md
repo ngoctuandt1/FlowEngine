@@ -240,16 +240,32 @@ Returns `true` if ANY signal matches. Returns `false` if no match — caller tre
 - Strategy 1 (aria-label) is **expected** to work on both locales (aria-label stable); Strategy 2 is text-based but uses the direction string as-is — works on EN, fails on VI unless aria-label also covers (via Strategy 1 fallback). Strategy 3 (`get_by_text`) works only on EN.
 - Recommendation for L2+ camera jobs: ensure profile locale is EN (matches `flow/navigation.py::detect_locale` expectation). A VI-only profile would require a direction map (out of scope for B3).
 
-#### Known unknowns (⚠️ needs live E2E validation)
+#### Ground truth (live DOM, Tier1 retest 2026-04-17 on L1 project `785d2255-…`)
 
-Phase-1 research for B3 was docs-based (no live Flow session available in this worktree). The following items are **assumed** from common SPA patterns and matching B2's defensive approach — they should be confirmed in manual E2E:
+The "Known unknowns" from phase-1 research were confirmed or refuted against live DOM. **The current `_click_preset` + `_verify_preset_selected` implementation is broken against real Flow UI.** See SPEC.md §D.4 B12 and `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B3 for the full evidence trail.
 
-1. Whether Flow actually sets `aria-label="<direction>"` on preset buttons (vs a different attribute like `data-preset-name`).
-2. Which active-state signal Flow uses — `aria-pressed`, `aria-selected`, a keyword class, or a parent marker. The verify helper checks all four; if none match, the helper returns False even on a successful click.
-3. Whether VI profile preserves EN aria-labels (i18n split between visible text and aria).
-4. Whether the preset element is truly `<button>` / `role="button"` or a custom element. Strategy 2's `[role='button']` selector would miss a custom element without explicit role.
+**What's actually on the page:**
 
-Mitigation: the helper **fails safely** — returns False + log WARNING/ERROR, caller `camera_move` raises `RuntimeError("Failed to find camera preset: {direction}")` which marks the job failed instead of silent-submit with default. Live E2E (see WORKPLAN §5.2 Test 4) is the final confirmation step.
+| Item | Ground truth |
+|---|---|
+| Preset tag | `<button>` element — implicit role `button`, NO explicit `role="button"` attribute |
+| `aria-label` | **Absent on all 15 presets** (8 motion + 7 position). No `data-preset-name` either. |
+| Class tokens | Styled-components hashes only, e.g. `sc-16c4830a-1 hxjMEo ... byyZkY` — NO `active\|selected\|pressed` keyword anywhere |
+| `aria-pressed` / `aria-selected` | Not set, in any state |
+| Parent className | Also styled-components hash (`sc-2384ceab-7 jrdoRH`) — no keyword |
+| Real state signal | **`getComputedStyle(labelDivInsideButton).color`** — selected = `rgb(48, 48, 48)` (dim grey, because the thumbnail is highlighted), unselected = `rgb(255, 255, 255)` (bright white). Label styled-components hash also differs (`jYmHac` selected vs `hkGUbO` unselected) but hashes may rotate per Flow release; color is the stable signal. |
+
+**Impact on the three click strategies (live-DOM behavior):**
+
+1. **`[aria-label='<direction>']`** — finds **0 elements**. aria-label is absent.
+2. **`[role='button']` + anchored regex** — finds **0 elements**. Playwright's CSS `[role='button']` requires the attribute literally; it does not match implicit button roles. (This is different from `page.get_by_role('button')`, which would match.)
+3. **`page.get_by_text(direction, exact=True)`** — **works**: finds and clicks the preset, Flow accepts (preview animates, submit enables).
+
+**Impact on `_verify_preset_selected`:** all four signals return false on a correctly-selected preset. The helper returns False on every call, strategy #3 falls through, `_click_preset` exhausts all strategies, and `camera_move` raises `RuntimeError("Failed to find camera preset: {direction}")`. **Every camera-move job currently fails hard.**
+
+**Fix direction (see SPEC.md §D.4 B12):** swap the union verify for a single `getComputedStyle(label).color` check (threshold: R+G+B < 150 ⇒ selected); keep the 3-strategy click chain (partial-match defense remains sound even though strategies 1+2 find 0 elements today — cheap insurance against future Flow refactors that might add aria or explicit roles).
+
+**Locale notes (unchanged from phase-1):** visible text is translated (EN "Dolly in" ↔ VI "Di chuyển ra trước"); engine passes EN. Strategy #3 is EN-only. Without aria-label available, VI profile camera-move requires a direction map — out of scope for B12.
 
 ## Model Selector (Dropdown)
 
@@ -612,48 +628,37 @@ assert expected_icon in chip_text, f"Chip did not reflect ratio: {chip_text!r}"
 ### Bbox Overlay UI
 
 After the user drags on the video canvas, Flow renders a **selection rectangle** over
-the video. The engine uses this overlay as the verification signal that the drag
-landed on the canvas — no overlay means the drag missed (bbox was out of bounds, the
-Insert/Remove panel wasn't active, or the video element moved between measure and
-drag).
+the video preview. The engine needs this as the verification signal that the drag
+landed on the canvas — no detection means the drag missed.
 
-**Overlay rendering patterns (common SPA approaches — Flow likely uses one of these):**
+#### Ground truth (live DOM, Tier1 retest 2026-04-17 on L1 project `785d2255-…`)
 
-| Pattern | Selector candidate | Where it usually appears |
-|---|---|---|
-| SVG rect | `svg rect` (with width/height ≥ some threshold) | Overlay drawn inside an `<svg>` layer above `<video>` |
-| Div with class keyword | `[class*="bbox" i]`, `[class*="selection" i]`, `[class*="region" i]`, `[class*="mask" i]` | CSS-positioned absolute div with keyword in class name |
-| ARIA role | `[role="region"]`, `[aria-label*="selection" i]` | Accessible region annotation |
+The phase-1 "overlay rendering patterns" table below turned out not to match Flow's actual UI. **The bbox overlay is not a DOM element at all — it is painted onto the preview canvas bitmap.** Two independent problems with the current `draw_bbox_on_video` helper (`flow/operations/_base.py`):
 
-**Recommended detection strategy (locale-independent, used by `draw_bbox_on_video`):**
-```javascript
-// Union of all three patterns — match any visible rect >= 20x20 px
-const candidates = document.querySelectorAll(
-    'svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]'
-);
-for (const el of candidates) {
-    const r = el.getBoundingClientRect();
-    if (r.width >= 20 && r.height >= 20) {
-        const s = getComputedStyle(el);
-        if (s.display !== 'none' && s.visibility !== 'hidden') return true;
-    }
-}
-return false;
-```
+**Problem 1 — wrong target element.**
+- The helper targets `document.querySelector('video')`. On an L1 project this returns a **105×60 card-strip thumbnail**, not the main preview.
+- The main preview is a `<canvas width=598 height=336>` element, CSS-sized ~479×269, positioned center-screen.
+- Proof: `document.querySelectorAll('canvas').length` = 1 visible canvas matching preview bounds; `elementFromPoint(x, y)` for any coordinate inside the visible preview returns `<CANVAS>`.
+- Effect: the drag `start`/`end` are computed against the thumbnail rect, so Playwright drags on the wrong element — the main canvas never receives pointer events.
 
-**Threshold rationale:**
-- `20×20 px` minimum — excludes decorative icons/scrollbars that may match SVG `rect` selector but are unrelated to bbox.
-- `display != none && visibility != hidden` — excludes hidden templates.
+**Problem 2 — overlay is canvas-painted, not DOM.**
+- After a successful drag, Flow draws the bbox rectangle onto the canvas 2D bitmap via `CanvasRenderingContext2D` calls. There is no `<svg rect>`, no keyword-class div, no `role="region"` element.
+- Proof (post-drag, with a visible bbox on screen): `document.querySelectorAll('svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]').length` = **0**. `elementFromPoint` on three points inside the visible bbox — `[[350,280], [420,300], [480,340]]` — all return `CANVAS`.
+- Effect: the current union-selector verify step always returns false, regardless of whether the drag actually landed. The "Bbox drawing failed or unverified" WARNING is emitted on every bbox-using job.
 
-**Known unknowns (⚠️ needs live E2E validation):**
-- Exact class name Flow uses for the overlay div (candidates listed above are common React/Material patterns, not confirmed from Flow DOM).
-- Whether SVG or div is the primary overlay element.
-- Whether the overlay persists after `mouse.up` or fades quickly.
+Runtime consequence: every `insert-object` / `remove-object` job silently uses Flow's default region.
 
-If the union selector fails in production, extend the candidate list in
-`flow/operations/_base.py::draw_bbox_on_video` Step 4 JS. The function returns
-`False` on missed detection (graceful — Flow tolerates missing bbox by using the
-whole-video default region); callers log a warning but do not raise.
+#### Fix direction (see SPEC.md §D.4 B11)
+
+- **Target the canvas, not the video tag.** Replace `document.querySelector('video')` with the largest visible `<canvas>` (filter by rect dimensions; the card-strip uses its own `<video>` so the preview canvas is unambiguous once you switch target types).
+- **Verify via pixel sampling**, not via DOM query. Capture `getContext('2d').getImageData(sampleRect)` before drag and after `mouseup`; compare mean RGBA. A non-trivial delta (threshold TBD during implementation) confirms bbox was painted. Sample-rect should be inside the expected bbox coordinates.
+- **Alternative / complement**: intercept the network request Flow fires when a region is committed — B11 implementer should capture one real request first to decide which approach is more reliable. The network hook in `FlowClient` already has the plumbing for this.
+
+The union-selector verify should be removed, not extended — adding more DOM selectors cannot detect a canvas-painted shape.
+
+#### Phase-1 reference (for historical context; do not use as implementation guide)
+
+The original phase-1 design assumed one of three DOM patterns (SVG `<rect>`, keyword-class div, `role="region"`) and used the union selector `'svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]'`. **None of these match Flow.** Tier1 retest disproved the assumption on a live L1 project. See `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B2 for the full evidence.
 
 ### Bbox Coordinate System (engine-side)
 

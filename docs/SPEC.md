@@ -1222,24 +1222,26 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 ---
 
-## D.4 — Known bugs trong code hiện tại (B1-B9)
+## D.4 — Known bugs trong code hiện tại (B1-B13)
 
-> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng.
+> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17).
 
 ### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17)
 - File: `flow/operations/generate.py` → `_set_aspect_ratio()`
 - Triệu chứng: job có `aspect_ratio="9:16"` nhưng video output luôn 16:9 — stub chỉ tìm `button:has-text('9:16')` (không tồn tại trong DOM Flow) và fallback im lặng.
 - Fix: rewrite theo Radix chip panel flow (B1a research). Mở `button[aria-haspopup="menu"]` chip → đợi `[role="menu"][data-state="open"]` → đảm bảo Video tab active → click `[id$="-trigger-PORTRAIT|LANDSCAPE"]` bằng `Locator.click` (real pointer event — JS `el.click()` KHÔNG trigger Radix state) → wait `data-state="active"` → close bằng click-outside (`page.mouse.click(10, 10)` — Escape sẽ đóng luôn composer per B8 lesson) → verify chip `innerText` chứa `crop_9_16` / `crop_16_9`. Video mode chỉ support 9:16 / 16:9; `1:1` là image-only → log warning + fallback default. Guard: `tests/test_aspect_ratio.py` (3 cases: default early-return, 1:1 warning, 9:16 full flow with mocked Locator chain). Selector reference: `docs/FLOW_UI_REFERENCE.md` §Aspect Ratio UI.
 
-### ~~B2 — Bbox không verify (P0)~~ ✅ FIXED (commit `a165105`, defensive selector — needs live E2E)
+### ~~B2 — Bbox không verify (P0)~~ ⚠️ FIXED-BUT-MISMATCH (commit `a165105`; Tier1 retest 2026-04-17 found DOM mismatch — see B11)
 - File: `flow/operations/_base.py` (new `draw_bbox_on_video`), `flow/operations/insert.py`, `flow/operations/remove.py`
 - Triệu chứng: `_draw_bbox()` trong insert/remove drag chuột trên video canvas nhưng không validate input range, không clamp overflow, không verify overlay rect xuất hiện → bbox nằm ngoài canvas hoặc drag miss sẽ silent-fallback về vùng default của Flow, user không biết.
-- Fix: extract shared helper `draw_bbox_on_video(page, bbox) -> bool` vào `flow/operations/_base.py`. Helper: (1) đọc video `getBoundingClientRect` — reject nếu `width/height < 50`; (2) validate `x/y/w/h ∈ [0,1]` — out-of-range → log ERROR + return False; (3) clamp overflow (`x+w>1 → w = 1-x`); (4) mouse drag với 5 interpolation steps; (5) verify overlay via union selector `svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]` (bounding rect ≥ 20×20, display/visibility visible). Returns False → caller `insert.py`/`remove.py` log WARNING và continue (Flow tolerates missing bbox). Guard: `tests/test_bbox.py` (5 cases: out-of-range reject, overflow clamp, missing video, success+overlay, no-overlay warning). Selector reference: `docs/FLOW_UI_REFERENCE.md` §Bbox Overlay UI — exact overlay class name chưa verified trên DOM live (defensive union selector cover patterns phổ biến, manual E2E là supervisor task).
+- Fix: extract shared helper `draw_bbox_on_video(page, bbox) -> bool` vào `flow/operations/_base.py`. Helper: (1) đọc video `getBoundingClientRect` — reject nếu `width/height < 50`; (2) validate `x/y/w/h ∈ [0,1]` — out-of-range → log ERROR + return False; (3) clamp overflow (`x+w>1 → w = 1-x`); (4) mouse drag với 5 interpolation steps; (5) verify overlay via union selector `svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]` (bounding rect ≥ 20×20, display/visibility visible). Returns False → caller `insert.py`/`remove.py` log WARNING và continue (Flow tolerates missing bbox). Guard: `tests/test_bbox.py` (5 cases: out-of-range reject, overflow clamp, missing video, success+overlay, no-overlay warning).
+- **Tier1 retest (2026-04-17) verdict: ❌ SELECTOR MISMATCH.** Two problems against live Flow DOM: (i) `document.querySelector('video')` returns a 105×60 card-strip thumbnail — NOT the main preview; the preview is a `<canvas width=598 height=336>` CSS-sized ~479×269. The drag therefore happens on the wrong element. (ii) Flow paints the bbox onto the canvas 2D bitmap, not a DOM overlay — the union selector `svg rect, [class*="bbox" i], …` returns 0 matches regardless of drag success. Runtime effect: bbox never lands on the canvas → Flow uses default region silently. Defense-layer union selector is fundamentally insufficient against canvas-painted UI. Followup: see B10 below. Live evidence: `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B2. Reference updated: `docs/FLOW_UI_REFERENCE.md` §Bbox Overlay UI.
 
-### ~~B3 — Camera preset không verify (P0)~~ ✅ FIXED (commit `58937d4`, defensive selectors — needs live E2E)
+### ~~B3 — Camera preset không verify (P0)~~ ⚠️ FIXED-BUT-REGRESSION (commit `58937d4`; Tier1 retest 2026-04-17 found verify never succeeds — see B12)
 - File: `flow/operations/camera.py` — rewrote `_click_preset` + added `_verify_preset_selected`.
 - Triệu chứng: 3 fuzzy-match strategies (`*:visible` + case-insensitive regex, partial `has-text`, `get_by_text(exact=False)`) có thể hit button sai (direction="Low" match "Lower"); không verify preset active sau click → submit với preset default, user không biết.
-- Fix: replace 3 strategies bằng exact-match ordered chain: (1) `[aria-label='<direction>']` exact (most locale-stable), (2) `[role='button']` filtered bằng anchored regex `^<direction>$` (no partial), (3) `page.get_by_text(direction, exact=True)` — Playwright exact-text (EN-only). After click + 0.5s settle, `_verify_preset_selected` chạy `page.evaluate` union check (aria-pressed="true" | aria-selected="true" | className matches `active|selected|pressed` | parent className matches `active|selected`) — bất kỳ tín hiệu nào fire thì return True. Nếu strategy click nhưng verify False → fall through next strategy. Hết 3 strategies mà chưa verify → log ERROR + return False; outer `camera_move` handler raise `RuntimeError("Failed to find camera preset")` thay vì silent-submit với default. Guard: `tests/test_camera.py` (5 cases: aria-label wins + verify, anchored regex rejects partial "Low"→"Lower", all strategies fail → False+ERROR, no active state → verify False+WARNING, Strategy 2 role=button wins when Strategy 1 misses). Selector reference: `docs/FLOW_UI_REFERENCE.md` §Camera Preset Selection & Active State — exact active-state signal (aria-pressed vs class keyword vs parent marker) chưa verified trên DOM live (defensive union cover patterns phổ biến, manual E2E §5.2 Test 4 là supervisor task).
+- Fix: replace 3 strategies bằng exact-match ordered chain: (1) `[aria-label='<direction>']` exact (most locale-stable), (2) `[role='button']` filtered bằng anchored regex `^<direction>$` (no partial), (3) `page.get_by_text(direction, exact=True)` — Playwright exact-text (EN-only). After click + 0.5s settle, `_verify_preset_selected` chạy `page.evaluate` union check (aria-pressed="true" | aria-selected="true" | className matches `active|selected|pressed` | parent className matches `active|selected`) — bất kỳ tín hiệu nào fire thì return True. Nếu strategy click nhưng verify False → fall through next strategy. Hết 3 strategies mà chưa verify → log ERROR + return False; outer `camera_move` handler raise `RuntimeError("Failed to find camera preset")` thay vì silent-submit với default. Guard: `tests/test_camera.py` (5 cases: aria-label wins + verify, anchored regex rejects partial "Low"→"Lower", all strategies fail → False+ERROR, no active state → verify False+WARNING, Strategy 2 role=button wins when Strategy 1 misses).
+- **Tier1 retest (2026-04-17) verdict: ❌ SELECTOR MISMATCH — REGRESSION.** All 15 presets (8 motion + 7 position) have zero `aria-label` → strategy #1 finds 0. No element on the page has explicit `role="button"` attribute (presets are `<BUTTON>` tags; Playwright's CSS `[role='button']` is strict-attr, misses implicit roles) → strategy #2 finds 0. Strategy #3 `get_by_text(exact=True)` works and clicks correctly (Flow accepts the preset — preview animates, submit arrow enables). BUT all 4 verify signals return false on the selected button: `aria-pressed`/`aria-selected` absent; className = `"sc-16c4830a-1 hxjMEo … byyZkY"` (pure styled-components hashes, no `active|selected|pressed` keyword); parent className = `"sc-2384ceab-7 jrdoRH"` (no keyword). `_verify_preset_selected` therefore returns False, strategy #3 falls through, all exhausted → `camera_move` raises `RuntimeError`. **Every camera-move job currently fails hard** where pre-`58937d4` code would have clicked-and-submitted. The actual semantic selection marker is `getComputedStyle(labelDivInsideButton).color` (selected = `rgb(48,48,48)`, unselected = `rgb(255,255,255)`) — not reachable via attribute selectors. Partial-match defense (anchored regex, `exact=True`) is still sound but not load-bearing (no "Lower" button exists in Flow's DOM). Followup: see B12 below. Live evidence: `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B3. Reference updated: `docs/FLOW_UI_REFERENCE.md` §Camera Preset Selection & Active State.
 
 ### B4 — Chains table không dùng (P2, defer)
 - File: `server/db/database.py:12-20`
@@ -1275,6 +1277,47 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Factory triggers when caller omits `created_at` / `updated_at` (e.g. `server/routes/jobs.py:_build_job`) → DeprecationWarning on Python 3.12+, potential AttributeError on 3.13+.
 - Fix (estimated 15m): replace with `default_factory=lambda: datetime.now(UTC)` (or shared `_now_utc` helper in `server/models/_utils.py`). Test: extend `tests/test_datetime_migration.py::test_no_utcnow_in_code` to also forbid `default_factory=datetime.utcnow`.
 - Queue position: deferred until after B3 (per WORKPLAN §8 — not blocking Phase A done-done).
+
+### B11 — Bbox drag targets wrong element + overlay is canvas-painted (P0)
+- Discovered during Tier1 DOM validation (`docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B2) on live L1 project `785d2255-…`.
+- File: `flow/operations/_base.py:236` (`draw_bbox_on_video`) — supersedes B2 fix commit `a165105`.
+- Two independent problems:
+  1. **Wrong target.** `document.querySelector('video')` returns a 105×60 card-strip thumbnail, not the main preview. The main preview is a `<canvas width=598 height=336>` CSS-sized ~479×269. All `elementFromPoint` samples inside the visible bbox return `<CANVAS>`. Drag currently lands on the thumbnail → never reaches the actual frame.
+  2. **Bbox overlay is canvas-painted, not DOM.** Flow renders the bbox rectangle onto the canvas 2D bitmap. The B2 verify union selector `svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]` returns 0 matches regardless of whether the drag succeeded. Verify step provides no real confidence.
+- Runtime effect: every `insert-object` / `remove-object` job silently falls back to Flow's default region, masked by "Bbox drawing failed or unverified — Flow may fall back to default region" warning (which is currently always emitted).
+- Fix direction (sketch — not a mandate):
+  - Target the canvas, not the video tag: `document.querySelectorAll('canvas')` → pick the largest visible one (main preview). Use its `getBoundingClientRect` for drag coordinates.
+  - Verify via pixel sampling: before-drag and after-drag `canvas.getContext('2d').getImageData(sampleRect)` inside the expected bbox — compare mean RGBA. Non-trivial delta ⇒ bbox painted. Threshold and sample-rect TBD in implementation.
+  - Alternative: intercept the network request Flow fires when a region is committed (Flow typically POSTs a masked region payload) — B11 implementer should capture one real request first to decide.
+- Queue position: **P0 — blocks insert/remove reliability.** Schedule after B3 resolution (B12) to avoid conflicting edits in `_base.py`.
+- Guard: existing `tests/test_bbox.py` will need new cases: (a) target is canvas not video, (b) pixel-sampling verify true-positive, (c) true-negative when drag misses.
+
+### B12 — Camera `_verify_preset_selected` uses wrong state signals → every camera job fails (P0, regression)
+- Discovered during Tier1 DOM validation (`docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B3) on live L1 project `785d2255-…`.
+- File: `flow/operations/camera.py:133` (`_click_preset` + `_verify_preset_selected`) — regression introduced by commit `58937d4`.
+- Live DOM reality vs code assumptions:
+  - Presets have **no `aria-label`** → strategy #1 finds 0.
+  - Presets are `<button>` tags with **no explicit `role="button"` attribute** (Playwright CSS `[role='button']` requires the attribute, it does not match implicit roles) → strategy #2 finds 0.
+  - Strategy #3 `get_by_text(exact=True)` finds + clicks the preset successfully (Flow accepts the click — preview animates, submit enables).
+  - But `_verify_preset_selected` then checks four signals that **all return false on the actual selected preset**: `aria-pressed` absent, `aria-selected` absent, button className = `sc-16c4830a-1 hxjMEo … byyZkY` (pure styled-components hashes — no `active|selected|pressed` keyword), parent className = `sc-2384ceab-7 jrdoRH` (no keyword).
+  - `_verify_preset_selected` → False → strategy #3 falls through → all exhausted → `_click_preset` returns False → `camera_move` raises `RuntimeError("Failed to find camera preset: {direction}")`.
+- Runtime effect: **every camera-move job currently fails hard.** Pre-`58937d4` code (no verify) would have clicked and submitted successfully with the same DOM.
+- The actual semantic selection marker is `getComputedStyle(labelDivInsideButton).color`:
+  - Selected: `rgb(48, 48, 48)` (dim — inverted because thumbnail is highlighted).
+  - Unselected: `rgb(255, 255, 255)` (bright).
+  - Styled-components token on the label DIV also differs (`jYmHac` selected vs `hkGUbO` unselected) but tokens may rotate per Flow release — color is more stable.
+- Fix direction (sketch — not a mandate):
+  - Keep 3-strategy click chain (partial-match defense still sound); drop the union verify and replace with: after click + settle, read `getComputedStyle(<label-div>).color` on the clicked button; accept if color matches dim-grey threshold (R+G+B < 150, say).
+  - Consider moving verify out of the strategy-loop: click once via whichever strategy succeeds, then verify once — current fall-through design won't help when the real signal is paint-based.
+  - Keep the exact-match anchoring (`^Low$`, `exact=True`) — partial-match hazard (e.g. "Low" vs hypothetical "Lower") is cheap insurance even though no such collision exists today.
+- Queue position: **P0 — blocks all camera-move jobs.** Fix before B11 (unblocks camera chain before investing in canvas pixel-sampling).
+- Guard: existing `tests/test_camera.py` needs rewrite: remove union-selector cases, add `getComputedStyle(...).color` verify cases (selected passes, unselected fails, strategy #3 wins when #1/#2 find 0 elements).
+
+### B13 — Docs: replace "Known unknowns" in FLOW_UI_REFERENCE with ground-truth after B11/B12 (P2)
+- Tier1 retest produced ground truth that obsoletes `docs/FLOW_UI_REFERENCE.md` §Bbox Overlay UI and §Camera Preset Selection & Active State "Known unknowns" paragraphs.
+- After B11 ships: document canvas element selection + pixel-sampling verify pattern in §Bbox Overlay UI.
+- After B12 ships: document `getComputedStyle(label).color` as the semantic state signal in §Camera Preset Selection & Active State; note that strategy #1 (`aria-label`) and #2 (CSS `[role='button']`) find 0 elements on the live DOM and exist only as defense layers.
+- Queue position: bundled with each respective code fix (not standalone).
 
 ---
 
