@@ -7,6 +7,11 @@ from typing import Optional
 from server.db.database import get_db
 from server.models.job import BBox, Job, JobStatus, JobUpdate
 
+# Job states that release the profile and stamp completed_at (B5 + B6).
+# Hoisted to module level so claim/update paths share a single source of truth.
+TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -139,16 +144,17 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
     if not fields:
         return await get_job(job_id)
 
-    # B5: stamp completed_at when the caller moves the job into a terminal
-    # state but didn't set the timestamp themselves. Explicit caller wins.
+    # Normalise incoming status (enum or str) once — reused by B5 stamp
+    # and B6 profile clear below.
     new_status = fields.get("status")
+    status_value: Optional[str] = None
     if new_status is not None:
         status_value = new_status.value if hasattr(new_status, "value") else new_status
-        if (
-            status_value in {"completed", "failed", "cancelled"}
-            and "completed_at" not in fields
-        ):
-            fields["completed_at"] = _now_iso()
+
+    # B5: stamp completed_at when the caller moves the job into a terminal
+    # state but didn't set the timestamp themselves. Explicit caller wins.
+    if status_value in TERMINAL_STATES and "completed_at" not in fields:
+        fields["completed_at"] = _now_iso()
 
     sets: list[str] = []
     params: list = []
@@ -176,6 +182,18 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
 
     async with get_db() as db:
         cursor = await db.execute(sql, params)
+
+        # B6: release the profile pointer when the job reaches a terminal
+        # state. Same connection as the jobs UPDATE so the two rows commit
+        # together — UI never sees a profile pinned to a completed job.
+        # No-op when no profile row references this job (e.g. worker using
+        # a profile that was never registered in the DB).
+        if status_value in TERMINAL_STATES:
+            await db.execute(
+                "UPDATE profiles SET current_job_id = NULL WHERE current_job_id = ?",
+                (job_id,),
+            )
+
         await db.commit()
         if cursor.rowcount == 0:
             return None
@@ -262,6 +280,16 @@ async def claim_next_job(
                     """,
                     (worker_id, now, bound_profile, now, job_dict["id"]),
                 )
+                # B6: mirror the claim onto the profile row in the same
+                # transaction so the dashboard sees a consistent view.
+                await db.execute(
+                    """
+                    UPDATE profiles
+                    SET current_job_id = ?, worker_id = ?, last_used_at = ?
+                    WHERE name = ?
+                    """,
+                    (job_dict["id"], worker_id, now, bound_profile),
+                )
                 await db.commit()
                 return await get_job(job_dict["id"])
 
@@ -296,6 +324,16 @@ async def claim_next_job(
                     WHERE id = ?
                     """,
                     (worker_id, now, assigned_profile, now, job_dict["id"]),
+                )
+                # B6: mirror the claim onto the profile row so the dashboard
+                # can show which profile is running which job.
+                await db.execute(
+                    """
+                    UPDATE profiles
+                    SET current_job_id = ?, worker_id = ?, last_used_at = ?
+                    WHERE name = ?
+                    """,
+                    (job_dict["id"], worker_id, now, assigned_profile),
                 )
                 await db.commit()
                 return await get_job(job_dict["id"])
