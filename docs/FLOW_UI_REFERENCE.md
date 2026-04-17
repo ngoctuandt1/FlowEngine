@@ -173,6 +173,84 @@ Clicking "Camera" replaces composer with visual preset picker.
 - Submit: ⓘ info + → arrow button
 - Camera submit DOM: `generic "See how many credits this generation will use"` + `generic "Create"`
 
+### Camera Preset Selection & Active State
+
+The engine clicks a preset by name (`direction: str`, EN label — see `flow/operations/camera.py::CAMERA_MOTION_PRESETS` / `CAMERA_POSITION_PRESETS`) and must verify it became **active** before submit, otherwise the submit will run with the default preset and the user's direction is silently ignored.
+
+#### Entry point + tab
+- Camera button: `button "Camera"` (or icon fallback `button:has(span:has-text('videocam'))`).
+- After click, composer is replaced by a 2-tab preset picker.
+- Tab switch: `[role='tab']:has-text('Camera motion')` or `'Camera position')`.
+
+#### Preset element (from ARIA tree inspection)
+- Rendered as `generic "Dolly in"` (ARIA role `generic` with accessible name = direction label). In DOM this is typically a `<button>` or `<div role="button">` with an `aria-label` matching the EN direction + an animated thumbnail child.
+- EN profile: `aria-label` and visible text both = EN direction (`"Dolly in"`, `"Center"`, …).
+- VI profile: visible text is translated ("Di chuyển ra trước"); **`aria-label` is assumed to retain the EN label** (consistent with how Radix/Material components usually set stable aria-labels), but this is **not yet confirmed on live DOM** (see "Known unknowns" below).
+
+#### Click selector strategy (locale-independent first, text-match last)
+Implemented in `_click_preset` (`flow/operations/camera.py`) — three strategies, ordered most-reliable → most-fragile. All three require `_verify_preset_selected` to pass before returning True.
+
+1. **`[aria-label='<direction>']`** — exact attribute match. Most reliable because aria-label is typically set from a stable i18n key, not the display string. Works across locales if Flow follows common Radix/Material conventions.
+2. **`[role='button']` filtered by exact-text regex** `^<direction>$` (anchored). Prevents partial match (e.g. direction="Low" no longer matches button "Lower" / "Lowering").
+3. **`page.get_by_text(direction, exact=True)`** — Playwright exact-text match (case-sensitive, whole node). Last resort because it is locale-dependent (only works on EN profile). Still safer than the previous `*:visible + regex` which ignored case and matched anywhere in the subtree.
+
+#### Active state signal (post-click)
+
+After clicking a preset, Flow highlights the selected thumbnail. Exact indicator not confirmed on live DOM — the verify helper checks the union of common SPA conventions:
+
+| Signal | Selector / attribute |
+|---|---|
+| Pressed button (Material / Radix) | `aria-pressed="true"` on the preset element |
+| Selected option (tablist / listbox) | `aria-selected="true"` |
+| Class-based (CSS Modules / Tailwind) | `className` matches `/active\|selected\|pressed/i` |
+| Parent wrapper marker | Parent `className` matches `/active\|selected/i` |
+
+**Verify JS snippet** (used by `_verify_preset_selected`):
+```javascript
+(direction) => {
+    const els = document.querySelectorAll('[aria-label], [role="button"], button');
+    for (const el of els) {
+        const text = el.textContent?.trim() || '';
+        const label = el.getAttribute('aria-label') || '';
+        if (text === direction || label === direction) {
+            if (el.getAttribute('aria-pressed') === 'true') return true;
+            if (el.getAttribute('aria-selected') === 'true') return true;
+            const cls = el.className || '';
+            if (/active|selected|pressed/i.test(cls)) return true;
+            const parent = el.parentElement;
+            if (parent && /active|selected/i.test(parent.className || '')) return true;
+        }
+    }
+    return false;
+}
+```
+
+Returns `true` if ANY signal matches. Returns `false` if no match — caller treats as unverified and either falls through to the next strategy or returns False (caller logs ERROR and the operation raises `"Failed to find camera preset"` in the outer `camera_move` handler).
+
+#### Pitfalls
+
+- **Partial-text matching** — the prior `*:visible` + `re.compile(re.escape(direction), re.IGNORECASE)` regex matched ANY subtree containing the direction as a substring. For direction="Low" this would match buttons "Lower", "Slow motion", "Follow", as well as footer text like "Follow on Low Priority". The current strategies all require full-text equivalence (aria-label exact OR `^<direction>$` anchored regex OR Playwright `exact=True`). No substring match anywhere in the selector chain.
+- **Case sensitivity** — all three strategies are now case-sensitive. Flow preset labels are Title Case; callers must pass the exact canonical label (see `ALL_PRESETS` constant).
+- **Click-without-verify** — previously a successful click returned True immediately. Now strategies 1 and 2 can "click something that matched my selector but isn't actually a preset button" (e.g. if aria-label collides with another UI element) — the verify step catches this and the function falls through to the next strategy.
+- **Dark-theme class names** — Flow's class names may be hashed (`_abc123_active`). The class keyword regex (`/active|selected|pressed/i`) matches even hashed names as long as the keyword appears anywhere in the className string. If Flow uses purely hashed names (no keyword), verification fails; see Known unknowns.
+
+#### Locale notes (EN vs VI)
+
+- Preset visible text is translated (EN "Dolly in" ↔ VI "Di chuyển ra trước"). Engine callers pass the EN canonical label.
+- Strategy 1 (aria-label) is **expected** to work on both locales (aria-label stable); Strategy 2 is text-based but uses the direction string as-is — works on EN, fails on VI unless aria-label also covers (via Strategy 1 fallback). Strategy 3 (`get_by_text`) works only on EN.
+- Recommendation for L2+ camera jobs: ensure profile locale is EN (matches `flow/navigation.py::detect_locale` expectation). A VI-only profile would require a direction map (out of scope for B3).
+
+#### Known unknowns (⚠️ needs live E2E validation)
+
+Phase-1 research for B3 was docs-based (no live Flow session available in this worktree). The following items are **assumed** from common SPA patterns and matching B2's defensive approach — they should be confirmed in manual E2E:
+
+1. Whether Flow actually sets `aria-label="<direction>"` on preset buttons (vs a different attribute like `data-preset-name`).
+2. Which active-state signal Flow uses — `aria-pressed`, `aria-selected`, a keyword class, or a parent marker. The verify helper checks all four; if none match, the helper returns False even on a successful click.
+3. Whether VI profile preserves EN aria-labels (i18n split between visible text and aria).
+4. Whether the preset element is truly `<button>` / `role="button"` or a custom element. Strategy 2's `[role='button']` selector would miss a custom element without explicit role.
+
+Mitigation: the helper **fails safely** — returns False + log WARNING/ERROR, caller `camera_move` raises `RuntimeError("Failed to find camera preset: {direction}")` which marks the job failed instead of silent-submit with default. Live E2E (see WORKPLAN §5.2 Test 4) is the final confirmation step.
+
 ## Model Selector (Dropdown)
 
 Appears in **Extend** mode and **project-level** composer only.

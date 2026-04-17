@@ -674,15 +674,14 @@ OUTPUT: same shape
 4. Determine tab from direction:
    - Motion direction → click tab "Camera motion"
    - Position direction → click tab "Camera position"
-5. Click preset: page.locator(f'[aria-label="{direction}"]') or text match
-6. ⚠️ HIỆN TẠI KHÔNG VERIFY preset active state (B3)
-7. Submit (KHÁC các op khác — camera dùng):
+5. `_click_preset(page, direction)` — 3 exact-match strategies (aria-label → role=button+anchored-regex → get_by_text exact=True). Each strategy clicks then `_verify_preset_selected` checks active-state signal (aria-pressed / aria-selected / class keyword / parent keyword). Fall through to next strategy if clicked-but-unverified; return False + log ERROR after all miss (caller raises RuntimeError — NOT silent-submit with default). See `docs/FLOW_UI_REFERENCE.md` §Camera Preset Selection & Active State.
+6. Submit (KHÁC các op khác — camera dùng):
    - generic "See how many credits this generation will use" + generic "Create"
    - KHÔNG phải arrow_forward
-8. wait_for_completion(timeout=300)
-9. Extract media_id — SAME
-10. download_video
-11. return finalize_operation
+7. wait_for_completion(timeout=300)
+8. Extract media_id — SAME
+9. download_video
+10. return finalize_operation
 ```
 
 ### Lưu ý riêng của Camera
@@ -1237,10 +1236,10 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Triệu chứng: `_draw_bbox()` trong insert/remove drag chuột trên video canvas nhưng không validate input range, không clamp overflow, không verify overlay rect xuất hiện → bbox nằm ngoài canvas hoặc drag miss sẽ silent-fallback về vùng default của Flow, user không biết.
 - Fix: extract shared helper `draw_bbox_on_video(page, bbox) -> bool` vào `flow/operations/_base.py`. Helper: (1) đọc video `getBoundingClientRect` — reject nếu `width/height < 50`; (2) validate `x/y/w/h ∈ [0,1]` — out-of-range → log ERROR + return False; (3) clamp overflow (`x+w>1 → w = 1-x`); (4) mouse drag với 5 interpolation steps; (5) verify overlay via union selector `svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]` (bounding rect ≥ 20×20, display/visibility visible). Returns False → caller `insert.py`/`remove.py` log WARNING và continue (Flow tolerates missing bbox). Guard: `tests/test_bbox.py` (5 cases: out-of-range reject, overflow clamp, missing video, success+overlay, no-overlay warning). Selector reference: `docs/FLOW_UI_REFERENCE.md` §Bbox Overlay UI — exact overlay class name chưa verified trên DOM live (defensive union selector cover patterns phổ biến, manual E2E là supervisor task).
 
-### B3 — Camera preset không verify (P0)
-- File: `flow/operations/camera.py:108`
-- Triệu chứng: click trật preset → submit với default
-- Fix: sau click, check preset có active class (thường `aria-pressed="true"` hoặc border highlight)
+### ~~B3 — Camera preset không verify (P0)~~ ✅ FIXED (commit `<this-commit>`, defensive selectors — needs live E2E)
+- File: `flow/operations/camera.py` — rewrote `_click_preset` + added `_verify_preset_selected`.
+- Triệu chứng: 3 fuzzy-match strategies (`*:visible` + case-insensitive regex, partial `has-text`, `get_by_text(exact=False)`) có thể hit button sai (direction="Low" match "Lower"); không verify preset active sau click → submit với preset default, user không biết.
+- Fix: replace 3 strategies bằng exact-match ordered chain: (1) `[aria-label='<direction>']` exact (most locale-stable), (2) `[role='button']` filtered bằng anchored regex `^<direction>$` (no partial), (3) `page.get_by_text(direction, exact=True)` — Playwright exact-text (EN-only). After click + 0.5s settle, `_verify_preset_selected` chạy `page.evaluate` union check (aria-pressed="true" | aria-selected="true" | className matches `active|selected|pressed` | parent className matches `active|selected`) — bất kỳ tín hiệu nào fire thì return True. Nếu strategy click nhưng verify False → fall through next strategy. Hết 3 strategies mà chưa verify → log ERROR + return False; outer `camera_move` handler raise `RuntimeError("Failed to find camera preset")` thay vì silent-submit với default. Guard: `tests/test_camera.py` (5 cases: aria-label wins + verify, anchored regex rejects partial "Low"→"Lower", all strategies fail → False+ERROR, no active state → verify False+WARNING, Strategy 2 role=button wins when Strategy 1 misses). Selector reference: `docs/FLOW_UI_REFERENCE.md` §Camera Preset Selection & Active State — exact active-state signal (aria-pressed vs class keyword vs parent marker) chưa verified trên DOM live (defensive union cover patterns phổ biến, manual E2E §5.2 Test 4 là supervisor task).
 
 ### B4 — Chains table không dùng (P2, defer)
 - File: `server/db/database.py:12-20`

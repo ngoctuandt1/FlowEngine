@@ -131,53 +131,102 @@ async def camera_move(
 
 
 async def _click_preset(page, direction: str) -> bool:
-    """Click a camera preset by name.
+    """Click a camera preset by name and verify it becomes active.
 
-    Presets are shown as generic elements (thumbnails with text labels).
-    Try multiple selector strategies.
+    Three strategies ordered most-reliable → most-fragile. Each strategy
+    clicks + calls `_verify_preset_selected` before returning True.
+    If a strategy clicks "something" that matched the selector but is not
+    the real preset button, the verify step rejects it and the function
+    falls through to the next strategy. On full exhaustion, logs ERROR
+    and returns False (caller raises RuntimeError in `camera_move`).
+
+    Partial-text matching is explicitly avoided — direction="Low" must
+    NOT match button "Lower". See `docs/FLOW_UI_REFERENCE.md`
+    §Camera Preset Selection & Active State for selector rationale.
     """
-    # Strategy 1: generic element with exact text
-    selectors = [
-        f"[role='button']:has-text('{direction}')",
-        f"button:has-text('{direction}')",
-        # generic elements (Google uses custom elements)
-        f"*:has-text('{direction}'):not(body):not(html):not(div)",
-    ]
-
-    for sel in selectors:
-        try:
-            el = page.locator(sel).first
-            if await el.is_visible(timeout=2000):
-                await el.click(timeout=3000)
-                logger.info("Clicked camera preset: %s via %s", direction, sel)
-                await asyncio.sleep(0.5)
+    # Strategy 1: aria-label exact match (most reliable; locale-stable)
+    try:
+        el = page.locator(f"[aria-label='{direction}']").first
+        if await el.is_visible(timeout=2000):
+            await el.click(timeout=3000)
+            logger.info("Clicked preset via aria-label: %s", direction)
+            await asyncio.sleep(0.5)
+            if await _verify_preset_selected(page, direction):
                 return True
-        except Exception:
-            continue
+            logger.debug("Strategy 1 clicked but not verified; falling through")
+    except Exception as e:
+        logger.debug("Strategy 1 (aria-label) failed for %s: %s", direction, e)
 
-    # Strategy 2: Use getByText for more flexible matching
+    # Strategy 2: role=button filtered by anchored regex (exact-text match)
+    # Using `^...$` anchors prevents partial match (e.g. "Low" → "Lower").
     try:
-        el = page.get_by_text(direction, exact=False).first
+        exact_pattern = re.compile(f"^{re.escape(direction)}$")
+        el = page.locator("[role='button']").filter(has_text=exact_pattern).first
         if await el.is_visible(timeout=2000):
             await el.click(timeout=3000)
-            logger.info("Clicked camera preset via getByText: %s", direction)
+            logger.info("Clicked preset via role=button exact: %s", direction)
             await asyncio.sleep(0.5)
-            return True
-    except Exception:
-        pass
+            if await _verify_preset_selected(page, direction):
+                return True
+            logger.debug("Strategy 2 clicked but not verified; falling through")
+    except Exception as e:
+        logger.debug("Strategy 2 (role=button) failed for %s: %s", direction, e)
 
-    # Strategy 3: Case-insensitive search in all visible text
+    # Strategy 3: Playwright get_by_text with exact=True (NOT partial)
     try:
-        el = page.locator("*:visible").filter(
-            has_text=re.compile(re.escape(direction), re.IGNORECASE)
-        ).last  # last = most nested/specific element
+        el = page.get_by_text(direction, exact=True).first
         if await el.is_visible(timeout=2000):
             await el.click(timeout=3000)
-            logger.info("Clicked camera preset via regex: %s", direction)
+            logger.info("Clicked preset via get_by_text(exact=True): %s", direction)
             await asyncio.sleep(0.5)
-            return True
-    except Exception:
-        pass
+            if await _verify_preset_selected(page, direction):
+                return True
+            logger.debug("Strategy 3 clicked but not verified; falling through")
+    except Exception as e:
+        logger.debug("Strategy 3 (get_by_text) failed for %s: %s", direction, e)
 
-    logger.error("Could not find camera preset: %s", direction)
+    logger.error("Could not click+verify camera preset: %s", direction)
     return False
+
+
+async def _verify_preset_selected(page, direction: str) -> bool:
+    """Verify the named preset is in an active/selected state after click.
+
+    Checks union of common SPA conventions via a single `page.evaluate`:
+    - `aria-pressed="true"` (Material / Radix toggle)
+    - `aria-selected="true"` (tablist / listbox)
+    - class matches `active|selected|pressed` (case-insensitive)
+    - parent class matches `active|selected`
+
+    Returns True if any signal fires, False otherwise. Returns False
+    (not raises) on `page.evaluate` failure — caller treats as unverified
+    and can try the next strategy.
+    """
+    try:
+        is_selected = await page.evaluate(
+            """(direction) => {
+                const els = document.querySelectorAll('[aria-label], [role="button"], button');
+                for (const el of els) {
+                    const text = el.textContent?.trim() || '';
+                    const label = el.getAttribute('aria-label') || '';
+                    if (text === direction || label === direction) {
+                        if (el.getAttribute('aria-pressed') === 'true') return true;
+                        if (el.getAttribute('aria-selected') === 'true') return true;
+                        const cls = el.className || '';
+                        if (/active|selected|pressed/i.test(cls)) return true;
+                        const parent = el.parentElement;
+                        if (parent && /active|selected/i.test(parent.className || '')) return true;
+                    }
+                }
+                return false;
+            }""",
+            direction,
+        )
+        if is_selected:
+            logger.info("Preset verified selected: %s", direction)
+            return True
+        logger.warning("Preset clicked but not verified active: %s", direction)
+        return False
+    except Exception as e:
+        logger.warning("Preset verify failed for %s: %s", direction, e)
+        return False
