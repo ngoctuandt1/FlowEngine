@@ -231,7 +231,6 @@ async def dispatch_job(
     job_type: str = job["type"]
     profile: str = job.get("profile", "")
     project_url: str = job.get("project_url") or ""
-    job_level: int = job.get("job_level", 1)
 
     handler = HANDLER_MAP.get(job_type)
     if handler is None:
@@ -245,8 +244,9 @@ async def dispatch_job(
     if profile:
         profile_manager.mark_busy(profile, job_id)
 
-    # Level-2+ jobs operate on an existing project -> acquire lock
-    needs_lock = job_level >= 2 and project_url
+    # Any job pointing at an existing project_url needs the lock. Level-1 jobs
+    # that create a new project have no project_url yet and skip the lock.
+    needs_lock = bool(project_url)
     if needs_lock:
         if not project_lock.acquire(project_url, job_id):
             if profile:

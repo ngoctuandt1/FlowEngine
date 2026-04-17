@@ -252,14 +252,26 @@ async def claim_next_job(
                 return await get_job(job_dict["id"])
 
             # ----- Priority 2: Level-1 jobs (any available profile) -----
+            # Same project-URL serialisation as Level-2+: if this Level-1 job
+            # targets an existing project_url, skip it while another job is
+            # already active on that project.
             cursor = await db.execute(
                 f"""
                 SELECT *
-                FROM jobs
-                WHERE status = 'pending'
-                  AND job_level = 1
-                  AND (profile IS NULL OR profile IN ({placeholders}))
-                ORDER BY created_at ASC
+                FROM jobs j
+                WHERE j.status = 'pending'
+                  AND j.job_level = 1
+                  AND (j.profile IS NULL OR j.profile IN ({placeholders}))
+                  AND (
+                      j.project_url IS NULL
+                      OR NOT EXISTS (
+                          SELECT 1 FROM jobs active
+                          WHERE active.project_url = j.project_url
+                            AND active.id != j.id
+                            AND active.status IN ('claimed', 'running')
+                      )
+                  )
+                ORDER BY j.created_at ASC
                 LIMIT 1
                 """,
                 available_profiles,
