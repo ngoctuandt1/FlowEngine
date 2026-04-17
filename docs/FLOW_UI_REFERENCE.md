@@ -205,6 +205,140 @@ menu
   generic "Generating will use" → link "5 credits"
 ```
 
+## Prompt Input (Composer editor)
+
+> Verified 2026-04-17 on EN profile — Slate.js editor. See B1a session report §Bonus.
+
+### Primary selector
+
+```
+[data-slate-editor="true"][contenteditable="true"]
+```
+
+On a fresh T2V project page, there is **exactly one** Slate editor in the viewport (composer at bottom). Extend/Insert modes have their own editor with the same selector but different placeholder text.
+
+### DOM attributes
+
+| Attr | Value |
+|---|---|
+| `role` | `"textbox"` |
+| `contenteditable` | `"true"` |
+| `data-slate-editor` | `"true"` |
+| `aria-multiline` | `"true"` |
+| `placeholder` | — (NOT a placeholder attribute) |
+| `aria-label` / `aria-placeholder` | — (NONE) |
+
+### Editor content structure
+
+When user types `"hello world"` the inner DOM becomes:
+
+```
+<p data-slate-node="element">
+  <span data-slate-node="text">
+    <span data-slate-leaf="true">
+      <span data-slate-string="true">hello world</span>
+    </span>
+  </span>
+</p>
+```
+
+One `<p data-slate-node="element">` per paragraph (Shift+Enter creates new paragraph).
+
+### Empty-state detection (canonical)
+
+**Do NOT rely on `innerText`** — when the editor is empty, `innerText` is `"What do you want to create?\n﻿\n"` (placeholder label + zero-width BOM + newlines). This is the PLACEHOLDER rendered inline, not real content.
+
+**Canonical empty check:**
+```python
+empty = await page.locator('[data-slate-string="true"]').count() == 0
+# Equivalent: await page.locator('[data-slate-placeholder="true"]').count() > 0
+```
+
+**Reading real prompt text:**
+```python
+nodes = await page.locator('[data-slate-string="true"]').all()
+prompt_text = "\n".join([await n.text_content() for n in nodes])
+```
+
+### Placeholder text by mode
+
+| Mode | EN placeholder | VI placeholder |
+|---|---|---|
+| Project-level T2V | "What do you want to create?" | "Bạn muốn tạo gì?" |
+| Extend | "What happens next?" | "Tiếp theo là gì?" |
+| Insert | "Describe what you'd like to add, optional: click-and-drag above to specify location" | (Vietnamese equivalent) |
+| Remove | "Click-and-drag to fully select what you want to remove from the video." | (Vietnamese equivalent) |
+
+The placeholder lives in `[data-slate-placeholder="true"]` child node of the editor. DO NOT use it to identify the mode — use the active toolbar button (Extend/Insert/Remove) or composer-level markers.
+
+### Typing interaction
+
+**Golden path (works for all Slate editors):**
+```python
+editor = page.locator('[data-slate-editor="true"][contenteditable="true"]').first
+await editor.click()              # focus editor
+await page.keyboard.press("Control+a")  # select-all (clears placeholder)
+await page.keyboard.press("Delete")     # delete selection → truly empty
+await page.keyboard.type(prompt, delay=15)  # type character-by-character
+```
+
+- **`page.fill()` does NOT work reliably** — Slate needs real key events to trigger its controller; `fill()` sets innerText but the model doesn't update.
+- **`page.type()` / `keyboard.type()` works** — per-character input events trigger Slate's onChange.
+- `delay=15` (15ms/char) avoids races on fast machines.
+
+### Critical gotchas
+
+1. **Enter submits, does NOT insert newline.** Plain Enter on the composer triggers the same handler as the ➜ submit button (starts generation). **Never include raw `\n` in prompts.** If a multi-line prompt is required, use **Shift+Enter** (sends `Shift` modifier + Enter to insert paragraph break).
+
+   Observed regression: `keyboard.type("line1\nline2")` caused Enter handling — line1 vanished (submitted/cleared), line2 remained as fresh text.
+
+2. **Ctrl+A selects the Slate document**, including the placeholder's zero-width BOM. Pair with `Delete` to get a truly empty editor.
+
+3. **Placeholder inside `innerText`** — the zero-width BOM `﻿` (U+FEFF) appears in `innerText` when empty. Strip/ignore it. Better: use `[data-slate-string="true"]` node presence.
+
+4. **Fresh Slate uses `data-slate-zero-width`** attribute variants for empty blocks — do not confuse with content.
+
+### Auxiliary composer buttons (around the editor)
+
+All sit within the composer container (bottom ~30% of viewport).
+
+| Button | Icon text | aria-label / Selector pattern | When visible | Purpose |
+|---|---|---|---|---|
+| Swap first/last frame | `swap_horiz` | `button` with innerText starting `"swap_horiz"` | Always in T2V | Swap Start/End frame inputs |
+| Clear prompt | `close` | `button` with innerText `"close\nClear prompt"` | Only when editor NOT empty | Click to clear editor (faster than Ctrl+A+Delete) |
+| Submit / Create | `arrow_forward` | `button` with innerText `"arrow_forward\nCreate"` | Always; visually disabled when empty | Submit job |
+| Start frame upload | "Start" | `generic "Start"` | Always in T2V | Drop an image to use as first frame |
+| End frame upload | "End" | `generic "End"` | Always in T2V | Drop an image to use as last frame |
+
+### Engine-ready prompt-entry helper
+
+```python
+async def _type_prompt(page, prompt: str, timeout_sec: float = 15.0) -> None:
+    """Focus composer, clear any existing text, type prompt. Raises RuntimeError on failure."""
+    # Guard: strip raw newlines — Enter submits, causing silent drop of lines
+    if "\n" in prompt:
+        logger.warning("Prompt contains newlines — replacing with spaces to avoid Enter=submit")
+        prompt = prompt.replace("\n", " ")
+
+    editor = page.locator('[data-slate-editor="true"][contenteditable="true"]').first
+    await editor.wait_for(state="visible", timeout=int(timeout_sec * 1000))
+    await editor.click()
+    await asyncio.sleep(0.2)
+
+    # Clear any placeholder-state zero-width or leftover text
+    await page.keyboard.press("Control+a")
+    await page.keyboard.press("Delete")
+    await asyncio.sleep(0.1)
+
+    await page.keyboard.type(prompt, delay=15)
+
+    # Verify: at least one slate-string node should now exist
+    count = await page.locator('[data-slate-string="true"]').count()
+    if count == 0:
+        raise RuntimeError(f"Prompt did not land in editor (empty after type) — len={len(prompt)}")
+    logger.info("Prompt typed OK (%d slate-string nodes)", count)
+```
+
 ## Model Chip Panel (Composer — project-level T2V)
 
 > Verified 2026-04-17 on EN profile. See B1a session report.
