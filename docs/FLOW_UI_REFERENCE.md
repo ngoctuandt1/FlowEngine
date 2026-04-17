@@ -294,9 +294,17 @@ await page.keyboard.type(prompt, delay=15)  # type character-by-character
 
 2. **Ctrl+A selects the Slate document**, including the placeholder's zero-width BOM. Pair with `Delete` to get a truly empty editor.
 
-3. **Placeholder inside `innerText`** — the zero-width BOM `﻿` (U+FEFF) appears in `innerText` when empty. Strip/ignore it. Better: use `[data-slate-string="true"]` node presence.
+3. **Ctrl+A + Delete MUST be two separate `press()` calls.** Playwright `page.keyboard.press("Control+a")` followed by `page.keyboard.press("Delete")` works (verified). If a harness ever batches the two keys into a single call, the `Ctrl` modifier may not persist — observed failure mode: only the character at cursor position gets deleted (1 char loss, placeholder NOT restored, slate still reports non-empty).
 
-4. **Fresh Slate uses `data-slate-zero-width`** attribute variants for empty blocks — do not confuse with content.
+   Quick self-check after clear: `await page.locator('[data-slate-string="true"]').count() == 0`. If non-zero, re-press.
+
+4. **Fastest clean-clear is the in-UI button.** When the editor is non-empty, a `button` with innerText `"close\nClear prompt"` (a 32×32 icon) appears next to the composer. Clicking it resets the editor atomically (no keyboard state to manage). Selector: `button:has-text("Clear prompt")`. Safe fallback when the keyboard-clear approach fails.
+
+5. **Placeholder inside `innerText`** — the zero-width BOM `﻿` (U+FEFF) appears in `innerText` when empty. Strip/ignore it. Better: use `[data-slate-string="true"]` node presence.
+
+6. **Fresh Slate uses `data-slate-zero-width`** attribute variants for empty blocks — do not confuse with content.
+
+7. **Character fidelity verified for single-line typing.** `keyboard.type("hello world flow test prompt", delay=15)` → 28 chars in, 28 chars out, verified via `[data-slate-string="true"]` nodeText. No IME / autocomplete drops observed on EN profile.
 
 ### Auxiliary composer buttons (around the editor)
 
@@ -325,10 +333,19 @@ async def _type_prompt(page, prompt: str, timeout_sec: float = 15.0) -> None:
     await editor.click()
     await asyncio.sleep(0.2)
 
-    # Clear any placeholder-state zero-width or leftover text
+    # Clear any placeholder-state zero-width or leftover text.
+    # Two SEPARATE press() calls — some harnesses drop the Ctrl modifier when
+    # batching "Ctrl+a" and "Delete" together, yielding a 1-char deletion bug.
     await page.keyboard.press("Control+a")
     await page.keyboard.press("Delete")
     await asyncio.sleep(0.1)
+
+    # Self-check: if clear failed, fall back to the in-UI "Clear prompt" button.
+    if await page.locator('[data-slate-string="true"]').count() > 0:
+        clear_btn = page.locator('button:has-text("Clear prompt")').first
+        if await clear_btn.is_visible(timeout=500):
+            await clear_btn.click()
+            await asyncio.sleep(0.1)
 
     await page.keyboard.type(prompt, delay=15)
 
