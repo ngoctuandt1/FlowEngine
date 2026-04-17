@@ -12,8 +12,70 @@ from flow.login import is_login_page, handle_login_redirect
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.download import download_video
+from flow.media_id import media_id_from_url, normalize_media_id, looks_like_media_id
 
 logger = logging.getLogger(__name__)
+
+
+async def extract_final_media_id(client, job: dict | None = None) -> str | None:
+    """Extract the media_id produced by an operation.
+
+    Tries three sources, in order of reliability:
+      1. Current page URL ``/edit/{media_uuid}``
+      2. ``client._media_id_events`` captured during the wait phase
+      3. DOM ``<video>`` element ``src`` query param ``?name={media_id}``
+      4. The job's original ``media_id`` (for Level-2 ops that edit in place)
+
+    Returns a normalized media_id string, or ``None`` if nothing was found.
+    """
+    page = getattr(client, "page", None)
+
+    # 1. URL parse
+    try:
+        current_url = page.url if page else ""
+    except Exception:
+        current_url = ""
+    mid = extract_media_id(current_url)
+    if mid:
+        return mid
+
+    # 2. Network capture buffer
+    events = getattr(client, "_media_id_events", []) or []
+    # Walk newest first — most recent capture is most likely to be the new video
+    for evt in reversed(events):
+        n = normalize_media_id(evt.get("mid") or evt.get("media_id") or "")
+        if n and looks_like_media_id(n):
+            return n
+
+    # 3. DOM: <video src="...?name={media_id}">
+    if page is not None:
+        try:
+            video_src = await page.evaluate("""() => {
+                const vids = document.querySelectorAll('video');
+                for (const v of vids) {
+                    const src = v.currentSrc || v.src || '';
+                    if (src) return src;
+                    const source = v.querySelector('source');
+                    if (source && source.src) return source.src;
+                }
+                return '';
+            }""")
+        except Exception:
+            video_src = ""
+        if video_src:
+            dom_mid = media_id_from_url(video_src)
+            if dom_mid:
+                n = normalize_media_id(dom_mid)
+                if n and looks_like_media_id(n):
+                    return n
+
+    # 4. Fallback: job's original media_id (in-place edits preserve the id)
+    if job is not None:
+        original = job.get("media_id")
+        if original:
+            return original
+
+    return None
 
 
 async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
@@ -248,14 +310,17 @@ async def finalize_operation(
 
     logger.info("%s complete!", job_type)
 
-    # Extract metadata from current URL
+    # Extract metadata: URL → captured media_id events → DOM <video> src → original
     current_url = page.url
-    media_id = extract_media_id(current_url)
+    media_id = await extract_final_media_id(client, job)
     if not media_id and result.get("media_ids"):
         media_id = result["media_ids"][0]
-    # Fallback to job's original media_id (operations update in-place)
+
     if not media_id:
-        media_id = job.get("media_id")
+        logger.error(
+            "%s: failed to extract media_id after completion (url=%s)",
+            job_type, current_url[:120],
+        )
 
     # Build edit_url
     edit_url_val = None

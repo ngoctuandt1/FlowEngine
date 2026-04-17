@@ -9,6 +9,7 @@ from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.download import download_video
+from flow.operations._base import extract_final_media_id
 
 logger = logging.getLogger(__name__)
 
@@ -219,9 +220,14 @@ async def text_to_video(
 
     # === Step 8: Extract metadata ===
     current_url = page.url
-    media_id = extract_media_id(current_url)
+    media_id = await extract_final_media_id(client, job=None)
     if not media_id and result.get("media_ids"):
         media_id = result["media_ids"][0]
+    if not media_id:
+        logger.error(
+            "text-to-video: failed to extract media_id after completion (url=%s)",
+            current_url[:120],
+        )
 
     # Build edit_url
     edit_url_val = None
