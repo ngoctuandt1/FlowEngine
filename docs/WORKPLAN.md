@@ -1409,7 +1409,7 @@ Phase A coi là hoàn thành khi ALL items:
 > Format:
 > - **[B-discovery-N]** Short description — found during fixing Bx — file:line — severity — deferred to Phase B? / fix inline?
 
-(Empty — populate khi bắt đầu fix)
+- **[B10]** Pydantic `default_factory=datetime.utcnow` residual — found during B8 (commit `573cffd`) — `server/models/job.py:96-97`, `server/models/profile.py:25` — P2 severity (deprecation only, not correctness) — **deferred to post-B3** (15m estimate). Executor chose NOT to extend B8 scope per §1.3 "không tiện thể fix luôn". Full rationale in `docs/session-reports/2026-04-17_B8_datetime-utcnow.md §7 Q1`. See SPEC.md §D.4 B10 for fix plan.
 
 ---
 

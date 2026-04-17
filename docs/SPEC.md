@@ -1265,14 +1265,21 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Files: `server/config.py:19`, `worker/main.py:29`
 - Fix: thống nhất 8080 everywhere
 
-### ~~B8 — datetime.utcnow deprecated (P1)~~ ✅ FIXED (commit `<this-commit>`)
+### ~~B8 — datetime.utcnow deprecated (P1)~~ ✅ FIXED (commit `573cffd`)
 - Triệu chứng: worker_err.log DeprecationWarning
 - Fix: replaced 7 `datetime.utcnow()` call-sites in `worker/main.py`, `server/db/job_store.py`, `server/db/profile_store.py`, `server/routes/worker.py` with `datetime.now(UTC)` (tz-aware). Guard: `tests/test_datetime_migration.py` (source scan + round-trip).
-- Out of scope (deferred): 3 `default_factory=datetime.utcnow` references in `server/models/job.py:96-97` and `server/models/profile.py:25` still emit DeprecationWarning if default is triggered — flagged in session report, candidate for follow-up.
+- Out of scope (deferred → B10): 3 `default_factory=datetime.utcnow` references in `server/models/job.py:96-97` and `server/models/profile.py:25` still emit DeprecationWarning if default is triggered.
 
-### B9 — Zero test coverage (P0)
-- `tests/` rỗng
-- Fix: viết 6 test files theo §A.4, target ≥ 70% coverage server+worker
+### ~~B9 — Zero test coverage (P0)~~ ✅ FIXED (commit `adca116`)
+- `tests/` rỗng → no TDD infra
+- Fix: added `tests/conftest.py` (temp DB + api_client fixtures), `tests/test_smoke.py`, `requirements-dev.txt`, `pytest.ini`. Coverage target ≥70% deferred to post-phase-A; B9 provides the *foundation* only.
+
+### B10 — Pydantic `default_factory=datetime.utcnow` residual (P2)
+- Discovered during B8 (see session report 2026-04-17_B8_datetime-utcnow.md §7).
+- 3 sites: `server/models/job.py:96`, `server/models/job.py:97`, `server/models/profile.py:25` — `Field(default_factory=datetime.utcnow)`.
+- Factory triggers when caller omits `created_at` / `updated_at` (e.g. `server/routes/jobs.py:_build_job`) → DeprecationWarning on Python 3.12+, potential AttributeError on 3.13+.
+- Fix (estimated 15m): replace with `default_factory=lambda: datetime.now(UTC)` (or shared `_now_utc` helper in `server/models/_utils.py`). Test: extend `tests/test_datetime_migration.py::test_no_utcnow_in_code` to also forbid `default_factory=datetime.utcnow`.
+- Queue position: deferred until after B3 (per WORKPLAN §8 — not blocking Phase A done-done).
 
 ---
 
