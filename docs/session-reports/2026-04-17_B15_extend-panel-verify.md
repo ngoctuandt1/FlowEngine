@@ -28,7 +28,7 @@ opens correctly and submit confirms before timeout.
 ## 2. Commits landed
 
 ```
-<B15-COMMIT>  feat(extend): panel verify + submit diagnostics + scroll-state Slate selector (B15 cherry-pick)
+caef3e9  feat(extend): panel verify + submit diagnostics + scroll-state Slate selector (B15 cherry-pick)
 ```
 
 1 commit: 1 prod file + 1 test file + SPEC + WORKPLAN + this report.
@@ -109,10 +109,10 @@ would take the full `timeout_sec` to converge.
 ## 5. SPEC.md update
 
 - [x] §D.4 header bumped from B1-B14 → B1-B15 + descriptor updated
-- [x] §D.4 B15 entry added (struck-through, `<B15-COMMIT>` placeholder)
-- [x] WORKPLAN §8 B15 resolved entry added (struck-through, `<B15-COMMIT>` placeholder)
+- [x] §D.4 B15 entry added (struck-through, `caef3e9` placeholder)
+- [x] WORKPLAN §8 B15 resolved entry added (struck-through, `caef3e9` placeholder)
 
-Placeholder `<B15-COMMIT>` will be replaced with the actual hash by
+Placeholder `caef3e9` will be replaced with the actual hash by
 supervisor or a follow-up docs pass (same pattern as B11/B12/B14 used
 pre-hash, see commits `6612215`, `85e2f45`, `a2293bf`, `a4e9092`
 replacing B11/B12/B14-COMMIT placeholders).
@@ -253,7 +253,7 @@ From supervisor prompt's `[DONE CRITERIA]`:
 - [x] 4 placeholder fallbacks trong master KHÔNG bị xóa (H5 rejected — `test_type_extend_prompt_preserves_placeholder_fallbacks` is the guard)
 - [x] Tests GREEN (12/12 in `test_extend.py`), full suite pass (48/48), no regression (B11 bbox 6/6, B12 camera 7/7, B14 base 7/7)
 - [x] DeprecationWarning-strict: clean (48/48)
-- [x] SPEC §D.4 B15 + WORKPLAN §8 B15 added (both with `<B15-COMMIT>` placeholder)
+- [x] SPEC §D.4 B15 + WORKPLAN §8 B15 added (both with `caef3e9` placeholder)
 - [x] Stash@{0} còn (`git stash list` post-session confirms)
 - [x] Zero diff ngoài whitelist (only `flow/operations/extend.py`, `tests/test_extend.py`, `docs/SPEC.md`, `docs/WORKPLAN.md`, this report)
 - [x] Report has 9 sections per `_TEMPLATE.md`
