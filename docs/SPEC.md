@@ -1176,12 +1176,11 @@ Claim atomic dùng `BEGIN IMMEDIATE` → lock RESERVED. 2 worker gọi đồng t
 ### D.3.2 — `aiosqlite` không hỗ trợ `WITH cte`
 Dùng raw query hoặc sub-select. Check library version trước khi viết query phức tạp.
 
-### D.3.3 — Port default mismatch (B7)
-- `server/config.py:19` → default SERVER_PORT=8000
-- `worker/main.py:29` → default SERVER_URL=http://localhost:8080
-- Docker override = 8080
-
-**Fix:** chuẩn hoá tất cả = 8080.
+### D.3.3 — ~~Port default mismatch (B7)~~ ✅ FIXED (commit 336ba75..HEAD)
+- ~~`server/config.py:19` → default SERVER_PORT=8000~~ → **đã sửa = 8080**
+- `worker/main.py:29` → default SERVER_URL=http://localhost:8080 (đúng rồi)
+- Docker override = 8080 (đúng rồi)
+- Test regression: `tests/test_config.py::test_server_port_default_is_8080`
 
 ### D.3.4 — WebSocket auth
 Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public phải thêm token.
@@ -1228,7 +1227,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Triệu chứng: UI profile page hiển thị job cũ mãi
 - Fix: reset khi worker mark_available(profile)
 
-### B7 — Port mismatch (P0)
+### ~~B7 — Port mismatch (P0)~~ ✅ FIXED
 - Files: `server/config.py:19`, `worker/main.py:29`
 - Fix: thống nhất 8080 everywhere
 

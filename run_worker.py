@@ -5,7 +5,7 @@ Usage:
     python run_worker.py
 
 Environment variables (or .env file):
-    SERVER_URL          - FlowEngine server URL  (default: http://localhost:8000)
+    SERVER_URL          - FlowEngine server URL  (default: http://localhost:8080)
     WORKER_ID           - Unique worker identifier (default: worker-1)
     API_KEY             - Server API key          (default: empty)
     CHROME_USER_DATA_DIR - Path to Chrome user data directory
