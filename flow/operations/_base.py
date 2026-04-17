@@ -81,7 +81,16 @@ async def extract_final_media_id(client, job: dict | None = None) -> str | None:
 async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     """Navigate to the video edit page.
 
-    Uses edit_url if available, otherwise constructs from project_url + media_id.
+    Targeting strategy:
+      * When ``job.media_id`` is known, navigate directly to the
+        ``/edit/{media_id}`` URL.  This binds the targeted video by id and
+        never scans the project grid — so inserting/deleting other videos
+        on the project cannot shift which video is edited.
+      * When there is no ``media_id`` (legacy jobs that predate media_id
+        storage), fall back to the project URL and click a visible tile.
+
+    Uses ``edit_url`` if provided, otherwise builds it from
+    ``project_url`` + ``media_id``.
 
     Returns (edit_url, project_id, locale).
     """
@@ -104,12 +113,20 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             f"Cannot navigate: no edit_url, project_url={project_url_val}, media_id={media_id}"
         )
 
-    # Strategy: navigate to PROJECT URL first (more reliable), then click
-    # into the video tile to enter edit mode.  Direct /edit/ URLs often fail
-    # because the Flow SPA needs the project context loaded first.
-    project_url_val = job.get("project_url") or ""
-    target_url = project_url_val or edit_url_val
-    logger.info("Navigating to: %s", target_url[:100])
+    # Strategy:
+    # - When media_id is known, navigate DIRECTLY to /edit/{media_id}.  This
+    #   binds the targeted video by id (see spec §10 live test — 100% reliable)
+    #   and avoids the fragile grid-card-index path, which shifts any time a
+    #   new generation arrives or a video is deleted.
+    # - Only legacy jobs that predate media_id storage fall back to the
+    #   project URL + tile-click path.
+    use_direct_edit = bool(media_id and edit_url_val)
+    target_url = edit_url_val if use_direct_edit else (project_url_val or edit_url_val)
+    logger.info(
+        "Navigating to: %s (strategy=%s)",
+        target_url[:100],
+        "edit-url" if use_direct_edit else "project-grid",
+    )
     await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(3)
 
@@ -140,15 +157,25 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             f"— wrong account or project deleted"
         )
 
-    # If we're on the project page (not edit), click a video tile
+    # If we're on the project page (not edit), enter edit mode.
+    # For media_id-bound jobs we re-try the direct /edit/ URL — we must NOT
+    # fall back to clicking a tile because the grid order is fragile and can
+    # target the wrong video.  Legacy jobs (no media_id) use tile click.
     if "/edit/" not in page.url:
-        logger.info("On project view — clicking video tile to enter edit mode")
-        entered = await _click_video_tile(page, job.get("media_id", ""))
-        if not entered:
-            # Last resort: try direct edit URL
-            logger.info("Tile click failed — trying direct edit URL: %s", edit_url_val[:80])
+        if use_direct_edit:
+            logger.info(
+                "Not on /edit/ after direct nav — retrying edit URL: %s",
+                edit_url_val[:80],
+            )
             await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(5)
+        else:
+            logger.info("Legacy job (no media_id) — clicking video tile to enter edit mode")
+            entered = await _click_video_tile(page, "")
+            if not entered and edit_url_val:
+                logger.info("Tile click failed — trying direct edit URL: %s", edit_url_val[:80])
+                await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(5)
 
     locale = detect_locale(page.url)
     project_id = extract_project_id(page.url) or ""
