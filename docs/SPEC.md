@@ -1,0 +1,1392 @@
+# FlowEngine — Master Specification
+
+> **Đây là document master. Mọi công việc trên codebase phải đọc file này trước.**
+> Created: 2026-04-17
+> Status: AUTHORITATIVE — nếu file khác mâu thuẫn với file này, file này thắng.
+
+---
+
+## MỤC LỤC
+
+- [PHẦN A — RULES (quy tắc bắt buộc)](#phần-a--rules-quy-tắc-bắt-buộc)
+  - [A.1 — Core Invariants (5 bất biến)](#a1--core-invariants-5-bất-biến)
+  - [A.2 — Code Rules](#a2--code-rules)
+  - [A.3 — Git & Commit Rules](#a3--git--commit-rules)
+  - [A.4 — Test Rules](#a4--test-rules)
+  - [A.5 — Change Control Rules](#a5--change-control-rules)
+- [PHẦN B — PIPELINE (luồng xử lý đầy đủ)](#phần-b--pipeline-luồng-xử-lý-đầy-đủ)
+  - [B.1 — Toàn cảnh](#b1--toàn-cảnh-level-0)
+  - [B.2 — Job Creation Pipeline](#b2--job-creation-pipeline-ui--db)
+  - [B.3 — Claim Pipeline](#b3--claim-pipeline-worker--server)
+  - [B.4 — Operation Pipeline — text-to-video (L1)](#b4--operation-pipeline--text-to-video-l1)
+  - [B.5 — Operation Pipeline — extend-video (L2)](#b5--operation-pipeline--extend-video-l2)
+  - [B.6 — Operation Pipeline — insert-object (L2)](#b6--operation-pipeline--insert-object-l2)
+  - [B.7 — Operation Pipeline — remove-object (L2)](#b7--operation-pipeline--remove-object-l2)
+  - [B.8 — Operation Pipeline — camera-move (L2)](#b8--operation-pipeline--camera-move-l2)
+  - [B.9 — Completion & Broadcast Pipeline](#b9--completion--broadcast-pipeline)
+  - [B.10 — Chain Pipeline (multi-level)](#b10--chain-pipeline-multi-level)
+  - [B.11 — Error / Recovery Pipeline](#b11--error--recovery-pipeline)
+- [PHẦN C — DATA CONTRACTS](#phần-c--data-contracts)
+  - [C.1 — Job Schema](#c1--job-schema-đầy-đủ)
+  - [C.2 — Profile Schema](#c2--profile-schema)
+  - [C.3 — API Contracts](#c3--api-contracts-đầy-đủ)
+  - [C.4 — WebSocket Events](#c4--websocket-events)
+- [PHẦN D — NOTES & GOTCHAS](#phần-d--notes--gotchas)
+  - [D.1 — Google Flow UI gotchas](#d1--google-flow-ui-gotchas)
+  - [D.2 — Playwright / Chrome gotchas](#d2--playwright--chrome-gotchas)
+  - [D.3 — Server / DB gotchas](#d3--server--db-gotchas)
+  - [D.4 — Known bugs trong code hiện tại (B1-B9)](#d4--known-bugs-trong-code-hiện-tại-b1-b9)
+- [PHẦN E — DEBUG PLAYBOOK](#phần-e--debug-playbook)
+- [PHẦN F — GLOSSARY](#phần-f--glossary)
+- [PHẦN G — EXTERNAL REFERENCES](#g--external-references)
+  - [G.1 — flowkit (crisng95/flowkit)](#g1--flowkit-crisng95flowkit)
+
+---
+
+# PHẦN A — RULES (quy tắc bắt buộc)
+
+## A.1 — Core Invariants (5 bất biến)
+
+Đây là 5 bất biến tuyệt đối. Nếu code VI PHẠM bất kỳ bất biến nào, code SAI, không cần bàn cãi.
+
+### INV-1: Account Binding
+> **1 video project thuộc về 1 Google account duy nhất.**
+> Mọi job trong 1 chain PHẢI chạy trên cùng Chrome profile (= cùng Google account).
+
+**Hệ quả:**
+- L2+ job KHÔNG BAO GIỜ được claim bởi worker không có profile của parent
+- Nếu không có worker nào có profile phù hợp → job PHẢI wait, không được assign bừa
+- Profile đổi = account đổi = project 404
+
+**Kiểm tra:** `server/db/job_store.py:claim_next_job` phải có điều kiện `parent.profile IN worker.profiles`.
+
+### INV-2: Navigate by `edit_url` only
+> **Để target 1 video cụ thể, CHỈ được navigate đến `/edit/{media_id}` URL trực tiếp.**
+> Cấm tuyệt đối: đếm DOM card, dùng `video_index`, click theo vị trí trong grid.
+
+**Lý do:** Grid card order thay đổi khi có video mới. video_index=0 hôm nay ≠ hôm mai.
+
+**Verify:** live test 2026-04-16 đã confirm 4 operations liên tiếp navigate-away-and-back, luôn đúng video. Xem `docs/FLOW_MULTILEVEL_JOBS.md` §10.
+
+**Kiểm tra:** mọi L2 operation (`flow/operations/extend.py`, `insert.py`, `remove.py`, `camera.py`) phải gọi `navigate_to_edit()` trong `_base.py` — KHÔNG được gọi grid-scan.
+
+### INV-3: Store Everything After Every Operation
+> **Sau mỗi operation hoàn thành, PHẢI ghi trở lại DB các field:**
+> `project_url`, `media_id`, `profile`, `generation_id`, `output_files`, `status=completed`, `completed_at`.
+
+**Lý do:** Chain tiếp theo cần đọc các field này từ parent. Thiếu 1 field = chain break.
+
+**Kiểm tra:** `flow/operations/_base.py:finalize_operation` phải return dict có đủ 6 field trên. Worker dispatcher attach vào PUT `/api/worker/jobs/{id}`.
+
+### INV-4: Serial per Project
+> **2 job trên cùng `project_url` KHÔNG BAO GIỜ chạy song song.**
+
+**Lý do:** Flow UI không support concurrent edit trên cùng project → conflict state.
+
+**Implementation:** `worker/project_lock.py` + điều kiện `NO active claim on project_url` trong `claim_next_job`.
+
+### INV-5: `media_id` is Stable Across Operations
+> **extend / insert / remove / camera đều CẬP NHẬT video IN-PLACE — `media_id` KHÔNG đổi.**
+
+**Hệ quả:**
+- Chain 4 bước trên 1 video → 4 job cùng chia sẻ 1 `media_id`
+- URL sau operation = URL trước operation
+- Mỗi operation chỉ thêm 1 entry vào history panel
+
+**Verify:** docs/FLOW_MULTILEVEL_JOBS.md §10 — 4 ops liên tiếp cùng 1 media_id `1eb6fea7-f1d4-4fcc-a25f-7ca3e06470be`.
+
+---
+
+## A.2 — Code Rules
+
+### R-CODE-1: Separation of Concerns
+| Layer | Được làm gì | Cấm làm gì |
+|---|---|---|
+| `server/` | API, DB CRUD, WS broadcast | **Không touch Playwright/Chrome** |
+| `worker/` | Poll, claim, dispatch, profile/lock management | Không chứa Flow UI logic chi tiết |
+| `flow/` | Playwright automation, DOM selectors | Không gọi server API trực tiếp (dùng worker/remote_api) |
+| `frontend/` | UI rendering, API calls, WS listen | Không embed business logic |
+
+### R-CODE-2: Single Entry Point per Operation
+Mỗi operation có 1 và chỉ 1 handler:
+- `run_generate()` trong `flow/operations/generate.py`
+- `run_extend()` trong `flow/operations/extend.py`
+- `run_insert()` trong `flow/operations/insert.py`
+- `run_remove()` trong `flow/operations/remove.py`
+- `run_camera()` trong `flow/operations/camera.py`
+
+Dispatcher (`worker/dispatcher.py`) route `job.type` → handler đúng. **Không tạo thêm handler variant.**
+
+### R-CODE-3: Locale-Independent Selectors
+Khi tương tác Google Flow UI, **ưu tiên icon class names** (same EN + VI):
+```python
+# GOOD — locale independent
+page.locator('[class*="keyboard_double_arrow_right"]')  # Extend
+page.locator('[class*="add_box"]')                       # Insert
+page.locator('[class*="ink_eraser"]')                    # Remove
+page.locator('[class*="videocam"]')                      # Camera
+page.locator('[class*="arrow_forward"]')                 # Submit
+
+# ACCEPTABLE — text với cả 2 locale
+for text in ("Extend", "Mở rộng"):
+    page.locator("button").filter(has_text=text)
+
+# AVOID — chỉ 1 locale
+page.locator("button").filter(has_text="Extend")  # fail trên VI profile
+```
+
+### R-CODE-4: Model Panel Dismiss — Click Outside, NOT Escape
+Trong `flow/model_selector.py`, sau khi chọn model:
+- ✅ Click outside panel (trên chip hiện model) để đóng
+- ❌ **CẤM dùng Escape** — Escape đóng cả edit dialog → mất state
+
+### R-CODE-5: Submit Confirmation = 4 Signals, Any One Wins
+`flow/submit.py` phải confirm submit bằng **1 trong 4 signal**:
+1. `client._gen_id` changed (network intercept)
+2. New `operations/` API call in `client._calls`
+3. Card count increased
+4. Progress indicator visible (% or "Generating" text)
+
+KHÔNG được block wait cho network response complete — chỉ detect initiation.
+
+### R-CODE-6: Completion Detection = 3 Parallel Methods
+`flow/wait.py` check parallel:
+1. Reverse API (`operations/` response với `done: true`)
+2. Network video URLs (MP4/WebM in `client._video_urls`)
+3. DOM observer (injected JS tracks progress %)
+
+Timeout per type (chỉnh qua env):
+- `text-to-video`: 900s
+- `extend-video`: 600s
+- `insert/remove/camera`: 300s
+- No-signal timeout: 180-300s
+
+### R-CODE-7: Download Fallback Chain 4 Tiers
+`flow/download.py` fallback theo thứ tự:
+1. API: `getMediaUrlRedirect?name={id}_upsampled` → 1080p
+2. API: `?name={id}` → 720p
+3. UI: right-click card → Download → 1080p menu
+4. Blob: extract blob URL, fetch from browser
+
+File size min: 100 KB (reject smaller).
+
+### R-CODE-8: Always Use LP Model for Free Mode
+Khi `free_mode=True`:
+- Model DEFAULT = `veo-3.1-fast-lp`
+- Verify "0 credits" / "0 tín dụng" trong footer TRƯỚC khi submit
+- Nếu footer hiện số credit > 0 → ABORT submit, log lỗi, không submit
+
+### R-CODE-9: Pydantic Models for All API I/O
+`server/models/job.py` + `server/models/profile.py` là single source of schema. Routes dùng Pydantic validate input. KHÔNG parse dict raw.
+
+### R-CODE-10: No datetime.utcnow() (Python 3.12+ deprecated)
+```python
+# ❌ CŨ
+from datetime import datetime
+now = datetime.utcnow()
+
+# ✅ MỚI
+from datetime import datetime, UTC
+now = datetime.now(UTC)
+```
+
+---
+
+## A.3 — Git & Commit Rules
+
+### R-GIT-1: Branch Naming
+```
+claude/bug-N-slug        # Bug fix cho issue #N
+claude/feature-slug      # Feature mới
+claude/refactor-slug     # Refactor
+claude/<auto-name>       # Exploratory worktree
+```
+
+### R-GIT-2: Commit Message
+```
+fix(scope): short description
+feat(scope): short description
+refactor(scope): short description
+test(scope): short description
+docs: short description
+
+# Body (optional) — giải thích WHY, không phải WHAT
+# Closes #N (nếu PR đóng issue)
+```
+
+### R-GIT-3: Co-author
+Mọi commit Claude tạo phải có:
+```
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+```
+
+### R-GIT-4: Cấm
+- `git push --force` lên `master` / `main`
+- `--no-verify` / skip hooks
+- `git commit --amend` (luôn tạo commit mới)
+- Commit file secrets (`.env`, credentials)
+
+---
+
+## A.4 — Test Rules
+
+### R-TEST-1: Mọi PR đóng bug / thêm feature PHẢI có test
+- Bug fix → 1 test reproduce bug trước khi fix (TDD)
+- Feature → ≥ 1 happy path + ≥ 1 error path
+
+### R-TEST-2: Test location = `tests/`
+```
+tests/
+  test_job_store.py
+  test_chain_logic.py
+  test_profile_pinning.py
+  test_api.py
+  test_navigation.py
+  test_e2e.py         # (optional, requires Chrome)
+```
+
+### R-TEST-3: Không test browser trong unit test
+`flow/` module chỉ test qua integration test với Playwright mock hoặc manual E2E.
+
+### R-TEST-4: Coverage Target
+- `server/` + `worker/` ≥ 70%
+- `flow/` — manual E2E acceptable (browser-dependent)
+
+---
+
+## A.5 — Change Control Rules
+
+### R-CC-1: KHÔNG restructure kiến trúc
+Kiến trúc 4-tầng đã verify hoạt động. Cấm:
+- Đổi layer boundaries
+- Thêm layer mới
+- Merge `server/` + `worker/` thành 1 process
+- Đổi SQLite sang DB khác
+
+### R-CC-2: KHÔNG thêm job type mới cho đến khi 9 gaps (B1-B9) close
+Xem §D.4 — focus vào correctness trước.
+
+### R-CC-3: KHÔNG optimize performance khi chưa có baseline
+Đo trước, optimize sau. Hiện tại chưa có benchmark nào.
+
+### R-CC-4: Mọi thay đổi chạm 1 trong 5 invariants (§A.1) phải có design review
+- Đăng issue GitHub mô tả change + impact
+- Update `docs/SPEC.md` với decision log
+- Mới được code
+
+### R-CC-5: Docs update cùng commit
+Nếu commit thay đổi API / schema / pipeline → cùng commit update:
+- `docs/SPEC.md` (nếu affect rules/pipeline)
+- `CLAUDE.md` (nếu affect Claude context)
+- Relevant docstring
+
+---
+
+# PHẦN B — PIPELINE (luồng xử lý đầy đủ)
+
+## B.1 — Toàn cảnh (Level 0)
+
+```
+[User] → [Frontend] → [Server API] → [SQLite jobs table]
+                         ↑
+                   [WS broadcast]
+                         ↑
+[Worker poll loop] ← [Server /api/worker/claim]
+        ↓
+[Dispatcher]
+        ↓
+[FlowClient (Playwright + Chrome profile)]
+        ↓
+[Google Flow UI]
+        ↓
+[Video file in downloads/]
+        ↓
+[PUT /api/worker/jobs/{id} với project_url, media_id, output_files]
+        ↓
+[WS broadcast job_completed] → [Frontend cập nhật UI]
+```
+
+---
+
+## B.2 — Job Creation Pipeline (UI → DB)
+
+### B.2.1 — Single Job
+
+```
+1. User mở Create Job page (frontend/js/pages/create-job.js)
+2. User chọn type (text-to-video / extend-video / insert-object / remove-object / camera-move)
+3. Form render field tương ứng theo type (xem §C.1 để biết field required)
+4. User submit form → POST /api/jobs
+   Body: {type, prompt?, model?, aspect_ratio?, bbox?, direction?, parent_job_id?, project_url?, media_id?}
+5. Server route jobs.py:38 (create_job):
+   a. Validate Pydantic (JobCreate)
+   b. Nếu có parent_job_id:
+      - Fetch parent từ DB
+      - Nếu parent.status == completed → inherit project_url, media_id, profile
+      - job_level = parent.job_level + 1
+   c. Sinh UUID cho job.id
+   d. status = "pending"
+   e. INSERT INTO jobs
+   f. WS broadcast "job_created"
+6. Response: Job object (200)
+7. Frontend:
+   - Toast "Job created: {id}"
+   - Dashboard nhận WS event → append card
+```
+
+### B.2.2 — Chain (Multi-Job)
+
+```
+1. User mở Chain Builder page
+2. Bước 1 PHẢI là text-to-video (enforce ở frontend)
+3. Các bước sau: extend / insert / remove / camera
+4. Mỗi bước config prompt / bbox / direction riêng
+5. User submit → POST /api/chains
+   Body: {jobs: [JobCreate1, JobCreate2, ...], profile?: "optional pin"}
+6. Server route jobs.py:67 (create_chain):
+   a. Sinh chain_id (UUID)
+   b. Loop qua jobs:
+      - jobs[0]: job_level=1, no parent_job_id
+      - jobs[i] (i>0): job_level=i+1, parent_job_id=jobs[i-1].id
+      - Tất cả cùng chain_id
+      - Tất cả status="pending"
+      - Nếu body.profile set → assign cho job[0] (L2+ inherit khi claim)
+   c. INSERT từng job
+   d. WS broadcast "job_created" cho mỗi
+7. Response: {chain_id, jobs: [Job1, Job2, ...]}
+```
+
+### B.2.3 — Validation Rules per Type
+
+| Type | Required fields | Inherited from parent (nếu có) |
+|---|---|---|
+| text-to-video | `prompt`, `type` | — |
+| extend-video | `type`, (prompt optional) | `project_url`, `media_id`, `profile` |
+| insert-object | `type`, `prompt`, (bbox optional) | `project_url`, `media_id`, `profile` |
+| remove-object | `type`, `bbox` (REQUIRED) | `project_url`, `media_id`, `profile` |
+| camera-move | `type`, `direction` | `project_url`, `media_id`, `profile` |
+
+---
+
+## B.3 — Claim Pipeline (Worker → Server)
+
+### B.3.1 — Worker Poll Loop
+
+```
+worker/main.py mỗi POLL_INTERVAL_SEC (5s):
+1. Check available profiles (not busy, not quarantined) — profile_manager
+2. POST /api/worker/claim với {worker_id, profiles: [list]}
+3. Server response:
+   a. 204 No Content → sleep, retry
+   b. 200 + Job object → dispatch
+4. Nếu 200: lock profile (profile_manager.mark_busy)
+5. await dispatcher.dispatch_job(job)
+6. Release profile (mark_available)
+7. PUT /api/worker/jobs/{id} với result
+```
+
+### B.3.2 — Server Claim Algorithm (atomic)
+
+`server/db/job_store.py:claim_next_job` — WRAP trong `BEGIN IMMEDIATE`:
+
+```
+INPUT: worker_id, available_profiles: List[str]
+
+PRIORITY 1 — L2+ jobs (profile-pinned):
+  SELECT * FROM jobs
+  WHERE status = 'pending'
+    AND job_level >= 2
+    AND parent_job_id IS NOT NULL
+  ORDER BY created_at ASC
+  
+  For each candidate:
+    parent = fetch_job(candidate.parent_job_id)
+    IF parent.status != 'completed': SKIP
+    IF parent.profile NOT IN available_profiles: SKIP
+    IF EXISTS (job WHERE status IN ('claimed','running') AND project_url = parent.project_url): SKIP
+    → CLAIM này:
+       UPDATE jobs SET 
+         status='claimed', 
+         worker_id=worker_id, 
+         claimed_at=now(),
+         profile=parent.profile,
+         project_url=parent.project_url,
+         media_id=parent.media_id
+       WHERE id=candidate.id
+       RETURN Job
+
+PRIORITY 2 — L1 jobs (any available profile):
+  SELECT * FROM jobs
+  WHERE status = 'pending'
+    AND job_level = 1
+    AND (profile IS NULL OR profile IN available_profiles)
+  ORDER BY created_at ASC
+  LIMIT 1
+  
+  If found:
+    assign_profile = job.profile OR available_profiles[0]
+    UPDATE jobs SET
+      status='claimed',
+      worker_id=worker_id,
+      claimed_at=now(),
+      profile=assign_profile
+    RETURN Job
+
+ELSE: RETURN None (204 No Content)
+
+COMMIT
+```
+
+**Key invariant:** `BEGIN IMMEDIATE` ngăn 2 worker claim cùng 1 job. SQLite lock level = RESERVED.
+
+---
+
+## B.4 — Operation Pipeline — text-to-video (L1)
+
+```
+INPUT: job = {id, type="text-to-video", prompt, model="veo-3.1-fast-lp", aspect_ratio="16:9", profile}
+OUTPUT: {project_url, media_id, edit_url, output_files, generation_id, profile}
+```
+
+### Steps
+
+```
+1. Dispatcher (worker/dispatcher.py):
+   a. Nếu profile chưa có credentials → trigger AIgglog login
+   b. Launch FlowClient(profile_name=job.profile)
+   c. Call run_generate(client, prompt, model, aspect_ratio)
+
+2. flow/operations/generate.py:run_generate:
+   a. client.page.goto("https://labs.google/fx/tools/flow")
+   b. Wait for homepage loaded
+   c. check_account() — verify ULTRA tier (hoặc skip nếu LP)
+   d. Click "+ New project" button
+   e. Wait for empty project canvas
+   f. extract_project_url() từ URL hiện tại → lưu project_url
+   g. click composer textarea
+   h. type prompt
+   i. select_model(model) — open model dropdown, click LP model, verify "0 credits"
+   j. _set_aspect_ratio(aspect_ratio) — ⚠️ HIỆN TẠI STUB (B1)
+   k. submit_with_confirmation():
+      - Click submit button ([class*="arrow_forward"])
+      - Wait 4 confirmation signals (§A.2 R-CODE-5)
+   l. wait_for_completion(timeout=900):
+      - Parallel 3 detection methods (§A.2 R-CODE-6)
+   m. extract_media_id from URL /edit/{uuid} → lưu media_id
+   n. download_video(media_id):
+      - API 1080p → 720p → UI right-click → blob (§A.2 R-CODE-7)
+      - Save to downloads/{profile}_{timestamp}.mp4
+   o. return {
+        project_url, 
+        media_id, 
+        edit_url=f"{project_url}/edit/{media_id}",
+        output_files=[path], 
+        generation_id, 
+        profile
+      }
+
+3. Dispatcher attach status="completed", completed_at=now()
+4. remote_api.update_job(job_id, result) → PUT /api/worker/jobs/{id}
+5. FlowClient teardown (close browser)
+6. Release profile
+```
+
+### Failure modes
+
+| Triệu chứng | Lý do có thể | File debug |
+|---|---|---|
+| "Credits required" popup | Không phải LP model hoặc LP slot hết | `model_selector.py`, check footer text |
+| reCAPTCHA block | Google flag account | `recaptcha.py` — wait 120s manual |
+| No project canvas | Homepage render chậm | `generate.py` — tăng `wait_for_selector` timeout |
+| Submit không confirm | 4 signals đều miss | `submit.py` — check selector cập nhật |
+| Wait timeout 900s | Gen bị stuck trên Flow server | `wait.py` — check DOM observer log |
+
+---
+
+## B.5 — Operation Pipeline — extend-video (L2)
+
+```
+INPUT: job = {id, type="extend-video", project_url, media_id, profile, prompt?, model}
+OUTPUT: {project_url, media_id (SAME), edit_url, output_files, generation_id, profile}
+```
+
+### Steps
+
+```
+1. Dispatcher → run_extend(client, job, prompt, model)
+
+2. flow/operations/_base.py:navigate_to_edit(client, job):
+   a. Build edit_url = f"{project_url}/edit/{media_id}"
+   b. page.goto(edit_url)
+   c. Wait for <video> element visible (wait_for_video_loaded)
+   d. VERIFY: media_id trong page.url — nếu không khớp → FAIL
+   e. Nếu redirect login → trigger AIgglog, retry 1 lần
+   f. Nếu URL 404 → fallback click tile theo media_id match (last resort)
+
+3. flow/operations/extend.py:run_extend:
+   a. click_action_button("Extend" / "Mở rộng" / icon [class*="keyboard_double_arrow_right"])
+   b. Wait for composer placeholder change to "What happens next?" / "Tiếp theo là gì?"
+   c. Nếu prompt truthy: click composer → type prompt
+   d. select_model(LP) — verify "0 credits"
+   e. submit_with_confirmation()
+   f. wait_for_completion(timeout=600)
+   g. Extract new media_id from URL — verify SAME as input (INV-5)
+   h. download_video(media_id)
+   i. return finalize_operation(result)
+
+4. Dispatcher → update_job(status=completed, project_url, media_id, output_files, ...)
+```
+
+### Failure modes
+
+| Triệu chứng | Lý do | Fix |
+|---|---|---|
+| URL redirect về homepage | Profile chưa login account của project | Check profile = parent.profile (INV-1) |
+| media_id changed sau extend | Flow đã tạo version mới (bất thường) | ⚠️ LOG rõ, update job với media_id mới |
+| `navigate_to_edit` 404 | project_url sai hoặc project bị xoá | FAIL job, log error |
+| Extend panel không mở | Click sai button | Check selector icon class |
+
+---
+
+## B.6 — Operation Pipeline — insert-object (L2)
+
+```
+INPUT: job = {type="insert-object", project_url, media_id, profile, prompt (REQUIRED), bbox?: {x,y,w,h}}
+OUTPUT: same shape as extend
+```
+
+### Steps
+
+```
+1. navigate_to_edit(job)  — như B.5
+2. click_action_button("Insert" / "Chèn" / [class*="add_box"])
+3. Wait composer placeholder: "Describe what you'd like to add..."
+4. Nếu bbox:
+   a. Get video canvas bounding rect
+   b. Convert normalized (0-1) → pixel coords
+   c. mouse.move(start) → mouse.down → mouse.move(end) → mouse.up
+   d. ⚠️ HIỆN TẠI KHÔNG VERIFY bbox đã vẽ đúng (B2)
+5. Nếu bbox null → Flow dùng vùng default (thường toàn video)
+6. Click composer → type prompt
+7. submit_with_confirmation()
+8. wait_for_completion(timeout=300)
+9. Extract media_id — SAME as input (INV-5)
+10. download_video(media_id)
+11. return finalize_operation(result)
+```
+
+### Bbox Coordinate System
+- Normalized 0-1:
+  - `x` = left edge of bbox / video_width
+  - `y` = top edge / video_height
+  - `w` = width / video_width
+  - `h` = height / video_height
+- Convert sang pixel theo `page.locator("video").bounding_box()`:
+  ```
+  rect = video.bounding_box()
+  px_start = (rect.x + bbox.x * rect.width, rect.y + bbox.y * rect.height)
+  px_end = (px_start.x + bbox.w * rect.width, px_start.y + bbox.h * rect.height)
+  ```
+
+---
+
+## B.7 — Operation Pipeline — remove-object (L2)
+
+```
+INPUT: job = {type="remove-object", project_url, media_id, profile, bbox (REQUIRED)}
+OUTPUT: same shape
+```
+
+### Steps
+
+```
+1. navigate_to_edit(job)
+2. click_action_button("Remove" / "Xoá" / [class*="ink_eraser"])
+3. Wait composer placeholder: "Click-and-drag to fully select..."
+4. bbox PHẢI có (nếu null → default 0.25-0.75 center)
+5. Draw bbox (same logic as B.6)
+6. KHÔNG type prompt (chế độ remove không cần)
+7. submit_with_confirmation()
+8. wait_for_completion(timeout=300)
+9. Extract media_id — SAME
+10. download_video
+11. return finalize_operation
+```
+
+### Lưu ý
+- Remove quality phụ thuộc AI model, có thể "partial removal" (xoá không sạch)
+- Không có prompt → nếu muốn hint Flow bỏ gì, dùng insert với prompt "empty background" thay vì remove
+
+---
+
+## B.8 — Operation Pipeline — camera-move (L2)
+
+```
+INPUT: job = {type="camera-move", project_url, media_id, profile, direction: str}
+OUTPUT: same shape
+```
+
+### Available Directions
+**Camera motion tab:**
+- "Dolly in", "Dolly out"
+- "Orbit left", "Orbit right", "Orbit up", "Orbit low"
+- "Dolly in zoom out", "Dolly out zoom in"
+
+**Camera position tab:**
+- "Center", "Left", "Right", "High", "Low", "Closer", "Further"
+
+### Steps
+
+```
+1. navigate_to_edit(job)
+2. click_action_button("Camera" / [class*="videocam"])
+3. Wait for preset grid visible (composer REPLACED by preset picker)
+4. Determine tab from direction:
+   - Motion direction → click tab "Camera motion"
+   - Position direction → click tab "Camera position"
+5. Click preset: page.locator(f'[aria-label="{direction}"]') or text match
+6. ⚠️ HIỆN TẠI KHÔNG VERIFY preset active state (B3)
+7. Submit (KHÁC các op khác — camera dùng):
+   - generic "See how many credits this generation will use" + generic "Create"
+   - KHÔNG phải arrow_forward
+8. wait_for_completion(timeout=300)
+9. Extract media_id — SAME
+10. download_video
+11. return finalize_operation
+```
+
+### Lưu ý riêng của Camera
+- KHÔNG có model selector (dùng model mặc định của Flow)
+- KHÔNG có prompt (dùng preset only)
+- Submit button DOM khác 4 op còn lại
+
+---
+
+## B.9 — Completion & Broadcast Pipeline
+
+```
+1. Dispatcher sau khi op handler return:
+   result = {
+     status: "completed",      ← dispatcher thêm
+     completed_at: now(),      ← dispatcher thêm (⚠️ HIỆN TẠI CHƯA SET, B5)
+     project_url, media_id, edit_url, profile,
+     output_files, generation_id, error: None
+   }
+
+2. remote_api.update_job(job_id, result):
+   PUT /api/worker/jobs/{job_id}
+   Body: JobUpdate(status="completed", project_url=..., media_id=..., ...)
+
+3. Server route worker.py:50 (update_job):
+   a. Validate JobUpdate
+   b. job_store.update_job(job_id, fields):
+      - UPDATE jobs SET ... WHERE id=?
+      - updated_at = now()
+   c. WS broadcast "job_completed" với job object
+
+4. Frontend ws.js nhận event:
+   a. Dispatch "job_completed" event
+   b. Dashboard listener cập nhật card status → green checkmark
+   c. Nếu có chain_id → Dashboard highlight next job
+
+5. Worker side:
+   a. profile_manager.mark_available(profile)
+   b. project_lock.release(project_url) ← nhưng server đã check status nên optional
+   c. Nếu job.chain_id và còn job pending cùng chain → poll loop sẽ claim tiếp
+```
+
+---
+
+## B.10 — Chain Pipeline (multi-level)
+
+### Ví dụ chain 4 bước
+
+```
+Input: Chain = {
+  jobs: [
+    {type: "text-to-video", prompt: "golden sunset ocean waves"},
+    {type: "extend-video", prompt: "camera zooms out to reveal coastline"},
+    {type: "insert-object", prompt: "flock of seagulls", bbox: {x:0.7,y:0.1,w:0.2,h:0.2}},
+    {type: "camera-move", direction: "Dolly in"}
+  ]
+}
+
+POST /api/chains → tạo 4 job:
+  Job A: id=ja, type=t2v, level=1, parent=null, chain_id=C1, status=pending
+  Job B: id=jb, type=extend, level=2, parent=ja, chain_id=C1, status=pending
+  Job C: id=jc, type=insert, level=3, parent=jb, chain_id=C1, status=pending
+  Job D: id=jd, type=camera, level=4, parent=jc, chain_id=C1, status=pending
+
+Tại thời điểm T=0:
+  - Worker W1 (profile=alpha) poll → claim được Job A (L1, any profile)
+  - W1 chạy t2v → complete → Job A: project_url=P1, media_id=M1, profile=alpha
+
+Tại T=1:
+  - W1 poll → claim Job B (L2, parent profile=alpha, W1 có alpha → OK)
+  - W1 chạy extend → complete → Job B: project_url=P1, media_id=M1 (SAME), profile=alpha
+
+Tại T=2:
+  - W1 poll → claim Job C (L2, parent profile=alpha → OK)
+  - W1 chạy insert → complete → Job C: same project_url, same media_id
+
+Tại T=3:
+  - W1 poll → claim Job D (L2, parent profile=alpha → OK)
+  - W1 chạy camera → complete → Job D: same project_url, same media_id
+
+Chain complete. Output: 4 file trong downloads/, all versions trong history panel Flow.
+```
+
+### Điều gì chặn chain?
+
+| Tình huống | Kết quả |
+|---|---|
+| Worker W2 có profile=beta poll lúc T=1 | KHÔNG claim Job B (profile mismatch) — wait |
+| Project_url P1 đang có Job B running, user tạo Job X extend cùng P1 | Job X wait cho Job B xong |
+| Job A fail | Chain DỪNG — Job B,C,D vẫn pending, không claim được (parent không completed) |
+| User delete Job B giữa chừng | Job C,D trở thành orphan — parent_job_id refer đến deleted job |
+
+---
+
+## B.11 — Error / Recovery Pipeline
+
+### B.11.1 — Worker Crash
+
+```
+Worker đang chạy Job X → crash (process killed)
+→ Job X kẹt status="running", worker_id=W1
+
+Recovery:
+1. User click "Recover Stale" ở Settings page
+2. Frontend → POST /api/jobs/recover
+3. Server reset tất cả job:
+   UPDATE jobs SET status='pending', worker_id=NULL, claimed_at=NULL
+   WHERE status IN ('claimed', 'running') AND claimed_at < now() - 30min
+4. Return count of jobs reset
+5. Dashboard WS update, jobs trở lại pending
+```
+
+### B.11.2 — Login Session Expired
+
+```
+FlowClient.goto(flow_url) → redirect về login page
+→ run_generate/extend/... detect redirect
+→ Raise `NeedAutoLogin` exception
+
+Worker dispatcher:
+1. Catch `NeedAutoLogin`
+2. _kill_chrome_for_profile(profile) — ⚠️ chỉ work trên Windows (wmic)
+3. Trigger AIgglog subprocess:
+   - Launch separate login flow
+   - User manually auth nếu chưa
+   - AIgglog cache cookies vào profile dir
+4. Retry job (1 lần)
+5. Nếu retry fail → mark profile quarantined, job fail
+```
+
+### B.11.3 — reCAPTCHA Detected
+
+```
+Mid-operation detect reCAPTCHA:
+1. flow/recaptcha.py:check_for_recaptcha phát hiện iframe/text/network 403
+2. Pause automation, log "reCAPTCHA detected — waiting for manual solve"
+3. Poll mỗi 10s, max 120s:
+   - Check recaptcha iframe còn không
+   - Check body text còn "verify you're human" không
+4. Nếu solved → continue operation
+5. Nếu timeout → raise RecaptchaError → job fail
+```
+
+### B.11.4 — Download Fail All 4 Tiers
+
+```
+1. API 1080p fail × 3 rounds (10s interval)
+2. API 720p fail × 3 rounds
+3. UI right-click fail
+4. Blob extract fail
+
+→ return empty output_files list
+→ Job complete (status=completed) nhưng output_files=[]
+→ Frontend show warning icon
+
+⚠️ Cần decide: nên fail job hay complete với empty output?
+Hiện tại: complete với empty (silent fail). Nên đổi thành FAIL.
+```
+
+### B.11.5 — Generation Failed on Flow
+
+```
+Flow server trả "Generation failed" card:
+1. wait.py DOM observer detect failed card
+2. Retry logic trong flow_retry_steps.py (nếu có)
+3. Hiện tại: không retry tự động, fail job ngay
+4. status="failed", error="Flow generation failed"
+```
+
+---
+
+# PHẦN C — DATA CONTRACTS
+
+## C.1 — Job Schema (đầy đủ)
+
+```python
+# server/models/job.py
+
+class Job(BaseModel):
+    # Identity
+    id: str                           # UUID
+    type: JobType                     # text-to-video | extend-video | insert-object | remove-object | camera-move
+    status: JobStatus                 # pending | claimed | running | completed | failed | cancelled
+    
+    # Chain
+    job_level: int = 1                # 1 = standalone L1, 2+ = chain member
+    parent_job_id: Optional[str]      # Link to parent (null for L1)
+    chain_id: Optional[str]           # Group jobs in same chain
+    
+    # Account binding (CRITICAL — INV-1)
+    profile: Optional[str]            # Chrome profile dir name = Google account
+    project_url: Optional[str]        # Flow project URL
+    media_id: Optional[str]           # UUID of target video
+    edit_url: Optional[str]           # Computed: project_url + /edit/ + media_id
+    
+    # Operation params
+    prompt: Optional[str]             # Required for t2v, insert; optional for extend
+    model: Optional[str]              # e.g. "veo-3.1-fast-lp"
+    aspect_ratio: Optional[str]       # "16:9" | "9:16" | "1:1"
+    bbox: Optional[BBox]              # {x, y, w, h} normalized 0-1 — insert/remove
+    direction: Optional[str]          # Camera preset name
+    free_mode: bool = True            # Force LP model
+    
+    # Output (stored after completion — INV-3)
+    output_files: List[str] = []      # Downloaded MP4 paths
+    generation_id: Optional[str]      # Flow gen UUID
+    
+    # Worker tracking
+    worker_id: Optional[str]          # Which worker claimed
+    claimed_at: Optional[datetime]
+    completed_at: Optional[datetime]  # ⚠️ B5: hiện chưa set
+    error: Optional[str]
+    
+    # Timestamps
+    created_at: datetime
+    updated_at: datetime
+
+
+class BBox(BaseModel):
+    x: float  # 0-1
+    y: float  # 0-1
+    w: float  # 0-1
+    h: float  # 0-1
+```
+
+### Status Transitions
+
+```
+pending ──claim──▶ claimed ──start──▶ running ──success──▶ completed
+   │                  │                   │                     
+   │                  │                   └──fail──▶ failed     
+   │                  │                                          
+   │                  └──abort──▶ pending (recover stale)        
+   │                                                             
+   └──user cancel──▶ cancelled                                   
+```
+
+### Required fields per type (re-check khi create)
+
+| Type | id | type | prompt | bbox | direction | parent_job_id | project_url | media_id |
+|---|---|---|---|---|---|---|---|---|
+| text-to-video | ✅ | ✅ | ✅ | — | — | — | — | — |
+| extend-video | ✅ | ✅ | opt | — | — | ✅* | ✅* | ✅* |
+| insert-object | ✅ | ✅ | ✅ | opt | — | ✅* | ✅* | ✅* |
+| remove-object | ✅ | ✅ | — | ✅ | — | ✅* | ✅* | ✅* |
+| camera-move | ✅ | ✅ | — | — | ✅ | ✅* | ✅* | ✅* |
+
+`*` = cần 1 trong 3 (parent_job_id OR (project_url + media_id))
+
+---
+
+## C.2 — Profile Schema
+
+```python
+class Profile(BaseModel):
+    name: str                         # Chrome profile dir name (= identity)
+    google_account: Optional[str]     # Google email
+    locale: str = "en"                # "en" | "vi"
+    tier: str = "ultra"               # "ultra" | "free"   (legacy: internal LP-availability hint)
+    status: str = "available"         # available | busy | quarantined
+    current_job_id: Optional[str]     # ⚠️ B6: không reset sau complete
+    worker_id: Optional[str]          # Worker process that owns
+    created_at: datetime
+    updated_at: datetime
+
+    # ↓ POST-PHASE-A FEATURES (chưa implement — xem §D.2.7)
+    # paygate_tier: Optional[str]    # "PAYGATE_TIER_ONE" | "PAYGATE_TIER_TWO"
+    #                                # Capture từ /v1/credits response. Phân biệt
+    #                                # tier-one (free, no LP) vs tier-two (paid + LP)
+    # lp_slots_remaining: Optional[int]  # Parse từ DOM "leaving X/Y" khi select model
+    # last_tier_check_at: Optional[datetime]
+```
+
+---
+
+## C.3 — API Contracts (đầy đủ)
+
+### Job Endpoints
+
+```
+POST /api/jobs
+  Body: JobCreate (fields per §C.1)
+  Response: 200 Job
+
+POST /api/chains
+  Body: ChainCreate {jobs: JobCreate[], profile?: str}
+  Response: 200 {chain_id: str, jobs: Job[]}
+
+GET /api/jobs/counts
+  Response: 200 {pending, claimed, running, completed, failed, cancelled}
+
+POST /api/jobs/recover
+  Response: 200 {reset_count: int}
+
+GET /api/jobs?status=&type=&profile=&chain_id=&limit=&offset=
+  Response: 200 Job[]
+
+GET /api/jobs/{id}
+  Response: 200 Job | 404
+
+GET /api/jobs/{id}/children
+  Response: 200 Job[]
+
+DELETE /api/jobs/{id}
+  Response: 204 | 404
+```
+
+### Worker Endpoints
+
+```
+POST /api/worker/claim
+  Body: ClaimRequest {worker_id: str, profiles: str[]}
+  Response: 200 Job | 204 No Content
+
+PUT /api/worker/jobs/{id}
+  Body: JobUpdate {status?, project_url?, media_id?, profile?, output_files?, generation_id?, error?, completed_at?}
+  Response: 200 Job
+
+POST /api/worker/heartbeat
+  Body: {worker_id: str, profiles: str[]}
+  Response: 200 {}
+
+GET /api/worker/workers
+  Response: 200 Worker[]
+```
+
+### Profile Endpoints
+
+```
+GET /api/profiles
+  Response: 200 Profile[]
+
+POST /api/profiles
+  Body: ProfileCreate {name, google_account?, locale?, tier?}
+  Response: 200 Profile
+
+GET /api/profiles/{name}
+  Response: 200 Profile | 404
+
+PUT /api/profiles/{name}
+  Body: ProfileUpdate {google_account?, locale?, tier?, status?}
+  Response: 200 Profile
+
+GET /api/profiles/{name}/jobs
+  Response: 200 Job[]
+```
+
+### WebSocket
+
+```
+WS /ws/jobs
+  Server → Client events:
+    {event: "job_created", job: Job}
+    {event: "job_updated", job: Job}
+    {event: "job_completed", job: Job}
+    {event: "job_failed", job: Job}
+    {event: "job_deleted", job_id: str}
+  
+  Client → Server: (none — one-way push)
+```
+
+---
+
+## C.4 — WebSocket Events
+
+| Event | Trigger | Payload |
+|---|---|---|
+| `job_created` | POST /api/jobs or /api/chains | full Job |
+| `job_updated` | PUT /api/worker/jobs/{id} (any field change) | full Job |
+| `job_completed` | PUT với status="completed" | full Job |
+| `job_failed` | PUT với status="failed" | full Job |
+| `job_deleted` | DELETE /api/jobs/{id} | `{job_id: str}` |
+
+Frontend subscribe tất cả events → update dashboard state.
+
+---
+
+# PHẦN D — NOTES & GOTCHAS
+
+## D.1 — Google Flow UI gotchas
+
+### D.1.1 — Locale Detection
+- URL path chứa `/vi/` → Vietnamese profile
+- URL không có locale segment → English profile
+- KHÔNG có language switcher trong Flow UI — locale bám chặt vào Google account language
+
+### D.1.2 — `cards=0` after Extend click
+Log thấy `cards=0` sau khi click Extend — đây là **NORMAL**, nghĩa là đã navigate vào edit view (không còn grid).
+
+### D.1.3 — Extend không tạo modal
+Extend không mở popup — chỉ toggle highlight toolbar + đổi composer placeholder.
+
+### D.1.4 — Model selector biến mất trong Insert/Remove/Camera
+3 mode này dùng model mặc định của Flow. KHÔNG gọi `select_model()` trong các op này.
+
+### D.1.5 — media_id CHỈ có trong URL
+Info panel (ⓘ) không hiển thị media_id. Phải parse từ URL.
+
+### D.1.6 — Operations do NOT create new media_id
+Extend/Insert/Remove/Camera → same media_id, same URL, +1 history entry. Nếu media_id đổi sau op → bất thường, log rõ.
+
+### D.1.7 — Camera submit UI khác
+Camera mode:
+- Composer bị REPLACE bằng preset grid
+- Submit DOM: `generic "See how many credits..."` + `generic "Create"` — KHÔNG phải `arrow_forward`
+
+### D.1.8 — LP slot count
+Model text hiển thị: `"Veo 3.1 - Fast [Lower Priority] (leaving 5/10)"` — con số giảm theo thời gian. Nếu = 0 → không submit được. Engine nên detect và fail gracefully.
+
+### D.1.9 — All Veo models có audio
+`volume_up` icon trên mọi model chip. Không phải flag audio on/off — chỉ là visual.
+
+### D.1.10 — History panel = version count
+Mỗi op xong thêm 1 entry. Có thể poll `history.count` để confirm completion (fallback khi 3 detection methods miss).
+
+### D.1.11 — Generation loading visual
+Blurry gradient + % counter góc trên phải. Download button grayed out. Khi hết blur + %=100% → done.
+
+### D.1.12 — "+" button ≠ file upload
+"+" ở top bar = attachment/ingredient picker (project media + upload option). Không phải upload-only.
+
+### D.1.13 — LP model = internal key `veo_3_1_i2v_s_fast*`
+Nguồn: xác minh từ [flowkit](https://github.com/crisng95/flowkit) `agent/models.json` (API-level automation, đã reverse-engineer Veo 3.1 backend).
+
+Mapping tier ↔ internal model key dùng trong `videoModelKey` field của `batchAsyncGenerateVideoStartImage` API:
+
+| Tier (`userPaygateTier`) | i2v (start frame only) | i2v+end (chain/extend API) | r2v (reference images) |
+|---|---|---|---|
+| `PAYGATE_TIER_ONE` (free) | `veo_3_1_i2v_s_fast` / `veo_3_1_i2v_s_fast_portrait` | `veo_3_1_i2v_s_fast_fl` / `_portrait_fl` | `veo_3_1_r2v_fast` / `_portrait` |
+| `PAYGATE_TIER_TWO` (paid + LP free slots) | `veo_3_1_i2v_s_fast_ultra_relaxed` | `veo_3_1_i2v_s_fast_ultra_relaxed` | `veo_3_1_r2v_fast_landscape_ultra_relaxed` |
+
+Upscale: `veo_3_1_upsampler_1080p` / `veo_3_1_upsampler_4k`.
+
+**Ý nghĩa với FlowEngine:**
+- UI label **"Veo 3.1 - Fast [Lower Priority]"** tương ứng với **TIER_TWO + `_ultra_relaxed`** (0 credit).
+- UI label **"Veo 3.1 - Fast"** (không có `[Lower Priority]`) tương ứng với **TIER_ONE + `veo_3_1_i2v_s_fast`** (trả credit).
+- Hàm `_select_lp_model()` của ta có thể verify bằng cách intercept network request `/v1/video:batchAsyncGenerateVideoStartImage` và assert `requests[0].videoModelKey` chứa substring `ultra_relaxed`. Nếu không → đã chọn sai model (paid).
+- Suffix `_fl` = "first-last" (chain mode dùng start+end image). Đây là API-level của FlowEngine's "extend" nhưng ngữ nghĩa khác — xem §D.1.14.
+
+### D.1.14 — "Extend" của FlowEngine (UI) ≠ "start+end frame" API (flowkit)
+Hai thao tác NHÌN GIỐNG NHAU nhưng khác bản chất:
+
+| Khía cạnh | FlowEngine `extend-video` | flowkit chain (start_end_frame_2_video) |
+|---|---|---|
+| Driver | UI click button "Extend" | API call with `endImage.mediaId` |
+| Input | 1 video hiện có | 1 ảnh start + 1 ảnh end |
+| Output media_id | **SAME** (update in-place — INV-5) | **NEW** uuid |
+| Dùng được cho | Kéo dài từ frame cuối hiện tại | Morph giữa 2 frame bất kỳ |
+| Chain kiểu L2/L3/L4 | ✅ | ❌ (mỗi lần phải tạo ảnh start mới) |
+
+→ KHÔNG dùng flowkit approach thay thế được FlowEngine extend. Giữ UI automation cho extend.
+
+---
+
+## D.2 — Playwright / Chrome gotchas
+
+### D.2.1 — CDP vs Playwright mode
+- **CDP mode** (Windows default, `FLOW_REAL_CHROME=1`): launch Chrome thật qua DevTools Protocol, giữ extension + cookies real.
+- **Playwright persistent**: Docker/headless, dùng persistent context.
+- `FlowClient` detect env var → chọn mode.
+
+### D.2.2 — Profile cloning
+Chrome không cho 2 instance share 1 profile dir → FlowClient clone profile vào temp dir trước khi launch. Clone rẻ (chỉ cookies + storage).
+
+### D.2.3 — Lock file cleanup
+Chrome crash → để lại `SingletonLock` file. FlowClient xoá trước khi launch.
+
+### D.2.4 — `_kill_chrome_for_profile` Windows-only
+Dùng `wmic` → fail silent trên Linux/Mac. Cần thay bằng cross-platform `psutil` nếu deploy Linux.
+
+### D.2.5 — Network hooks capacity
+`client._calls` max 500, `client._video_urls` max 400, `client._media_id_events` max 600. Sau đó FIFO drop — long-running session có thể miss events.
+
+### D.2.6 — Credits 404 = LP only account
+`/v1/credits` 404 thường nghĩa là account không có credit (free tier) — CHỈ LP model dùng được. OK cho FlowEngine purpose.
+
+### D.2.7 — Tier detection qua `/v1/credits` response body
+Nguồn: flowkit `agent/services/flow_client.py::_sync_tier()`.
+
+Khi 200, response body chứa field `userPaygateTier`:
+```json
+{
+  "credits": { ... },
+  "userPaygateTier": "PAYGATE_TIER_ONE"   // hoặc "PAYGATE_TIER_TWO"
+}
+```
+
+→ FlowEngine có thể intercept network khi Playwright load Flow (`page.on("response", ...)` match `/v1/credits`), parse JSON, lưu vào `Profile.paygate_tier`. Giúp:
+- Worker biết trước account nào có LP free slot (INV-3 + R-CODE-8).
+- Debug khi LP job fail với "no credit" — phân biệt (a) LP slots = 0, (b) account là TIER_ONE (không có LP).
+- Chưa implement — feature cho sau Phase A.
+
+### D.2.8 — Fresh signed URL refresh qua TRPC intercept
+Nguồn: flowkit `extension/injected.js` (monkey-patch `window.fetch`).
+
+Vấn đề: signed URL `storage.googleapis.com/ai-sandbox-videofx/*` có TTL (~vài giờ). Nếu muốn re-download video cũ → URL cũ đã 403.
+
+**Pattern của flowkit:**
+1. Monkey-patch `window.fetch` (MAIN world của page labs.google)
+2. Với mọi response từ `/fx/api/trpc/*` → nếu body chứa `storage.googleapis.com/ai-sandbox-videofx/` → capture
+3. Forward pair `(mediaId, freshUrl)` về agent qua WebSocket
+4. Agent match theo mediaId và update DB
+
+**Pattern tương đương cho FlowEngine (Playwright):**
+```python
+page.on("response", async lambda r:
+    await _capture_trpc_urls(r) if "/fx/api/trpc/" in r.url else None)
+```
+- Trong `_capture_trpc_urls`: đọc `r.text()`, regex `storage.googleapis.com/ai-sandbox-videofx/[^"\s]+`, pair với media_id context trong URL path.
+- Gọi API `/v1/media/{media_id}?key=...&clientContext.tool=PINHOLE` → response `data.fifeUrl` / `data.servingUri` cũng chứa fresh URL (alternative, không cần intercept).
+
+→ Chưa implement. Feature cho sau Phase A nếu có user case "xem lại video cũ".
+
+---
+
+## D.3 — Server / DB gotchas
+
+### D.3.1 — SQLite `BEGIN IMMEDIATE` lock
+Claim atomic dùng `BEGIN IMMEDIATE` → lock RESERVED. 2 worker gọi đồng thời → 1 succeed, 1 retry sau 100ms.
+
+### D.3.2 — `aiosqlite` không hỗ trợ `WITH cte`
+Dùng raw query hoặc sub-select. Check library version trước khi viết query phức tạp.
+
+### D.3.3 — Port default mismatch (B7)
+- `server/config.py:19` → default SERVER_PORT=8000
+- `worker/main.py:29` → default SERVER_URL=http://localhost:8080
+- Docker override = 8080
+
+**Fix:** chuẩn hoá tất cả = 8080.
+
+### D.3.4 — WebSocket auth
+Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public phải thêm token.
+
+### D.3.5 — CORS
+`server/app.py` CORS allow `*` → DEV only. Deploy cần siết.
+
+### D.3.6 — Chains table unused (B4)
+`chains` table tạo nhưng không insert. Nếu muốn chain status aggregated → cần implement insert/update, hoặc compute on-demand từ `SELECT chain_id, status FROM jobs GROUP BY chain_id`.
+
+---
+
+## D.4 — Known bugs trong code hiện tại (B1-B9)
+
+> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng.
+
+### B1 — Aspect ratio stub (P0)
+- File: `flow/operations/generate.py:187` → `_set_aspect_ratio()`
+- Triệu chứng: job có `aspect_ratio="9:16"` nhưng video output luôn 16:9
+- Fix: implement thực click vào ratio selector UI
+
+### B2 — Bbox không verify (P0)
+- File: `flow/operations/insert.py`, `remove.py`
+- Triệu chứng: bbox nằm ngoài canvas → Flow dùng vùng default, user không biết
+- Fix: sau drag, verify bằng DOM có hiện overlay rect không; nếu không → retry hoặc fail
+
+### B3 — Camera preset không verify (P0)
+- File: `flow/operations/camera.py:108`
+- Triệu chứng: click trật preset → submit với default
+- Fix: sau click, check preset có active class (thường `aria-pressed="true"` hoặc border highlight)
+
+### B4 — Chains table không dùng (P2, defer)
+- File: `server/db/database.py:12-20`
+- Không ảnh hưởng correctness
+- Defer đến khi cần chain-level analytics
+
+### B5 — `completed_at` không set (P1)
+- File: `worker/dispatcher.py` hoặc `server/db/job_store.py`
+- Triệu chứng: cột NULL sau khi complete
+- Fix: set `completed_at=datetime.now(UTC)` khi status→completed
+
+### B6 — Profile.current_job_id không reset (P1)
+- File: `worker/profile_manager.py` hoặc completion flow
+- Triệu chứng: UI profile page hiển thị job cũ mãi
+- Fix: reset khi worker mark_available(profile)
+
+### B7 — Port mismatch (P0)
+- Files: `server/config.py:19`, `worker/main.py:29`
+- Fix: thống nhất 8080 everywhere
+
+### B8 — datetime.utcnow deprecated (P1)
+- Triệu chứng: worker_err.log DeprecationWarning
+- Fix: replace toàn bộ `datetime.utcnow()` → `datetime.now(UTC)` trong codebase
+
+### B9 — Zero test coverage (P0)
+- `tests/` rỗng
+- Fix: viết 6 test files theo §A.4, target ≥ 70% coverage server+worker
+
+---
+
+# PHẦN E — DEBUG PLAYBOOK
+
+## E.1 — Theo triệu chứng
+
+| Triệu chứng | Nghi ngờ | File cần check đầu tiên | Log cần bật |
+|---|---|---|---|
+| Job stuck ở `pending` mãi | Worker không poll hoặc profile mismatch | `worker/main.py`, `server/db/job_store.py:claim_next_job` | worker_out.log |
+| Job stuck ở `claimed` > 30 phút | Worker crashed | Settings → Recover Stale | — |
+| Browser không mở | FlowClient config sai | `flow/client.py`, check `FLOW_REAL_CHROME` env | stderr |
+| Chrome launch lỗi profile lock | Chrome cũ chưa close | `flow/client.py` profile clone logic | — |
+| Không login được | AIgglog chưa cache cookies | `flow/login.py`, profile dir | login log |
+| Homepage không load | Network issue / redirect | `flow/operations/generate.py:51` | page console |
+| Submit không nhận | 4 signals đều miss | `flow/submit.py` | `client._calls` dump |
+| Progress stuck 0% | Gen không start | `flow/wait.py` DOM observer | injected JS log |
+| Progress stuck > 0% nhưng không xong | Flow server slow / stuck | `flow/wait.py` no-signal timeout | — |
+| Video không tải | 4-tier fallback fail hết | `flow/download.py` | network capture |
+| Media_id wrong sau op | URL parsing sai | `flow/media_id.py:normalize_media_id` | URL log |
+| Wrong account | Profile pinning break (INV-1) | `server/db/job_store.py:claim_next_job:231` | claim log |
+| Project 404 | profile không match account của project | `job.profile` vs parent.profile | — |
+| reCAPTCHA | Google flag account | `flow/recaptcha.py` — manual solve | screen |
+| Model selector đóng sớm | Dùng Escape thay vì click-outside | `flow/model_selector.py` | — |
+| Credits > 0 khi submit | Không phải LP model | `flow/model_selector.py:238` footer check | — |
+| Job completed nhưng output_files=[] | Download 4 tier fail | `flow/download.py` | download log |
+| UI không update realtime | WebSocket disconnect | `frontend/js/ws.js` reconnect logic | browser console |
+| Port connection refused | B7 mismatch | `server/config.py` vs `worker/main.py` | — |
+
+## E.2 — Quick commands
+
+### Start dev local
+```cmd
+cd D:\AI\FlowEngine
+scripts\start_all.cmd
+```
+
+### Check server health
+```bash
+curl http://localhost:8080/health
+```
+
+### Check job counts
+```bash
+curl http://localhost:8080/api/jobs/counts
+```
+
+### Recover stale jobs
+```bash
+curl -X POST http://localhost:8080/api/jobs/recover
+```
+
+### Check worker logs
+```bash
+tail -f worker_out.log
+tail -f worker_err.log
+```
+
+### Dump DB
+```bash
+sqlite3 data/flowengine.db ".schema"
+sqlite3 data/flowengine.db "SELECT id, type, status, profile FROM jobs ORDER BY created_at DESC LIMIT 20;"
+```
+
+### Kill stuck Chrome (Windows)
+```cmd
+taskkill /F /IM chrome.exe
+```
+
+---
+
+# PHẦN F — GLOSSARY
+
+| Term | Định nghĩa |
+|---|---|
+| **FlowEngine** | Hệ thống này — browser automation cho Google Flow |
+| **Google Flow** | Công cụ AI video của Google (labs.google/fx/tools/flow) |
+| **Profile** | Chrome user-data directory, 1-1 map với 1 Google account |
+| **Project** | Flow project — canvas chứa nhiều media item |
+| **Media item / media_id** | 1 video (hoặc image) trong project, có UUID riêng |
+| **edit_url** | `{project_url}/edit/{media_id}` — URL đi thẳng đến 1 video |
+| **L1 (Level 1)** | Job standalone — text-to-video (tạo project mới) |
+| **L2 (Level 2+)** | Job phụ thuộc parent — extend/insert/remove/camera |
+| **Chain** | Chuỗi N job liên tiếp chia sẻ cùng chain_id, cùng profile, cùng project |
+| **LP model** | "Lower Priority" — Veo 3.1 Fast/Lite với 0 credits |
+| **Bbox** | Bounding box `{x,y,w,h}` normalized 0-1, dùng cho insert/remove |
+| **Direction** | Tên preset camera (e.g. "Dolly in", "Orbit left") |
+| **ULTRA tier** | Google Flow tier có nhiều LP slots |
+| **AIgglog** | External tool auto-login Google account vào Chrome profile |
+| **CDP** | Chrome DevTools Protocol — launch mode dùng Chrome real (Windows) |
+| **Playwright persistent** | Launch mode dùng Chromium embedded (Docker) |
+| **INV-x** | Invariant (bất biến) — rule tuyệt đối không được vi phạm |
+| **R-xxx-y** | Rule cụ thể theo category (CODE / GIT / TEST / CC) |
+| **B1-B9** | 9 bugs hiện tại cần fix trong Phase A (xem §D.4) |
+| **Bug #2-#8** | 7 bugs cũ đã fix và merged (xem CLAUDE.md §6) |
+| **Phase A** | Fix 9 gaps B1-B9 |
+| **Phase B** | Viết test coverage |
+| **Phase C** | Manual E2E smoke test |
+
+---
+
+## G — External references
+
+### G.1 — flowkit (crisng95/flowkit)
+URL: https://github.com/crisng95/flowkit
+License: MIT
+Approach: Chrome Extension (MV3) + Python agent (WebSocket bridge) — thao tác Google Flow ở **API level** thay vì UI level.
+
+**Đọc ngày:** 2026-04-17
+
+**Value cho FlowEngine:**
+- ✅ Xác minh **LP model internal key** (§D.1.13) — giúp `_select_lp_model()` verify bằng network intercept.
+- ✅ Cung cấp pattern **tier detection qua `/v1/credits`** (§D.2.7) — dùng cho LP model routing post-Phase-A.
+- ✅ Cung cấp pattern **fresh URL refresh qua TRPC intercept** (§D.2.8) — fallback khi signed URL hết hạn.
+- ✅ Xác nhận rằng FlowEngine UI automation là **con đường duy nhất** cho insert/remove/camera (flowkit không support 3 op này — chỉ Google Flow UI mới có).
+
+**KHÔNG áp dụng:**
+- ❌ Không thay thế được Playwright approach của ta (4/5 operations là UI-only).
+- ❌ flowkit's chain (start+end frame) ≠ FlowEngine extend (§D.1.14) — semantics khác, media_id khác.
+- ❌ Pipeline cao hơn của flowkit (TTS, YouTube, Suno music) ngoài scope FlowEngine.
+
+**Key files đã đọc reference:**
+- `agent/services/flow_client.py` — full API client với endpoint map
+- `agent/models.json` — model key catalog (Veo 3.1 tiers)
+- `extension/background.js` — token capture + API proxy pattern
+- `extension/injected.js` — grecaptcha solver + TRPC intercept
+- `agent/services/scene_chain.py` — chain semantics (different from ours)
+- `agent/worker/processor.py` — rate limit + polling pattern
+- `agent/sdk/services/operations.py` — r2v reference image logic
+
+---
+
+## ĐỌC TIẾP
+
+- `docs/DESIGN.md` — high-level design summary
+- `docs/FLOW_UI_REFERENCE.md` — UI labels + DOM selectors (VI + EN)
+- `docs/FLOW_PIPELINE_KNOWLEDGE.md` — technical pipeline reference
+- `docs/FLOW_MULTILEVEL_JOBS.md` — multi-level design + live test results
+- `CLAUDE.md` — Claude Code context + bug history
+- `PLAN.md` — historical planning (Phase 1-5 checklist)
+
+## KHI NÀO UPDATE FILE NÀY
+
+1. Khi đóng 1 bug B1-B9 → update §D.4 (strike-through + commit hash)
+2. Khi thêm rule mới → update §A
+3. Khi đổi pipeline → update §B
+4. Khi đổi API contract → update §C
+5. Khi phát hiện gotcha mới → update §D
+6. Khi đọc/tham khảo dự án mở khác → update §G
+
+**Mọi thay đổi file này = commit riêng với message `docs(spec): ...`**
