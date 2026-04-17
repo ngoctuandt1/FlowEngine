@@ -8,7 +8,7 @@
     { id: 'extend', label: 'Extend', icon: 'add_to_queue' },
     { id: 'insert', label: 'Insert', icon: 'add_box' },
     { id: 'remove', label: 'Remove', icon: 'delete_sweep' },
-    { id: 'camera', label: 'Camera', icon: 'videocam_off' },
+    { id: 'camera-move', label: 'Camera', icon: 'videocam_off' },
   ];
 
   const CAMERA_PRESETS = [
@@ -33,7 +33,7 @@
       prompt: '',
       model: '',
       aspect_ratio: '',
-      camera_direction: '',
+      direction: '',
       bbox: null,
     });
     refreshSteps();
@@ -98,7 +98,7 @@
     let html = '';
 
     // Prompt (for t2v, extend, insert)
-    if (step.type !== 'remove' && step.type !== 'camera') {
+    if (step.type !== 'remove' && step.type !== 'camera-move') {
       const req = step.type === 'text-to-video' || step.type === 'insert';
       html += `
         <div class="form-group" style="margin-bottom:12px">
@@ -138,16 +138,16 @@
       `;
     }
 
-    // Camera direction
-    if (step.type === 'camera') {
+    // Camera direction (maps to backend `direction` field)
+    if (step.type === 'camera-move') {
       const camOpts = CAMERA_PRESETS.map(
         (p) =>
-          `<option value="${p}" ${step.camera_direction === p ? 'selected' : ''}>${p}</option>`
+          `<option value="${p}" ${step.direction === p ? 'selected' : ''}>${p}</option>`
       ).join('');
       html += `
         <div class="form-group" style="margin-bottom:12px">
           <label class="form-label">Direction <span class="required">*</span></label>
-          <select class="form-select step-field" data-step="${index}" data-field="camera_direction">
+          <select class="form-select step-field" data-step="${index}" data-field="direction">
             <option value="">Select preset...</option>
             ${camOpts}
           </select>
@@ -217,7 +217,7 @@
       if (s.type === 'insert' && !s.prompt.trim()) {
         return `Step ${i + 1} (Insert) requires a prompt.`;
       }
-      if (s.type === 'camera' && !s.camera_direction) {
+      if (s.type === 'camera-move' && !s.direction) {
         return `Step ${i + 1} (Camera) requires a direction.`;
       }
     }
@@ -231,7 +231,7 @@
         if (s.prompt) step.prompt = s.prompt;
         if (s.model) step.model = s.model;
         if (s.aspect_ratio) step.aspect_ratio = s.aspect_ratio;
-        if (s.camera_direction) step.camera_direction = s.camera_direction;
+        if (s.direction) step.direction = s.direction;
         return step;
       }),
     };

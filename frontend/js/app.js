@@ -256,6 +256,7 @@ const App = {
       'insert': 'add_box',
       'remove': 'delete_sweep',
       'camera': 'videocam_off',
+      'camera-move': 'videocam_off',
     };
     return icons[type] || 'work';
   },
@@ -271,6 +272,7 @@ const App = {
       'insert': 'insert',
       'remove': 'remove',
       'camera': 'camera',
+      'camera-move': 'camera',
     };
     return classes[type] || '';
   },

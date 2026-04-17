@@ -8,7 +8,7 @@
     { id: 'extend', label: 'Extend', icon: 'add_to_queue', shortLabel: 'Extend' },
     { id: 'insert', label: 'Insert', icon: 'add_box', shortLabel: 'Insert' },
     { id: 'remove', label: 'Remove', icon: 'delete_sweep', shortLabel: 'Remove' },
-    { id: 'camera', label: 'Camera', icon: 'videocam_off', shortLabel: 'Camera' },
+    { id: 'camera-move', label: 'Camera', icon: 'videocam_off', shortLabel: 'Camera' },
   ];
 
   const MODELS = [
@@ -137,8 +137,8 @@
       `);
     }
 
-    // Camera direction (for camera type)
-    if (selectedType === 'camera') {
+    // Camera direction (for camera-move type)
+    if (selectedType === 'camera-move') {
       const dirOptions = CAMERA_PRESETS.map(
         (p) => `<option value="${p}">${p}</option>`
       ).join('');
@@ -188,9 +188,9 @@
       };
     }
 
-    // Camera direction
+    // Camera direction (maps to backend `direction` field)
     const camDir = document.getElementById('field-camera-direction')?.value;
-    if (camDir) data.camera_direction = camDir;
+    if (camDir) data.direction = camDir;
 
     return data;
   }
@@ -202,7 +202,7 @@
     if (data.type === 'insert' && !data.prompt) {
       return 'Prompt is required for Insert jobs.';
     }
-    if (data.type === 'camera' && !data.camera_direction) {
+    if (data.type === 'camera-move' && !data.direction) {
       return 'Camera direction is required.';
     }
     if (data.type !== 'text-to-video' && !data.parent_job_id && !data.project_url) {
