@@ -126,6 +126,29 @@ Body: "Closes #N"
 | #7 | `claude/bug-7-project-lock` | `ProjectLock` — one job per `project_url` |
 | #8 | `claude/bug-8-lp-credit-leak` | LP model selector: click-to-dismiss, not Escape |
 
+**Phase A (B1-B12) — all merged to `master`** as of 2026-04-17. Docs trilogy workflow
+(`docs/DESIGN.md` + `docs/SPEC.md` + `docs/WORKPLAN.md` + `docs/session-reports/`).
+
+| Bug | Commit | Fix |
+|---|---|---|
+| B7 | `a95c9b5` | Unify server port default 8000 → 8080 |
+| B9 | `adca116` | Test foundation (pytest + fixtures + temp DB + api_client) |
+| B8 | `573cffd` | Migrate 7× `datetime.utcnow()` → `datetime.now(UTC)` |
+| B5 | `4d24c10` | Auto-set `completed_at` on terminal job status |
+| B6 | `0118e6d` | Track `profiles.current_job_id` on claim/complete |
+| B1 | `b359c84` | Aspect ratio via Radix chip + `[id$="-trigger-PORTRAIT\|LANDSCAPE"]` |
+| B2 → B11 | `a165105` → `ce6683a` | Bbox: target largest `<canvas>` (≥300px), pointer-trust verify (was: wrong `<video>` thumbnail) |
+| B3 → B12 | `58937d4` → `78d3e40` | Camera preset: verify via `getComputedStyle(labelDiv).color` R+G+B<400 (was: aria-pressed signals never present) |
+| B4 | — | Deferred (chains table unused, P2) |
+| B10 | — | Deferred post-Phase-A (Pydantic `default_factory=datetime.utcnow` residual, P2) |
+| B13 | inline `9facbe3` | Resolved inline (docs cleanup) |
+
+**Validation tiers:**
+- Tier 1 round 1 (`9facbe3`) — Chrome MCP live DOM probe: B1 ✅; B2/B3 ❌ flipped → B11/B12 created
+- Tier 1 round 2 (`db4c746`) — re-probe after fixes: B11/B12 ✅ verified live
+
+**Tag:** `v0.2.0-phase-a` at `db4c746`.
+
 For future epics: create `docs/PRD_<EPIC>.md`, open issues on GitHub, branch `claude/bug-N-slug`
 per issue, one PR per issue with `Closes #N`.
 
