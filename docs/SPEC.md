@@ -35,7 +35,7 @@
   - [D.1 — Google Flow UI gotchas](#d1--google-flow-ui-gotchas)
   - [D.2 — Playwright / Chrome gotchas](#d2--playwright--chrome-gotchas)
   - [D.3 — Server / DB gotchas](#d3--server--db-gotchas)
-  - [D.4 — Known bugs trong code hiện tại (B1-B9)](#d4--known-bugs-trong-code-hiện-tại-b1-b9)
+  - [D.4 — Known bugs trong code hiện tại (B1-B15)](#d4--known-bugs-trong-code-hiện-tại-b1-b15)
 - [PHẦN E — DEBUG PLAYBOOK](#phần-e--debug-playbook)
 - [PHẦN F — GLOSSARY](#phần-f--glossary)
 - [PHẦN G — EXTERNAL REFERENCES](#g--external-references)
@@ -1222,9 +1222,9 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 ---
 
-## D.4 — Known bugs trong code hiện tại (B1-B14)
+## D.4 — Known bugs trong code hiện tại (B1-B15)
 
-> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14 là stash-triage cherry-pick (2026-04-17).
+> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B15 là stash-triage cherry-picks (2026-04-17).
 
 ### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17)
 - File: `flow/operations/generate.py` → `_set_aspect_ratio()`
@@ -1364,6 +1364,36 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
   - `test_click_tile_priority2_falls_back_to_data_tile_id` — JS returns None → `[data-tile-id].first` clicked, not `video.first`.
   - `test_click_tile_no_media_id_skips_js_priority` — no media_id → `page.evaluate` never called; goes straight to locator fallback. Keeps legacy L1-only call sites working.
 - Session report: `docs/session-reports/2026-04-17_B14_base-nav-verify.md`.
+
+### ~~B15 — Extend panel silent fail + thin submit diagnostics + DOM-order-only Slate selector (P1)~~ ✅ FIXED (commit `<B15-COMMIT>`)
+- Cherry-picked from `stash@{0}` via triage `docs/session-reports/2026-04-17_stash-triage_flow-refinements.md` §7 KEEP-4 + KEEP-5 + KEEP-6. Three small hunks on `flow/operations/extend.py`.
+- File: `flow/operations/extend.py` — `extend_video` (Step 3.5 call + submit diagnostic block) + new `_verify_extend_panel` helper + `_type_extend_prompt` (Method 1 prepended).
+- Three independent problems:
+  1. **Silent panel-open failure.** Master's `extend_video` clicks Extend, then goes straight to typing the prompt. If the panel fails to open (UI race, Flow SPA loading state, click landed on disabled button, stale action-bar render), `_type_extend_prompt` finds only the main composer's Slate editor, types into it (contaminating the main prompt), and the flow eventually times out at submit — 15s later, with no diagnostic of what went wrong.
+  2. **Thin submit failure diagnostics.** When `submit_with_confirmation` returns False, master raises `RuntimeError("Extend submit not confirmed")` with no page state. Post-mortem has to re-run the job with full logging; the raise itself doesn't capture the URL or editor count at timeout.
+  3. **DOM-order-only Slate selector.** Master's `_type_extend_prompt` identifies the extend panel's editor purely by position (last `[data-slate-editor='true']` in DOM). This works when DOM order is stable but depends on Flow rendering the extend panel AFTER the main composer. A more precise selector (`[data-scroll-state='START'] [data-slate-editor='true']`) targets the panel by an extend-specific attribute rather than ordering.
+- Runtime effect (pre-fix): extend jobs hitting a panel-open race fail silently through prompt-typing into wrong editor, then submit times out 15s later with only "Extend submit not confirmed". Operator has no signal whether the issue is the click, the panel, the prompt, or the submit itself.
+- **Resolution (commit `<B15-COMMIT>`):**
+  - **KEEP-4 (panel verify).** New helper `_verify_extend_panel(page, timeout_sec=5.0)` polls `[data-slate-editor='true']` count and `[data-scroll-state='START']` count every 0.5s for up to 5s. Returns True on `editors >= 2` OR `panels >= 1` (either signal confirms the extend panel mounted); False on timeout (with ERROR log of final editor count for diagnosis). Called between Step 3 (click Extend) and Step 4 (type prompt) as "Step 3.5". On False, `extend_video` raises `RuntimeError("Extend panel did not open after clicking Extend button")` — fail-fast with a specific message, not a 15s submit timeout.
+  - **KEEP-5 (submit diagnostics).** When `submit_with_confirmation` returns False, log ERROR with `url=%s editors=%d` (URL truncated to 100 chars, editor count for panel-still-open check) BEFORE raising. Raise message updated to `"Extend submit not confirmed — generation did not start"` (more specific than master's bare wording; clarifies the failure is at confirmation, not click).
+  - **KEEP-6 (scroll-state-aware Slate selector — partial).** `_type_extend_prompt` now tries a NEW Method 1 (`page.locator("[data-scroll-state='START'] [data-slate-editor='true']")`) BEFORE the existing Method 2 (last Slate editor in DOM). Method 1 is extend-panel-specific; Method 2 is the master heuristic, unchanged. If both fail, the 4 master placeholder/aria-label fallbacks still run (see rejection below).
+  - Explicit rejection from the stash (supervisor decision per triage §7):
+    - **H5 (placeholder fallback removal)** — REJECTED. Stash removes the 4 `[placeholder*='next' i]`, `[placeholder*='tiếp' i]`, `[placeholder*='tiep' i]`, `[aria-label*='extend' i]` fallbacks after the two Slate methods. Supervisor preserves them as defense-in-depth: if both Slate selectors miss (unknown Flow DOM refactor), the placeholder-based fallbacks are a last chance before the flow proceeds without a prompt. Cost is 4 extra selector probes on the rare Slate-miss path — acceptable.
+  - `finalize_operation` and downstream state-storage (B11 canvas bbox, B14 tile click) untouched.
+- Guard: `tests/test_extend.py` — 12 cases:
+  - `test_verify_returns_true_on_two_slate_editors` — `editors=2` → True + INFO.
+  - `test_verify_returns_true_via_scroll_state` — `editors=1, panels=1` → True via scroll-state signal + INFO.
+  - `test_verify_returns_false_on_timeout` — `editors=1, panels=0` persistent → False + ERROR.
+  - `test_verify_checks_both_selectors` — contract trip-wire: helper probes both `[data-slate-editor='true']` AND `[data-scroll-state='START']`. Prevents regression to a single-signal check.
+  - `test_extend_raises_when_panel_not_open` — Step 3.5: `_verify_extend_panel` False → `RuntimeError("Extend panel did not open")`; `submit_with_confirmation` / `finalize_operation` NOT called (fail-fast).
+  - `test_extend_proceeds_when_panel_open` — panel open → type + select + submit + finalize all reached; result passes through.
+  - `test_extend_submit_failure_logs_diagnostics` — submit False → ERROR with `url=...` AND `editors=...`; raises `"generation did not start"`.
+  - `test_extend_submit_success_skips_diagnostic_log` — negative contract: success path leaves no `"not confirmed"` ERROR.
+  - `test_type_extend_prompt_method1_uses_scroll_state` — Method 1 selector found + visible → click + type via it; Method 2 NOT consulted.
+  - `test_type_extend_prompt_method1_contract_selector` — contract trip-wire: Method 1 compound selector probed BEFORE Method 2's bare `[data-slate-editor='true']`. Prevents silent regression to a Method-2-only implementation.
+  - `test_type_extend_prompt_falls_back_to_last_slate` — Method 1 count=0 → Method 2 clicks `editors.nth(count-1)` (master's "last Slate" behavior preserved); log contains "slate editor".
+  - `test_type_extend_prompt_preserves_placeholder_fallbacks` — H5 REJECTED contract: the 4 placeholder/aria-label selectors MUST still be probed when both Methods 1+2 miss. Prevents silent drift toward stash's removal.
+- Session report: `docs/session-reports/2026-04-17_B15_extend-panel-verify.md`.
 
 ---
 

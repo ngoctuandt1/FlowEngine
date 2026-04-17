@@ -123,6 +123,13 @@ async def extend_video(
             pass
         raise RuntimeError("Failed to find Extend button")
 
+    # Step 3.5: Verify extend panel opened
+    # Extend panel adds a SECOND Slate editor. Wait for it.
+    await asyncio.sleep(1)
+    panel_open = await _verify_extend_panel(page)
+    if not panel_open:
+        raise RuntimeError("Extend panel did not open after clicking Extend button")
+
     # Step 4: Type prompt (optional)
     if prompt:
         await _type_extend_prompt(page, prompt)
@@ -140,7 +147,17 @@ async def extend_video(
         prompt_text=prompt,
     )
     if not confirmed:
-        raise RuntimeError("Extend submit not confirmed")
+        # Log page state for diagnosis
+        try:
+            url = page.url
+            editors = await page.locator("[data-slate-editor='true']").count()
+            logger.error(
+                "Extend submit not confirmed. url=%s editors=%d",
+                url[:100], editors,
+            )
+        except Exception:
+            pass
+        raise RuntimeError("Extend submit not confirmed — generation did not start")
 
     # Step 7: Wait + Download + Return
     return await finalize_operation(
@@ -152,6 +169,39 @@ async def extend_video(
     )
 
 
+async def _verify_extend_panel(page, timeout_sec: float = 5.0) -> bool:
+    """Verify the extend panel opened by checking for a second Slate editor.
+
+    The extend panel adds a new Slate editor (data-slate-editor) for the
+    extend prompt. The main composer already has one, so we expect >= 2.
+    Also checks for extend-specific UI: "Bắt đầu"/"Start" toggle, or
+    scroll-state attribute on the panel.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            editors = await page.locator("[data-slate-editor='true']").count()
+            if editors >= 2:
+                logger.info("Extend panel verified: %d slate editors found", editors)
+                return True
+            # Also check for data-scroll-state="START" (extend panel attribute)
+            panels = await page.locator("[data-scroll-state='START']").count()
+            if panels >= 1:
+                logger.info("Extend panel verified via data-scroll-state")
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+
+    # Log what we see for debugging
+    try:
+        editors = await page.locator("[data-slate-editor='true']").count()
+        logger.error("Extend panel NOT detected: only %d slate editors", editors)
+    except Exception:
+        pass
+    return False
+
+
 async def _type_extend_prompt(page, prompt: str):
     """Type into the extend prompt field inside the extend panel.
 
@@ -159,6 +209,22 @@ async def _type_extend_prompt(page, prompt: str):
     Its textbox has placeholder "What happens next?" (EN) / "Tiếp theo là gì?" (VI).
     Must NOT type into the main composer textbox at the bottom of the page.
     """
+    # Method 1: target the extend panel's editor by data-scroll-state
+    try:
+        panel = page.locator("[data-scroll-state='START'] [data-slate-editor='true']")
+        if await panel.count() > 0:
+            el = panel.first
+            if await el.is_visible(timeout=2000):
+                await el.click(timeout=2000)
+                await asyncio.sleep(0.3)
+                await page.keyboard.press("Control+a")
+                await asyncio.sleep(0.1)
+                await page.keyboard.type(prompt, delay=20)
+                logger.info("Extend prompt typed via data-scroll-state editor")
+                return
+    except Exception as e:
+        logger.debug("data-scroll-state editor failed: %s", e)
+
     # The extend panel has a Slate.js editor (data-slate-editor="true").
     # The main composer ALSO has one, so we must pick the LAST one
     # (extend panel renders after composer in DOM).
