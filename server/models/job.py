@@ -115,3 +115,4 @@ class JobUpdate(BaseModel):
     output_files: Optional[list[str]] = None
     generation_id: Optional[str] = None
     error: Optional[str] = None
+    completed_at: Optional[datetime] = None

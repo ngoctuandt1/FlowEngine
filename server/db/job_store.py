@@ -139,6 +139,17 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
     if not fields:
         return await get_job(job_id)
 
+    # B5: stamp completed_at when the caller moves the job into a terminal
+    # state but didn't set the timestamp themselves. Explicit caller wins.
+    new_status = fields.get("status")
+    if new_status is not None:
+        status_value = new_status.value if hasattr(new_status, "value") else new_status
+        if (
+            status_value in {"completed", "failed", "cancelled"}
+            and "completed_at" not in fields
+        ):
+            fields["completed_at"] = _now_iso()
+
     sets: list[str] = []
     params: list = []
 
@@ -149,6 +160,9 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
         elif key == "status":
             sets.append("status = ?")
             params.append(value.value if isinstance(value, JobStatus) else value)
+        elif key == "completed_at":
+            sets.append("completed_at = ?")
+            params.append(value.isoformat() if isinstance(value, datetime) else value)
         else:
             sets.append(f"{key} = ?")
             params.append(value)

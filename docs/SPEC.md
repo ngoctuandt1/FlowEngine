@@ -702,7 +702,7 @@ OUTPUT: same shape
 1. Dispatcher sau khi op handler return:
    result = {
      status: "completed",      ← dispatcher thêm
-     completed_at: now(),      ← dispatcher thêm (⚠️ HIỆN TẠI CHƯA SET, B5)
+     completed_at: now(),      ← auto-stamped by job_store.update_job (B5)
      project_url, media_id, edit_url, profile,
      output_files, generation_id, error: None
    }
@@ -897,7 +897,7 @@ class Job(BaseModel):
     # Worker tracking
     worker_id: Optional[str]          # Which worker claimed
     claimed_at: Optional[datetime]
-    completed_at: Optional[datetime]  # ⚠️ B5: hiện chưa set
+    completed_at: Optional[datetime]  # auto-set by update_job on terminal status (B5)
     error: Optional[str]
     
     # Timestamps
@@ -1251,10 +1251,10 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Không ảnh hưởng correctness
 - Defer đến khi cần chain-level analytics
 
-### B5 — `completed_at` không set (P1)
-- File: `worker/dispatcher.py` hoặc `server/db/job_store.py`
-- Triệu chứng: cột NULL sau khi complete
-- Fix: set `completed_at=datetime.now(UTC)` khi status→completed
+### ~~B5 — `completed_at` không set (P1)~~ ✅ FIXED (commit `<this-commit>`)
+- File: `server/db/job_store.py:update_job`
+- Triệu chứng: cột NULL sau khi complete — không caller nào từng set timestamp này
+- Fix: `update_job` tự stamp `completed_at = _now_iso()` khi `status` ∈ {completed, failed, cancelled} và caller không set explicit. `JobUpdate` mở rộng thêm field `completed_at` (optional) để caller vẫn có thể override. Guard: `tests/test_job_store.py` (4 cases: auto-set on completed / failed, explicit wins, non-terminal no-op).
 
 ### B6 — Profile.current_job_id không reset (P1)
 - File: `worker/profile_manager.py` hoặc completion flow
