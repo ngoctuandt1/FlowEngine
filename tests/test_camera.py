@@ -1,24 +1,30 @@
-"""B3 — unit tests for `_click_preset` + `_verify_preset_selected` in
+"""B12 — unit tests for `_click_preset` + `_verify_preset_selected` in
 `flow/operations/camera.py`.
 
-The helper does 3 ordered strategies on a Playwright `page`:
+Post-B12, `_click_preset` uses exactly one click strategy:
+  `page.get_by_text(direction, exact=True).first` — Playwright exact-text.
 
-1. `page.locator("[aria-label='<dir>']").first` — exact attribute match.
-2. `page.locator("[role='button']").filter(has_text=re.compile("^<dir>$")).first`
-   — role-based + anchored regex (no partial match).
-3. `page.get_by_text(direction, exact=True).first` — Playwright exact-text.
+The pre-B12 strategies `[aria-label='<direction>']` and
+`page.locator("[role='button']").filter(has_text=...)` were pruned as dead:
+Tier1 live-DOM probing (2026-04-17) confirmed they return 0 elements on
+production Flow — presets lack `aria-label` and no element on the page has
+an explicit `role="button"` attribute (Flow uses `<button>` tags, which
+Playwright's CSS `[role='button']` does NOT match as it is strict-attribute).
+Evidence: `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B3.
 
-After each click, `_verify_preset_selected` checks the preset has an active-
-state signal (aria-pressed / aria-selected / class keyword). `page.evaluate`
-is called with the direction as the only argument.
+After click, `_verify_preset_selected` reads `getComputedStyle(labelDiv).color`
+on the inner label DIV inside the preset BUTTON via a single `page.evaluate`.
+The JS returns:
+  - True  when R+G+B sum < 400 (selected ≈ rgb(48, 48, 48), sum 144)
+  - False otherwise (unselected ≈ rgb(255, 255, 255), sum 765, OR label
+    DIV not found, OR color fails to parse as rgb(...))
 
 Tests mock `page` with `AsyncMock` / `MagicMock` — no Playwright runtime.
-Manual E2E (POST camera job with preset, verify output motion) is a
-supervisor-side task after merge (WORKPLAN §5.2 Test 4).
+Manual E2E (POST camera job, verify output motion) is supervisor-side
+after merge (WORKPLAN §5.2 Test 4).
 """
 
 import logging
-import re
 from unittest.mock import AsyncMock, MagicMock
 
 from flow.operations.camera import _click_preset, _verify_preset_selected
@@ -26,8 +32,7 @@ from flow.operations.camera import _click_preset, _verify_preset_selected
 
 def _make_locator(visible=True, click_raises=False):
     """Build a MagicMock locator chain. `.first` self-references so `.first.first`
-    still works; `.filter(...)` returns a fresh-configurable inner locator by
-    default (overridden per-test when we need to capture filter args)."""
+    still works."""
     loc = MagicMock()
     loc.first = loc
     loc.is_visible = AsyncMock(return_value=visible)
@@ -35,126 +40,44 @@ def _make_locator(visible=True, click_raises=False):
         loc.click = AsyncMock(side_effect=Exception("click failed"))
     else:
         loc.click = AsyncMock()
-    loc.filter = MagicMock(return_value=loc)
     return loc
 
 
-async def test_click_preset_aria_label_wins(caplog):
-    """B3: Strategy 1 (aria-label exact) succeeds + verify True → return True."""
-    aria_loc = _make_locator(visible=True)
-    fallback = _make_locator(visible=False)
+# ---------------------------------------------------------------------------
+# _verify_preset_selected — color-based signal
+# ---------------------------------------------------------------------------
 
-    def route(selector):
-        if "aria-label" in selector:
-            return aria_loc
-        return fallback
 
+async def test_verify_returns_true_on_dim_color(caplog):
+    """B12: selected preset → JS returns True (label color dim) → verify True + INFO."""
     page = MagicMock()
-    page.locator = MagicMock(side_effect=route)
-    page.get_by_text = MagicMock(return_value=_make_locator(visible=False))
-    page.evaluate = AsyncMock(return_value=True)  # verify → active
+    # Simulate JS-side: found label DIV with computed color rgb(48,48,48)
+    # (sum 144 < 400 threshold) → evaluate resolves to True.
+    page.evaluate = AsyncMock(return_value=True)
 
     with caplog.at_level(logging.INFO, logger="flow.operations.camera"):
-        result = await _click_preset(page, "Dolly in")
+        result = await _verify_preset_selected(page, "Low")
 
     assert result is True
-    aria_loc.click.assert_awaited_once()
-    # Verify happened → evaluate called exactly once
-    assert page.evaluate.await_count == 1
+    page.evaluate.assert_awaited_once()
+
+    # direction must be passed to evaluate so JS side can match
+    call_args = page.evaluate.await_args
+    assert "Low" in call_args.args, (
+        f"evaluate must be called with direction 'Low', got args={call_args.args}"
+    )
 
     infos = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
     assert any(
-        "aria-label" in m and "Dolly in" in m for m in infos
-    ), f"Expected INFO mentioning aria-label strategy, got: {infos}"
-    assert any(
-        "verified selected" in m.lower() and "Dolly in" in m for m in infos
+        "verified selected" in m.lower() and "Low" in m for m in infos
     ), f"Expected INFO confirming verification, got: {infos}"
 
 
-async def test_click_preset_exact_text_not_partial(caplog):
-    """B3: direction='Low' MUST NOT partial-match 'Lower' in Strategy 2.
-
-    The implementation passes an anchored regex to `filter(has_text=...)`.
-    This test captures that regex and asserts: fullmatch('Low') succeeds,
-    fullmatch('Lower') fails. If either behavior flips, the fix has regressed.
-    """
-    aria_loc = _make_locator(visible=False)  # Strategy 1 fails (no aria-label)
-    role_button_loc = MagicMock()
-    role_button_loc.first = role_button_loc
-
-    captured_patterns = []
-
-    def filter_fn(has_text=None, **_kwargs):
-        captured_patterns.append(has_text)
-        # Simulate: filter returns a locator that is NOT visible for this test
-        # (we just want to capture the pattern, not actually click).
-        inner = _make_locator(visible=False)
-        return inner
-
-    role_button_loc.filter = MagicMock(side_effect=filter_fn)
-
-    def route(selector):
-        if "aria-label" in selector:
-            return aria_loc
-        if "role='button'" in selector or 'role="button"' in selector:
-            return role_button_loc
-        return _make_locator(visible=False)
-
+async def test_verify_returns_false_on_bright_color(caplog):
+    """B12: unselected preset OR label missing → JS returns False → verify False + WARNING."""
     page = MagicMock()
-    page.locator = MagicMock(side_effect=route)
-    page.get_by_text = MagicMock(return_value=_make_locator(visible=False))
-    page.evaluate = AsyncMock(return_value=False)
-
-    with caplog.at_level(logging.ERROR, logger="flow.operations.camera"):
-        result = await _click_preset(page, "Low")
-
-    assert result is False, "All strategies miss → return False"
-
-    # The captured pattern from Strategy 2 must be an anchored regex
-    assert len(captured_patterns) >= 1, "Strategy 2 must call .filter(has_text=...)"
-    pattern = captured_patterns[0]
-    assert isinstance(pattern, re.Pattern), (
-        f"Strategy 2 must pass a compiled regex (anchored), got {type(pattern).__name__}"
-    )
-    assert pattern.fullmatch("Low") is not None, (
-        "Anchored regex must match exactly 'Low'"
-    )
-    assert pattern.fullmatch("Lower") is None, (
-        "Anchored regex MUST NOT match 'Lower' — this was the B3 bug"
-    )
-    assert pattern.fullmatch("low") is None, (
-        "Regex must be case-sensitive (default) — preset labels are Title Case"
-    )
-
-
-async def test_click_preset_all_strategies_fail(caplog):
-    """B3: no strategy finds visible preset → return False + log ERROR."""
-    nothing = _make_locator(visible=False)
-
-    page = MagicMock()
-    page.locator = MagicMock(return_value=nothing)
-    page.get_by_text = MagicMock(return_value=nothing)
-    page.evaluate = AsyncMock(return_value=False)
-
-    with caplog.at_level(logging.ERROR, logger="flow.operations.camera"):
-        result = await _click_preset(page, "Nonexistent Preset")
-
-    assert result is False
-
-    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert any(
-        "could not click+verify" in m.lower() and "Nonexistent Preset" in m
-        for m in errors
-    ), f"Expected ERROR log about click+verify failure, got: {errors}"
-
-    # No click happened (nothing was visible)
-    nothing.click.assert_not_awaited()
-
-
-async def test_verify_returns_false_on_no_active_state(caplog):
-    """B3: click succeeded but no aria-pressed/active-class → verify=False."""
-    page = MagicMock()
-    # evaluate returns False: direction found but no active-state signal
+    # Simulate JS-side: label DIV has color rgb(255,255,255) (sum 765 >= 400)
+    # OR no matching label DIV at all — both paths yield False.
     page.evaluate = AsyncMock(return_value=False)
 
     with caplog.at_level(logging.WARNING, logger="flow.operations.camera"):
@@ -163,51 +86,146 @@ async def test_verify_returns_false_on_no_active_state(caplog):
     assert result is False
     page.evaluate.assert_awaited_once()
 
-    # The evaluate call must have passed direction as the arg
-    call_args = page.evaluate.await_args
-    assert "Center" in call_args.args, (
-        f"evaluate must be called with direction 'Center', got args={call_args.args}"
-    )
-
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert any(
         "not verified active" in m.lower() and "Center" in m for m in warnings
     ), f"Expected WARNING about unverified preset, got: {warnings}"
 
 
-async def test_click_preset_strategy_2_role_button(caplog):
-    """B3: Strategy 1 fails (no aria-label), Strategy 2 (role=button exact) wins."""
-    aria_loc = _make_locator(visible=False)  # Strategy 1: nothing
+async def test_verify_returns_false_on_evaluate_exception(caplog):
+    """B12: page.evaluate raising → verify returns False (swallowed) + WARNING."""
+    page = MagicMock()
+    page.evaluate = AsyncMock(side_effect=Exception("evaluate blew up"))
 
-    # Strategy 2: filter returns a visible locator that clicks successfully
-    strategy_2_inner = _make_locator(visible=True)
-    role_button_loc = MagicMock()
-    role_button_loc.first = role_button_loc
-    role_button_loc.filter = MagicMock(return_value=strategy_2_inner)
+    with caplog.at_level(logging.WARNING, logger="flow.operations.camera"):
+        result = await _verify_preset_selected(page, "Dolly in")
 
-    def route(selector):
-        if "aria-label" in selector:
-            return aria_loc
-        if "role='button'" in selector or 'role="button"' in selector:
-            return role_button_loc
-        return _make_locator(visible=False)
+    assert result is False
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "verify failed" in m.lower() and "Dolly in" in m for m in warnings
+    ), f"Expected WARNING about verify failure, got: {warnings}"
+
+
+async def test_verify_script_uses_computed_color_signal():
+    """B12: the JS sent to page.evaluate must read getComputedStyle.color.
+
+    This is a contract test — the semantic signal per Tier1 §B3 is the
+    computed `color` on the inner label DIV. Any future refactor that
+    drops this signal would reintroduce the B3 regression.
+    """
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=True)
+
+    await _verify_preset_selected(page, "Low")
+
+    call_args = page.evaluate.await_args
+    script = call_args.args[0]
+    assert "getComputedStyle" in script, (
+        "Verify JS must call getComputedStyle (computed-style read)"
+    )
+    assert "color" in script, "Verify JS must read the 'color' property"
+    # Ground-truth colors from Tier1: selected rgb(48,48,48), unselected rgb(255,255,255).
+    # A threshold on the R+G+B sum is the natural discriminator — the sentinel
+    # `rgb` token proves the script is parsing color values.
+    assert "rgb" in script.lower(), "Verify JS must parse rgb(...) color values"
+
+
+# ---------------------------------------------------------------------------
+# _click_preset — single strategy (get_by_text exact=True)
+# ---------------------------------------------------------------------------
+
+
+async def test_click_preset_get_by_text_succeeds(caplog):
+    """B12: get_by_text(exact=True) finds preset + verify True → return True + INFO."""
+    preset_loc = _make_locator(visible=True)
 
     page = MagicMock()
-    page.locator = MagicMock(side_effect=route)
-    page.get_by_text = MagicMock(return_value=_make_locator(visible=False))
-    page.evaluate = AsyncMock(return_value=True)  # verify: active
+    # Explicit mock so we can assert it is NEVER called (pruning contract below).
+    page.locator = MagicMock()
+    page.get_by_text = MagicMock(return_value=preset_loc)
+    page.evaluate = AsyncMock(return_value=True)  # verify: selected
 
     with caplog.at_level(logging.INFO, logger="flow.operations.camera"):
-        result = await _click_preset(page, "Orbit left")
+        result = await _click_preset(page, "Dolly in")
 
     assert result is True
-    strategy_2_inner.click.assert_awaited_once()
-    # aria-label strategy checked visibility first and saw False → no click
-    aria_loc.click.assert_not_awaited()
-    # get_by_text (Strategy 3) never consulted
-    page.get_by_text.assert_not_called()
+    preset_loc.click.assert_awaited_once()
+    # Exactly one verify call — only one strategy remains
+    assert page.evaluate.await_count == 1
+
+    # Pruning contract: strategies 1 (`[aria-label=...]`) and 2 (`[role='button']`)
+    # were removed after Tier1 confirmed they find 0 elements on live Flow DOM.
+    # `page.locator` must NEVER be called for preset lookup — a regression that
+    # reintroduces either strategy would trip this assertion.
+    page.locator.assert_not_called()
+
+    # Strategy contract: get_by_text MUST be called with exact=True to avoid
+    # partial-match hazards (e.g. "Low" colliding with "Lower"). Playwright's
+    # native exact-text matching replaces the pre-B12 anchored-regex strategy.
+    call_args = page.get_by_text.call_args
+    assert "Dolly in" in call_args.args, (
+        f"get_by_text must be called with direction, got {call_args}"
+    )
+    assert call_args.kwargs.get("exact") is True, (
+        f"get_by_text MUST receive exact=True, got kwargs={call_args.kwargs}"
+    )
 
     infos = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
     assert any(
-        "role=button exact" in m and "Orbit left" in m for m in infos
-    ), f"Expected INFO mentioning role=button exact, got: {infos}"
+        "get_by_text" in m and "Dolly in" in m for m in infos
+    ), f"Expected INFO mentioning get_by_text strategy, got: {infos}"
+
+
+async def test_click_preset_returns_false_when_preset_absent(caplog):
+    """B12: no matching preset visible → return False + ERROR. No click."""
+    nothing = _make_locator(visible=False)
+
+    page = MagicMock()
+    page.get_by_text = MagicMock(return_value=nothing)
+    page.evaluate = AsyncMock(return_value=False)
+
+    with caplog.at_level(logging.ERROR, logger="flow.operations.camera"):
+        result = await _click_preset(page, "Nonexistent Preset")
+
+    assert result is False
+    nothing.click.assert_not_awaited()
+    # Verify is never called when nothing was clickable
+    page.evaluate.assert_not_awaited()
+
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any(
+        "could not click+verify" in m.lower() and "Nonexistent Preset" in m
+        for m in errors
+    ), f"Expected ERROR log about click+verify failure, got: {errors}"
+
+
+async def test_click_preset_clicked_but_color_verify_fails(caplog):
+    """B12: preset clicked successfully but color-verify False → return False + ERROR.
+
+    Differs from the 'absent' case — click DID happen + verify DID run,
+    but the computed-color signal came back negative. Since only one
+    strategy remains, there is no fallthrough.
+    """
+    preset_loc = _make_locator(visible=True)
+
+    page = MagicMock()
+    page.get_by_text = MagicMock(return_value=preset_loc)
+    page.evaluate = AsyncMock(return_value=False)  # verify: NOT selected
+
+    with caplog.at_level(logging.WARNING, logger="flow.operations.camera"):
+        result = await _click_preset(page, "Low")
+
+    assert result is False
+    preset_loc.click.assert_awaited_once()
+    page.evaluate.assert_awaited_once()
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "not verified active" in m.lower() and "Low" in m for m in warnings
+    ), f"Expected WARNING from verify step, got: {warnings}"
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any(
+        "could not click+verify" in m.lower() and "Low" in m for m in errors
+    ), f"Expected ERROR after exhausting strategies, got: {errors}"

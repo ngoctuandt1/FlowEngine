@@ -11,7 +11,6 @@ Camera mode is DIFFERENT from other operations:
 
 import asyncio
 import logging
-import re
 
 from flow.submit import submit_with_confirmation
 from flow.operations._base import (
@@ -133,46 +132,20 @@ async def camera_move(
 async def _click_preset(page, direction: str) -> bool:
     """Click a camera preset by name and verify it becomes active.
 
-    Three strategies ordered most-reliable → most-fragile. Each strategy
-    clicks + calls `_verify_preset_selected` before returning True.
-    If a strategy clicks "something" that matched the selector but is not
-    the real preset button, the verify step rejects it and the function
-    falls through to the next strategy. On full exhaustion, logs ERROR
-    and returns False (caller raises RuntimeError in `camera_move`).
+    Uses Playwright's `get_by_text(direction, exact=True)` — the only strategy
+    that matches real Flow DOM. Earlier selector attempts (`[aria-label=...]`,
+    `[role='button']` CSS) were removed after Tier1 live-DOM probing confirmed
+    they find zero elements on production Flow: presets have no `aria-label`
+    and no explicit `role="button"` attribute (they are plain `<button>` tags).
 
-    Partial-text matching is explicitly avoided — direction="Low" must
-    NOT match button "Lower". See `docs/FLOW_UI_REFERENCE.md`
-    §Camera Preset Selection & Active State for selector rationale.
+    Playwright's `exact=True` natively prevents partial matches (direction
+    "Low" will not match a hypothetical "Lower" button), replacing the
+    anchored-regex defense from the pre-B12 implementation.
+
+    See `docs/FLOW_UI_REFERENCE.md` §Camera Preset Selection & Active State
+    and `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B3 for
+    the live-DOM ground truth.
     """
-    # Strategy 1: aria-label exact match (most reliable; locale-stable)
-    try:
-        el = page.locator(f"[aria-label='{direction}']").first
-        if await el.is_visible(timeout=2000):
-            await el.click(timeout=3000)
-            logger.info("Clicked preset via aria-label: %s", direction)
-            await asyncio.sleep(0.5)
-            if await _verify_preset_selected(page, direction):
-                return True
-            logger.debug("Strategy 1 clicked but not verified; falling through")
-    except Exception as e:
-        logger.debug("Strategy 1 (aria-label) failed for %s: %s", direction, e)
-
-    # Strategy 2: role=button filtered by anchored regex (exact-text match)
-    # Using `^...$` anchors prevents partial match (e.g. "Low" → "Lower").
-    try:
-        exact_pattern = re.compile(f"^{re.escape(direction)}$")
-        el = page.locator("[role='button']").filter(has_text=exact_pattern).first
-        if await el.is_visible(timeout=2000):
-            await el.click(timeout=3000)
-            logger.info("Clicked preset via role=button exact: %s", direction)
-            await asyncio.sleep(0.5)
-            if await _verify_preset_selected(page, direction):
-                return True
-            logger.debug("Strategy 2 clicked but not verified; falling through")
-    except Exception as e:
-        logger.debug("Strategy 2 (role=button) failed for %s: %s", direction, e)
-
-    # Strategy 3: Playwright get_by_text with exact=True (NOT partial)
     try:
         el = page.get_by_text(direction, exact=True).first
         if await el.is_visible(timeout=2000):
@@ -181,41 +154,48 @@ async def _click_preset(page, direction: str) -> bool:
             await asyncio.sleep(0.5)
             if await _verify_preset_selected(page, direction):
                 return True
-            logger.debug("Strategy 3 clicked but not verified; falling through")
     except Exception as e:
-        logger.debug("Strategy 3 (get_by_text) failed for %s: %s", direction, e)
+        logger.debug("get_by_text strategy failed for %s: %s", direction, e)
 
     logger.error("Could not click+verify camera preset: %s", direction)
     return False
 
 
 async def _verify_preset_selected(page, direction: str) -> bool:
-    """Verify the named preset is in an active/selected state after click.
+    """Verify the named preset is active via the computed label color.
 
-    Checks union of common SPA conventions via a single `page.evaluate`:
-    - `aria-pressed="true"` (Material / Radix toggle)
-    - `aria-selected="true"` (tablist / listbox)
-    - class matches `active|selected|pressed` (case-insensitive)
-    - parent class matches `active|selected`
+    Flow renders preset buttons using styled-components hash-only class
+    names with no stable keyword (`active` / `selected` / `pressed` all
+    absent) and no `aria-pressed` / `aria-selected` attributes. The only
+    semantic, release-stable selection signal is the computed `color` of
+    the inner label DIV inside the preset BUTTON:
 
-    Returns True if any signal fires, False otherwise. Returns False
-    (not raises) on `page.evaluate` failure — caller treats as unverified
-    and can try the next strategy.
+        selected   → rgb(48, 48, 48)   (dim; sum 144)
+        unselected → rgb(255, 255, 255) (bright; sum 765)
+
+    The JS below walks `<button>` elements, finds the descendant DIV whose
+    text equals `direction`, reads `getComputedStyle(lbl).color`, parses
+    the `rgb(r, g, b)` form, and returns true when R+G+B < 400. The
+    threshold sits halfway between the two ground-truth sums (144 vs 765)
+    so small anti-aliasing variance on either side cannot flip the result.
+
+    Returns False on any failure (label not found, color fails to parse,
+    `page.evaluate` raises) — caller treats this as unverified.
     """
     try:
         is_selected = await page.evaluate(
-            """(direction) => {
-                const els = document.querySelectorAll('[aria-label], [role="button"], button');
-                for (const el of els) {
-                    const text = el.textContent?.trim() || '';
-                    const label = el.getAttribute('aria-label') || '';
-                    if (text === direction || label === direction) {
-                        if (el.getAttribute('aria-pressed') === 'true') return true;
-                        if (el.getAttribute('aria-selected') === 'true') return true;
-                        const cls = el.className || '';
-                        if (/active|selected|pressed/i.test(cls)) return true;
-                        const parent = el.parentElement;
-                        if (parent && /active|selected/i.test(parent.className || '')) return true;
+            r"""(direction) => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                for (const btn of buttons) {
+                    const labels = btn.querySelectorAll('div');
+                    for (const lbl of labels) {
+                        if ((lbl.textContent || '').trim() === direction) {
+                            const color = getComputedStyle(lbl).color;
+                            const m = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+                            if (!m) return false;
+                            const sum = (+m[1]) + (+m[2]) + (+m[3]);
+                            return sum < 400;
+                        }
                     }
                 }
                 return false;

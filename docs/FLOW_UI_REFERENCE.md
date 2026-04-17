@@ -187,85 +187,68 @@ The engine clicks a preset by name (`direction: str`, EN label — see `flow/ope
 - EN profile: `aria-label` and visible text both = EN direction (`"Dolly in"`, `"Center"`, …).
 - VI profile: visible text is translated ("Di chuyển ra trước"); **`aria-label` is assumed to retain the EN label** (consistent with how Radix/Material components usually set stable aria-labels), but this is **not yet confirmed on live DOM** (see "Known unknowns" below).
 
-#### Click selector strategy (locale-independent first, text-match last)
-Implemented in `_click_preset` (`flow/operations/camera.py`) — three strategies, ordered most-reliable → most-fragile. All three require `_verify_preset_selected` to pass before returning True.
+#### Click selector strategy (post-B12: single exact-text strategy)
 
-1. **`[aria-label='<direction>']`** — exact attribute match. Most reliable because aria-label is typically set from a stable i18n key, not the display string. Works across locales if Flow follows common Radix/Material conventions.
-2. **`[role='button']` filtered by exact-text regex** `^<direction>$` (anchored). Prevents partial match (e.g. direction="Low" no longer matches button "Lower" / "Lowering").
-3. **`page.get_by_text(direction, exact=True)`** — Playwright exact-text match (case-sensitive, whole node). Last resort because it is locale-dependent (only works on EN profile). Still safer than the previous `*:visible + regex` which ignored case and matched anywhere in the subtree.
+Implemented in `_click_preset` (`flow/operations/camera.py`). Exactly one strategy:
 
-#### Active state signal (post-click)
+1. **`page.get_by_text(direction, exact=True).first`** — Playwright exact-text match (case-sensitive, whole node). Native `exact=True` prevents partial-match collisions (direction="Low" does not match a hypothetical "Lower" button).
 
-After clicking a preset, Flow highlights the selected thumbnail. Exact indicator not confirmed on live DOM — the verify helper checks the union of common SPA conventions:
+**Pruned (pre-B12):** `[aria-label='<direction>']` and `page.locator("[role='button']").filter(has_text=re.compile("^<direction>$"))`. Tier1 live-DOM probing (2026-04-17) confirmed both find **0 elements** on production Flow — presets have no `aria-label` and no explicit `role="button"` attribute (Flow uses `<button>` tags; Playwright's CSS `[role='button']` is strict-attribute and does not match implicit roles). Kept in phase-1 as defensive layers, removed in B12 as dead code per spec §1.3.
 
-| Signal | Selector / attribute |
-|---|---|
-| Pressed button (Material / Radix) | `aria-pressed="true"` on the preset element |
-| Selected option (tablist / listbox) | `aria-selected="true"` |
-| Class-based (CSS Modules / Tailwind) | `className` matches `/active\|selected\|pressed/i` |
-| Parent wrapper marker | Parent `className` matches `/active\|selected/i` |
+#### Active state signal (post-click) — computed label color
 
-**Verify JS snippet** (used by `_verify_preset_selected`):
+Flow renders preset buttons with styled-components hash-only class names. No stable keyword (`active` / `selected` / `pressed`) appears anywhere in the DOM, and no `aria-pressed` / `aria-selected` attribute is set in any state. The only semantic, release-stable selection signal is the **computed `color` of the inner label DIV** inside the preset BUTTON:
+
+| State | Label DIV computed color | R+G+B sum |
+|---|---|---|
+| **Selected** | `rgb(48, 48, 48)` (dim grey — thumbnail is highlighted, label dims for contrast) | **144** |
+| **Unselected** | `rgb(255, 255, 255)` (bright white) | **765** |
+| **Decision threshold** | `R+G+B < 400` ⇒ selected | halfway between 144 and 765 |
+
+Styled-components hash on the label DIV also flips (`jYmHac` selected vs `hkGUbO` unselected) but hashes may rotate per Flow release; **the color flip is the stable signal**. Do NOT verify via className.
+
+**Verify JS snippet** (used by `_verify_preset_selected`, post-B12):
 ```javascript
 (direction) => {
-    const els = document.querySelectorAll('[aria-label], [role="button"], button');
-    for (const el of els) {
-        const text = el.textContent?.trim() || '';
-        const label = el.getAttribute('aria-label') || '';
-        if (text === direction || label === direction) {
-            if (el.getAttribute('aria-pressed') === 'true') return true;
-            if (el.getAttribute('aria-selected') === 'true') return true;
-            const cls = el.className || '';
-            if (/active|selected|pressed/i.test(cls)) return true;
-            const parent = el.parentElement;
-            if (parent && /active|selected/i.test(parent.className || '')) return true;
+    const buttons = Array.from(document.querySelectorAll('button'));
+    for (const btn of buttons) {
+        const labels = btn.querySelectorAll('div');
+        for (const lbl of labels) {
+            if ((lbl.textContent || '').trim() === direction) {
+                const color = getComputedStyle(lbl).color;
+                const m = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+                if (!m) return false;
+                const sum = (+m[1]) + (+m[2]) + (+m[3]);
+                return sum < 400;
+            }
         }
     }
     return false;
 }
 ```
 
-Returns `true` if ANY signal matches. Returns `false` if no match — caller treats as unverified and either falls through to the next strategy or returns False (caller logs ERROR and the operation raises `"Failed to find camera preset"` in the outer `camera_move` handler).
+Returns `true` when the matching label DIV's color sums below the threshold. Returns `false` when (a) no matching label DIV is found, (b) the color string fails to parse as `rgb(...)`, or (c) the sum is above threshold (unselected). Caller (`_click_preset`) treats `false` as unverified → logs ERROR and returns False; outer `camera_move` raises `RuntimeError("Failed to find camera preset")`.
 
 #### Pitfalls
 
-- **Partial-text matching** — the prior `*:visible` + `re.compile(re.escape(direction), re.IGNORECASE)` regex matched ANY subtree containing the direction as a substring. For direction="Low" this would match buttons "Lower", "Slow motion", "Follow", as well as footer text like "Follow on Low Priority". The current strategies all require full-text equivalence (aria-label exact OR `^<direction>$` anchored regex OR Playwright `exact=True`). No substring match anywhere in the selector chain.
-- **Case sensitivity** — all three strategies are now case-sensitive. Flow preset labels are Title Case; callers must pass the exact canonical label (see `ALL_PRESETS` constant).
-- **Click-without-verify** — previously a successful click returned True immediately. Now strategies 1 and 2 can "click something that matched my selector but isn't actually a preset button" (e.g. if aria-label collides with another UI element) — the verify step catches this and the function falls through to the next strategy.
-- **Dark-theme class names** — Flow's class names may be hashed (`_abc123_active`). The class keyword regex (`/active|selected|pressed/i`) matches even hashed names as long as the keyword appears anywhere in the className string. If Flow uses purely hashed names (no keyword), verification fails; see Known unknowns.
+- **Partial-text matching** — the pre-phase-1 `*:visible` + `re.compile(re.escape(direction), re.IGNORECASE)` regex matched ANY subtree containing the direction as a substring (direction="Low" matched "Lower", "Slow motion", "Follow on Low Priority"). The current `get_by_text(exact=True)` requires full-node equality — no substring match.
+- **Case sensitivity** — `exact=True` is case-sensitive. Flow preset labels are Title Case; callers MUST pass the exact canonical label (see `ALL_PRESETS` constant in `flow/operations/camera.py`).
+- **className is NOT a state signal** — pre-B12 verify checked `className` for `active|selected|pressed` keywords. Flow's styled-components hashes contain no such keyword; this check always returned false on live DOM and caused the B3 regression. Only `getComputedStyle(label).color` is reliable.
+- **Do not key on styled-components hash tokens** — tokens like `jYmHac` or `hkGUbO` do flip between states but are expected to rotate per Flow release. Using them ties the verifier to a specific build.
 
 #### Locale notes (EN vs VI)
 
 - Preset visible text is translated (EN "Dolly in" ↔ VI "Di chuyển ra trước"). Engine callers pass the EN canonical label.
-- Strategy 1 (aria-label) is **expected** to work on both locales (aria-label stable); Strategy 2 is text-based but uses the direction string as-is — works on EN, fails on VI unless aria-label also covers (via Strategy 1 fallback). Strategy 3 (`get_by_text`) works only on EN.
-- Recommendation for L2+ camera jobs: ensure profile locale is EN (matches `flow/navigation.py::detect_locale` expectation). A VI-only profile would require a direction map (out of scope for B3).
+- The surviving `get_by_text(exact=True)` strategy is **EN-only** (matches on the rendered display text). Without `aria-label` available on the DOM, a VI-only profile would require a direction-label map. Out of scope for B12 — recommendation for L2+ camera jobs is to ensure profile locale is EN (matches `flow/navigation.py::detect_locale` expectation).
 
-#### Ground truth (live DOM, Tier1 retest 2026-04-17 on L1 project `785d2255-…`)
+#### Live-DOM evidence trail
 
-The "Known unknowns" from phase-1 research were confirmed or refuted against live DOM. **The current `_click_preset` + `_verify_preset_selected` implementation is broken against real Flow UI.** See SPEC.md §D.4 B12 and `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B3 for the full evidence trail.
+Selector ground truth gathered during Tier1 DOM validation (2026-04-17, project `785d2255-…`) and encoded above:
 
-**What's actually on the page:**
-
-| Item | Ground truth |
-|---|---|
-| Preset tag | `<button>` element — implicit role `button`, NO explicit `role="button"` attribute |
-| `aria-label` | **Absent on all 15 presets** (8 motion + 7 position). No `data-preset-name` either. |
-| Class tokens | Styled-components hashes only, e.g. `sc-16c4830a-1 hxjMEo ... byyZkY` — NO `active\|selected\|pressed` keyword anywhere |
-| `aria-pressed` / `aria-selected` | Not set, in any state |
-| Parent className | Also styled-components hash (`sc-2384ceab-7 jrdoRH`) — no keyword |
-| Real state signal | **`getComputedStyle(labelDivInsideButton).color`** — selected = `rgb(48, 48, 48)` (dim grey, because the thumbnail is highlighted), unselected = `rgb(255, 255, 255)` (bright white). Label styled-components hash also differs (`jYmHac` selected vs `hkGUbO` unselected) but hashes may rotate per Flow release; color is the stable signal. |
-
-**Impact on the three click strategies (live-DOM behavior):**
-
-1. **`[aria-label='<direction>']`** — finds **0 elements**. aria-label is absent.
-2. **`[role='button']` + anchored regex** — finds **0 elements**. Playwright's CSS `[role='button']` requires the attribute literally; it does not match implicit button roles. (This is different from `page.get_by_role('button')`, which would match.)
-3. **`page.get_by_text(direction, exact=True)`** — **works**: finds and clicks the preset, Flow accepts (preview animates, submit enables).
-
-**Impact on `_verify_preset_selected`:** all four signals return false on a correctly-selected preset. The helper returns False on every call, strategy #3 falls through, `_click_preset` exhausts all strategies, and `camera_move` raises `RuntimeError("Failed to find camera preset: {direction}")`. **Every camera-move job currently fails hard.**
-
-**Fix direction (see SPEC.md §D.4 B12):** swap the union verify for a single `getComputedStyle(label).color` check (threshold: R+G+B < 150 ⇒ selected); keep the 3-strategy click chain (partial-match defense remains sound even though strategies 1+2 find 0 elements today — cheap insurance against future Flow refactors that might add aria or explicit roles).
-
-**Locale notes (unchanged from phase-1):** visible text is translated (EN "Dolly in" ↔ VI "Di chuyển ra trước"); engine passes EN. Strategy #3 is EN-only. Without aria-label available, VI profile camera-move requires a direction map — out of scope for B12.
+- Click strategy: only `get_by_text(exact=True)` matches production DOM (2 nodes per preset — the `<button>` container and an inner `<div>` label; `.first` picks the button in document order, the real pointer-click target).
+- Verify signal: computed `color` on the label DIV — `rgb(48, 48, 48)` when selected, `rgb(255, 255, 255)` when not. All `aria-*` and `className`-keyword probes miss.
+- Detailed probe transcripts: `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §4 + §7 B3.
+- Regression fix: `docs/session-reports/2026-04-17_B12_camera-verify-fix.md` (B12).
 
 ## Model Selector (Dropdown)
 
