@@ -1,6 +1,6 @@
 """Worker interaction endpoints."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
@@ -42,7 +42,7 @@ async def claim_job(req: ClaimRequest):
     if job is None:
         return Response(status_code=204)
 
-    _workers[req.worker_id] = datetime.utcnow()
+    _workers[req.worker_id] = datetime.now(UTC)
     await broadcast_job_update(job)
     return job
 
@@ -62,7 +62,7 @@ async def update_job_status(job_id: str, body: JobUpdate):
 @router.post("/heartbeat")
 async def heartbeat(req: HeartbeatRequest):
     """Worker pings to say it's alive."""
-    _workers[req.worker_id] = datetime.utcnow()
+    _workers[req.worker_id] = datetime.now(UTC)
     return {"status": "ok", "worker_id": req.worker_id}
 
 

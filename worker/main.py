@@ -11,7 +11,7 @@ import logging
 import os
 import signal
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from dotenv import load_dotenv
 
@@ -78,7 +78,7 @@ async def claim_loop(
 ) -> None:
     """Core claim-dispatch-update loop."""
 
-    last_heartbeat = datetime.utcnow()
+    last_heartbeat = datetime.now(UTC)
     heartbeat_delta = timedelta(seconds=HEARTBEAT_INTERVAL_SEC)
 
     logger.info(
@@ -88,7 +88,7 @@ async def claim_loop(
 
     while not _shutdown.is_set():
         # --- Heartbeat ---
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         if now - last_heartbeat >= heartbeat_delta:
             try:
                 await api.heartbeat()

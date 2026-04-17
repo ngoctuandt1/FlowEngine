@@ -1265,9 +1265,10 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Files: `server/config.py:19`, `worker/main.py:29`
 - Fix: thống nhất 8080 everywhere
 
-### B8 — datetime.utcnow deprecated (P1)
+### ~~B8 — datetime.utcnow deprecated (P1)~~ ✅ FIXED (commit `<this-commit>`)
 - Triệu chứng: worker_err.log DeprecationWarning
-- Fix: replace toàn bộ `datetime.utcnow()` → `datetime.now(UTC)` trong codebase
+- Fix: replaced 7 `datetime.utcnow()` call-sites in `worker/main.py`, `server/db/job_store.py`, `server/db/profile_store.py`, `server/routes/worker.py` with `datetime.now(UTC)` (tz-aware). Guard: `tests/test_datetime_migration.py` (source scan + round-trip).
+- Out of scope (deferred): 3 `default_factory=datetime.utcnow` references in `server/models/job.py:96-97` and `server/models/profile.py:25` still emit DeprecationWarning if default is triggered — flagged in session report, candidate for follow-up.
 
 ### B9 — Zero test coverage (P0)
 - `tests/` rỗng

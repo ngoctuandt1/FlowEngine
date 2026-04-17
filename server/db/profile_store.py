@@ -1,6 +1,6 @@
 """Profile CRUD operations (async, aiosqlite)."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 from server.db.database import get_db
@@ -16,7 +16,7 @@ def _row_to_profile(row) -> Profile:
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ---------------------------------------------------------------------------

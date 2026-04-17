@@ -1,7 +1,7 @@
 """Job CRUD operations (async, aiosqlite)."""
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from server.db.database import get_db
@@ -32,7 +32,7 @@ def _row_to_job(row) -> Job:
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@ async def recover_stale_jobs(stale_minutes: int = 30) -> list[Job]:
 
     Returns list of recovered jobs.
     """
-    cutoff = (datetime.utcnow() - timedelta(minutes=stale_minutes)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(minutes=stale_minutes)).isoformat()
 
     async with get_db() as db:
         cursor = await db.execute(
