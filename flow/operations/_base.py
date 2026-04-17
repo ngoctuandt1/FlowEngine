@@ -213,34 +213,61 @@ async def _click_video_tile(page, media_id: str = "", timeout_sec: float = 10.0)
 
 
 async def draw_bbox_on_video(page, bbox: dict) -> bool:
-    """Draw a bounding box on the video canvas via mouse drag, verified by overlay.
+    """Draw a bounding box on the Flow preview canvas via mouse drag.
 
-    Shared between insert-object and remove-object ops. The caller is expected
-    to have already clicked Insert/Remove so the panel is in bbox-drawing mode.
+    Shared between insert-object and remove-object ops. The caller must
+    have already clicked Insert/Remove so the preview is in bbox-drawing
+    mode.
+
+    Target: the LARGEST visible `<canvas>` with `width ≥ 300`. On an L1
+    project Flow's preview is a `<canvas width=598 height=336>` (CSS-sized
+    ~479×269) centered on screen. The `<video>` tag exists on the page
+    but is a 105×60 card-strip thumbnail — never target it (B2 regression).
+
+    Verify: pointer-trust — no post-drag DOM check and no pixel sampling.
+    Flow paints the bbox onto the canvas 2D bitmap (confirmed Tier1:
+    `elementFromPoint` inside the visible bbox returns `<CANVAS>`), so the
+    B2 union selector `svg rect, [class*="bbox" i], …` matches 0 elements
+    regardless of drag success. Pixel sampling is also unreliable because
+    the preview plays video frames continuously — `getImageData` deltas
+    are noisy even without a drag. Pointer delivery onto the correct
+    canvas rect is the load-bearing signal; if that happens, Flow accepts
+    the region. See `docs/session-reports/2026-04-17_B11_bbox-canvas-fix.md`
+    §7 for the Option A vs B decision rationale.
 
     Args:
-        bbox: {x, y, w, h} normalized 0-1 relative to the video's bounding rect.
+        bbox: `{x, y, w, h}` normalized 0-1 relative to the canvas rect.
               Values outside [0, 1] → reject (return False). Overflow
-              (x+w > 1 or y+h > 1) is clamped to the video rect.
+              (`x+w>1` or `y+h>1`) is clamped to fit.
 
     Returns:
-        True if drag landed on canvas AND Flow's overlay rect is visible after.
-        False on: missing/too-small video element, out-of-range bbox, overlay
-        not detected. Caller decides whether to warn-and-continue or abort.
+        True after the drag sequence completes on the target canvas.
+        False on genuine pre-drag failures: no visible canvas ≥ 300×200,
+        or any bbox key out of range. Caller logs a WARNING and continues
+        (Flow falls back to its default region on unreliable bbox input).
 
-    See docs/FLOW_UI_REFERENCE.md §Bbox Overlay UI for selector strategy and
-    known unknowns.
+    See `docs/FLOW_UI_REFERENCE.md` §Bbox Overlay UI for the live-DOM
+    ground truth that drove this design.
     """
-    # Step 1: Read video element rect
-    video_rect = await page.evaluate("""() => {
-        const video = document.querySelector('video');
-        if (!video) return null;
-        const r = video.getBoundingClientRect();
-        return {left: r.left, top: r.top, width: r.width, height: r.height};
+    # Step 1: Find the largest visible <canvas> (width ≥ 300). Flow's
+    # preview canvas is the only one that size; card-strip canvases are
+    # smaller thumbnails.
+    canvas_rect = await page.evaluate("""() => {
+        const canvases = Array.from(document.querySelectorAll('canvas'));
+        let best = null;
+        for (const c of canvases) {
+            const r = c.getBoundingClientRect();
+            if (r.width < 300 || r.height < 200) continue;
+            const area = r.width * r.height;
+            if (!best || area > best.area) {
+                best = {left: r.left, top: r.top, width: r.width, height: r.height, area: area};
+            }
+        }
+        return best;
     }""")
 
-    if not video_rect or video_rect.get("width", 0) < 50 or video_rect.get("height", 0) < 50:
-        logger.error("Video element not found or too small: %s", video_rect)
+    if not canvas_rect:
+        logger.error("Preview canvas not found (no visible <canvas> ≥ 300×200)")
         return False
 
     # Step 2: Validate bbox keys in [0, 1]
@@ -255,23 +282,24 @@ async def draw_bbox_on_video(page, bbox: dict) -> bool:
     w = bbox.get("w", 0.5)
     h = bbox.get("h", 0.5)
 
-    # Step 3: Clamp overflow so bbox fits within video rect
+    # Step 3: Clamp overflow so bbox fits within canvas rect
     if x + w > 1:
         w = 1 - x
     if y + h > 1:
         h = 1 - y
 
-    vl = video_rect["left"]
-    vt = video_rect["top"]
-    vw = video_rect["width"]
-    vh = video_rect["height"]
+    cl = canvas_rect["left"]
+    ct = canvas_rect["top"]
+    cw = canvas_rect["width"]
+    ch = canvas_rect["height"]
 
-    start_x = vl + x * vw
-    start_y = vt + y * vh
-    end_x = vl + (x + w) * vw
-    end_y = vt + (y + h) * vh
+    start_x = cl + x * cw
+    start_y = ct + y * ch
+    end_x = cl + (x + w) * cw
+    end_y = ct + (y + h) * ch
 
-    # Step 4: Mouse drag (small interpolation steps — Flow requires real drag)
+    # Step 4: Mouse drag on the canvas — 5 interpolation steps (Flow needs a
+    # real, gradual drag; a single move→down→up does not register).
     await page.mouse.move(start_x, start_y)
     await page.mouse.down()
     await asyncio.sleep(0.1)
@@ -284,31 +312,12 @@ async def draw_bbox_on_video(page, bbox: dict) -> bool:
     await page.mouse.up()
     await asyncio.sleep(0.5)
 
-    # Step 5: VERIFY — overlay rect visible after drag
-    overlay_visible = await page.evaluate("""() => {
-        const candidates = document.querySelectorAll(
-            'svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]'
-        );
-        for (const el of candidates) {
-            const r = el.getBoundingClientRect();
-            if (r.width >= 20 && r.height >= 20) {
-                const s = getComputedStyle(el);
-                if (s.display !== 'none' && s.visibility !== 'hidden') return true;
-            }
-        }
-        return false;
-    }""")
-
-    if not overlay_visible:
-        logger.warning(
-            "Bbox drag completed but no overlay detected — bbox=%s video_rect=%s",
-            bbox, video_rect,
-        )
-        return False
-
+    # Step 5: Pointer-trust. No post-drag verify (bbox is canvas-painted;
+    # DOM selectors cannot detect it and pixel sampling is noisy — see
+    # docstring + session report §7).
     logger.info(
-        "Drew bbox (verified): x=%.2f y=%.2f w=%.2f h=%.2f on video %dx%d",
-        x, y, w, h, int(vw), int(vh),
+        "Drew bbox on canvas: x=%.2f y=%.2f w=%.2f h=%.2f canvas=%dx%d",
+        x, y, w, h, int(cw), int(ch),
     )
     return True
 

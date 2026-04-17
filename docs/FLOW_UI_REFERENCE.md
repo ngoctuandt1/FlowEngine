@@ -610,50 +610,79 @@ assert expected_icon in chip_text, f"Chip did not reflect ratio: {chip_text!r}"
 
 ### Bbox Overlay UI
 
-After the user drags on the video canvas, Flow renders a **selection rectangle** over
-the video preview. The engine needs this as the verification signal that the drag
-landed on the canvas — no detection means the drag missed.
+After the user drags on the preview canvas, Flow paints a **selection rectangle**
+onto the canvas bitmap itself. There is no DOM overlay element; the engine
+cannot detect the bbox post-drag via any DOM query. The verification that
+matters is **targeting the correct canvas** — once drag coordinates derive
+from the preview canvas rect, Flow accepts the region.
 
-#### Ground truth (live DOM, Tier1 retest 2026-04-17 on L1 project `785d2255-…`)
+#### Ground truth (live DOM, Tier1 retest 2026-04-17 on L1 project `785d2255-…`; resolved by B11 commit `<B11-COMMIT>`)
 
-The phase-1 "overlay rendering patterns" table below turned out not to match Flow's actual UI. **The bbox overlay is not a DOM element at all — it is painted onto the preview canvas bitmap.** Two independent problems with the current `draw_bbox_on_video` helper (`flow/operations/_base.py`):
+The bbox UI has two load-bearing facts, both the opposite of what phase-1 assumed:
 
-**Problem 1 — wrong target element.**
-- The helper targets `document.querySelector('video')`. On an L1 project this returns a **105×60 card-strip thumbnail**, not the main preview.
+**Fact 1 — the preview is a `<canvas>`, not a `<video>`.**
+- `document.querySelector('video')` on an L1 project returns a **105×60 card-strip thumbnail**, NOT the main preview.
 - The main preview is a `<canvas width=598 height=336>` element, CSS-sized ~479×269, positioned center-screen.
 - Proof: `document.querySelectorAll('canvas').length` = 1 visible canvas matching preview bounds; `elementFromPoint(x, y)` for any coordinate inside the visible preview returns `<CANVAS>`.
-- Effect: the drag `start`/`end` are computed against the thumbnail rect, so Playwright drags on the wrong element — the main canvas never receives pointer events.
+- Selector for automation: **the largest visible `<canvas>` with `width ≥ 300`**. The 300-px threshold safely excludes card-strip canvases (thumbnails are << 300 px wide). Used as the B11 target.
 
-**Problem 2 — overlay is canvas-painted, not DOM.**
+**Fact 2 — the bbox overlay is canvas-painted, not DOM.**
 - After a successful drag, Flow draws the bbox rectangle onto the canvas 2D bitmap via `CanvasRenderingContext2D` calls. There is no `<svg rect>`, no keyword-class div, no `role="region"` element.
 - Proof (post-drag, with a visible bbox on screen): `document.querySelectorAll('svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]').length` = **0**. `elementFromPoint` on three points inside the visible bbox — `[[350,280], [420,300], [480,340]]` — all return `CANVAS`.
-- Effect: the current union-selector verify step always returns false, regardless of whether the drag actually landed. The "Bbox drawing failed or unverified" WARNING is emitted on every bbox-using job.
+- Consequence: no DOM query can detect the drawn bbox.
 
-Runtime consequence: every `insert-object` / `remove-object` job silently uses Flow's default region.
+#### B11 implementation — canvas target + pointer-trust verify (commit `<B11-COMMIT>`)
 
-#### Fix direction (see SPEC.md §D.4 B11)
+`flow/operations/_base.py::draw_bbox_on_video` — post-B11 contract:
 
-- **Target the canvas, not the video tag.** Replace `document.querySelector('video')` with the largest visible `<canvas>` (filter by rect dimensions; the card-strip uses its own `<video>` so the preview canvas is unambiguous once you switch target types).
-- **Verify via pixel sampling**, not via DOM query. Capture `getContext('2d').getImageData(sampleRect)` before drag and after `mouseup`; compare mean RGBA. A non-trivial delta (threshold TBD during implementation) confirms bbox was painted. Sample-rect should be inside the expected bbox coordinates.
-- **Alternative / complement**: intercept the network request Flow fires when a region is committed — B11 implementer should capture one real request first to decide which approach is more reliable. The network hook in `FlowClient` already has the plumbing for this.
+1. **Find the preview canvas** via `page.evaluate`:
+   ```js
+   Array.from(document.querySelectorAll('canvas'))
+     .filter(c => {
+       const r = c.getBoundingClientRect();
+       return r.width >= 300 && r.height >= 200;
+     })
+     .reduce((best, c) => {
+       const r = c.getBoundingClientRect();
+       return (!best || r.width * r.height > best.area) ? {…r, area: r.width * r.height} : best;
+     }, null);
+   ```
+2. **Derive drag coords** from `canvas_rect`, not `video.getBoundingClientRect()`.
+3. **Drag** with 5-step interpolation (unchanged from B2 — Flow needs a real gradual drag).
+4. **Do not verify post-drag.** Pointer-trust: canvas was found, drag landed on it → Flow accepts. Return True.
 
-The union-selector verify should be removed, not extended — adding more DOM selectors cannot detect a canvas-painted shape.
+**Why pointer-trust and not pixel sampling?** Two reasons:
+- Preview canvas plays video frames continuously. `getContext('2d').getImageData(rect)` before/after drag sees natural delta from frame changes alone — impossible to set a noise-floor threshold that reliably distinguishes "bbox painted" from "frame advanced" without hand-tuning per project.
+- WebGL-backed canvases throw `SecurityError` on `getImageData` for CORS-tainted contexts; Flow's canvas provenance is unverified. Pointer-trust has zero failure modes from this class.
 
-#### Phase-1 reference (for historical context; do not use as implementation guide)
+See `docs/session-reports/2026-04-17_B11_bbox-canvas-fix.md` §7 for the full Option A (pixel sampling) vs Option B (pointer-trust) decision rationale.
 
-The original phase-1 design assumed one of three DOM patterns (SVG `<rect>`, keyword-class div, `role="region"`) and used the union selector `'svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]'`. **None of these match Flow.** Tier1 retest disproved the assumption on a live L1 project. See `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B2 for the full evidence.
+**Return-value contract** (post-B11):
+- `False` → genuine pre-drag failure: no visible canvas ≥ 300×200, or bbox out-of-range. Caller (`insert.py` / `remove.py`) logs WARNING and continues; Flow falls back to default region.
+- `True` → drag completed on the target canvas. Caller proceeds to type prompt (insert) or submit (remove) normally.
+
+#### Pitfalls — don't do these
+
+- ❌ `document.querySelector('video')` — hits the 105×60 thumbnail. This was the B2 bug.
+- ❌ Union selector `svg rect, [class*="bbox" i], …` — matches 0 elements (bbox is canvas-painted).
+- ❌ Pixel sampling without a before-drag baseline that accounts for video-frame noise — will false-positive on frame advances.
+- ❌ A `width ≥ 50` threshold — too permissive; doesn't reliably exclude the 105-px thumbnail if it happens to be the only canvas on a page (e.g. during load).
+
+#### Phase-1 reference (historical; retained for context)
+
+The phase-1 design assumed one of three DOM patterns (SVG `<rect>`, keyword-class div, `role="region"`) and used the union selector `'svg rect, [class*="bbox" i], [class*="selection" i], [class*="region" i], [class*="mask" i]'`. **None of these match Flow.** Tier1 retest disproved the assumption on a live L1 project; B11 superseded it with the canvas-target / pointer-trust approach documented above. See `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B2 for the original live-DOM probe.
 
 ### Bbox Coordinate System (engine-side)
 
-- Input: normalized `{x, y, w, h}` in `[0, 1]` relative to the video's
-  `getBoundingClientRect()`.
+- Input: normalized `{x, y, w, h}` in `[0, 1]` relative to the **preview canvas**
+  `getBoundingClientRect()` (post-B11 — was video rect pre-B11).
 - Validation: any value outside `[0, 1]` → reject (return `False`, log `ERROR`).
 - Clamping: if `x + w > 1` → `w = 1 - x` (same for y/h). Flow's canvas coordinates
-  do not extend past the video rect, so we clip before dragging.
+  do not extend past the canvas rect, so we clip before dragging.
 - Pixel conversion: `start = (rect.left + x*rect.width, rect.top + y*rect.height)`;
   `end = (rect.left + (x+w)*rect.width, rect.top + (y+h)*rect.height)`.
-- Minimum video size: reject if `width < 50` or `height < 50` (video not loaded or
-  collapsed).
+- Minimum canvas size: reject if no visible canvas has `width ≥ 300` and
+  `height ≥ 200` (preview not loaded or layout collapsed).
 
 ## Engine Selector Mapping (DOM selectors for automation)
 
