@@ -283,6 +283,12 @@ async def dispatch_job(
                 "profile": profile,
             }
 
+        # Bug #3: Level-2+ jobs must persist project_url so Level-3 children
+        # can resolve it directly from their parent without grandparent lookup.
+        # The operation's finalize_operation() already sets this, but fall back
+        # to the claimed job's project_url if the result lacks it.
+        if job_level >= 2 and project_url and not result.get("project_url"):
+            result["project_url"] = project_url
         return result
 
     except Exception as exc:
