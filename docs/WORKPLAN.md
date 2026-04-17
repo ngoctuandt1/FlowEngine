@@ -62,6 +62,20 @@ Sau mỗi bug merge → STOP code → user review → user approve → bug tiế
 ### 1.5 Docs update = cùng commit
 Mọi commit fix bug phải đi kèm update SPEC.md §D.4 (mark strike-through) trong CÙNG commit. Không tách.
 
+### 1.6 Session report BẮT BUỘC cho mọi task
+Mỗi session (triage / bug-fix / refactor) phải kết thúc bằng 1 file báo cáo:
+
+- **Vị trí:** `docs/session-reports/YYYY-MM-DD_<task-id>_<slug>.md`
+- **Template:** `docs/session-reports/_TEMPLATE.md` (copy rồi fill)
+- **Commit:** file báo cáo được add vào CÙNG commit cuối của task (kèm code fix + SPEC.md strike-through). Không commit riêng.
+
+Lý do:
+1. Audit trail xuyên session — supervisor không dò chat
+2. Không dựa vào việc user paste chat lại
+3. Tự verify: supervisor đọc file là biết task đóng đúng chưa
+
+Session con KHÔNG hoàn tất cho đến khi file report ở `docs/session-reports/` tồn tại và được commit. Nếu session con bỏ sót → supervisor reject, yêu cầu chạy lại 1 session nhỏ chỉ để viết report.
+
 ---
 
 ## §2 — Thứ tự sequential (bắt buộc)
