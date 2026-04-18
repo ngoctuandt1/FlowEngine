@@ -568,10 +568,37 @@ async def _set_aspect_ratio(page, ratio: str):
 
     suffix = RATIO_IDS[ratio]
 
-    chip_btn = page.locator('button[aria-haspopup="menu"]').filter(
-        has_text=re.compile(r"video.*x\d", re.IGNORECASE),
+    # Locate the aspect-ratio chip by its Material Icon ligature, not by
+    # surrounding text. The chip always contains an `<i class="google-symbols">`
+    # whose text is the crop ligature (`crop_9_16` or `crop_16_9`). The
+    # surrounding label (model name: "Video", "Veo 3.1 Fast LP",
+    # "🍌 Nano Banana Pro", …) varies per account/session and is
+    # locale-dependent — relying on it breaks whenever the model changes
+    # or the browser locale flips to VI.
+    #
+    # We match via CSS `:has-text("crop_9_16"|"crop_16_9")` on the
+    # button's own textContent, which is `"Videocrop_16_9x1"` (or
+    # `"<model>crop_9_16x1"`). The crop ligature is a stable substring
+    # regardless of the surrounding label, so a CSS `:has-text` substring
+    # match is sufficient — no regex gymnastics, no newline edge cases
+    # (`innerText` vs `textContent` diverge on block children). This
+    # avoids the `has=<nested-locator>` path that previously failed to
+    # resolve against the real DOM (B19, Tier 2 Run 3/4).
+    chip_btn = page.locator(
+        'button[aria-haspopup="menu"]:has-text("crop_9_16"), '
+        'button[aria-haspopup="menu"]:has-text("crop_16_9")'
     ).first
-    await chip_btn.click(timeout=3000)
+
+    # Radix DropdownMenu trigger reflects open/closed via `data-state`.
+    # A preceding interaction (model-selector dropdown dismiss, DOM
+    # focus-trap reset) can leave the aspect chip in the open state
+    # before we arrive — clicking it then TOGGLES the menu CLOSED
+    # and the subsequent `wait_for("[role=\"menu\"][data-state=\"open\"]")`
+    # times out (B19, Tier 2 Run 3-6).
+    # Only click to open when the trigger is currently closed.
+    current_state = await chip_btn.get_attribute("data-state", timeout=2000)
+    if current_state != "open":
+        await chip_btn.click(timeout=3000)
 
     await page.locator('[role="menu"][data-state="open"]').wait_for(
         state="visible", timeout=3000,
