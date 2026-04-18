@@ -14,6 +14,49 @@ from flow.download import download_video
 logger = logging.getLogger(__name__)
 
 
+# Locale-independent selectors for the homepage "+ New project" CTA (B18).
+# Ordered by stability — most locale-independent first. Live DOM evidence:
+# docs/FLOW_UI_REFERENCE.md §Homepage New Project Button.
+#
+# Ground truth button structure (same on VI + EN profiles):
+#   <button>
+#     <i class="google-symbols">add_2</i>  ← Material Icon ligature, stable
+#     Dự án mới | New project                ← localized, unstable
+#     <div data-type="button-overlay"/>
+#   </button>
+# aria-label is EMPTY, href is EMPTY, no role / id / data-testid.
+# The only stable locale-independent signal is the Material Icon ligature
+# text "add_2" inside the <i class="google-symbols"> child.
+NEW_PROJECT_SELECTORS = [
+    # Icon-first (locale-independent, unique on homepage): only the
+    # new-project button contains Material Icon "add_2". Live probe on
+    # ngoctuandt20 homepage: 1 button with add_2 text; other icons on
+    # page are "edit"/"delete" on existing project cards.
+    "button:has(i.google-symbols):has-text('add_2')",
+    "button:has(i:has-text('add_2'))",
+    "button:has-text('add_2')",
+    # Text variants (bilingual + conjugations — defense in depth).
+    "button:has-text('Dự án mới')",
+    "button:has-text('New project')",
+    "button:has-text('Dự án')",
+    "button:has-text('Tạo dự án')",
+    "button:has-text('Tạo mới')",
+    "a:has-text('Dự án mới')",
+    "a:has-text('New project')",
+    "[role='button']:has-text('Dự án mới')",
+    "[role='button']:has-text('New project')",
+    # Aria-label fallback (observed EMPTY on live DOM but kept for
+    # future-proofing if Flow adds accessible names).
+    "[aria-label*='new project' i]",
+    "[aria-label*='dự án' i]",
+    "[aria-label*='new' i][aria-label*='project' i]",
+    # Last resort: generic create buttons (can false-match welcome
+    # overlays — kept at the end).
+    "button:has-text('Create')",
+    "button:has-text('Tạo')",
+]
+
+
 async def text_to_video(
     client,
     prompt: str,
@@ -82,33 +125,20 @@ async def text_to_video(
 
     new_project_clicked = False
 
-    # Try multiple selectors for the new project button
-    # IMPORTANT: "+ New project" / "+ Dự án mới" FIRST, "Create" last
-    # (because "Create" can match wrong buttons on welcome overlays)
-    NEW_PROJECT_SELECTORS = [
-        "button:has-text('New project')",
-        "button:has-text('Dự án mới')",
-        "a:has-text('New project')",
-        "a:has-text('Dự án mới')",
-        "[role='button']:has-text('New project')",
-        "[role='button']:has-text('Dự án mới')",
-        # "+" icon button (the actual new project FAB)
-        "button:has-text('add')",
-        "[aria-label*='New project' i]",
-        "[aria-label*='new' i][aria-label*='project' i]",
-        "[aria-label*='Create' i]",
-        # Last resort: generic create buttons
-        "button:has-text('Create')",
-        "button:has-text('Tạo')",
-    ]
-
     for sel in NEW_PROJECT_SELECTORS:
         try:
             btn = page.locator(sel).first
-            if await btn.is_visible(timeout=5000):
+            # Short probe first — icon selectors should match instantly
+            # on a loaded homepage; only the later text fallbacks need
+            # the longer wait.
+            if await btn.is_visible(timeout=2000):
+                try:
+                    await btn.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
                 await btn.click(timeout=5000)
                 new_project_clicked = True
-                logger.info(f"Clicked new project via: {sel}")
+                logger.info("Clicked new project via: %s", sel)
                 break
         except Exception:
             continue
@@ -257,17 +287,44 @@ async def _dismiss_overlays(page):
     """Dismiss welcome/onboarding overlays that block the homepage UI.
 
     Flow may show a "Meet the new Flow" overlay or similar announcements
-    after login or UI updates. These need to be dismissed before we can
-    interact with the actual homepage buttons.
+    after login or UI updates. Live DOM probe on a healthy ngoctuandt20
+    homepage found no visible overlays — this function is defensive only
+    and must no-op cleanly on overlay-free pages. In particular it does
+    NOT press Escape unconditionally (pressing Escape with a composer
+    focused elsewhere in the app has been observed to close unrelated UI
+    — see B8 LP model-selector lesson).
     """
-    # Try pressing Escape to close any modal
+    # Probe for real overlay presence before acting.
     try:
-        await page.keyboard.press("Escape")
-        await asyncio.sleep(0.5)
+        has_overlay = await page.evaluate(
+            """() => {
+                const overlayish = document.querySelectorAll(
+                    '[role="dialog"], [role="alertdialog"], '
+                    + '[aria-modal="true"], '
+                    + '[class*="overlay" i], [class*="backdrop" i], '
+                    + '[class*="scrim" i], [class*="modal" i]'
+                );
+                for (const el of overlayish) {
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    if (s.display !== 'none' && s.visibility !== 'hidden'
+                        && parseFloat(s.opacity) > 0
+                        && r.width > 50 && r.height > 50) {
+                        return true;
+                    }
+                }
+                return false;
+            }"""
+        )
     except Exception:
-        pass
+        has_overlay = False
 
-    # Close button patterns
+    if not has_overlay:
+        return
+
+    logger.info("Overlay detected on homepage — attempting dismiss")
+
+    # Close button patterns — try localised confirm buttons first.
     CLOSE_SELECTORS = [
         "button[aria-label*='close' i]",
         "button[aria-label*='dismiss' i]",
@@ -285,30 +342,17 @@ async def _dismiss_overlays(page):
                 await btn.click(timeout=2000)
                 logger.info("Dismissed overlay via: %s", sel)
                 await asyncio.sleep(1)
-                break
+                return
         except Exception:
             continue
 
-    # Also try clicking outside any overlay (click on a safe area)
+    # Last resort: Escape (only runs if an overlay WAS detected — reduces
+    # risk of dismissing unrelated UI).
     try:
-        await page.evaluate("""() => {
-            // Click backdrop/overlay if present
-            const overlays = document.querySelectorAll(
-                '[class*="overlay"], [class*="backdrop"], [class*="scrim"]'
-            );
-            for (const el of overlays) {
-                const s = getComputedStyle(el);
-                if (s.display !== 'none' && s.visibility !== 'hidden') {
-                    el.click();
-                    return true;
-                }
-            }
-            return false;
-        }""")
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.5)
     except Exception:
         pass
-
-    await asyncio.sleep(0.5)
 
 
 async def _wait_for_composer(page, timeout_sec: float = 15.0):

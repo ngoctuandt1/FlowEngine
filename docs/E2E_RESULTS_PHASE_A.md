@@ -5,6 +5,72 @@
 
 ---
 
+## Tier 2 — 2026-04-18 — Run 2 — ⚠️ **PARTIAL** (B18 PASS, new B19 candidate blocker)
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-18 05:21 UTC (12:21 local) |
+| Profile | `ngoctuandt20` (ULTRA tier — unchanged from Run 1) |
+| Chain IDs | 2 sequential retries (both halted at same downstream point — first attempt + post-login re-click) |
+| Jobs per chain | 3 (t2v 9:16 → camera Dolly in → insert bbox seagull) |
+| LP consumed | 0 |
+| Supervisor commit | `e618731` (master — pre-B18) |
+| B18 commit under test | `<B18-COMMIT>` (worktree `claude/brave-villani-73e607`) |
+| Session report | [`docs/session-reports/2026-04-18_B18_homepage-locale-fix.md`](session-reports/2026-04-18_B18_homepage-locale-fix.md) |
+
+### Per-job verdict
+
+| # | Job | Target bug | Status | Verdict |
+|---|---|---|---|---|
+| 1 | text-to-video `9:16` | B1 aspect ratio | `failed` | **B18 PASS live** (homepage button clicked twice via icon selector, 2 projects created). **B19 candidate FAIL** (aspect-ratio chip panel never opens `[role="menu"][data-state="open"]`). |
+| 2 | camera-move `Dolly in` | B12 preset verify | `pending` | Not reached — parent J1 failed at B19 candidate |
+| 3 | insert-object bbox | B11 canvas drag | `pending` | Not reached — parent J2 never ran |
+
+### B18 verification evidence (LIVE — ✅ PASS)
+
+```
+flow.operations.generate: Clicked new project via: button:has(i.google-symbols):has-text('add_2')
+```
+
+Same log line emitted on BOTH the initial attempt (before login re-check) AND the post-login re-click loop — proves the module-level `NEW_PROJECT_SELECTORS` constant is shared across both paths as contract-tested. Engine successfully transitioned from `https://labs.google/fx/tools/flow` → `/project/cf20a347-…/edit/...` (attempt 1) and again `/project/82fa5465-…/edit/...` (attempt 2). Pre-B18 this transition never happened — `RuntimeError("Failed to find '+ New project' button on Flow homepage")` fired at `generate.py:125` every time.
+
+### Downstream blocker (NEW — B19 candidate, OUT OF B18 SCOPE)
+
+```
+error: Locator.wait_for: Timeout 3000ms exceeded.
+       waiting for locator("[role=\"menu\"][data-state=\"open\"]")
+```
+
+Triggered at the aspect-ratio chip panel step. Chrome MCP DOM probe on the failing editor page (`/edit/82fa5465-…`) found:
+- 6 `button[aria-haspopup="menu"]` buttons on the editor toolbar.
+- The target chip (aspect) at y=599 carries multi-line text: `"Video\ncrop_9_16\nx1"` (newlines between tokens).
+- Suspected root cause: B1's regex `re.compile(r"video.*x\d", re.IGNORECASE)` in `flow/operations/generate.py` lacks `re.DOTALL` — `.` does not match `\n`, so the chip is never found and a wrong (or no) click occurs, leaving the Radix menu closed.
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✓ honored | `profile=ngoctuandt20` claimed both retries under same worker |
+| INV-2 Navigate by `edit_url` | n/a | No L2+ nav |
+| INV-3 Store Everything | partial | J1 failed pre-submit; `project_url` created client-side twice, not persisted (failed before L2+) |
+| INV-4 / INV-5 | n/a | Chain halted pre-submit |
+| **R-CODE-3 Locale-Independent** | ✓ **RESTORED** | B18 selector matches VI + EN via `add_2` icon ligature |
+| R-CODE-10 No `datetime.utcnow()` | ✓ | Unchanged from Run 1 |
+| B5 auto `completed_at` | ✓ incidental | Both J1 failures auto-stamped `completed_at` |
+| B6 profile release | ✓ incidental | `ngoctuandt20` marked AVAILABLE after each terminal status |
+| B4 chain aggregate | ✓ incidental | `status=failed` (rule #1) on both retries |
+
+### Next action
+
+B18 (homepage locale) is closed. Blocker moves to **B19 candidate — aspect-ratio chip regex/selector**. Propose:
+
+1. **B19** — multi-line chip text breaks `re.compile(r"video.*x\d", re.IGNORECASE)`. Add `re.DOTALL` or switch to `[\s\S]*`; alternatively select by `aria-haspopup="menu"` + label sibling. P0 for any T2V. DOM probe session needed.
+2. **B-stdout-encoding** (carried from Run 1, P2) — still open.
+
+Until B19 lands, Tier 2 still cannot exercise B1 (aspect verify), B11 (bbox canvas), or B12 (camera preset) code paths on any profile. B18 alone was necessary but not sufficient to complete Tier 2.
+
+---
+
 ## Tier 2 — 2026-04-18 — Run 1 — ⚠️ **BLOCKED**
 
 | Field | Value |

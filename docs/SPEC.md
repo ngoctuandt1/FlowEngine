@@ -1275,9 +1275,9 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 ---
 
-## D.4 — Known bugs trong code hiện tại (B1-B17)
+## D.4 — Known bugs trong code hiện tại (B1-B18)
 
-> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B17 là stash-triage cherry-picks (2026-04-17 / 2026-04-18).
+> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B17 là stash-triage cherry-picks (2026-04-17 / 2026-04-18). B18 là Tier2 2026-04-18 discovery (homepage locale-hardcoded selector blocked every T2V job on non-EN Google account).
 
 ### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17, Tier2 2026-04-18 **not reached** — chain halted at Flow homepage locator on VI-locale account; see `docs/E2E_RESULTS_PHASE_A.md` Run 1 + `docs/session-reports/2026-04-18_Tier2_e2e-live.md`)
 - File: `flow/operations/generate.py` → `_set_aspect_ratio()`
@@ -1501,6 +1501,32 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
   - `test_close_model_panel_signature_unchanged` — H3 REJECTED contract: `inspect.signature(_close_model_panel).parameters` keys == `["page", "dropdown_was_opened"]`. Guards against accidentally adopting H1/H3 chip-handle threading.
   - `test_close_model_panel_preserves_click_outside_approach` — H4 REJECTED contract: `_close_model_panel` body contains `[data-slate-editor='true']` (master's click-outside target); does NOT contain `chip_handle`, `chip_tagged_js`, or `data-flow-chip`. Guards against stash's toggle-close rewrite leaking in via a later cherry-pick.
 - Session report: `docs/session-reports/2026-04-18_B17_lp-precheck.md`.
+
+### ~~B18 — Homepage `+ New project` selector locale-hardcoded → every T2V on VI/non-EN account fails (P0)~~ ✅ FIXED (commit `<B18-COMMIT>`)
+- Discovered during Tier2 2026-04-18 live E2E on `ngoctuandt20` (VI profile) — `docs/session-reports/2026-04-18_Tier2_e2e-live.md` §7 [Primary]. Tier2 retry after fix: see `docs/E2E_RESULTS_PHASE_A.md` Run 2.
+- File: `flow/operations/generate.py` — `NEW_PROJECT_SELECTORS` (hoisted to module-level constant) + `_dismiss_overlays` (overlay-presence gate before Escape).
+- Triệu chứng: `text_to_video` raised `RuntimeError("Failed to find '+ New project' button on Flow homepage")` on every T2V job run under a Google account whose locale preference is non-English (Flow redirects `/fx/tools/flow` → `/fx/vi/tools/flow` and renders VI labels; URL `?locale=en` is ignored). Pre-B18 selector list probed only EN text (`button:has-text('New project')` + weak variants) — VI button `+ Dự án mới` was never matched. Engine halted at `generate.py:125` before reaching B1/B11/B12 code, blocking Tier 2 validation entirely.
+- Runtime effect (pre-fix): **every text-to-video job on any non-EN Google account failed pre-submit** (21 s from claim to terminal failure on the Tier 2 run). Chain aggregation correctly propagated failure to L2+ jobs via parent-gated claim. B4 chain aggregation worked correctly as a side-effect, but no forward progress possible.
+- Live DOM probe (2026-04-18, Chrome MCP on `ngoctuandt20` VI homepage) captured ground truth:
+  - Button structure: `<button><i class="google-symbols">add_2</i>Dự án mới<div data-type="button-overlay"/></button>`
+  - `aria-label` EMPTY, `href` EMPTY (not an anchor), no `role` / `id` / `data-testid` attribute.
+  - Only stable locale-independent signal = Material Icon ligature text `add_2` inside `<i class="google-symbols">` child. The icon name is identical on EN profile (Material Icons are English tokens by design).
+  - Uniqueness: exactly 1 button on the homepage contains `add_2`; other `i.google-symbols` carry `edit`/`delete` (project-card actions) — zero collision risk.
+  - Homepage has no visible `[role="dialog"] / [aria-modal="true"] / [class*="overlay"]` elements in the healthy state — `_dismiss_overlays` was unnecessarily pressing Escape before every click.
+- **Resolution (commit `<B18-COMMIT>`):**
+  - **Icon-first selectors (R-CODE-3 Locale-Independent).** `NEW_PROJECT_SELECTORS` hoisted to module-level (so post-login re-click loop in `text_to_video` shares the exact same ordering). Top 3 entries match the Material Icon ligature: `button:has(i.google-symbols):has-text('add_2')`, `button:has(i:has-text('add_2'))`, `button:has-text('add_2')`. Bilingual text fallbacks (`Dự án mới`, `New project`, `Dự án`, `Tạo dự án`, `Tạo mới`) follow. Generic `Create` / `Tạo` kept as last-resort tail.
+  - **Overlay-gate on `_dismiss_overlays`.** Pre-flight `page.evaluate` checks for actually-visible overlays (`role="dialog"` / `aria-modal="true"` / class-contains `overlay|backdrop|scrim|modal`) BEFORE any dismiss action. No overlay → function returns immediately (no Escape press). Reduces risk of dismissing unrelated UI on a clean homepage — per B8 lesson about Escape breadth.
+  - **Click loop hardening.** Primary click path now runs `scroll_into_view_if_needed` (best-effort) before click, and uses a 2 s visibility probe per selector (was 5 s — the icon selector matches instantly on a loaded homepage, so we only burn time if the fast path misses).
+- Guard: `tests/test_generate.py` — 7 cases:
+  - `test_new_project_selectors_is_list_of_strings` — basic shape.
+  - `test_icon_selector_comes_first` — contract trip-wire: top-3 selectors MUST contain `add_2`. Prevents silent drift to text-first ordering.
+  - `test_bilingual_text_fallbacks_present` — contract trip-wire: selector list MUST include both `Dự án mới` AND `New project`. Guards against pre-B18 EN-only regression.
+  - `test_icon_selector_uses_google_symbols_class` — at least one selector compounds `google-symbols` class with `add_2` ligature (most specific form).
+  - `test_generic_create_selectors_are_last` — `Create` / `Tạo` must appear AFTER the icon and specific text variants.
+  - `test_selector_list_is_shared_with_retry_path` — `text_to_video` references `NEW_PROJECT_SELECTORS` in ≥ 2 places (primary + retry) → ensures post-login recovery uses identical ordering.
+  - `test_source_does_not_reintroduce_en_only_list` — source-level sentinel for `Dự án mới` and `add_2` tokens.
+- Reference updated: `docs/FLOW_UI_REFERENCE.md` §Homepage New Project Button (live-DOM evidence, stable vs rejected signals table, uniqueness note, pitfalls incl. URL-locale-ignored + avoid-unconditional-Escape).
+- Session report: `docs/session-reports/2026-04-18_B18_homepage-locale-fix.md`.
 
 ---
 

@@ -37,9 +37,88 @@ Flow Account (Google login, ULTRA tier)
 | Element | VI ✅ | EN ✅ | DOM Selector |
 |---|---|---|---|
 | Page title | "Flow" | "Flow" | — |
-| New project button | "+ Dự án mới" | "+ New project" | — |
+| New project button | "+ Dự án mới" | "+ New project" | `button:has(i.google-symbols):has-text('add_2')` (see §Homepage New Project Button) |
 | Tier badge | "ULTRA" | "ULTRA" | `generic "ULTRA"` |
 | Flow TV button | "Flow TV" | "Flow TV" | — |
+
+## Homepage New Project Button
+
+> Verified 2026-04-18 via Chrome MCP DOM probe on `ngoctuandt20` (VI profile).
+> See `docs/session-reports/2026-04-18_B18_homepage-locale-fix.md`.
+
+### Ground truth (live DOM)
+
+Probe on `https://labs.google/fx/vi/tools/flow` (automatic VI redirect from
+`/fx/tools/flow` because the Google account locale is Vietnamese — URL
+`?locale=en` is ignored by Flow):
+
+```html
+<button class="sc-16c4830a-1 jsIRVP sc-a38764c7-0 fXsrxE">
+  <i class="sc-95c4f607-0 fLjDIG google-symbols undefined"
+     font-size="1.125rem" color="currentColor">add_2</i>
+  Dự án mới
+  <div data-type="button-overlay" class="sc-16c4830a-0 iSFgQn"></div>
+</button>
+```
+
+Observed body text preview on the homepage (VI profile):
+
+```
+Flow
+tv
+Flow TV
+help_outlined
+Trung tâm trợ giúp về Flow
+more_vert
+ULTRA
+add_2
+Dự án mới
+```
+
+### Stable signals (locale-independent)
+
+| Signal | Value | Stability |
+|---|---|---|
+| Icon ligature text | `"add_2"` | ✅ Material Icon font — same on every locale |
+| Icon class | `google-symbols` | ✅ CSS class on `<i>` — stable across releases |
+| Tag | `<button>` | ✅ semantic |
+
+### Rejected signals
+
+| Signal | Value | Why rejected |
+|---|---|---|
+| `aria-label` | EMPTY | Not present |
+| `href` | EMPTY | It's a `<button>`, not an anchor |
+| `role` attr | (none) | Implicit via `<button>` only; `[role='button']` CSS miss |
+| `id`, `data-testid` | (none) | Not set |
+| styled-components hashes (`jsIRVP`, `fXsrxE`, …) | rotate per release | Build-dependent |
+| Visible text `"Dự án mới"` / `"New project"` | locale-dependent | Breaks on VI profile |
+
+### Uniqueness (homepage context)
+
+Only **one** button on the homepage contains the Material Icon text
+`add_2`. Other `i.google-symbols` icons on the homepage carry tokens
+like `edit` and `delete` (project-card actions); `add_2` is unique to
+the primary CTA.
+
+### Canonical selector (locale-independent)
+
+```python
+# Top priority — CSS compound selector
+"button:has(i.google-symbols):has-text('add_2')"
+```
+
+Engine uses the selector list in `flow/operations/generate.NEW_PROJECT_SELECTORS`.
+See `flow/operations/generate.py` for the full priority-ordered list. The
+post-login recovery branch of `text_to_video` reuses the same list by
+import.
+
+### Pitfalls / Gotchas
+
+1. **URL locale is ignored.** Appending `?locale=en` to `https://labs.google/fx/tools/flow` does NOT force EN rendering — Flow redirects to `/fx/vi/tools/flow` based on the Google account's locale preference. Engine MUST NOT rely on URL locale to predict UI language.
+2. **Avoid unconditional Escape on the homepage.** The homepage has no modal overlay in the healthy state (live probe confirms zero visible `[role="dialog"] / [aria-modal="true"] / [class*="overlay"]` elements). Pressing Escape with no overlay can dismiss unrelated focused UI in other states (see B8 LP model-selector lesson). Detect overlay presence first; Escape-as-last-resort.
+3. **Do NOT match by styled-components hash.** `sc-16c4830a-1 jsIRVP sc-a38764c7-0 fXsrxE` rotates per Flow release — tying the selector to these tokens breaks on every deploy.
+4. **`add_2` is not `add`.** The `<i>` ligature is literally the 5-char string `add_2` — not `add`, `add_circle`, or `add_box`. Matching by `has-text('add')` would match `add_2` (substring) but also any future element whose text starts with `add` — prefer `add_2` exact token.
 
 ## Project Editor (Grid View)
 
