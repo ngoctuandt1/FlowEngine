@@ -25,7 +25,7 @@
 ## 2. Commits landed
 
 ```
-<B18-COMMIT>  fix(generate): locale-independent + robust NEW_PROJECT_SELECTORS (B18 — unblocks Tier2)
+8dc357c  fix(generate): locale-independent + robust NEW_PROJECT_SELECTORS (B18 — unblocks Tier2)
 ```
 
 One commit spanning the `generate.py` fix, the 7 unit tests, and the 3 doc updates + this session report + E2E results Run 2.
@@ -81,7 +81,7 @@ Total: `7 files, +~609 / -~56 lines`. Zero credentials / TOTP / passwords logged
 
 - [x] Append §D.4 B18 entry (full — symptoms, evidence, resolution, guard, reference)
 - [x] Update §D.4 heading `B1-B17` → `B1-B18`
-- [x] Commit hash `<B18-COMMIT>` placeholder (replaced post-commit)
+- [x] Commit hash `8dc357c` recorded
 - [x] Tier 2 retry caveat wired via `docs/E2E_RESULTS_PHASE_A.md` Run 2 reference (new B19 candidate documented without tangling SPEC with the downstream chip-panel issue)
 
 ---
@@ -167,7 +167,7 @@ This is NEW behavior — pre-B18 the job never reached this code (it died at the
 - **DB state:** 2 chains from retries left in `failed` aggregate state (J1 `failed`, J2/J3 `pending`). Safe to leave; re-runs should POST a fresh chain.
 - **Next session prerequisites:**
   - If goal is **close B19** → DOM probe `button[aria-haspopup="menu"]` layout on a Veo project editor page, identify the aspect-ratio chip's stable signal (likely the `<input>` / hidden selector sibling or a specific child label), rewrite `find_by_text` call site, add test with multi-line chip text. Do NOT rerun Tier 2 until B19 lands.
-  - If goal is **finalize B18** (this report's scope) → replace `<B18-COMMIT>` placeholders in `docs/SPEC.md` (2 occurrences) and `docs/WORKPLAN.md` (1 occurrence) with the actual hash after commit, then sign off.
+  - If goal is **finalize B18** (this report's scope) → `<B18-COMMIT>` placeholders in `docs/SPEC.md` + `docs/WORKPLAN.md` + `docs/E2E_RESULTS_PHASE_A.md` + this report have been replaced with `8dc357c` (follow-up docs commit).
 
 ---
 

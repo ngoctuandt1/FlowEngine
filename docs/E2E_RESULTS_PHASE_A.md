@@ -15,7 +15,7 @@
 | Jobs per chain | 3 (t2v 9:16 → camera Dolly in → insert bbox seagull) |
 | LP consumed | 0 |
 | Supervisor commit | `e618731` (master — pre-B18) |
-| B18 commit under test | `<B18-COMMIT>` (worktree `claude/brave-villani-73e607`) |
+| B18 commit under test | `8dc357c` (worktree `claude/brave-villani-73e607`) |
 | Session report | [`docs/session-reports/2026-04-18_B18_homepage-locale-fix.md`](session-reports/2026-04-18_B18_homepage-locale-fix.md) |
 
 ### Per-job verdict
