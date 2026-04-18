@@ -5,6 +5,107 @@
 
 ---
 
+## Tier 2 — 2026-04-18 — Run 8 — ⚠️ **PARTIAL** (B19 fix holds end-to-end on J1; J2/J3 expose independent L2 inheritance gap — out of B19 scope)
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-18 ~07:40 UTC (~14:40 local) |
+| Profile | `ngoctuandt20` |
+| Chain type | 3-job (t2v 9:16 → camera Dolly in → insert bbox) |
+| B19 commit under test | `e1597b2` (this branch — `claude/gallant-jang-cbe036`) |
+| Session report | [`docs/session-reports/2026-04-18_B19_aspect-chip-multiline.md`](session-reports/2026-04-18_B19_aspect-chip-multiline.md) |
+
+### Per-job verdict
+
+| # | Job | Target bug | Status | Verdict |
+|---|---|---|---|---|
+| 1 | text-to-video `9:16` | B1 aspect (via B19 fix) | `completed` | ✅ B19 two-part fix holds in chain context: icon-ligature selector matched `crop_9_16` + pre-open guard correctly skipped chip click when `data-state="open"`. Persisted `project_url=https://labs.google/fx/tools/flow/project/bf4c75fa-e039-43bb-b994-bf7d6373138e` + `media_id=03fe613e-988d-4f29-b0b1-3d0603c916a1`. |
+| 2 | camera-move `Dolly in` | B12 preset verify | `failed` | **Independent L2 inheritance gap (NOT B19).** Worker raised `Cannot navigate: no edit_url, project_url=, media_id=` — server's `claim_next_job` (`server/db/job_store.py`) currently inherits only `profile` from parent, NOT `project_url` / `media_id`. |
+| 3 | insert-object bbox | B11 canvas drag | `pending` | Not reached — parent J2 failed. |
+
+### Outcome
+
+B19 fix (two-part) landed cleanly. B1 end-to-end **unblocked** in chain context. The downstream L2 inheritance bug is pre-existing (predates B19) and surfaces only once a chain gets past J1 — it was masked in Phase A Tier 1 because Tier 1 jobs were exercised individually, and masked in Tier 2 Runs 1-6 because no chain ever reached J2. Proposed **B22 (P0)**: extend `claim_next_job` to also inherit `project_url` + `media_id` from parent when L2+ job is claimed.
+
+---
+
+## Tier 2 — 2026-04-18 — Run 7 — ✅ **B19 FIX VERIFIED LIVE (single job)**
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-18 ~07:30 UTC (~14:30 local) |
+| Profile | `ngoctuandt20` |
+| Job type | single `text-to-video` (aspect 9:16) |
+| B19 commit under test | `e1597b2` |
+| Session report | [`docs/session-reports/2026-04-18_B19_aspect-chip-multiline.md`](session-reports/2026-04-18_B19_aspect-chip-multiline.md) |
+
+### Verdict: ✅ PASS
+
+First full green run of the aspect-ratio code path after B19 fix v3 landed. Engine output:
+- Chip located via icon selector: `button[aria-haspopup="menu"]:has-text("crop_9_16")` matched directly (bypassing model-name text that was `"🍌 Nano Banana Pro\ncrop_9_16\nx1"`).
+- Pre-click `get_attribute("data-state")` returned `"open"` — engine SKIPPED `chip.click()` per B19 guard and fell through to `wait_for("[role=\"menu\"][data-state=\"open\"]")` which resolved immediately.
+- Portrait trigger clicked, chip verified `crop_9_16`, submit succeeded.
+- Persisted: `project_url=https://labs.google/fx/tools/flow/project/f656f223-7e65-4309-bc34-cd39e9b3da24`, `media_id=f2f736d2-5094-4bdb-abc6-d4f8ed254ccb`.
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✓ | `profile=ngoctuandt20` on J1 claim + completion |
+| INV-3 Store Everything | ✓ | `project_url` + `media_id` persisted |
+| R-CODE-3 Locale-Independent | ✓ | Icon ligature `crop_9_16` matches across models/locales |
+| R-CC-1 No architecture restructure | ✓ | Single-function patch in `_set_aspect_ratio` |
+
+---
+
+## Tier 2 — 2026-04-18 — Run 6 — ❌ BLOCKED (live DOM diag — real root cause surfaced)
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-18 ~07:10 UTC |
+| Profile | `ngoctuandt20` |
+| Fix version | v2 (CSS `:has-text`, no state guard yet) — + temporary `DIAG aspect chip:` log line |
+| Verdict | Same `Locator.wait_for: Timeout 3000ms` symptom, but diag log exposed true cause |
+
+### Diagnostic output (critical finding)
+
+```
+DIAG aspect chip: { exists: true, dataState: 'open', innerText: '🍌 Nano Banana Pro\ncrop_9_16\nx1' }
+```
+
+Two facts that flipped B19's hypothesis from v1/v2 to v3:
+1. **Chip text is NOT `"Video"`** — default model on this account is `"🍌 Nano Banana Pro"`. Pre-B19 regex `r"video.*x\d"` matched nothing.
+2. **`data-state="open"` BEFORE `_set_aspect_ratio` called** — a prior interaction (likely `flow/model_selector.py::_open_model_dropdown` which uses `button:has-text('Video')` — same substring match as the chip's old-DOM label) left the aspect chip's Radix trigger pre-open. Unconditional `chip.click()` then TOGGLED CLOSED → subsequent `wait_for` timed out.
+
+This run is the pivot: from "regex multi-line" (wrong hypothesis) to "text probe wrong + pre-open state" (real hypothesis). Triggered fix v3 (icon-ligature selector + state guard) → Run 7 ✅.
+
+---
+
+## Tier 2 — 2026-04-18 — Runs 4 + 5 — ❌ BLOCKED (fix v1/v2 still fail)
+
+| Run | Fix version | Selector form | Verdict |
+|---|---|---|---|
+| 4 | v1 | `button:has(i.google-symbols:has-text(/crop_(9_16|16_9)/))` (nested `has=` with regex) | ❌ same timeout — selector resolved correctly in Playwright's eyes but click-toggle effect still closed the menu |
+| 5 | v2 | `button[aria-haspopup="menu"]:has-text("crop_9_16"), …:has-text("crop_16_9")` (CSS `:has-text`, simpler form) | ❌ same timeout — simpler selector, same behavior |
+
+**Lesson:** whichever selector resolved the chip, the `.click()` call happened on a trigger that was already open → toggle-closed the menu. Selector-only fixes could not succeed without a pre-open state check.
+
+---
+
+## Tier 2 — 2026-04-18 — Run 3 — ❌ BLOCKED (wrong hypothesis: `re.DOTALL`)
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-18 ~06:30 UTC |
+| Fix v0 | `re.compile(r"video.*x\d", re.IGNORECASE \| re.DOTALL)` — added `re.DOTALL` flag so `.` crosses `\n` |
+| Verdict | ❌ Same `Locator.wait_for: Timeout 3000ms` — DOTALL didn't help |
+
+### Why fix v0 failed
+
+Initial hypothesis was that chip `innerText` is `"Video\ncrop_9_16\nx1"` (multi-line) and regex `video.*x\d` needed `re.DOTALL` to cross the newlines. Unit-test-green (pattern matches multi-line string), but live run showed the **actual chip text did not start with `"Video"` at all** — default model had been switched to `"🍌 Nano Banana Pro"` since Phase A Tier 1 tag `db4c746`. Even with `DOTALL`, the `video` token was absent. Ran 1-line fix live → identical failure symptom → triggered Chrome MCP live DOM probe that surfaced the real root cause (Run 6).
+
+---
+
 ## Tier 2 — 2026-04-18 — Run 2 — ⚠️ **PARTIAL** (B18 PASS, new B19 candidate blocker)
 
 | Field | Value |
