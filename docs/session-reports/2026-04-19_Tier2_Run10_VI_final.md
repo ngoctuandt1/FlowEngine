@@ -25,9 +25,10 @@
 Run 10 began as a **pure verification session** (3-job chain on VI profile). Post-run, supervisor requested applying the direct-goto simplification surfaced by §7 probe. Resulting commits:
 
 ```
-<hash-docs>  docs(run10): E2E pass report + SPEC §D.4 B1/B11/B12 markers
-<hash-b27>   refactor(_base): direct goto(edit_url) primary + tile-click fallback (B27)
+9519c06  refactor(_base): direct goto(edit_url) primary + tile-click fallback (B27)
 ```
+
+Run 10 verification docs (session report + E2E prepend + SPEC §D.4 B1/B11/B12 markers) were bundled into the same commit as the B27 code change, since the probe that motivated B27 ran immediately after Run 10.b's PASS and the same supervisor-attested session produced both.
 
 - Verification: J1+J2+J3 all ✅ on EN-switched `ngoctuandt20` (see §4).
 - B27 code change: `flow/operations/_base.py::navigate_to_edit` now `goto(edit_url)` first; tile-click path kept as defensive fallback when the SPA bounces to /project/. `tests/test_base.py` +2 cases (primary goto trip-wire + fallback path). Full suite 95 pass (was 93 + 2 new).
