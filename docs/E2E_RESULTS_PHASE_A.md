@@ -1,7 +1,82 @@
 # Phase A — E2E Results
 
 > Live engine E2E validation log per `docs/WORKPLAN.md` §5 / §7 Meta.
-> Format: one section per attempt, most recent first. `Tier 1 = DOM probe via Chrome MCP`; `Tier 2 = full engine-driven chain via REST API`.
+> Format: one section per attempt, most recent first. `Tier 1 = DOM probe via Chrome MCP`; `Tier 2 = full engine-driven chain via REST API`; `Tier 1.5 = DB-layer live validation against real-run snapshot (no Chrome)`.
+
+---
+
+## Tier 1.5 — 2026-04-18 — Run 9 — ✅ **B22 FIX VERIFIED AGAINST LIVE RUN-8 DB** (DB-layer)
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-18 ~08:45 UTC (~15:45 local) |
+| Tier | 1.5 — DB-layer live-validation (not full-browser Tier 2; see Outcome) |
+| Profile | `ngoctuandt20` (same account as Run 8) |
+| Source DB | `.claude/worktrees/gallant-jang-cbe036/data/flowengine.db` (read-only snapshot of Run-8 state) |
+| Fix under test | B22 commit on branch `claude/elated-edison-a7ac87` (this worktree) |
+| Target row | L2 `8ffc308a-…` (camera-move Dolly in — the exact job that failed in Run 8) |
+| Parent row | L1 `6bdcadd7-…` (text-to-video completed in Run 8 with real `project_url` + `media_id`) |
+| Session report | [`docs/session-reports/2026-04-18_B22_l2-inheritance.md`](session-reports/2026-04-18_B22_l2-inheritance.md) |
+
+### Method
+
+1. Snapshot the Run-8 DB to a temp path (read-only on source).
+2. Load MY worktree's `server.db.job_store.claim_next_job` (B22-fixed) with `DATABASE_PATH` re-pointed at the snapshot.
+3. Reset L2 `8ffc308a-…` to `pending` with `project_url` / `media_id` / `edit_url` all NULL — reproduces the exact Run-8 failure state.
+4. Invoke `claim_next_job("run9-db-probe", ["ngoctuandt20"])`.
+5. Read back the child row and compare against the parent's values.
+
+### Result
+
+```
+Parent L1 6bdcadd7 (completed):
+  project_url = https://labs.google/fx/tools/flow/project/bf4c75fa-e039-43bb-b994-bf7d6373138e
+  media_id    = 03fe613e-988d-4f29-b0b1-3d0603c916a1
+  edit_url    = https://labs.google/fx/tools/flow/project/bf4c75fa-…/edit/03fe613e-…
+  profile     = ngoctuandt20
+
+Before B22 claim (L2 reset to pending):
+  status=pending  project_url=None  media_id=None  edit_url=None
+
+After B22 claim (L2 8ffc308a):
+  status=claimed  profile=ngoctuandt20
+  project_url=https://labs.google/fx/tools/flow/project/bf4c75fa-e039-43bb-b994-bf7d6373138e
+  media_id=03fe613e-988d-4f29-b0b1-3d0603c916a1
+  edit_url=https://labs.google/fx/tools/flow/project/bf4c75fa-…/edit/03fe613e-…
+```
+
+All 3 target fields now populated on the child row — exactly what `worker/dispatcher.py` + `flow/operations/_base.py::navigate_to_edit(job)` need. Pre-B22 Run 8 had all 3 NULL, which was the sole blocker.
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✓ | `profile=ngoctuandt20` inherited from parent L1 |
+| INV-2 Navigate by `edit_url` | ✓ **UNBLOCKED** | `edit_url` now populated on the child row — worker has a target |
+| INV-3 Store Everything | ✓ **UNBLOCKED** | `project_url` + `media_id` + `edit_url` + `profile` all persisted on claim (claim-time propagation per SPEC.md §A.1 INV-3 B22 note) |
+| INV-4 Serial per Project | ✓ unchanged | Existing project-lock logic preserved — B22 only adds fields to the same UPDATE |
+| INV-5 `media_id` stable | ✓ | Child `media_id` == parent `media_id` (`03fe613e-…`) |
+
+### Outcome — PASS (DB-layer) / DEFERRED (full browser J1→J2→J3)
+
+**PASS**: B22 fix verified against real Run-8 DB state using the exact parent/child rows that failed in Run 8. The ONE thing B22 changes (claim-time field propagation) works correctly against authentic live data — not just synthetic fixtures.
+
+**DEFERRED (full browser chain retry)**: Not executed because:
+1. The sibling worktree `gallant-jang-cbe036` has its engine process running (PID 49360 server + PID 47656 worker on port 8080 + `CHROME_USER_DATA_DIR=D:/AI/chrome-profiles`) — stopping it would interrupt that session's open context.
+2. A full J1→J2→J3 chain requires a real Chrome run against real Flow that consumes live LP credits on `ngoctuandt20` (10–15 min, 3 video generations).
+3. B22 is strictly a DB-layer change. The worker / `navigate_to_edit` / `camera.run_camera` / `insert.run_insert` code is **unchanged**. Live DB validation proves the fix populates the fields those callers already know how to use.
+
+Proposed supervisor action: run a standalone Tier 2 Run 9 (full Chrome chain) after this branch merges, when the sibling worktree's engine can be cleanly stopped. Success criteria: J2 (camera-move) reaches `completed` validating B12, J3 (insert-object) reaches `completed` validating B11.
+
+### Unit-test coverage (complementary)
+
+`tests/test_claim_algorithm.py` adds 4 cases (B22 regression guards):
+- `test_l2_claim_inherits_project_url_media_id_edit_url` — core contract (RED→GREEN against pre-B22 code).
+- `test_l2_claim_overwrites_child_fields_from_parent` — parent-wins-on-overwrite (single source of truth).
+- `test_l1_claim_does_not_inherit_anything` — L1 fresh-claim branch untouched (blast-radius guard).
+- `test_l2_claim_inherits_when_parent_edit_url_null` — pure NULL-preserving propagation, no synthesis.
+
+Full-suite: 93 pass (was 89 + 4 new) under `python -W error::DeprecationWarning -m pytest tests/`.
 
 ---
 

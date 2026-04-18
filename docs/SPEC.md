@@ -35,7 +35,7 @@
   - [D.1 — Google Flow UI gotchas](#d1--google-flow-ui-gotchas)
   - [D.2 — Playwright / Chrome gotchas](#d2--playwright--chrome-gotchas)
   - [D.3 — Server / DB gotchas](#d3--server--db-gotchas)
-  - [D.4 — Known bugs trong code hiện tại (B1-B17)](#d4--known-bugs-trong-code-hiện-tại-b1-b17)
+  - [D.4 — Known bugs trong code hiện tại (B1-B22)](#d4--known-bugs-trong-code-hiện-tại-b1-b22)
 - [PHẦN E — DEBUG PLAYBOOK](#phần-e--debug-playbook)
 - [PHẦN F — GLOSSARY](#phần-f--glossary)
 - [PHẦN G — EXTERNAL REFERENCES](#g--external-references)
@@ -77,6 +77,8 @@
 **Lý do:** Chain tiếp theo cần đọc các field này từ parent. Thiếu 1 field = chain break.
 
 **Kiểm tra:** `flow/operations/_base.py:finalize_operation` phải return dict có đủ 6 field trên. Worker dispatcher attach vào PUT `/api/worker/jobs/{id}`.
+
+**Claim-time propagation (B22):** `server/db/job_store.py:claim_next_job` L2+ branch PHẢI inherit `project_url`, `media_id`, `edit_url` từ parent row cùng transaction với `profile` inherit. Nếu bỏ sót → child có các field NULL → worker `navigate_to_edit` không có target → INV-2 bị gap gián tiếp.
 
 ### INV-4: Serial per Project
 > **2 job trên cùng `project_url` KHÔNG BAO GIỜ chạy song song.**
@@ -1275,9 +1277,9 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 ---
 
-## D.4 — Known bugs trong code hiện tại (B1-B19)
+## D.4 — Known bugs trong code hiện tại (B1-B22)
 
-> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B17 là stash-triage cherry-picks (2026-04-17 / 2026-04-18). B18 là Tier2 2026-04-18 discovery (homepage locale-hardcoded selector blocked every T2V job on non-EN Google account). B19 là Tier2 2026-04-18 post-B18 discovery (aspect-ratio chip selector depended on model-name text + pre-open Radix state — both surfaced only once B18 unblocked code flow past homepage).
+> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B17 là stash-triage cherry-picks (2026-04-17 / 2026-04-18). B18 là Tier2 2026-04-18 discovery (homepage locale-hardcoded selector blocked every T2V job on non-EN Google account). B19 là Tier2 2026-04-18 post-B18 discovery (aspect-ratio chip selector depended on model-name text + pre-open Radix state — both surfaced only once B18 unblocked code flow past homepage). B22 là Tier2 2026-04-18 post-B19 discovery (L2+ claim branch inherited only `profile`, not `project_url`/`media_id`/`edit_url` — surfaced only when a chain successfully reached J2 for the first time).
 
 ### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17, Tier2 2026-04-18 **reached + unblocked via B19** — chain previously halted at Flow homepage on VI-locale account (B18), then halted at aspect-ratio chip on non-`"Video"` default model (B19); after B19 fix, Tier 2 Run 7 ✅ verified J1 `text-to-video` reached `completed` with `media_id` + `project_url` on aspect_ratio="9:16" on `ngoctuandt20`; see `docs/E2E_RESULTS_PHASE_A.md` Runs 3-7 + `docs/session-reports/2026-04-18_B19_aspect-chip-multiline.md`)
 - File: `flow/operations/generate.py` → `_set_aspect_ratio()`
@@ -1551,6 +1553,26 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Follow-up candidates discovered but NOT fixed:
   - **B20 (P2 proposed):** `flow/model_selector.py` uses `button:has-text('Video')` to open the model dropdown — on current DOM the same selector also matches the aspect chip. Model selector succeeds via Playwright `.first` ordering but is the origin of the pre-open state B19 now tolerates. Propose making model selector use a non-text anchor (icon or `role=combobox`).
   - **B21 (P3 proposed):** Worker emits a stray bare `arrow_drop_down` line to stdout during model selection (stray `print()` in `flow/model_selector.py`).
+
+### ~~B22 — L2+ claim does NOT inherit `project_url` / `media_id` / `edit_url` from parent (P0)~~ ✅ FIXED (commit `__B22_COMMIT__`)
+- Discovered during Tier 2 2026-04-18 Run 8 on `ngoctuandt20` after B19 unblocked J1 — `docs/session-reports/2026-04-18_B19_aspect-chip-multiline.md §8` + `docs/E2E_RESULTS_PHASE_A.md` Run 8 blocker description.
+- File: `server/db/job_store.py::claim_next_job` L2+ branch (lines ~260-290). L1 fresh-claim branch untouched.
+- Triệu chứng: every multi-level chain broke at J2. L2 job claim with `project_url=NULL`, `media_id=NULL`, `edit_url=NULL` even though parent row had all 3 fields populated post-completion (written by `update_job` from `finalize_operation` payload). Worker's `navigate_to_edit(job)` then had no target → every L2 extend/insert/remove/camera raised before any Flow interaction. Phase A Tier 1 never hit this because Tier 1 jobs were exercised individually (no chain ever reached J2); Phase A Tier 2 Runs 1-7 masked it by halting earlier (B18 then B19). Only Run 8, with B18+B19 fixed, got far enough for the L2 branch to run and expose the gap.
+- Root cause: pre-B22 `claim_next_job` priority-1 branch SELECTed only `parent.profile` and UPDATEd only `jobs.profile` + worker_id + claimed_at + status + updated_at. The 3 target-context fields were never touched on the L2+ path. `project_url` / `media_id` / `edit_url` were POSTed NULL by the chain-builder frontend (it doesn't know them yet — they're outputs of J1) and stayed NULL through claim. INV-3 "Store Everything" gap surfaced as INV-2 "Navigate by edit_url" break at the worker.
+- Runtime effect (pre-fix): **every L2+ job on every chain failed** with `navigate_to_edit`-stage error the instant J1 succeeded. Chain aggregation (B4) correctly propagated the J2 failure to J3 via parent-gated claim, so J3 never ran either. Effectively: Tier 2 chain validation impossible.
+- **Resolution (commit `__B22_COMMIT__`):**
+  - **Parent SELECT extended.** `SELECT profile, project_url, media_id, edit_url FROM jobs WHERE id = ?` (up from `SELECT profile` only). Parent row is the authoritative source — it's `completed`, its `finalize_operation` ran, the 3 fields reflect the real Flow output.
+  - **Jobs UPDATE extended.** Same `BEGIN IMMEDIATE` transaction also sets `project_url = ?`, `media_id = ?`, `edit_url = ?` on the child row from the parent's values. If the child had stale values from an earlier API request (replay / pre-populated frontend — edge case), the parent wins (source of truth).
+  - **NULL-preserving.** If the parent has NULL for a given field (e.g. `edit_url` column stays NULL when the worker computes it via `Job.computed_edit_url` property rather than writing the column), inherit copies NULL — no synthesis. Pure propagation.
+  - **L1 branch untouched.** Priority-2 branch (L1 fresh claims, `parent_job_id IS NULL`) unchanged — L1 jobs have no parent to inherit from; their `project_url`/`media_id`/`edit_url` are the outputs of their own Flow run, written back by `finalize_operation` at completion.
+  - **B6 profile-row mirror still fires in the same transaction** — `profiles.current_job_id = <job.id>` update is unchanged.
+- Guard: `tests/test_claim_algorithm.py` — 4 cases:
+  - `test_l2_claim_inherits_project_url_media_id_edit_url` — RED→GREEN core contract: parent completed with all 3 fields, child POSTed with all NULL → post-claim child carries parent's values AND a fresh SELECT confirms they're persisted.
+  - `test_l2_claim_overwrites_child_fields_from_parent` — edge contract: child POSTed with stale values → parent wins on overwrite (single-source-of-truth invariant, not additive merge).
+  - `test_l1_claim_does_not_inherit_anything` — blast-radius guard: L1 fresh claim (no parent) → `project_url`/`media_id`/`edit_url` remain NULL (priority-2 path unchanged by B22).
+  - `test_l2_claim_inherits_when_parent_edit_url_null` — pure-propagation contract: parent has NULL `edit_url` → inherit copies NULL, no synthesis.
+- Live verdict: **Tier 2 Run 9 __RUN9_VERDICT__** — see `docs/E2E_RESULTS_PHASE_A.md` Run 9.
+- Session report: `docs/session-reports/2026-04-18_B22_l2-inheritance.md`.
 
 ---
 

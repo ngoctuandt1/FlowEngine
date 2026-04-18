@@ -260,13 +260,26 @@ async def claim_next_job(
 
             if row is not None:
                 job_dict = dict(row)
-                # Inherit profile from parent
+                # B4 profile + B22 target-field inheritance — parent is the
+                # single source of truth. Without project_url/media_id/edit_url
+                # the worker's navigate_to_edit has no target and every L2+
+                # op fails before touching Flow (INV-2 + INV-3 gap).
                 parent_cur = await db.execute(
-                    "SELECT profile FROM jobs WHERE id = ?",
+                    "SELECT profile, project_url, media_id, edit_url "
+                    "FROM jobs WHERE id = ?",
                     (job_dict["parent_job_id"],),
                 )
                 parent_row = await parent_cur.fetchone()
-                bound_profile = parent_row["profile"] if parent_row else None
+                if parent_row is not None:
+                    bound_profile = parent_row["profile"]
+                    bound_project_url = parent_row["project_url"]
+                    bound_media_id = parent_row["media_id"]
+                    bound_edit_url = parent_row["edit_url"]
+                else:
+                    bound_profile = None
+                    bound_project_url = None
+                    bound_media_id = None
+                    bound_edit_url = None
 
                 await db.execute(
                     """
@@ -275,10 +288,22 @@ async def claim_next_job(
                         worker_id = ?,
                         claimed_at = ?,
                         profile = ?,
+                        project_url = ?,
+                        media_id = ?,
+                        edit_url = ?,
                         updated_at = ?
                     WHERE id = ?
                     """,
-                    (worker_id, now, bound_profile, now, job_dict["id"]),
+                    (
+                        worker_id,
+                        now,
+                        bound_profile,
+                        bound_project_url,
+                        bound_media_id,
+                        bound_edit_url,
+                        now,
+                        job_dict["id"],
+                    ),
                 )
                 # B6: mirror the claim onto the profile row in the same
                 # transaction so the dashboard sees a consistent view.
