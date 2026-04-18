@@ -35,7 +35,7 @@
   - [D.1 — Google Flow UI gotchas](#d1--google-flow-ui-gotchas)
   - [D.2 — Playwright / Chrome gotchas](#d2--playwright--chrome-gotchas)
   - [D.3 — Server / DB gotchas](#d3--server--db-gotchas)
-  - [D.4 — Known bugs trong code hiện tại (B1-B26)](#d4--known-bugs-trong-code-hiện-tại-b1-b26)
+  - [D.4 — Known bugs trong code hiện tại (B1-B27)](#d4--known-bugs-trong-code-hiện-tại-b1-b27)
 - [PHẦN E — DEBUG PLAYBOOK](#phần-e--debug-playbook)
 - [PHẦN F — GLOSSARY](#phần-f--glossary)
 - [PHẦN G — EXTERNAL REFERENCES](#g--external-references)
@@ -1277,11 +1277,11 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 ---
 
-## D.4 — Known bugs trong code hiện tại (B1-B26)
+## D.4 — Known bugs trong code hiện tại (B1-B27)
 
 > Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B17 là stash-triage cherry-picks (2026-04-17 / 2026-04-18). B18 là Tier2 2026-04-18 discovery (homepage locale-hardcoded selector blocked every T2V job on non-EN Google account). B19 là Tier2 2026-04-18 post-B18 discovery (aspect-ratio chip selector depended on model-name text + pre-open Radix state — both surfaced only once B18 unblocked code flow past homepage). B22 là Tier2 2026-04-18 post-B19 discovery (L2+ claim branch inherited only `profile`, not `project_url`/`media_id`/`edit_url` — surfaced only when a chain successfully reached J2 for the first time). B26 là Tier2 2026-04-19 post-B22 discovery (during live-extension E2E verification of the B22 fix): `_switch_to_video_tab`'s JS fallback used `lower.includes('videocam')` which also matched /edit/ Camera mode-switch button (innerText `"videocam\nCamera"`) — clicking it silently redirected the composer from /edit/ to /project/ between `select_model` and `submit_with_confirmation`, so the submit POST never fired. Same class of fuzzy-text leak also lived in `flow/submit.py` (submit selector) and `flow/operations/_base.py::click_action_button` (mode button selector) — B26 fixed all three via Playwright `:text-is(...)` exact-match engine on Material Icon `<i>` ligature children.
 
-### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17, Tier2 2026-04-18 **reached + unblocked via B19** — chain previously halted at Flow homepage on VI-locale account (B18), then halted at aspect-ratio chip on non-`"Video"` default model (B19); after B19 fix, Tier 2 Run 7 ✅ verified J1 `text-to-video` reached `completed` with `media_id` + `project_url` on aspect_ratio="9:16" on `ngoctuandt20`; see `docs/E2E_RESULTS_PHASE_A.md` Runs 3-7 + `docs/session-reports/2026-04-18_B19_aspect-chip-multiline.md`)
+### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17, Tier2 2026-04-18 **reached + unblocked via B19** — chain previously halted at Flow homepage on VI-locale account (B18), then halted at aspect-ratio chip on non-`"Video"` default model (B19); after B19 fix, Tier 2 Run 7 ✅ verified J1 `text-to-video` reached `completed` with `media_id` + `project_url` on aspect_ratio="9:16" on `ngoctuandt20`; see `docs/E2E_RESULTS_PHASE_A.md` Runs 3-7 + `docs/session-reports/2026-04-18_B19_aspect-chip-multiline.md` · Tier2 Run 10 full 3-job chain verified cross-locale 2026-04-19 on `ngoctuandt20` EN-switched profile — J1 aspect 9:16 held in chain context with B18/B19/B22/B26 all active)
 - File: `flow/operations/generate.py` → `_set_aspect_ratio()`
 - Triệu chứng: job có `aspect_ratio="9:16"` nhưng video output luôn 16:9 — stub chỉ tìm `button:has-text('9:16')` (không tồn tại trong DOM Flow) và fallback im lặng.
 - Fix: rewrite theo Radix chip panel flow (B1a research). Mở `button[aria-haspopup="menu"]` chip → đợi `[role="menu"][data-state="open"]` → đảm bảo Video tab active → click `[id$="-trigger-PORTRAIT|LANDSCAPE"]` bằng `Locator.click` (real pointer event — JS `el.click()` KHÔNG trigger Radix state) → wait `data-state="active"` → close bằng click-outside (`page.mouse.click(10, 10)` — Escape sẽ đóng luôn composer per B8 lesson) → verify chip `innerText` chứa `crop_9_16` / `crop_16_9`. Video mode chỉ support 9:16 / 16:9; `1:1` là image-only → log warning + fallback default. Guard: `tests/test_aspect_ratio.py` (3 cases: default early-return, 1:1 warning, 9:16 full flow with mocked Locator chain). Selector reference: `docs/FLOW_UI_REFERENCE.md` §Aspect Ratio UI.
@@ -1346,7 +1346,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Guard (extended): `tests/test_datetime_migration.py::test_no_utcnow_in_code` now also forbids `default_factory=datetime.utcnow` substring — trip-wire prevents silent reintroduction of the reference-form (no parens) pattern that B8's call-form scan missed.
 - Session report: `docs/session-reports/2026-04-18_B10_pydantic-default-factory.md`.
 
-### ~~B11 — Bbox drag targets wrong element + overlay is canvas-painted (P0)~~ ✅ FIXED (commit `ce6683a`, Tier1 R2 verified live 2026-04-17, Tier2 2026-04-18 **not reached** — chain halted before any L2+ navigation on VI-locale account; see `docs/E2E_RESULTS_PHASE_A.md` Run 1)
+### ~~B11 — Bbox drag targets wrong element + overlay is canvas-painted (P0)~~ ✅ FIXED (commit `ce6683a`, Tier1 R2 verified live 2026-04-17, Tier2 2026-04-18 **not reached** — chain halted before any L2+ navigation on VI-locale account; see `docs/E2E_RESULTS_PHASE_A.md` Run 1 · Tier2 Run 10 verified live-chain 2026-04-19 — J3 insert-object completed with worker log `Drew bbox on canvas: x=0.10 y=0.10 w=0.20 h=0.20 canvas=390x694` + output `downloads\ins_720p_1776544675.mp4`)
 - Discovered during Tier1 DOM validation (`docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B2) on live L1 project `785d2255-…`.
 - File: `flow/operations/_base.py:236` (`draw_bbox_on_video`) — supersedes B2 fix commit `a165105`.
 - Two independent problems:
@@ -1368,7 +1368,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Reference updated: `docs/FLOW_UI_REFERENCE.md` §Bbox Overlay UI (canvas target + pointer-trust rationale + pitfall list + updated coordinate system).
 - Session report: `docs/session-reports/2026-04-17_B11_bbox-canvas-fix.md`.
 
-### ~~B12 — Camera `_verify_preset_selected` uses wrong state signals → every camera job fails (P0, regression)~~ ✅ FIXED (commit `78d3e40`, Tier1 R2 verified live 2026-04-17, Tier2 2026-04-18 **not reached** — chain halted before any L2+ navigation on VI-locale account; see `docs/E2E_RESULTS_PHASE_A.md` Run 1)
+### ~~B12 — Camera `_verify_preset_selected` uses wrong state signals → every camera job fails (P0, regression)~~ ✅ FIXED (commit `78d3e40`, Tier1 R2 verified live 2026-04-17, Tier2 2026-04-18 **not reached** — chain halted before any L2+ navigation on VI-locale account; see `docs/E2E_RESULTS_PHASE_A.md` Run 1 · Tier2 Run 10 verified live-chain 2026-04-19 — J2 camera-move direction="Dolly in" completed with output `downloads\cam_720p_1776544567.mp4`; B22 claim-time inheritance populated J2's navigation metadata)
 - Discovered during Tier1 DOM validation (`docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B3) on live L1 project `785d2255-…`.
 - File: `flow/operations/camera.py:133` (`_click_preset` + `_verify_preset_selected`) — regression introduced by commit `58937d4`.
 - Live DOM reality vs code assumptions:
@@ -1606,6 +1606,32 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
   - **L2 insert** — navigated to /edit/029f1ad0 (L1 original; the extend child had "Các chế độ chỉnh sửa khác không dùng được cho video mở rộng" so couldn't host Chèn), clicked Chèn via new `button[title='Chèn']` primary selector, drew bbox on 479×269 canvas, typed "a small yellow pencil", submit fired, **yellow pencil visibly inserted over red cube in the preview** after ~8s.
 - Session report: `docs/session-reports/2026-04-19_B26_submit-and-model-exact-text.md`.
 - Incidental absorption: **B20** (P2 proposed under B19) — the model selector previously used `button:has-text('Video')` which collided with the aspect chip on current DOM. B26's rewrite of `chip_selectors` to `aria-haspopup='menu'` + exact icon ligatures eliminates the `'Video'` text match entirely. Aspect chip and model chip now use distinct, locale-independent anchors.
+
+### ~~B27 — `navigate_to_edit` wastes a pageload preloading /project/ before /edit/ (P3, perf)~~ ✅ FIXED (commit `<hash-b27>`, verified via `scripts/probe_direct_edit_url.py` v2 on EN-switched `ngoctuandt20` 2026-04-19; Tier2 Run 10.b live-chain PASS on the same profile before the B27 code change landed, so B27 itself is a post-verification simplification, not a behavior fix)
+- Discovered during Tier2 Run 10.b post-pass probe: supervisor asked whether full metadata (`project_url` + `media_id` → built `edit_url`) is sufficient to navigate directly to the editor. `scripts/probe_direct_edit_url.py` v2 confirms on EN-locale `ngoctuandt20` direct `page.goto(edit_url)` lands on the rendered editor (submit chip `arrow_forward` visible + Veo model chip visible + textarea count 1 + no homepage bounce + `/edit/` URL preserved). Probe v1 had reported FAIL — that verdict was false-positive on a `"[...catchAll]"` substring match in raw HTML (Next.js client bundle contains that string regardless of actual catch-all routing).
+- File: `flow/operations/_base.py::navigate_to_edit` — **single line change** at the `target_url = …` assignment.
+- Pre-B27 flow (2 pageloads + 3s sleep per L2+ op):
+  1. `target_url = project_url_val or edit_url_val` → always `goto(project_url)` first when both present (B22 guarantees both post-claim).
+  2. Wait 3s.
+  3. Homepage-redirect check (if URL lacks both /project/ and /edit/, raise).
+  4. `/edit/` check → if absent, call `_click_video_tile(page, media_id)` to enter edit mode from the project grid.
+  5. If tile click fails, "last resort" `goto(edit_url_val)` + wait 5s.
+  6. Post-nav verify: raise if `/edit/` still absent.
+- Post-B27 flow (1 pageload on fast path):
+  1. `target_url = edit_url_val` → `goto(edit_url)` directly.
+  2. Wait 3s.
+  3. Homepage-redirect check unchanged.
+  4. **Fast path exit:** if `/edit/` present (EN profile happy case), skip tile-click, return.
+  5. **Defensive fallback:** if SPA bounced to `/project/{id}` (rare — locale flap or media moved), the existing `_click_video_tile` block still runs (media_id-aware JS click, B14 KEEP-3); on its failure, the "last resort" `goto(edit_url)` retry also still runs.
+- Runtime effect: happy path saves 1 pageload + ~3s per L2+ job. On a 3-job chain (L1 t2v + L2 camera + L3 insert) this is ~6s saved across the chain. On longer chains (4-8 ops) it compounds. Correctness unchanged — all existing post-nav verifies + mismatch-warning (B14 KEEP-2) retained.
+- **Why safe:** B27 reorders primary-vs-fallback but does not remove the fallback. The tile-click block and last-resort `goto(edit_url)` retry are still reachable whenever the primary `goto(edit_url)` fails to land on `/edit/`. The only behavior change is on the fast path (EN profile + complete metadata + no SPA bounce); all other paths are identical to pre-B27.
+- **Why not earlier:** pre-B22, L2+ jobs often claimed with `project_url=NULL` (B22 bug), so `target_url = project_url_val or edit_url_val` naturally fell to `edit_url_val` when the project_url was missing. The assertion `direct goto works` couldn't be tested cross-locale until B22 fixed inheritance + VI→EN language switch unblocked Run 10.b. Once both conditions held (2026-04-19), probe v2 could confirm the simpler path.
+- Guard: `tests/test_base.py` +2 B27 cases:
+  - `test_navigate_uses_edit_url_as_primary_goto` — trip-wire: asserts `page.goto.await_args_list[0].args[0]` contains `/edit/` AND the requested `media_id`. Fails under pre-B27 code (which would call `goto(project_url)` first). Pins the B27 contract so future refactors of `navigate_to_edit` can't silently re-introduce the project-first strategy without the test noticing.
+  - `test_navigate_falls_back_to_tile_click_when_spa_bounces` — defensive fallback: simulates a post-goto URL of `/project/{id}` (bounce), stubs `_click_video_tile` to succeed and flip the mocked URL to `/edit/{media_id}`, asserts `navigate_to_edit` returns the edit URL and the tile-click was awaited. Prevents accidental removal of the fallback block during future cleanups.
+- Full-suite verification: **95 pass** (pre-B27 baseline 93 + 2 new). Zero DeprecationWarning under `-W error::DeprecationWarning`. No other test file touched.
+- Comment in `navigate_to_edit` updated — old comment claimed "Direct /edit/ URLs often fail because the Flow SPA needs the project context loaded first", which was true on VI-locale accounts but false on EN. New comment cites the 2026-04-19 probe and flags VI-locale as the known edge case handled by the fallback.
+- Reference: `scripts/probe_direct_edit_url.py` (kept in tree as a repeatable probe if this path's behavior shifts in a future Flow release). Session report: `docs/session-reports/2026-04-19_Tier2_Run10_VI_final.md` §7 "Out-of-scope discoveries".
 
 ---
 

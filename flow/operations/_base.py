@@ -42,12 +42,17 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             f"Cannot navigate: no edit_url, project_url={project_url_val}, media_id={media_id}"
         )
 
-    # Strategy: navigate to PROJECT URL first (more reliable), then click
-    # into the video tile to enter edit mode.  Direct /edit/ URLs often fail
-    # because the Flow SPA needs the project context loaded first.
-    project_url_val = job.get("project_url") or ""
-    target_url = project_url_val or edit_url_val
-    logger.info("Navigating to: %s", target_url[:100])
+    # Strategy: direct goto(edit_url) is the fast path. On EN-locale Google
+    # accounts the Flow SPA mounts the editor on /edit/{media_id} without
+    # needing the project grid preloaded — verified 2026-04-19 by
+    # `scripts/probe_direct_edit_url.py` on `ngoctuandt20` post-language-
+    # switch (submit chip, model chip, textarea all present on direct goto).
+    #
+    # Fallback: if the SPA bounces to /project/{id} (rare — e.g. temporary
+    # locale flap or media moved), the `/edit/ not in page.url` block below
+    # falls through to tile-click on the project grid.
+    target_url = edit_url_val
+    logger.info("Navigating to edit URL: %s", target_url[:100])
     await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(3)
 

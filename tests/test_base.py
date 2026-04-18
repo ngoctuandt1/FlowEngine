@@ -128,6 +128,68 @@ async def test_navigate_no_warning_on_media_id_match(caplog):
     ), f"No mismatch WARNING expected for matching media_id, got: {warnings}"
 
 
+async def test_navigate_uses_edit_url_as_primary_goto():
+    """B27 (2026-04-19): direct `goto(edit_url)` is the fast path.
+
+    Verified live on `ngoctuandt20` EN profile — `scripts/probe_direct_edit_url.py`
+    shows the SPA mounts the editor on direct /edit/ goto (submit chip +
+    model chip + textarea all present). Pre-B27 code went to project_url
+    first, then tile-clicked — 2 pageloads + a wait instead of 1.
+
+    This test asserts the FIRST `page.goto` call targets the edit_url,
+    not the project_url. Prevents silent regression to the project-grid-
+    first strategy."""
+    client, page = _make_client(_edit_url(MEDIA_ID_A))
+
+    job = {
+        "edit_url": _edit_url(MEDIA_ID_A),
+        "project_url": _project_url(),
+        "media_id": MEDIA_ID_A,
+    }
+
+    await navigate_to_edit(client, job)
+
+    assert page.goto.await_count >= 1
+    first_call = page.goto.await_args_list[0]
+    first_url = first_call.args[0]
+    assert "/edit/" in first_url, (
+        f"Primary goto must target the edit URL (contains /edit/), "
+        f"got: {first_url}"
+    )
+    assert MEDIA_ID_A in first_url, (
+        f"Primary goto must carry the requested media_id, got: {first_url}"
+    )
+
+
+async def test_navigate_falls_back_to_tile_click_when_spa_bounces(monkeypatch):
+    """B27: if direct goto lands on /project/ (SPA bounce), fall back to
+    the existing tile-click path. Ensures the simplification does NOT
+    remove the defensive fallback."""
+    # Page reports /project/ after goto → bounce scenario.
+    client, page = _make_client(_project_url())
+
+    # Tile click succeeds (returns True — media_id-aware JS click).
+    tile_click = AsyncMock(return_value=True)
+    monkeypatch.setattr(_base, "_click_video_tile", tile_click)
+
+    # After tile click, post-nav verify reads page.url again; simulate
+    # page having transitioned to /edit/ by mutating the mock.
+    def _flip_url_to_edit():
+        page.url = _edit_url(MEDIA_ID_A)
+    tile_click.side_effect = lambda *a, **kw: (_flip_url_to_edit(), True)[1]
+
+    job = {
+        "edit_url": _edit_url(MEDIA_ID_A),
+        "project_url": _project_url(),
+        "media_id": MEDIA_ID_A,
+    }
+
+    edit_url, _pid, _locale = await navigate_to_edit(client, job)
+
+    assert edit_url == _edit_url(MEDIA_ID_A)
+    tile_click.assert_awaited()  # fallback triggered
+
+
 async def test_navigate_raises_when_not_in_edit_mode(monkeypatch):
     """KEEP-2: after all nav attempts, URL still lacks `/edit/` → RuntimeError.
 

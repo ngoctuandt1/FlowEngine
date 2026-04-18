@@ -5,6 +5,57 @@
 
 ---
 
+## Tier 2 — 2026-04-19 — Run 10 — ✅ **FULL 3-JOB CHAIN PASS** (B1 + B11 + B12 cross-locale verified; incidentally landed B27 engine simplification)
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-19 ~03:30-03:42 local (Run 10.b PASS; Run 10.a blocked pre-language-switch) |
+| Tier | 2 — full engine-driven chain via REST API |
+| Profile | `ngoctuandt20` (Google account was VI-locale at session start → switched to English at `myaccount.google.com/language` mid-session per `feedback_english_locale.md` memory) |
+| Chain type | 3-job: t2v (9:16) → camera-move (Dolly in) → insert-object (bbox 0.10/0.10/0.20/0.20, "a small bird") |
+| Chain id | `72160591-d2bb-4731-8096-1a48a45c6ef2` |
+| Commits under test | B18 `8dc357c` + B19 `e1597b2` + B22 `0637c92` + B23 `caef3e9` + B24 `004d8fb` + B26 `d4fca1a` + B20-final `0aa01b8` |
+| Session report | [`docs/session-reports/2026-04-19_Tier2_Run10_VI_final.md`](session-reports/2026-04-19_Tier2_Run10_VI_final.md) |
+
+### Per-job verdict
+
+| # | Job | Target bug | Status | Completion evidence |
+|---|---|---|---|---|
+| 1 | `text-to-video` aspect=9:16, "a fluffy cat chasing a butterfly in sunlit meadow" | B1 / B18 / B19 | ✅ `completed` @ 2026-04-18T20:34:15Z | `media_id=5920c395-465d-4970-b22e-5c5359a3c147`, `project_url=https://labs.google/fx/tools/flow/project/dbb990c0-7d75-41f4-b7c9-21870bf3b190`, output `downloads\t2v_720p_1776544454.mp4` |
+| 2 | `camera-move` direction="Dolly in" | B12 preset + B22 L2 inherit | ✅ `completed` @ 2026-04-18T20:36:08Z | new `media_id=e219fc6c-ee61-4a42-a1b7-731e9f95ae53` (Flow mints new media on camera-move — see INV-5 discovery below), output `downloads\cam_720p_1776544567.mp4`. B22 inheritance: J2 claimed with J1's `project_url` + `media_id` + `edit_url` populated. |
+| 3 | `insert-object` bbox={0.10, 0.10, 0.20, 0.20}, "a small bird" | B11 canvas bbox + B22 L3 inherit | ✅ `completed` @ 2026-04-18T20:37:55Z | `media_id=e219fc6c-…` (preserved from J2 — insert-object does NOT mint new media), output `downloads\ins_720p_1776544675.mp4`. B11 worker log: `Drew bbox on canvas: x=0.10 y=0.10 w=0.20 h=0.20 canvas=390x694`. |
+
+### Outcome — PASS (full 3-job browser chain)
+
+Run 10 is the **first full 3-job chain to reach terminal state on all three L1 + L2 + L2 operations** in Tier 2 — Phase A baseline. Verifies B1 / B11 / B12 in live chain-context (not just the isolated Tier 1 DOM probes from 2026-04-17), and verifies B22 inheritance + B26 exact-text selectors hold under back-to-back L2 navigations.
+
+### Run 10.a blocker → Run 10.b path
+
+Run 10.a (first attempt on VI-locale Google account) blocked at J2 with `RuntimeError("Failed to enter edit mode")`. Isolated via `scripts/probe_nav_direct.py`: Flow's SPA redirects `/fx/tools/flow/project/{id}` → `/fx/vi/tools/flow/project/{id}` on VI-locale accounts AND strips `/edit/{media_id}` segment on direct goto AND renders Next.js catch-all placeholder on EN-URL direct goto. All three are SPA-level, not engine-selector, so code-level fix is impractical (locale-conditional URL handling everywhere).
+
+Supervisor flipped `ngoctuandt20@gmail.com`'s Preferred Language to English at `myaccount.google.com/language` (Google Account-level setting, not per-Chrome-profile). Run 10.b then produced the PASS above. Saved as `feedback_english_locale.md` memory — future Flow-onboarding operators must switch account language to EN before first engine run.
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✅ | All 3 jobs `profile=ngoctuandt20` |
+| INV-2 Navigate by `edit_url` | ✅ | `navigate_to_edit(job)` used `project_url` + `media_id` → built `edit_url`; no `video_index` |
+| INV-3 Store Everything | ✅ | Each job stored `project_url` + `media_id` + `edit_url` + output file post-completion; B22 claim-time propagation populated L2/L3 on claim |
+| INV-4 Serial per Project | ✅ | J1 → J2 → J3 ran sequentially (ProjectLock path) |
+| INV-5 `media_id` stable | ⚠️ | J1 `5920c395` → J2 `e219fc6c` (Flow minted new media on camera-move) → J3 preserved `e219fc6c`. Pre-existing Flow-SPA behavior; engine handles via `finalize_operation` re-extract. Flagged for SPEC wording revision — see session report §7 |
+| R-CODE-3 Locale-Independent | ✅ | All selectors (B18 `add_2`, B19 `crop_9_16`, B26 `arrow_forward`, B12 computed-color) locale-agnostic; VI blocker was Flow-SPA URL rewrite, not engine code |
+
+### Probe-driven engine simplification (B27 landed mid-session)
+
+After Run 10.b PASS, supervisor requested probing direct `page.goto(edit_url)` on the now-EN profile. `scripts/probe_direct_edit_url.py` v2 confirms direct goto lands on the rendered editor (submit chip `arrow_forward` + Veo model chip + textarea all present, no homepage bounce, `/edit/` URL preserved). v1 of the probe reported FAIL — that verdict was false-positive on a naïve `"[...catchAll]"` string match in raw HTML; v2 checks real editor DOM signals.
+
+Based on probe v2 evidence, `flow/operations/_base.py::navigate_to_edit` updated: `target_url = edit_url_val` (was `project_url_val or edit_url_val`) — direct `goto(edit_url)` is the fast path; existing `_click_video_tile` fallback block remains defensive. Saves one pageload + 3s sleep per L2+ operation. Tests `tests/test_base.py` +2 cases (primary-goto trip-wire + fallback path). Full suite 95 pass.
+
+See SPEC.md §D.4 B27 for the complete code / test / rationale entry.
+
+---
+
 ## Tier 1.5 — 2026-04-18 — Run 9 — ✅ **B22 FIX VERIFIED AGAINST LIVE RUN-8 DB** (DB-layer)
 
 | Field | Value |
