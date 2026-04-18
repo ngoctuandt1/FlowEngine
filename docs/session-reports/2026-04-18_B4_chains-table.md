@@ -20,7 +20,7 @@
 ## 2. Commits landed
 
 ```
-B4-COMMIT  feat(chains): persist chain metadata + aggregated status API (B4)
+4dcf50f  feat(chains): persist chain metadata + aggregated status API (B4)
 ```
 
 (hash to be recorded after commit)
@@ -78,7 +78,7 @@ Tổng: 7 files, approx +550 / -25 lines.
 - [x] Strike-through §D.4 B4 (known-bugs section) — full Choice C rationale + rejected alternatives inline
 - [x] NEW §C.1b Chain Schema (Chain, ChainAggregate, ChainProgress) + aggregated status rules table
 - [x] §C.3 Job Endpoints — added GET /api/chains/{id}; annotated POST /api/chains with INSERT side-effect
-- [x] Commit hash reference placeholder `B4-COMMIT` (will be replaced post-commit)
+- [x] Commit hash `4dcf50f` recorded in SPEC.md, WORKPLAN.md, and this report
 
 ---
 

@@ -1406,7 +1406,7 @@ Phase A coi là hoàn thành khi ALL items:
 - [ ] B1 merged (aspect ratio real impl)
 - [ ] B2 merged (bbox verify)
 - [ ] B3 merged (camera preset verify)
-- [x] B4 fixed post-Phase-A (commit `B4-COMMIT`) — chains table persisted + aggregated status endpoint
+- [x] B4 fixed post-Phase-A (commit `4dcf50f`) — chains table persisted + aggregated status endpoint
 
 ### Test
 - [ ] `pytest tests/` all pass
@@ -1415,7 +1415,7 @@ Phase A coi là hoàn thành khi ALL items:
 
 ### Docs
 - [ ] SPEC.md §D.4 B1-B8 strike-through với commit hash
-- [x] SPEC.md §D.4 B4 strike-through (FIXED commit `B4-COMMIT`) + §C.1b Chain Schema + §C.3 GET /api/chains/{id}
+- [x] SPEC.md §D.4 B4 strike-through (FIXED commit `4dcf50f`) + §C.1b Chain Schema + §C.3 GET /api/chains/{id}
 - [ ] FLOW_UI_REFERENCE.md updated (aspect ratio, bbox overlay, camera active state)
 - [ ] WORKPLAN.md §8 "Discovered during work" populated nếu có
 - [ ] CLAUDE.md §6 "Epic History" thêm entry Phase A
