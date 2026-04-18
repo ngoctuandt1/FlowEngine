@@ -22,10 +22,10 @@
 ## 2. Commits landed
 
 ```
-__B26_COMMIT__   fix(flow): exact-text selectors for submit + model chip + mode buttons (B26 — L2 extend no longer drifts /edit/→/project/)
+d4fca1a   fix(flow): exact-text selectors for submit + model chip + mode buttons (B26 — L2 extend no longer drifts /edit/→/project/)
 ```
 
-(Code + tests + docs + session report in one commit. Follow-up placeholder-replacement commit so SPEC/WORKPLAN carry the real hash rather than `__B26_COMMIT__`, matching the B22 pattern.)
+(Code + tests + docs + session report in one commit. Follow-up placeholder-replacement commit so SPEC/WORKPLAN carry the real hash rather than `d4fca1a`, matching the B22 pattern.)
 
 ---
 
@@ -82,7 +82,7 @@ Both flows exercised the three B26-changed files end-to-end against the real Flo
 - [x] §D.4 header line — `B1-B22` → `B1-B26`
 - [x] §D.4 intro paragraph — appended B26 discovery note ("B26 là Tier 2 post-B22 discovery: mid-session live E2E attempt to verify B22 surfaced a distinct UI-layer bug where `_switch_to_video_tab` JS fallback matched the /edit/ Camera mode-switch button via `lower.includes('videocam')`, silently redirecting the composer from /edit/ to /project/ between `select_model` and `submit_with_confirmation`.")
 - [x] §D.4 B26 FIXED entry — full block covering root cause (3-part: submit fuzzy, chip-lookup absent `arrow_drop_down` on /edit/, JS videocam substring match), resolution (3 files, exact-text across the board), test changes, and live verdict
-- [x] Commit-hash placeholder `__B26_COMMIT__` to be replaced post-commit
+- [x] Commit-hash placeholder `d4fca1a` to be replaced post-commit
 
 ---
 
@@ -180,4 +180,4 @@ Per the mid-session supervisor directive ("live test to the point of real extend
 
 ---
 
-_Sign-off: ✅ Ready for supervisor review. B26 fix complete + live-validated on real Flow DOM via both extend and insert operations. Follow-up placeholder-replacement commit will fill `__B26_COMMIT__` in SPEC/WORKPLAN/this report with the real hash._
+_Sign-off: ✅ Ready for supervisor review. B26 fix complete + live-validated on real Flow DOM via both extend and insert operations. Follow-up placeholder-replacement commit will fill `d4fca1a` in SPEC/WORKPLAN/this report with the real hash._
