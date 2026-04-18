@@ -40,7 +40,7 @@ the MCP screenshots captured during the run (ephemeral).
 ## 3. Files changed
 
 ```
-docs/FLOW_E2E_WALKTHROUGH.md   +312 / -0   (new — button-by-button walkthrough, created earlier this session)
+docs/FLOW_BUTTON_EXACT.md      +312 / -0   (new — button-by-button walkthrough, created earlier this session)
 docs/session-reports/2026-04-19_discrete-2job-verify_en.md   +NEW   (this report)
 ```
 
@@ -140,7 +140,7 @@ navigate using only the stored metadata → L2 Extend. Simulates
 * **Extend-child lockout observed** — Insert / Remove / Camera buttons
   grayed out after the extend clip finished. This is the expected
   Flow-side UX constraint documented in
-  [FLOW_E2E_WALKTHROUGH.md §5.1](../FLOW_E2E_WALKTHROUGH.md). Not a
+  [FLOW_BUTTON_EXACT.md §5.1](../FLOW_BUTTON_EXACT.md). Not a
   FlowEngine bug.
 * **No misclicks** — single submit click on both L1 and L2, no B26
   regression (no /edit/→/project/ redirect, no mode-button bleed from
@@ -213,7 +213,7 @@ the DB side; this session verifies the UI side.
 ## 8. Handoff notes
 
 * **Workdir state:** clean except 2 untracked docs:
-  * `docs/FLOW_E2E_WALKTHROUGH.md` — walkthrough doc from earlier in session
+  * `docs/FLOW_BUTTON_EXACT.md` — walkthrough doc from earlier in session
   * `docs/session-reports/2026-04-19_discrete-2job-verify_en.md` — this file
 * **No env changes.**
 * **Residual tab:** `tabId=1988718806` still open on the extend-child view.
@@ -226,7 +226,7 @@ the DB side; this session verifies the UI side.
 
 ## 9. Cross-reference
 
-* `docs/FLOW_E2E_WALKTHROUGH.md` — step-by-step UI walkthrough created
+* `docs/FLOW_BUTTON_EXACT.md` — step-by-step UI walkthrough created
   earlier this session (walkthrough style, not reference).
 * `docs/session-reports/2026-04-19_B26_submit-and-model-exact-text.md` —
   B26 code fix session (`d4fca1a`).
