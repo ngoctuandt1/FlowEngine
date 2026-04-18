@@ -292,3 +292,54 @@ def test_close_model_panel_preserves_click_outside_approach():
             f"Stash H1/H3/H4 token '{forbidden}' leaked into "
             f"_close_model_panel — those hunks were rejected."
         )
+
+
+# ---------------------------------------------------------------------------
+# B20 final: no fuzzy Veo selector (exact-text trip-wire)
+# ---------------------------------------------------------------------------
+
+
+def test_no_fuzzy_veo_selector():
+    """B20 final trip-wire: ``flow/model_selector.py`` must not contain any
+    fuzzy ``Veo`` selector — neither ``:has-text('Veo')`` in a Playwright
+    CSS selector string, nor a raw ``.filter(has_text="Veo")`` substring
+    filter. Exact-text via ``:text-is(...)`` on the ``arrow_drop_down``
+    Material Icon ligature is the canonical anchor for the model chip
+    (per ``docs/FLOW_BUTTON_EXACT.md §1.6``); combine with
+    ``.filter(has_text=re.compile(r"^Veo", re.IGNORECASE))`` to pin the
+    "Veo 3.1 — <variant>" button inside the panel.
+
+    Background: B20 was flagged in B19 follow-ups as a P2 candidate (model
+    selector used ``button:has-text('Video')`` which collided with the
+    aspect chip on current DOM). B26 (commit ``d4fca1a``) incidentally
+    absorbed the ``'Video'`` text collision by rewriting ``chip_selectors``
+    to ``aria-haspopup='menu'`` + exact crop-icon / ``arrow_drop_down``
+    ligatures. This trip-wire closes the loop on the three residual
+    ``'Veo'`` fuzzy sites (``_open_model_dropdown`` line 281,
+    ``get_current_model`` lines 556-557 pre-B20-final) and prevents silent
+    regression.
+
+    Regex-based filtering via ``re.compile(r"...Veo...")`` remains
+    permitted — it's a principled Python-side filter, not a fragile CSS
+    substring match on textContent.
+    """
+    src = Path(model_selector_mod.__file__).read_text(encoding="utf-8")
+
+    fuzzy_css_patterns = ("has-text('Veo')", 'has-text("Veo")')
+    for forbidden in fuzzy_css_patterns:
+        assert forbidden not in src, (
+            f"Fuzzy Veo CSS selector '{forbidden}' leaked back into "
+            f"flow/model_selector.py. Use the B26/B20-final canonical "
+            f"pattern per docs/FLOW_BUTTON_EXACT.md §1.6: "
+            f"\"button[aria-haspopup='menu']:has(i:text-is('arrow_drop_down'))\" "
+            f"+ .filter(has_text=re.compile(r'^Veo', re.IGNORECASE))."
+        )
+
+    raw_filter_patterns = ('filter(has_text="Veo")', "filter(has_text='Veo')")
+    for forbidden in raw_filter_patterns:
+        assert forbidden not in src, (
+            f"Raw Veo string filter '{forbidden}' leaked back into "
+            f"flow/model_selector.py. Use a compiled regex "
+            f"(re.compile(r'^Veo', re.IGNORECASE)) so the intent is "
+            f"principled and the match is anchored."
+        )

@@ -277,8 +277,18 @@ async def _open_model_dropdown(page) -> bool:
     # Playwright: find button with "Veo" text + "arrow_drop_down" (the model name button)
     # First pass: prefer non-LP button (standard model name).
     # Second pass: accept LP button too (account remembered LP selection).
+    #
+    # B20 final (2026-04-19): pin the match on the canonical model-chip anchor
+    # per docs/FLOW_BUTTON_EXACT.md §1.6 — `aria-haspopup='menu'` + exact
+    # `arrow_drop_down` ligature — and narrow to Veo-prefixed buttons via a
+    # compiled regex filter. A bare substring filter on the Veo keyword was
+    # the B20 root cause: it matched any visible button whose textContent
+    # happened to include "Veo" (e.g. a video-library label reflecting
+    # a previously-selected model in an unrelated panel).
     try:
-        veo_btns = page.locator("button").filter(has_text="Veo")
+        veo_btns = page.locator(
+            "button[aria-haspopup='menu']:has(i:text-is('arrow_drop_down'))"
+        ).filter(has_text=re.compile(r"^Veo", re.IGNORECASE))
         count = await veo_btns.count()
 
         # First pass: non-LP Veo button
@@ -550,18 +560,22 @@ async def _switch_to_video_tab(page) -> bool:
 
 
 async def get_current_model(page) -> str | None:
-    """Read the currently selected model from the UI chip."""
+    """Read the currently selected model from the UI chip.
+
+    B20 final (2026-04-19): use the canonical model-chip anchor per
+    ``docs/FLOW_BUTTON_EXACT.md §1.6`` — ``aria-haspopup='menu'`` + exact
+    ``arrow_drop_down`` Material Icon ligature — combined with a compiled
+    regex filter anchored on ``^Veo``. A fuzzy substring selector on the
+    Veo keyword collided with unrelated buttons whose textContent
+    reflected a previous model name (same class as the B20 root cause
+    absorbed by B26 for ``'Video'``).
+    """
     try:
-        for sel in [
-            "button:has-text('Veo')",
-            "[role='button']:has-text('Veo')",
-        ]:
-            try:
-                el = page.locator(sel).first
-                if await el.is_visible(timeout=1000):
-                    return (await el.inner_text()).strip()
-            except Exception:
-                continue
+        chip = page.locator(
+            "button[aria-haspopup='menu']:has(i:text-is('arrow_drop_down'))"
+        ).filter(has_text=re.compile(r"^Veo", re.IGNORECASE)).first
+        if await chip.is_visible(timeout=1000):
+            return (await chip.inner_text()).strip()
     except Exception:
         pass
     return None
