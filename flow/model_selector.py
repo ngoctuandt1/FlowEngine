@@ -121,22 +121,36 @@ async def select_model(
     if any(kw in target_text.lower() for kw in ("veo", "video")):
         await _switch_to_video_tab(page)
 
-    # Step 2.7: Open the MODEL DROPDOWN within the panel
-    # After Video tab switch, the panel shows the current model as:
-    #   "Veo 3.1 - Fast arrow_drop_down" (button with dropdown arrow)
-    # Must click this button to reveal the LP model options.
-    dropdown_opened = await _open_model_dropdown(page)
+    # Step 2.7: Check if LP items already visible BEFORE opening dropdown.
+    # In extend mode, the model panel may already show LP options directly
+    # without needing to click the Veo dropdown. Clicking it would TOGGLE
+    # the dropdown closed, hiding the LP items.
+    is_lp = "Lower Priority" in target_text
+    base_name = target_text.split(" [")[0].strip()  # "Veo 3.1 - Fast"
 
-    # Step 3: Find and click the target model
-    # Use broad selectors: menuitem, button, [role] — and retry up to 3 times.
     MODEL_ITEM_SELECTORS = (
         "menuitem, [role='menuitem'], [role='option'], "
         "button, [role='button'], [role='listbox'] button"
     )
 
-    is_lp = "Lower Priority" in target_text
-    base_name = target_text.split(" [")[0].strip()  # "Veo 3.1 - Fast"
+    # Pre-check: are LP items already visible?
+    dropdown_opened = False
+    if is_lp:
+        try:
+            lp_items = page.locator(MODEL_ITEM_SELECTORS).filter(
+                has_text=re.compile(r"Lower Priority", re.IGNORECASE)
+            )
+            lp_count = await lp_items.count()
+            if lp_count > 0:
+                logger.info("LP items already visible (%d) — skipping dropdown open", lp_count)
+            else:
+                dropdown_opened = await _open_model_dropdown(page)
+        except Exception:
+            dropdown_opened = await _open_model_dropdown(page)
+    else:
+        dropdown_opened = await _open_model_dropdown(page)
 
+    # Step 3: Find and click the target model
     for attempt in range(3):
         if attempt > 0:
             logger.info("Model select retry %d, waiting 1.5s...", attempt + 1)
