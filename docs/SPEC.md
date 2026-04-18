@@ -35,7 +35,7 @@
   - [D.1 — Google Flow UI gotchas](#d1--google-flow-ui-gotchas)
   - [D.2 — Playwright / Chrome gotchas](#d2--playwright--chrome-gotchas)
   - [D.3 — Server / DB gotchas](#d3--server--db-gotchas)
-  - [D.4 — Known bugs trong code hiện tại (B1-B15)](#d4--known-bugs-trong-code-hiện-tại-b1-b15)
+  - [D.4 — Known bugs trong code hiện tại (B1-B17)](#d4--known-bugs-trong-code-hiện-tại-b1-b17)
 - [PHẦN E — DEBUG PLAYBOOK](#phần-e--debug-playbook)
 - [PHẦN F — GLOSSARY](#phần-f--glossary)
 - [PHẦN G — EXTERNAL REFERENCES](#g--external-references)
@@ -1222,9 +1222,9 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 ---
 
-## D.4 — Known bugs trong code hiện tại (B1-B15)
+## D.4 — Known bugs trong code hiện tại (B1-B17)
 
-> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B15 là stash-triage cherry-picks (2026-04-17).
+> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B17 là stash-triage cherry-picks (2026-04-17 / 2026-04-18).
 
 ### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17)
 - File: `flow/operations/generate.py` → `_set_aspect_ratio()`
@@ -1394,6 +1394,29 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
   - `test_type_extend_prompt_falls_back_to_last_slate` — Method 1 count=0 → Method 2 clicks `editors.nth(count-1)` (master's "last Slate" behavior preserved); log contains "slate editor".
   - `test_type_extend_prompt_preserves_placeholder_fallbacks` — H5 REJECTED contract: the 4 placeholder/aria-label selectors MUST still be probed when both Methods 1+2 miss. Prevents silent drift toward stash's removal.
 - Session report: `docs/session-reports/2026-04-17_B15_extend-panel-verify.md`.
+
+### ~~B17 — `select_model` can toggle-close LP panel in extend mode by always opening dropdown (P1)~~ ✅ FIXED (commit `<B17-COMMIT>`)
+- Cherry-picked from `stash@{0}` via triage `docs/session-reports/2026-04-17_stash-triage_flow-refinements.md` §7 KEEP-1. Single standalone hunk on `flow/model_selector.py`.
+- File: `flow/model_selector.py` — `select_model` (Step 2.7 rewritten: LP items pre-check before `_open_model_dropdown`).
+- Problem: in extend mode, the Flow model panel may ALREADY surface LP options directly after the Video-tab switch (no inner dropdown click needed). Master's `select_model` unconditionally calls `_open_model_dropdown(page)` which clicks the "Veo … arrow_drop_down" chip — and clicking it when the panel is already showing LP items TOGGLES the panel CLOSED, hiding the very items the retry loop is about to search for. The retry loop then sees 0 LP items across all 3 attempts, the JS fallback also finds nothing (panel dismissed), and `select_model` returns False.
+- Runtime effect (pre-fix): LP model selection in extend mode can fall through 3 retry attempts (4.5s of `asyncio.sleep(1.5)`) + JS fallback + close → all returning empty. The caller (`extend_video` → `select_model` returns False) proceeds with the remembered model — which may NOT be LP if the account's default is a paid tier → non-free submit → credit leak in the worst case (same class as B8 LP credit leak, different trigger: B8 closed by dismiss-misfire, B17 by open-double-click).
+- **Resolution (commit `<B17-COMMIT>`):**
+  - **KEEP-1 (LP pre-check).** Before calling `_open_model_dropdown`, `select_model` now counts `page.locator(MODEL_ITEM_SELECTORS).filter(has_text=re.compile(r"Lower Priority", re.IGNORECASE))` — the SAME filter the retry loop uses. If count > 0, log `"LP items already visible (N) — skipping dropdown open"` and skip the open call (leaving `dropdown_opened=False`, since the panel state matches the "not toggled by us" branch). If count == 0 OR the target isn't LP OR the locator raises, fall through to `dropdown_opened = await _open_model_dropdown(page)` — master's unconditional behavior is preserved for the common case.
+  - `is_lp` + `base_name` + `MODEL_ITEM_SELECTORS` are computed BEFORE the pre-check (hoisted up from their original position inside the retry loop). No semantic change for the retry loop — it still reads the same three locals.
+  - Explicit rejections from the stash (user decision per triage §7.1 CONFLICT row + supervisor prompt):
+    - **H1 (capture `chip_handle` before click)** — REJECTED. Dependency of H4; no standalone value.
+    - **H3 (thread `chip_handle` + `chip_tagged_js` through the 4 call sites of `_close_model_panel`)** — REJECTED. Signature change required only for H4.
+    - **H4 (rewrite `_close_model_panel` to re-click the captured chip)** — REJECTED. User preserves master's click-outside (Slate editor click) + single Escape fallback from B8 commit `7245ae8`, which passed Phase A validation (LP credit leak fix). Stash's "toggle-close by re-clicking chip" philosophy was not adopted.
+  - `_close_model_panel(page, dropdown_was_opened)` signature UNCHANGED. Master's click-outside body UNCHANGED. The 4 existing call sites still pass `dropdown_opened`; the semantics of `dropdown_opened` (True if we opened it, False if we did not) are preserved.
+- Guard: `tests/test_model_selector.py` — 7 cases:
+  - `test_lp_precheck_skips_open_when_items_already_visible` — RED→GREEN core contract: mock page with lp_count=2 + monkeypatched `_open_model_dropdown` spy → `select_model("veo-3.1-fast-lp")` returns True AND spy NOT called AND INFO log contains "already visible". Master (unconditional open) fails the `assert_not_called()`.
+  - `test_lp_precheck_opens_when_items_not_visible` — regression guard: lp_count=0 → pre-check else-branch → `_open_model_dropdown` called once. Preserves master's common-case behavior.
+  - `test_non_lp_model_skips_precheck_and_opens_directly` — else-branch contract: non-LP target (`veo-3.1-quality`, `free_mode=False`) → `is_lp=False` → outer else → `_open_model_dropdown` called without pre-check. Pre-check is LP-specific.
+  - `test_precheck_exception_falls_back_to_open` — resilience contract: `.count()` side_effect raises RuntimeError on first call (pre-check), returns 2 thereafter → except branch calls `_open_model_dropdown`, retry loop still finds the LP item, `select_model` returns True. Pre-check is an optimization, never a blocker.
+  - `test_precheck_source_uses_lp_regex_and_skip_message` — source-level trip-wire (RED→GREEN): `select_model` body contains "already visible" + "skipping dropdown open" log strings AND ≥ 2 occurrences of `re.compile(r"Lower Priority"` (pre-check + retry loop — same selector, same filter). Prevents silent drift back to master "always open".
+  - `test_close_model_panel_signature_unchanged` — H3 REJECTED contract: `inspect.signature(_close_model_panel).parameters` keys == `["page", "dropdown_was_opened"]`. Guards against accidentally adopting H1/H3 chip-handle threading.
+  - `test_close_model_panel_preserves_click_outside_approach` — H4 REJECTED contract: `_close_model_panel` body contains `[data-slate-editor='true']` (master's click-outside target); does NOT contain `chip_handle`, `chip_tagged_js`, or `data-flow-chip`. Guards against stash's toggle-close rewrite leaking in via a later cherry-pick.
+- Session report: `docs/session-reports/2026-04-18_B17_lp-precheck.md`.
 
 ---
 
