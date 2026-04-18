@@ -31,12 +31,12 @@ enabled — a scenario master could not recover from.
 ## 2. Commits landed
 
 ```
-<B16-COMMIT>  feat(submit): iterate all matching buttons, skip disabled (B16 cherry-pick)
+004d8fb  feat(submit): iterate all matching buttons, skip disabled (B16 cherry-pick)
 ```
 
 1 commit: 1 prod file + 1 test file + SPEC + WORKPLAN + this report.
 Optional follow-up commit (per B14/B15 precedent) replaces the
-`<B16-COMMIT>` placeholder with the actual hash in `docs/SPEC.md` §D.4 B16
+`004d8fb` placeholder with the actual hash in `docs/SPEC.md` §D.4 B16
 and `docs/WORKPLAN.md` §8 B16.
 
 ---
@@ -130,11 +130,11 @@ for the module).
   ("B14-B15 là stash-triage cherry-picks" → "B14-B16 là stash-triage
   cherry-picks (2026-04-17 triage, landed 2026-04-17/18)")
 - [x] MỤC LỤC link updated (`b1-b15` → `b1-b16` anchor)
-- [x] §D.4 B16 entry added (struck-through, `<B16-COMMIT>` placeholder)
+- [x] §D.4 B16 entry added (struck-through, `004d8fb` placeholder)
 - [x] WORKPLAN §8 B16 resolved entry added (struck-through,
-  `<B16-COMMIT>` placeholder)
+  `004d8fb` placeholder)
 
-Placeholder `<B16-COMMIT>` will be replaced with the actual hash by a
+Placeholder `004d8fb` will be replaced with the actual hash by a
 follow-up docs commit (same pattern as B14/B15 used pre-hash, see
 commits `a4e9092` / `a2293bf` / `d11500f` replacing
 `<B14-COMMIT>`/`<B15-COMMIT>` placeholders).
@@ -305,7 +305,7 @@ From supervisor prompt's `[DONE CRITERIA]`:
       no regression (B11 bbox 6/6, B12 camera 7/7, B14 base 7/7,
       B15 extend 12/12)
 - [x] `-W error::DeprecationWarning` clean (56/56)
-- [x] SPEC §D.4 B16 + WORKPLAN §8 B16 added (both with `<B16-COMMIT>`
+- [x] SPEC §D.4 B16 + WORKPLAN §8 B16 added (both with `004d8fb`
       placeholder)
 - [x] Stash@{0} còn (`git stash list` post-session confirms)
 - [x] Zero diff ngoài whitelist (only `flow/submit.py`,
