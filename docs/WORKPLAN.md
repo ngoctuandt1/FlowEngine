@@ -1311,8 +1311,9 @@ Sau khi tất cả 8 bug (bao gồm B4 fix post-Phase-A) đã merged, chạy man
    }
 2. Watch dashboard: 4 jobs chạy tuần tự
 3. Verify after each:
-   - Same project_url across all 4
-   - Same media_id across all 4 (INV-5)
+   - Same project_url across all 4 (INV-2)
+   - media_id: J1 = J2 = J3 (extend + insert preserve); J4 mints NEW (camera-move — SPEC INV-5)
+   - Each job's stored `media_id` matches `/edit/{id}` URL at completion (post-op re-extract)
    - Same profile across all 4 (INV-1)
 4. On Flow UI: open project, verify:
    - History panel có 4 entries

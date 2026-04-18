@@ -70,7 +70,7 @@ job_level     1 or 2+
 parent_job_id link to L1 (or previous L2) job
 chain_id      shared across all jobs in one chain
 project_url   created at L1, inherited by all L2+
-media_id      stable UUID — does NOT change across extend/insert/remove
+media_id      Re-extracted per op. Extend/insert/remove preserve; camera-move mints NEW uuid (SPEC INV-5). Chain inherits parent's FINAL media_id via B22.
 profile       Chrome profile dir name (= Google account identity)
 bbox          {x,y,w,h} normalized — required for insert/remove
 direction     preset string — required for camera-move
@@ -81,7 +81,7 @@ direction     preset string — required for camera-move
 2. **Navigate by `edit_url`** (`/edit/{media_id}`) — never use `video_index` / DOM card counting
 3. **Store everything** after completion: `project_url`, `media_id`, `profile`, `generation_id`
 4. **Serial per project** — `project_lock.py` ensures no two jobs run on same `project_url`
-5. `media_id` is **stable** — same UUID survives extend, insert, remove operations
+5. `media_id` is **re-extracted per op** — extend/insert/remove preserve the UUID; camera-move mints a NEW one; chain inherits parent's FINAL media_id via B22 (see SPEC §A.1 INV-5)
 
 ### Claim flow
 Worker `main.py` → `POST /api/worker/claim` with `profiles` list → server returns job where

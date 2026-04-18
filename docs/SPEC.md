@@ -87,15 +87,29 @@
 
 **Implementation:** `worker/project_lock.py` + điều kiện `NO active claim on project_url` trong `claim_next_job`.
 
-### INV-5: `media_id` is Stable Across Operations
-> **extend / insert / remove / camera đều CẬP NHẬT video IN-PLACE — `media_id` KHÔNG đổi.**
+### INV-5: Engine Re-Extracts `media_id` per Operation
+> **Sau mỗi operation, engine PHẢI re-extract `media_id` từ `page.url` / network và lưu DB. Chain tiếp sau inherit parent's FINAL media_id qua B22 — KHÔNG assume `media_id` stable qua mọi op.**
+
+**Behavior matrix (empirical):**
+
+| Operation | `media_id` post-op |
+|---|---|
+| `extend-video` / `insert-object` / `remove-object` | Preserved (Flow updates in-place) |
+| `camera-move` | **NEW uuid** — Flow mints new media |
+
+**Evidence:**
+- `docs/FLOW_MULTILEVEL_JOBS.md` §10 — 4-op test 2026-04-16: extend / insert / remove preserve same `1eb6fea7-f1d4-4fcc-a25f-7ca3e06470be`.
+- Tier 2 Run 10 (2026-04-19) — J1 t2v `5920c395-…` → J2 camera-move `e219fc6c-…` (NEW) → J3 insert-object `e219fc6c-…` (preserved). See `docs/E2E_RESULTS_PHASE_A.md`.
 
 **Hệ quả:**
-- Chain 4 bước trên 1 video → 4 job cùng chia sẻ 1 `media_id`
-- URL sau operation = URL trước operation
-- Mỗi operation chỉ thêm 1 entry vào history panel
+- Chain qua `camera-move` PHẢI dùng J[camera]'s **post-op** media_id, không phải pre-op. Engine handle đúng qua INV-3 Store Everything + B22 inherit-from-parent's-completion-record.
+- In-place ops (extend / insert / remove): URL sau = URL trước; history +1 entry.
+- `camera-move`: URL sau = `/edit/{new_media_id}`; history vẫn +1 entry.
+- Wrong-tile click trong multi-video project = vi phạm INV-5 (engine acts on WRONG media_id — sibling video thay vì target). B14 `_click_video_tile` media_id-aware guard đúng cho tình huống này bất kể op preserve hay mint new.
 
-**Verify:** docs/FLOW_MULTILEVEL_JOBS.md §10 — 4 ops liên tiếp cùng 1 media_id `1eb6fea7-f1d4-4fcc-a25f-7ca3e06470be`.
+**Kiểm tra:**
+- `flow/operations/_base.py:finalize_operation` re-extract media_id từ `page.url` / network — KHÔNG return input media_id.
+- `server/db/job_store.py:claim_next_job` L2+ branch inherit project_url / media_id / edit_url từ parent's completion record (B22).
 
 ---
 
@@ -681,7 +695,7 @@ OUTPUT: same shape
    - generic "See how many credits this generation will use" + generic "Create"
    - KHÔNG phải arrow_forward
 7. wait_for_completion(timeout=300)
-8. Extract media_id — SAME
+8. Extract media_id — **NEW uuid** (camera-move mints new media — Tier 2 Run 10 2026-04-19 J1→J2 confirms). `finalize_operation` re-extracts from `page.url`; store as the op's completed `media_id`. Chain tiếp sau inherit qua B22 sẽ đọc giá trị mới này. See INV-5 behavior matrix.
 9. download_video
 10. return finalize_operation
 ```
@@ -1407,7 +1421,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - File: `flow/operations/_base.py` — `navigate_to_edit` (post-nav verify block added) + `_click_video_tile` (body rewritten).
 - Two independent problems:
   1. **Silent nav failure.** Master's `navigate_to_edit` returns normally even if the last-resort `page.goto(edit_url)` leaves the page on `/project/...` (not `/edit/...`) — the caller then submits an op against the project grid, which clicks the wrong button (e.g. "New video" instead of "Extend"). No exception, no log.
-  2. **Wrong-tile click in multi-video projects.** `_click_video_tile` iterated generic selectors (`video`, `[data-tile-id]`, `[class*='tile']`, `[class*='thumbnail']`, `img[src*='googleusercontent']`) and clicked `.first`. In a project with ≥ 2 videos the "first" match is DOM-order dependent, not media_id-targeted → clicking an unrelated video enters edit mode for the wrong media_id, silently violating INV-5 (media_id stable across the chain).
+  2. **Wrong-tile click in multi-video projects.** `_click_video_tile` iterated generic selectors (`video`, `[data-tile-id]`, `[class*='tile']`, `[class*='thumbnail']`, `img[src*='googleusercontent']`) and clicked `.first`. In a project with ≥ 2 videos the "first" match is DOM-order dependent, not media_id-targeted → clicking an unrelated video enters edit mode for the wrong media_id, silently violating INV-5 (engine operates on a sibling video rather than the targeted media_id).
 - Runtime effect (pre-fix): L2+ jobs on multi-video projects could extend/insert/remove/camera against a sibling video; chain state (parent.media_id) and page state diverge with no warning.
 - **Resolution (commit `72e056b`):**
   - **KEEP-2 (post-nav verify).** After the tile-click-or-goto attempts, `navigate_to_edit` now reads `page.url` and raises `RuntimeError("Failed to enter edit mode")` if `/edit/` is absent. If `/edit/` is present but the URL's media_id differs from the requested `job["media_id"]`, log a WARNING and proceed — Flow's SPA sometimes redirects to a sibling video in the same project, which is acceptable (the important invariant is being in edit mode for some video in the correct project; `finalize_operation` will re-extract the actual media_id from the final URL).

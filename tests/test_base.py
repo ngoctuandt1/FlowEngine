@@ -10,7 +10,8 @@ Cherry-picks from `stash@{0}` §7 KEEP-2 + KEEP-3 (see
 - **KEEP-3** — `_click_video_tile` prioritises a JS-side click whose
   link/data-attribute matches the target `media_id`. Master fell back to
   clicking *any* visible video, which in a multi-video project could pick
-  the wrong tile (violates INV-5 media_id stability).
+  the wrong tile (violates INV-5 — engine would operate on the wrong
+  media_id, a sibling video rather than the targeted one).
 
 Both are mocked at the Playwright boundary — no browser runtime. Sleeps
 are stubbed out via an autouse fixture so the 2s / 3s render waits inside
@@ -81,8 +82,10 @@ def _make_client(url: str, profile: str = "test-profile"):
 
 async def test_navigate_warns_on_media_id_mismatch(caplog):
     """KEEP-2: URL landed on a DIFFERENT media_id than requested → WARNING,
-    but function still returns (non-fatal — INV-5 says media_id stable; SPA
-    redirect to a sibling video in the same project is acceptable)."""
+    but function still returns (non-fatal — INV-5 has the engine re-extract
+    post-op media_id via `finalize_operation`; SPA redirect to a sibling
+    video in the same project is acceptable since the stored value will
+    match the actual landed id, not the requested one)."""
     # Requested MEDIA_ID_A, but page ended up on MEDIA_ID_B (both in same
     # project, so /edit/ is present — just a different media UUID).
     client, _page = _make_client(_edit_url(MEDIA_ID_B))

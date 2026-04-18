@@ -39,7 +39,7 @@ Google Flow (`labs.google/fx/tools/flow`) là công cụ tạo video AI (Veo 3.1
 2. **Navigate by `/edit/{media_id}`** — không bao giờ target video bằng vị trí DOM card
 3. **Store everything** — sau mỗi operation phải lưu: `project_url`, `media_id`, `profile`, `generation_id`, `output_files`
 4. **Serial per project** — 2 job trên cùng `project_url` KHÔNG chạy song song
-5. **`media_id` stable** — extend/insert/remove/camera không đổi media_id, chỉ thêm history entry
+5. **`media_id` re-extract per op** — extend/insert/remove preserve media_id (Flow in-place); camera-move mints NEW uuid (Tier 2 Run 10 2026-04-19). Engine re-extract post-op via `finalize_operation`; chain propagates parent's FINAL media_id qua B22 claim-time inherit. Mỗi op vẫn thêm 1 history entry. Xem SPEC §A.1 INV-5.
 
 ### 1.4 Non-Goals
 

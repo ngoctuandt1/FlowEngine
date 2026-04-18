@@ -322,8 +322,14 @@ you'll think it's an automation bug when it's actually your own mistake.
    `generation_id`. Worker's PATCH does this.
 4. **Serial per project.** `worker/project_lock.py` — one job per
    `project_url` at a time. Two extends on the same project would race.
-5. **`media_id` is stable.** Extend / Insert / Remove / Camera all preserve
-   the UUID. A NEW media_id means you accidentally started a new project.
+5. **`media_id` is re-extracted per op.** Extend / Insert / Remove preserve
+   the UUID (Flow updates in-place). **Camera-move mints a NEW `media_id`**
+   — confirmed Tier 2 Run 10 2026-04-19 J1→J2 (see SPEC §A.1 INV-5 and
+   `docs/E2E_RESULTS_PHASE_A.md`). Engine re-extracts post-op via
+   `finalize_operation` and stores the FINAL value; the next job in the
+   chain inherits that stored value via B22 claim-time propagation. A NEW
+   `media_id` outside of camera-move means you accidentally started a new
+   project (wrong-tile click or SPA bounce).
 
 ---
 
