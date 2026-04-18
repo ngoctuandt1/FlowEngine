@@ -1,30 +1,30 @@
-"""B16 — unit tests for click_submit iteration + disabled-skip in `flow/submit.py`.
+"""Unit tests for ``click_submit`` in ``flow/submit.py``.
 
-Cherry-picks from `stash@{0}` §7.4 KEEP-7 (see
-`docs/session-reports/2026-04-17_stash-triage_flow-refinements.md`):
+History:
+  * B16 (commit ``004d8fb``) — KEEP-7 iterate all matching buttons + skip
+    disabled, don't stop at ``.first``.
+  * B26 (2026-04-19) — collapse ``SUBMIT_SELECTORS`` to the single
+    exact-text selector ``button:has(i:text-is('arrow_forward'))`` and
+    drop ``_SKIP_PATTERN`` (the new selector can only match submit
+    buttons — no noise to filter out). Add ``scope`` parameter so
+    callers on /edit/ can restrict the search to the composer panel.
 
-- **KEEP-7** — `click_submit` used to call `page.locator(selector).first` and
-  accept the first *visible* match. If that first match was disabled
-  (loading state, duplicate DOM node, stale shadow tree), master fell
-  through to the next selector and could miss an enabled submit button
-  sibling. Stash iterates ALL matches via `.nth(i)` in `range(count)`,
-  checks `is_enabled` alongside `is_visible`, and clicks the first match
-  that is visible + enabled + not in `_SKIP_PATTERN`. Per-button debug
-  log is added for post-mortem.
+The B16 iterate/skip/debug-log contracts remain intact; B26 tightens the
+selector itself so the filter step is redundant.
 
-Tests mock `page.locator` with `MagicMock` that supports `.count()` +
-`.nth(i)`. No Playwright runtime. The `submit_with_confirmation` wrapper
-is out of scope (Phase A commit `5c7d625` touched it separately; the
-cherry-pick does not).
+Tests mock ``page.locator`` with ``MagicMock`` that supports ``.count()``
++ ``.nth(i)``. No Playwright runtime. The ``submit_with_confirmation``
+wrapper is out of scope.
 """
 
 import logging
-import re
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from flow.submit import SUBMIT_SELECTORS, _SKIP_PATTERN, click_submit
+import flow.submit as submit_mod
+from flow.submit import SUBMIT_SELECTORS, click_submit
 
 
 # ---------------------------------------------------------------------------
@@ -35,8 +35,8 @@ from flow.submit import SUBMIT_SELECTORS, _SKIP_PATTERN, click_submit
 def _make_button(*, visible=True, enabled=True, text=""):
     """Build a mock Playwright Locator for a single button.
 
-    The returned mock supports the three async methods `click_submit` calls:
-    `is_visible`, `is_enabled`, `inner_text`, plus `click`.
+    The returned mock supports the three async methods ``click_submit``
+    calls: ``is_visible``, ``is_enabled``, ``inner_text``, plus ``click``.
     """
     btn = MagicMock()
     btn.is_visible = AsyncMock(return_value=visible)
@@ -47,14 +47,8 @@ def _make_button(*, visible=True, enabled=True, text=""):
 
 
 def _locator_with_buttons(buttons):
-    """Build a mock Playwright Locator matching `buttons` — supports
-    `.count()` + `.nth(i)` indexing.
-
-    `.first` aliases `buttons[0]` when present so a would-be master-era code
-    path (`.first.is_visible()` → click) would see the real state of the
-    first match, not a zero-count sentinel. Empty list returns a locator
-    whose `.first.is_visible()` is False (no element to probe).
-    """
+    """Build a mock Playwright Locator matching ``buttons`` — supports
+    ``.count()`` + ``.nth(i)`` indexing."""
     loc = MagicMock()
     loc.count = AsyncMock(return_value=len(buttons))
     loc.nth = MagicMock(side_effect=lambda i: buttons[i])
@@ -67,9 +61,8 @@ def _locator_with_buttons(buttons):
 
 
 def _make_page(selector_to_buttons):
-    """Mock `page` whose `locator(sel)` dispatches to a per-selector button
-    list. Any unmapped selector returns a zero-count locator (fall-through).
-    """
+    """Mock ``page`` whose ``locator(sel)`` dispatches to a per-selector
+    button list. Any unmapped selector returns a zero-count locator."""
     page = MagicMock()
     page.keyboard = MagicMock()
     page.keyboard.press = AsyncMock()
@@ -83,20 +76,18 @@ def _make_page(selector_to_buttons):
 
 
 # ---------------------------------------------------------------------------
-# KEEP-7: iterate all matching buttons, skip disabled
+# B16 KEEP-7 behaviors (still required under B26 single-selector design)
 # ---------------------------------------------------------------------------
 
 
 async def test_click_submit_iterates_all_buttons(caplog):
     """B16 KEEP-7: selector matches 3 buttons (2 disabled + 1 enabled) →
     code iterates, skips disabled, clicks the enabled one. Master would
-    have stopped at .first (disabled) or clicked it via force=True."""
-    btn_disabled = _make_button(visible=True, enabled=False, text="Generate")
-    btn_not_visible = _make_button(visible=False, enabled=True, text="Generate")
-    btn_ok = _make_button(visible=True, enabled=True, text="Generate")
+    have stopped at ``.first`` (disabled) or clicked it via force=True."""
+    btn_disabled = _make_button(visible=True, enabled=False, text="Tạo")
+    btn_not_visible = _make_button(visible=False, enabled=True, text="Tạo")
+    btn_ok = _make_button(visible=True, enabled=True, text="Tạo")
 
-    # Use the FIRST selector in SUBMIT_SELECTORS so we hit the iteration
-    # before any other selector is tried.
     page = _make_page({SUBMIT_SELECTORS[0]: [btn_disabled, btn_not_visible, btn_ok]})
 
     with caplog.at_level(logging.INFO, logger="flow.submit"):
@@ -113,13 +104,17 @@ async def test_click_submit_iterates_all_buttons(caplog):
 
 
 async def test_click_submit_skip_disabled_first(caplog):
-    """B16 KEEP-7 core contract: if `.nth(0)` is disabled, iteration MUST
-    continue to `.nth(1)` rather than fall through to the next selector.
-    Master's `.first` behavior would miss the enabled sibling entirely."""
-    btn_disabled = _make_button(visible=True, enabled=False, text="Generate")
-    btn_enabled = _make_button(visible=True, enabled=True, text="Generate")
+    """B16 KEEP-7 core contract: if ``.nth(0)`` is disabled, iteration
+    MUST continue to ``.nth(1)`` rather than fall through to keyboard.
+    Master's ``.first`` behavior would miss the enabled sibling entirely.
 
-    # Same selector matches both — stop iteration on the enabled one.
+    This is the exact shape of the /edit/ DOM: two buttons with
+    ``<i>arrow_forward</i>`` — the disabled decorative one and the real
+    submit. B16 iteration is what picks the right one under B26's single
+    ``:text-is('arrow_forward')`` selector."""
+    btn_disabled = _make_button(visible=True, enabled=False, text="Tạo")
+    btn_enabled = _make_button(visible=True, enabled=True, text="Tạo")
+
     page = _make_page({SUBMIT_SELECTORS[0]: [btn_disabled, btn_enabled]})
 
     with caplog.at_level(logging.INFO, logger="flow.submit"):
@@ -128,61 +123,18 @@ async def test_click_submit_skip_disabled_first(caplog):
     assert result is True
     btn_disabled.click.assert_not_awaited()
     btn_enabled.click.assert_awaited_once()
-    # Only ONE selector was tried — fall-through did not occur.
+    # Only ONE selector was tried.
     tried = [call.args[0] for call in page.locator.call_args_list]
     assert tried == [SUBMIT_SELECTORS[0]], (
-        f"Expected ONLY the first selector to be probed (no fall-through), got: {tried}"
+        f"Expected ONLY the first selector to be probed, got: {tried}"
     )
-
-
-async def test_click_submit_skip_pattern_preserved():
-    """B16 KEEP-7 rule: master's `_SKIP_PATTERN` noise filter MUST still
-    run inside the per-button loop. Stash iterates but keeps this filter;
-    a regression that removed it would click "Generate Video" / "Lower
-    Priority" buttons that aren't the composer submit."""
-    # "video" matches `_SKIP_PATTERN` — confirm the pattern itself first.
-    assert _SKIP_PATTERN.search("Generate video")
-
-    btn_noise = _make_button(visible=True, enabled=True, text="Generate video")
-    btn_ok = _make_button(visible=True, enabled=True, text="Create")
-
-    page = _make_page({SUBMIT_SELECTORS[0]: [btn_noise, btn_ok]})
-
-    result = await click_submit(page)
-
-    assert result is True
-    btn_noise.click.assert_not_awaited()  # filtered by _SKIP_PATTERN
-    btn_ok.click.assert_awaited_once()
-
-
-async def test_click_submit_no_enabled_button():
-    """B16 KEEP-7: all matches on selector A disabled → fall through to
-    selector B. The selector-level fall-through (master's only strategy)
-    still works on top of the per-selector iteration."""
-    btn_a1 = _make_button(visible=True, enabled=False, text="Generate")
-    btn_a2 = _make_button(visible=True, enabled=False, text="Generate")
-    btn_b = _make_button(visible=True, enabled=True, text="Create")
-
-    page = _make_page(
-        {
-            SUBMIT_SELECTORS[0]: [btn_a1, btn_a2],
-            SUBMIT_SELECTORS[1]: [btn_b],
-        }
-    )
-
-    result = await click_submit(page)
-
-    assert result is True
-    btn_a1.click.assert_not_awaited()
-    btn_a2.click.assert_not_awaited()
-    btn_b.click.assert_awaited_once()
 
 
 async def test_click_submit_debug_log_per_button(caplog):
     """B16 KEEP-7: per-button DEBUG log records index + state for
     post-mortem. Guards against silent drift to a single aggregate log."""
-    btn_1 = _make_button(visible=True, enabled=False, text="Generate")
-    btn_2 = _make_button(visible=True, enabled=True, text="Create")
+    btn_1 = _make_button(visible=True, enabled=False, text="Tạo")
+    btn_2 = _make_button(visible=True, enabled=True, text="Tạo")
 
     page = _make_page({SUBMIT_SELECTORS[0]: [btn_1, btn_2]})
 
@@ -190,14 +142,12 @@ async def test_click_submit_debug_log_per_button(caplog):
         await click_submit(page)
 
     debug_msgs = [r.getMessage() for r in caplog.records if r.levelname == "DEBUG"]
-    # Expect a per-index log for each of the 2 buttons.
     assert any("btn[0]" in m for m in debug_msgs), (
         f"Expected DEBUG mentioning btn[0], got: {debug_msgs}"
     )
     assert any("btn[1]" in m for m in debug_msgs), (
         f"Expected DEBUG mentioning btn[1], got: {debug_msgs}"
     )
-    # And a selector-level count log.
     assert any(
         "count=" in m and SUBMIT_SELECTORS[0] in m for m in debug_msgs
     ), f"Expected DEBUG with selector count, got: {debug_msgs}"
@@ -205,10 +155,8 @@ async def test_click_submit_debug_log_per_button(caplog):
 
 async def test_click_submit_all_disabled_falls_back_to_keyboard(caplog):
     """B16 KEEP-7 interaction with existing Ctrl+Enter fallback: if ALL
-    selectors match disabled/invisible buttons only, click_submit reaches
-    the keyboard fallback unchanged. Verifies the cherry-pick didn't
-    accidentally short-circuit the fallback branch."""
-    # Every selector returns 1 disabled button — none clickable.
+    matches are disabled/invisible, ``click_submit`` reaches the keyboard
+    fallback unchanged."""
     selector_map = {sel: [_make_button(enabled=False)] for sel in SUBMIT_SELECTORS}
     page = _make_page(selector_map)
 
@@ -223,39 +171,17 @@ async def test_click_submit_all_disabled_falls_back_to_keyboard(caplog):
     ), f"Expected Ctrl+Enter fallback INFO log, got: {infos}"
 
 
-async def test_click_submit_zero_count_falls_through():
-    """B16 KEEP-7: if `locator(selector).count()` returns 0, skip the
-    iteration entirely and move to the next selector. No phantom click."""
-    page = _make_page(
-        {
-            # First selector: 0 matches.
-            SUBMIT_SELECTORS[0]: [],
-            # Second selector: 1 enabled match — should win.
-            SUBMIT_SELECTORS[1]: [_make_button(text="Create")],
-        }
-    )
-
-    result = await click_submit(page)
-    assert result is True
-    # Confirm both selectors were probed (first returned 0 → move on).
-    tried = [call.args[0] for call in page.locator.call_args_list]
-    assert SUBMIT_SELECTORS[0] in tried
-    assert SUBMIT_SELECTORS[1] in tried
-
-
 async def test_click_submit_per_button_exception_does_not_abort():
-    """B16 KEEP-7: if `is_visible` / `is_enabled` / `inner_text` raises on
-    `btn[i]`, the loop moves on to `btn[i+1]` rather than aborting the
-    whole selector. The per-button try/except around the inner probes is
-    the mechanism; this test is the trip-wire against a future refactor
-    that flattens the exception handling."""
+    """B16 KEEP-7: if ``is_visible`` / ``is_enabled`` / ``inner_text``
+    raises on ``btn[i]``, the loop moves on to ``btn[i+1]`` rather than
+    aborting the whole selector."""
     btn_broken = MagicMock()
     btn_broken.is_visible = AsyncMock(side_effect=RuntimeError("detached"))
     btn_broken.is_enabled = AsyncMock(return_value=True)
-    btn_broken.inner_text = AsyncMock(return_value="Generate")
+    btn_broken.inner_text = AsyncMock(return_value="Tạo")
     btn_broken.click = AsyncMock()
 
-    btn_ok = _make_button(text="Create")
+    btn_ok = _make_button(text="Tạo")
 
     page = _make_page({SUBMIT_SELECTORS[0]: [btn_broken, btn_ok]})
 
@@ -264,3 +190,85 @@ async def test_click_submit_per_button_exception_does_not_abort():
     assert result is True
     btn_broken.click.assert_not_awaited()
     btn_ok.click.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# B26 — scope parameter + exact-text selector contract
+# ---------------------------------------------------------------------------
+
+
+async def test_click_submit_scope_prepends_to_selector():
+    """B26 behavioral contract: when ``scope`` is given, ``click_submit``
+    queries ``"{scope} {SUBMIT_SELECTORS[0]}"`` — NOT the bare selector.
+    This lets L2 callers scope the search to the composer panel (e.g.
+    ``[data-scroll-state='START']``) so decorative submit buttons elsewhere
+    on the page aren't candidates."""
+    scope = "[data-scroll-state='START']"
+    scoped_selector = f"{scope} {SUBMIT_SELECTORS[0]}"
+    btn_ok = _make_button(text="Tạo")
+
+    page = _make_page({scoped_selector: [btn_ok]})
+
+    result = await click_submit(page, scope=scope)
+
+    assert result is True
+    btn_ok.click.assert_awaited_once()
+    tried = [call.args[0] for call in page.locator.call_args_list]
+    assert tried == [scoped_selector], (
+        f"Expected ``page.locator`` to be called with the scoped selector only, "
+        f"got: {tried}"
+    )
+
+
+def test_submit_selectors_use_exact_text_and_no_fuzzy_antipattern():
+    """B26 source trip-wire: the submit selector list must use Playwright's
+    ``:text-is('arrow_forward')`` (exact-match engine) and must NOT use
+    fuzzy ``:has-text('arrow_forward')`` or text-based aria-label probes.
+
+    Reason for both halves:
+      * Exact-text is required — on /edit/ the Camera mode-switch button's
+        innerText is ``"videocam\\nCamera"`` and the L1 composer has
+        multiple buttons with Material Icon ligatures. Fuzzy matches leak
+        across icons (``arrow_forward`` vs ``arrow_forward_ios``) and
+        across icon-plus-label text.
+      * ``aria-label``-based selectors (pre-B26 ``button[aria-label*='Create' i]``)
+        are locale-dependent AND the live DOM has EMPTY aria-label on the
+        real submit button.
+
+    Also enforces the B26 collapse to a single canonical selector — if
+    someone adds a new submit selector, they must either update this test
+    with a deliberate reason (and probably extend scope handling), or
+    reconsider whether the addition is locale-independent and unique.
+    """
+    src = Path(submit_mod.__file__).read_text(encoding="utf-8")
+
+    assert "button:has(i:text-is('arrow_forward'))" in src, (
+        "B26 canonical selector missing. Expected exact-text "
+        "``button:has(i:text-is('arrow_forward'))`` in SUBMIT_SELECTORS."
+    )
+    # Whitelist docstring mentions of the anti-pattern (they explain why
+    # it's forbidden). Only code-level use is fatal.
+    forbidden_fuzzy = "button:has(i:has-text('arrow_forward'))"
+    assert forbidden_fuzzy not in src, (
+        f"B26 anti-pattern leaked into source: ``{forbidden_fuzzy}`` is "
+        "fuzzy and matches across Material Icon variants. Use "
+        "``:text-is('arrow_forward')`` instead."
+    )
+    for forbidden_text_aria in (
+        "aria-label*='Create' i",
+        "aria-label*='Generate' i",
+        "aria-label*='Send' i",
+    ):
+        assert forbidden_text_aria not in src, (
+            f"B26 anti-pattern leaked into source: text-based aria-label "
+            f"probe ``{forbidden_text_aria}`` — live DOM's submit button "
+            "has EMPTY aria-label, so this selector is a locale-dependent "
+            "red herring."
+        )
+
+    # Exactly one canonical selector — collapse is intentional.
+    assert len(SUBMIT_SELECTORS) == 1, (
+        f"Expected B26 collapse to a single submit selector, got "
+        f"{len(SUBMIT_SELECTORS)}: {SUBMIT_SELECTORS}. If you add a "
+        "second selector, extend the scope-prepending logic + this test."
+    )

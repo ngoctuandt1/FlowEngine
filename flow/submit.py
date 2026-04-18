@@ -1,45 +1,57 @@
-"""Submit pipeline -- click generate button, confirm submission accepted."""
+"""Submit pipeline -- click generate button, confirm submission accepted.
+
+Submit button identity (verified live on /project/ and /edit/ views, 2026-04-19):
+  <button ...>
+    <i ...>arrow_forward</i>    ← icon text EXACT, locale-independent
+    Tạo | Create                  ← localized label
+  </button>
+
+The ONLY stable structural signal is the child ``<i>`` whose textContent is
+exactly ``arrow_forward`` (Material Icon ligature). Do NOT rely on:
+  * aria-label (empty on live DOM)
+  * data-testid (none)
+  * button innerText (locale-dependent, contains both icon text + label)
+  * fuzzy ``:has-text`` substring matches (can match the Camera mode
+    switcher's innerText "videocam\\nCamera" — see B26 Session Report)
+
+On /edit/ there are TWO buttons with ``<i>arrow_forward</i>``: one is
+disabled (visibility-hidden decorative), one is the real submit. The
+enabled + visible check picks the right one.
+"""
 
 import asyncio
-import re
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Selectors tried in priority order
+# Exact-text selector: button that contains a child ``<i>`` whose text is
+# EXACTLY "arrow_forward". Playwright's ``:text-is`` engine does the exact
+# match (trimmed), so no fuzzy overlap with other Material Icons. Verified
+# unique on both /project/ (L1 generate) and /edit/ (L2 extend/insert/
+# remove/camera) composers.
 SUBMIT_SELECTORS = [
-    "button:has(i:has-text('arrow_forward'))",
-    "button:has(span:has-text('arrow_forward'))",
-    "button[aria-label*='Create' i]",
-    "button[aria-label*='Generate' i]",
-    "[data-testid='composer_submit_button']",
-    "button[aria-label*='Send' i]",
+    "button:has(i:text-is('arrow_forward'))",
 ]
 
-# Buttons matching this pattern are NOT submit buttons
-_SKIP_PATTERN = re.compile(
-    r"(image|video|frames|ingredients|reference|9:16|16:9|"
-    r"\bx[1-4]\b|veo|lower priority)",
-    re.IGNORECASE,
-)
 
+async def click_submit(page, timeout_ms: int = 3000, scope: str | None = None) -> bool:
+    """Find and click the submit / generate button (exact-text match).
 
-async def click_submit(page, timeout_ms: int = 3000) -> bool:
-    """Find and click the submit / generate button.
+    Finds buttons via ``button:has(i:text-is('arrow_forward'))`` — exact
+    match on the icon's textContent. On /edit/ there are 2 such buttons;
+    disabled one is skipped by ``is_enabled`` check.
 
-    Selector priority (first visible match wins):
-      1. button with arrow_forward icon (``<i>`` or ``<span>``)
-      2. button[aria-label*='Create']
-      3. button[aria-label*='Generate']
-      4. [data-testid='composer_submit_button']
-      5. button[aria-label*='Send']
-      6. Keyboard fallback: Ctrl+Enter
+    Args:
+        page:        Playwright Page.
+        timeout_ms:  Click timeout (default 3000 ms).
+        scope:       Optional CSS selector prepended to scope the search
+                     (e.g. ``[data-scroll-state='START']`` for a panel).
 
-    Returns True if a click (or key-press) was performed.
+    Returns True if a click (or Ctrl+Enter fallback) was performed.
     """
-    for selector in SUBMIT_SELECTORS:
+    for base_selector in SUBMIT_SELECTORS:
+        selector = f"{scope} {base_selector}" if scope else base_selector
         try:
-            # Check ALL matching buttons, not just .first — skip disabled ones
             locator = page.locator(selector)
             count = await locator.count()
             logger.debug("Submit selector %s: count=%d", selector, count)
@@ -48,19 +60,15 @@ async def click_submit(page, timeout_ms: int = 3000) -> bool:
                 try:
                     vis = await btn.is_visible(timeout=500)
                     ena = await btn.is_enabled(timeout=300) if vis else False
-                    try:
-                        text = await btn.inner_text()
-                    except Exception:
-                        text = ""
-                    skip = bool(_SKIP_PATTERN.search(text)) if text else False
-                    logger.debug(
-                        "  btn[%d]: vis=%s ena=%s skip=%s text=%s",
-                        i, vis, ena, skip, text.strip()[:30],
-                    )
-                    if not vis or not ena or skip:
+                    logger.debug("  btn[%d]: vis=%s ena=%s", i, vis, ena)
+                    if not vis or not ena:
                         continue
                     await btn.click(timeout=timeout_ms, force=True)
-                    logger.info("Submit clicked via: %s [%d] text=%s", selector, i, text.strip()[:30])
+                    try:
+                        label = (await btn.inner_text()).strip()[:30]
+                    except Exception:
+                        label = ""
+                    logger.info("Submit clicked via: %s [%d] label=%s", selector, i, label)
                     return True
                 except Exception as e:
                     logger.debug("  btn[%d] error: %s", i, e)
@@ -85,6 +93,7 @@ async def submit_with_confirmation(
     before_card_count: int = 0,
     timeout_sec: float = 15.0,
     prompt_text: str = "",
+    scope: str | None = None,
 ) -> bool:
     """Click submit and confirm the submission was accepted.
 
@@ -108,9 +117,9 @@ async def submit_with_confirmation(
     calls_before = len(getattr(client, "_calls", []))
     gen_id_before = getattr(client, "_gen_id", None)
 
-    clicked = await click_submit(page)
+    clicked = await click_submit(page, scope=scope)
     if not clicked:
-        logger.error("Failed to find/click submit button")
+        logger.error("Failed to find/click submit button (scope=%s)", scope)
         return False
 
     poll_interval = 0.5

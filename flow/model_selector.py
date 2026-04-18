@@ -51,26 +51,23 @@ async def select_model(
     logger.info("Selecting model: %s", target_text)
 
     # Step 1: Open model dropdown
-    # The model chip is a button near the composer showing current model.
-    # EN: "Video 🖥️ x1" or "Videox1"
-    # VI: "🍌 Nano Banana Pro 📱 x1" or similar model name
-    # It may also show "Veo" or "Imagen" depending on selection.
+    #
+    # The model/settings chip is a button with:
+    #   * ``aria-haspopup="menu"``
+    #   * child ``<i>`` whose text is exactly the crop ligature
+    #     (``crop_16_9`` default landscape, ``crop_9_16`` portrait)
+    # Verified live 2026-04-19 on both /project/ and /edit/ views. The
+    # surrounding button innerText is locale-dependent ("Videox1" vs
+    # localized model name) and was a source of mis-matches — we now pin
+    # on the icon text and the haspopup attribute instead.
     chip_selectors = [
-        # Direct model name matches
-        "button:has-text('Veo')",
-        "button:has-text('Video')",
-        "button:has-text('Videox1')",
-        "button:has-text('Imagen')",
-        "button:has-text('Nano')",
-        "button:has-text('Banana')",
-        "[role='button']:has-text('Veo')",
-        "[role='button']:has-text('Video')",
-        "[role='button']:has-text('Imagen')",
-        "[role='button']:has-text('Nano')",
-        "[role='listbox']",
-        # Chip contains "x1" or "x4" (generation count)
-        "button:has-text('x1')",
-        "button:has-text('x4')",
+        # /project/ composer: chip shows the aspect crop icon (16:9 / 9:16 / 1:1).
+        "button[aria-haspopup='menu']:has(i:text-is('crop_16_9'))",
+        "button[aria-haspopup='menu']:has(i:text-is('crop_9_16'))",
+        "button[aria-haspopup='menu']:has(i:text-is('crop_1_1'))",
+        # /edit/ composer: the model chip shows "Veo 3.1 - <variant>" + <i>arrow_drop_down</i>.
+        # Verified unique live 2026-04-19 (sole aria-haspopup=menu button with that icon).
+        "button[aria-haspopup='menu']:has(i:text-is('arrow_drop_down'))",
     ]
 
     opened = False
@@ -343,9 +340,14 @@ async def _open_model_dropdown(page) -> bool:
 
 
 async def _has_dropdown_arrow(btn) -> bool:
-    """Check if a button contains a dropdown arrow icon."""
+    """Check if a button contains a dropdown arrow icon.
+
+    Uses exact ``:text-is('arrow_drop_down')`` on the child ``<i>`` (Material
+    Icon ligature). Fuzzy ``:has-text`` would also match "arrow_drop_down_circle"
+    or similar distractors — exact-text avoids those.
+    """
     try:
-        arrow = btn.locator("i:has-text('arrow_drop_down'), span:has-text('arrow_drop_down')")
+        arrow = btn.locator("i:text-is('arrow_drop_down')")
         return await arrow.count() > 0
     except Exception:
         return False
@@ -470,16 +472,23 @@ async def _switch_to_video_tab(page) -> bool:
     - "Hình ảnh" / "Image" — image models (Imagen, Nano Banana)
     - "Video" — video models (Veo 3.1 variants)
 
-    Must click "Video" tab before selecting a Veo model.
-    Uses the same approach as the old engine (flow_model_steps_v2.py):
-      panel.locator("button,[role='tab']").filter(has_text=r"videocam|video")
+    B26 ROOT CAUSE (fixed 2026-04-19): earlier JS fallback used
+    ``lower.includes('videocam')`` which also matched the /edit/ bottom-strip
+    **Camera mode-switcher** button whose ``innerText`` is ``"videocam\\nCamera"``.
+    Clicking it toggled Camera mode on and navigated away from extend mode,
+    killing the submit flow with ``gen_id=None`` + ``new_api_calls=0``.
+
+    Fix: match the Video tab via ``[role='tab']`` with ``:text-is('Video')``
+    (Radix gives the tab role="tab", so this is authoritative). For the JS
+    fallback we require either ``role='tab'`` with exact textContent ``'Video'``
+    OR a child ``<i>`` whose textContent is EXACTLY ``videocam``, AND the
+    element's ``title`` must NOT be one of the mode-switcher titles.
     """
-    # Priority: [role='tab'] first (most specific), then button with icon text
+    # Exact-text selectors only. No fuzzy :has-text — see B26 note.
     TAB_SELECTORS = [
-        "[role='tab']:has-text('Video')",
-        "[role='tab']:has-text('videocam')",
-        # Buttons that look like tabs (Material UI sometimes uses button for tabs)
-        "button:has-text('videocam')",
+        "[role='tab']:text-is('Video')",
+        # Rare fallback: tab whose only child is the videocam icon ligature.
+        "[role='tab']:has(i:text-is('videocam'))",
     ]
 
     for sel in TAB_SELECTORS:
@@ -494,33 +503,43 @@ async def _switch_to_video_tab(page) -> bool:
         except Exception:
             continue
 
-    # JS fallback: find tab-like element with "Video" or "videocam" text
-    # Must NOT match the model chip itself (which has "Video x1" or "Videox1")
+    # JS fallback — exact-text ONLY. Mode-switcher titles are excluded so we
+    # never re-trigger the B26 bug by clicking the Camera button on /edit/.
     try:
         clicked = await page.evaluate("""() => {
-            const candidates = document.querySelectorAll(
-                '[role="tab"], button, [role="button"]'
-            );
+            const MODE_TITLES = new Set([
+                'Camera',
+                'Mở rộng', 'Extend',
+                'Chèn', 'Insert',
+                'Xoá', 'Xóa', 'Remove', 'Delete',
+            ]);
+            const candidates = document.querySelectorAll('[role="tab"], button, [role="button"]');
             for (const el of candidates) {
-                const text = (el.innerText || '').trim();
-                const lower = text.toLowerCase();
+                // Skip the /edit/ bottom-strip mode-switcher buttons.
+                const title = el.getAttribute('title') || '';
+                if (MODE_TITLES.has(title)) continue;
+
                 const rect = el.getBoundingClientRect();
-                // Match "Video" or "videocam" tab button
-                // Exclude the chip: chip text contains "x1"/"x4" or is wider
-                if ((lower === 'video' || lower === 'videocam'
-                     || lower.includes('videocam'))
-                    && !lower.match(/x[1-4]/i)
-                    && rect.width > 20 && rect.height > 20
-                    && rect.width < 200) {
-                    el.click();
-                    return true;
+                if (rect.width < 20 || rect.height < 20) continue;
+
+                // Prefer role="tab" with exact textContent 'Video'.
+                if (el.getAttribute('role') === 'tab') {
+                    const text = (el.textContent || '').trim();
+                    if (text === 'Video') { el.click(); return 'tab-text-video'; }
+                }
+
+                // Fallback: child <i> with EXACT textContent 'videocam'.
+                for (const icon of el.querySelectorAll('i')) {
+                    if ((icon.textContent || '').trim() === 'videocam') {
+                        el.click();
+                        return 'icon-videocam';
+                    }
                 }
             }
-            return false;
+            return null;
         }""")
         if clicked:
-            logger.info("Switched to Video tab via JS fallback")
-            # Wait for model list to re-render
+            logger.info("Switched to Video tab via JS fallback (%s)", clicked)
             await asyncio.sleep(1.5)
             return True
     except Exception:

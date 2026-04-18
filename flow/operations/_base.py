@@ -120,18 +120,60 @@ async def wait_for_video_loaded(page, timeout_sec: float = 15.0):
         logger.warning("Video element not found after %.0fs — proceeding anyway", timeout_sec)
 
 
-async def click_action_button(page, button_texts: list[str], timeout_ms: int = 5000) -> bool:
-    """Click an action button (Extend/Insert/Remove/Camera).
+_MODE_ICON_BY_TITLE = {
+    "Mở rộng": "keyboard_double_arrow_right",
+    "Extend": "keyboard_double_arrow_right",
+    "Chèn": "add_box",
+    "Insert": "add_box",
+    "Xoá": "ink_eraser",
+    "Xóa": "ink_eraser",
+    "Remove": "ink_eraser",
+    "Delete": "ink_eraser",
+    "Camera": "videocam",
+}
 
-    Tries each text variant in order. Falls back to icon-based selectors.
+
+async def click_action_button(page, button_texts: list[str], timeout_ms: int = 5000) -> bool:
+    """Click a mode-switch button (Extend/Insert/Remove/Camera) on /edit/.
+
+    Live-verified 2026-04-19 on VI profile: each mode button has a stable
+    EXACT ``title`` attribute and an EXACT Material Icon ligature inside
+    its ``<i>`` child. Title is the authoritative primary selector; icon
+    is a locale-independent fallback.
+
+    Identity (exact):
+      * ``button[title="Mở rộng"]``  → icon ``keyboard_double_arrow_right``
+      * ``button[title="Chèn"]``     → icon ``add_box``
+      * ``button[title="Xoá"]``      → icon ``ink_eraser``
+      * ``button[title="Camera"]``   → icon ``videocam``
+
+    Do NOT use fuzzy ``:has-text`` — the Camera button's textContent is
+    "videocam\\nCamera" and matched ``:has-text('videocam')`` in B26,
+    causing a silent URL revert from /edit/ to /project/.
     """
-    # Try text-based selectors
+    # Pass 1 — exact title match (VI labels are unique, stable)
     for text in button_texts:
         try:
-            btn = page.locator(f"button:has-text('{text}')").first
-            if await btn.is_visible(timeout=2000):
+            btn = page.locator(f"button[title='{text}']").first
+            if await btn.is_visible(timeout=1500):
                 await btn.click(timeout=timeout_ms)
-                logger.info("Clicked action button: %s", text)
+                logger.info("Clicked mode button via title=%r", text)
+                await asyncio.sleep(0.5)
+                return True
+        except Exception:
+            continue
+
+    # Pass 2 — icon fallback (locale-independent).  Find the unique icon
+    # for the requested mode, then click the ancestor <button>.
+    for text in button_texts:
+        icon = _MODE_ICON_BY_TITLE.get(text)
+        if not icon:
+            continue
+        try:
+            btn = page.locator(f"button:has(i:text-is('{icon}'))").first
+            if await btn.is_visible(timeout=1500):
+                await btn.click(timeout=timeout_ms)
+                logger.info("Clicked mode button via icon=%r (requested title=%r)", icon, text)
                 await asyncio.sleep(0.5)
                 return True
         except Exception:
