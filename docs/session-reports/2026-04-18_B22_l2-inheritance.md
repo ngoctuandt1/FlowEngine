@@ -23,7 +23,7 @@
 
 ```
 0637c92  fix(job_store): inherit project_url/media_id/edit_url on L2+ claim (B22 — unblocks Tier 2 chain)
-<PENDING-PLACEHOLDERS-COMMIT>  docs(spec): replace B22 placeholders with hash 0637c92
+14157f0  docs(spec): replace B22 placeholders with hash 0637c92
 ```
 
 (Code+tests+docs+session-report in one commit; follow-up placeholder-replacement commit so SPEC/WORKPLAN carry the real hash rather than `__B22_COMMIT__`.)
