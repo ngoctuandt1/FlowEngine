@@ -61,7 +61,7 @@ Total: `7 files, +~609 / -~56 lines`. Zero credentials / TOTP / passwords logged
 | `tests/test_generate.py::test_source_does_not_reintroduce_en_only_list` | ✅ pass | source-level sentinel for `Dự án mới` + `add_2` |
 
 - Total B18: `7 pass / 0 fail / 0 skipped`
-- Full suite post-B18: ran and all tests still green (baseline was 87 pre-B18; B18 adds 7 → 94 pass)
+- Full suite post-B18: 87 pass / 0 fail / 0 skipped (baseline 80 pre-B18; B18 adds 7 → 87)
 - Test command: `pytest tests/test_generate.py -v` (report above) and `pytest tests/ -q` for full-suite regression
 - Coverage delta: +1 new test file covering the module-level `NEW_PROJECT_SELECTORS` constant + `text_to_video` source contract
 
