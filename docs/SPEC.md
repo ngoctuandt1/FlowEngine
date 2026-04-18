@@ -1279,7 +1279,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 > Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B17 là stash-triage cherry-picks (2026-04-17 / 2026-04-18).
 
-### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17)
+### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17, Tier2 2026-04-18 **not reached** — chain halted at Flow homepage locator on VI-locale account; see `docs/E2E_RESULTS_PHASE_A.md` Run 1 + `docs/session-reports/2026-04-18_Tier2_e2e-live.md`)
 - File: `flow/operations/generate.py` → `_set_aspect_ratio()`
 - Triệu chứng: job có `aspect_ratio="9:16"` nhưng video output luôn 16:9 — stub chỉ tìm `button:has-text('9:16')` (không tồn tại trong DOM Flow) và fallback im lặng.
 - Fix: rewrite theo Radix chip panel flow (B1a research). Mở `button[aria-haspopup="menu"]` chip → đợi `[role="menu"][data-state="open"]` → đảm bảo Video tab active → click `[id$="-trigger-PORTRAIT|LANDSCAPE"]` bằng `Locator.click` (real pointer event — JS `el.click()` KHÔNG trigger Radix state) → wait `data-state="active"` → close bằng click-outside (`page.mouse.click(10, 10)` — Escape sẽ đóng luôn composer per B8 lesson) → verify chip `innerText` chứa `crop_9_16` / `crop_16_9`. Video mode chỉ support 9:16 / 16:9; `1:1` là image-only → log warning + fallback default. Guard: `tests/test_aspect_ratio.py` (3 cases: default early-return, 1:1 warning, 9:16 full flow with mocked Locator chain). Selector reference: `docs/FLOW_UI_REFERENCE.md` §Aspect Ratio UI.
@@ -1344,7 +1344,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Guard (extended): `tests/test_datetime_migration.py::test_no_utcnow_in_code` now also forbids `default_factory=datetime.utcnow` substring — trip-wire prevents silent reintroduction of the reference-form (no parens) pattern that B8's call-form scan missed.
 - Session report: `docs/session-reports/2026-04-18_B10_pydantic-default-factory.md`.
 
-### ~~B11 — Bbox drag targets wrong element + overlay is canvas-painted (P0)~~ ✅ FIXED (commit `ce6683a`)
+### ~~B11 — Bbox drag targets wrong element + overlay is canvas-painted (P0)~~ ✅ FIXED (commit `ce6683a`, Tier1 R2 verified live 2026-04-17, Tier2 2026-04-18 **not reached** — chain halted before any L2+ navigation on VI-locale account; see `docs/E2E_RESULTS_PHASE_A.md` Run 1)
 - Discovered during Tier1 DOM validation (`docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B2) on live L1 project `785d2255-…`.
 - File: `flow/operations/_base.py:236` (`draw_bbox_on_video`) — supersedes B2 fix commit `a165105`.
 - Two independent problems:
@@ -1366,7 +1366,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Reference updated: `docs/FLOW_UI_REFERENCE.md` §Bbox Overlay UI (canvas target + pointer-trust rationale + pitfall list + updated coordinate system).
 - Session report: `docs/session-reports/2026-04-17_B11_bbox-canvas-fix.md`.
 
-### ~~B12 — Camera `_verify_preset_selected` uses wrong state signals → every camera job fails (P0, regression)~~ ✅ FIXED (commit `78d3e40`)
+### ~~B12 — Camera `_verify_preset_selected` uses wrong state signals → every camera job fails (P0, regression)~~ ✅ FIXED (commit `78d3e40`, Tier1 R2 verified live 2026-04-17, Tier2 2026-04-18 **not reached** — chain halted before any L2+ navigation on VI-locale account; see `docs/E2E_RESULTS_PHASE_A.md` Run 1)
 - Discovered during Tier1 DOM validation (`docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B3) on live L1 project `785d2255-…`.
 - File: `flow/operations/camera.py:133` (`_click_preset` + `_verify_preset_selected`) — regression introduced by commit `58937d4`.
 - Live DOM reality vs code assumptions:
