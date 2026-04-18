@@ -21,11 +21,11 @@
 ## 2. Commits landed
 
 ```
-<B10-COMMIT>  fix(models): migrate default_factory=datetime.utcnow to tz-aware (B10)
+fe13870  fix(models): migrate default_factory=datetime.utcnow to tz-aware (B10)
 ```
 
 1 commit duy nhất (tuân §1.5 + §1.6: code + tests + SPEC + WORKPLAN + report trong cùng commit).
-Hash thực = tip của branch sau commit. Placeholder `<B10-COMMIT>` trong SPEC.md §D.4 B10 +
+Hash thực = tip của branch sau commit. Placeholder `fe13870` trong SPEC.md §D.4 B10 +
 WORKPLAN.md §8 B10 + metadata §2 báo cáo này sẽ được backfill bằng commit thứ hai
 (precedent: B14 `72e056b` → `a4e9092`, B15 `caef3e9` → `d11500f`).
 
@@ -154,13 +154,13 @@ không raise → deprecation gone end-to-end. Mô phỏng exactly
 ## 5. SPEC.md + WORKPLAN.md update
 
 - [x] `docs/SPEC.md §D.4 B10` — strike-through (`~~...~~`) + commit hash placeholder
-  `<B10-COMMIT>` + resolution block (fix approach, test extension, rationale pointer).
-- [x] `docs/WORKPLAN.md §8 B10` — strike-through + `<B10-COMMIT>` placeholder + 1-line
+  `fe13870` + resolution block (fix approach, test extension, rationale pointer).
+- [x] `docs/WORKPLAN.md §8 B10` — strike-through + `fe13870` placeholder + 1-line
   resolution summary.
 - [ ] `docs/DESIGN.md` — N/A (B10 không chạm architectural decisions).
 
 Commit hash cho các file này: cùng commit với code fix (theo rule §1.5). Backfill commit
-sẽ replace placeholder `<B10-COMMIT>` → real hash sau khi primary commit landed.
+sẽ replace placeholder `fe13870` → real hash sau khi primary commit landed.
 
 ---
 
@@ -217,7 +217,7 @@ loop — không tách thành test riêng vì:
 
 Trade-off được cân nhắc nhưng bỏ: Choice 2 cleaner nếu `_utils.py` có **nhiều** helper khác (serialization, TZ conversion, …). Nhưng hiện tại không có nhu cầu đó.
 
-#### Q2: Commit hash placeholder `<B10-COMMIT>`
+#### Q2: Commit hash placeholder `fe13870`
 
 Giữ placeholder, backfill bằng commit thứ hai (precedent: B14 `72e056b` → docs commit
 `a4e9092`/`a2293bf`, B15 `caef3e9` → docs commit `d11500f`). Self-reference không fix
@@ -269,7 +269,7 @@ nào khác. Quay lại khi có Phase B model mới.
     parallel sessions.
 - **Env set**: không set gì mới. Python 3.13.5 + pytest 9.0.2 + pytest-asyncio 1.3 đã
   có từ B9 session.
-- **Supervisor next step**: merge B10 commit → backfill `<B10-COMMIT>` → merge B16/B17
+- **Supervisor next step**: merge B10 commit → backfill `fe13870` → merge B16/B17
   khi parallel session xong. B10 không block B16/B17 (đã verify whitelist disjoint).
 
 ---
@@ -285,7 +285,7 @@ nào khác. Quay lại khi có Phase B model mới.
 - [x] **Full suite pass, no regression** — 48 pass (§4), same as pre-B10 baseline.
 - [x] **`-W error::DeprecationWarning` clean** — 48 pass (§4) + live factory trigger
       check (§4 sanity) confirms no warning from factory-triggered path.
-- [x] **SPEC §D.4 B10 strike + WORKPLAN §8 B10 strike** — §5 done với `<B10-COMMIT>`
+- [x] **SPEC §D.4 B10 strike + WORKPLAN §8 B10 strike** — §5 done với `fe13870`
       placeholder.
 - [x] **Zero diff ngoài whitelist** — `git diff --name-only` returns exactly
       `server/models/job.py`, `server/models/profile.py`, `tests/test_datetime_migration.py`
@@ -295,4 +295,4 @@ nào khác. Quay lại khi có Phase B model mới.
 
 ---
 
-_Sign-off: ✅ Ready for supervisor review. B10 DONE — commit `<B10-COMMIT>`._
+_Sign-off: ✅ Ready for supervisor review. B10 DONE — commit `fe13870`._
