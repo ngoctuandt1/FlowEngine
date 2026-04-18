@@ -1,6 +1,6 @@
 """Job data models for FlowEngine."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -93,8 +93,8 @@ class Job(BaseModel):
     error: Optional[str] = None
 
     # Timestamps
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def computed_edit_url(self) -> Optional[str]:

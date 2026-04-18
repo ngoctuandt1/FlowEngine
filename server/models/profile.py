@@ -1,6 +1,6 @@
 """Profile data models for FlowEngine."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -22,7 +22,7 @@ class Profile(BaseModel):
     current_job_id: Optional[str] = None   # Job currently running
     worker_id: Optional[str] = None        # Worker that owns this profile
     last_used_at: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ProfileUpdate(BaseModel):

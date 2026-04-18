@@ -1275,12 +1275,13 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - `tests/` rỗng → no TDD infra
 - Fix: added `tests/conftest.py` (temp DB + api_client fixtures), `tests/test_smoke.py`, `requirements-dev.txt`, `pytest.ini`. Coverage target ≥70% deferred to post-phase-A; B9 provides the *foundation* only.
 
-### B10 — Pydantic `default_factory=datetime.utcnow` residual (P2)
+### ~~B10 — Pydantic `default_factory=datetime.utcnow` residual (P2)~~ ✅ FIXED (commit `fe13870`)
 - Discovered during B8 (see session report 2026-04-17_B8_datetime-utcnow.md §7).
 - 3 sites: `server/models/job.py:96`, `server/models/job.py:97`, `server/models/profile.py:25` — `Field(default_factory=datetime.utcnow)`.
 - Factory triggers when caller omits `created_at` / `updated_at` (e.g. `server/routes/jobs.py:_build_job`) → DeprecationWarning on Python 3.12+, potential AttributeError on 3.13+.
-- Fix (estimated 15m): replace with `default_factory=lambda: datetime.now(UTC)` (or shared `_now_utc` helper in `server/models/_utils.py`). Test: extend `tests/test_datetime_migration.py::test_no_utcnow_in_code` to also forbid `default_factory=datetime.utcnow`.
-- Queue position: deferred until after B3 (per WORKPLAN §8 — not blocking Phase A done-done).
+- **Resolution (commit `fe13870`):** replaced with `default_factory=lambda: datetime.now(UTC)` at all 3 sites (Choice 1 — inline lambda, not shared helper; rationale in report §7 Q1: only 3 call sites and single-module scope make `_utils.py` premature abstraction). `from datetime import UTC, datetime` added to `server/models/job.py` + `server/models/profile.py`. Live-instantiate sanity check confirms factory produces tz-aware datetime (`tzinfo=UTC`) with zero DeprecationWarning under `python -W error::DeprecationWarning`.
+- Guard (extended): `tests/test_datetime_migration.py::test_no_utcnow_in_code` now also forbids `default_factory=datetime.utcnow` substring — trip-wire prevents silent reintroduction of the reference-form (no parens) pattern that B8's call-form scan missed.
+- Session report: `docs/session-reports/2026-04-18_B10_pydantic-default-factory.md`.
 
 ### ~~B11 — Bbox drag targets wrong element + overlay is canvas-painted (P0)~~ ✅ FIXED (commit `ce6683a`)
 - Discovered during Tier1 DOM validation (`docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B2) on live L1 project `785d2255-…`.

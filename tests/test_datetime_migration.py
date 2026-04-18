@@ -1,12 +1,15 @@
-"""B8 regression — forbid `datetime.utcnow()` and verify tz-aware timestamps.
+"""B8 + B10 regression — forbid `datetime.utcnow` (call and reference) and verify
+tz-aware timestamps.
 
 Python 3.12+ deprecates `datetime.utcnow()` (returns naive UTC). Python 3.13
 already prints DeprecationWarning; later versions may remove it. SPEC §R-CODE-10
 requires `datetime.now(UTC)` (tz-aware) everywhere.
 
-Two guards here:
-1. Source scan — no `datetime.utcnow()` call syntax left in server/, worker/, flow/.
-2. Round-trip — a Job written with tz-aware timestamps comes back tz-aware.
+Three guards here:
+1. Source scan (B8) — no `datetime.utcnow()` call expressions in server/, worker/, flow/.
+2. Source scan (B10) — no `default_factory=datetime.utcnow` reference expressions
+   (no parens) — Pydantic triggers these when a caller omits the field.
+3. Round-trip (B8) — a Job written with tz-aware timestamps comes back tz-aware.
 """
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,7 +19,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_no_utcnow_in_code():
-    """B8: no `datetime.utcnow()` call expressions remain in production dirs."""
+    """B8 + B10: no `datetime.utcnow()` calls AND no `default_factory=datetime.utcnow`
+    references remain in production dirs. The second pattern is a function reference
+    (no parens) that Pydantic invokes when the field default is triggered."""
     scan_dirs = ["server", "worker", "flow"]
     offenses: list[str] = []
     for d in scan_dirs:
@@ -24,12 +29,16 @@ def test_no_utcnow_in_code():
             if "__pycache__" in py.parts:
                 continue
             text = py.read_text(encoding="utf-8")
+            rel = str(py.relative_to(REPO_ROOT))
             if "datetime.utcnow()" in text:
-                offenses.append(str(py.relative_to(REPO_ROOT)))
+                offenses.append(rel)
+            if "default_factory=datetime.utcnow" in text:
+                offenses.append(f"{rel} (default_factory)")
 
     assert not offenses, (
-        f"datetime.utcnow() is deprecated. Found in: {offenses}. "
-        "Use datetime.now(UTC) instead. See SPEC §R-CODE-10."
+        f"datetime.utcnow is deprecated. Found in: {offenses}. "
+        "Use datetime.now(UTC) (or default_factory=lambda: datetime.now(UTC)) "
+        "instead. See SPEC §R-CODE-10."
     )
 
 
