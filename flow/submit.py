@@ -39,23 +39,34 @@ async def click_submit(page, timeout_ms: int = 3000) -> bool:
     """
     for selector in SUBMIT_SELECTORS:
         try:
-            locator = page.locator(selector).first
-            if not await locator.is_visible(timeout=500):
-                continue
-
-            # Read button text to apply noise filter
-            try:
-                text = await locator.inner_text()
-            except Exception:
-                text = ""
-
-            if _SKIP_PATTERN.search(text):
-                continue
-
-            await locator.click(timeout=timeout_ms, force=True)
-            logger.info("Submit clicked via: %s", selector)
-            return True
-        except Exception:
+            # Check ALL matching buttons, not just .first — skip disabled ones
+            locator = page.locator(selector)
+            count = await locator.count()
+            logger.debug("Submit selector %s: count=%d", selector, count)
+            for i in range(count):
+                btn = locator.nth(i)
+                try:
+                    vis = await btn.is_visible(timeout=500)
+                    ena = await btn.is_enabled(timeout=300) if vis else False
+                    try:
+                        text = await btn.inner_text()
+                    except Exception:
+                        text = ""
+                    skip = bool(_SKIP_PATTERN.search(text)) if text else False
+                    logger.debug(
+                        "  btn[%d]: vis=%s ena=%s skip=%s text=%s",
+                        i, vis, ena, skip, text.strip()[:30],
+                    )
+                    if not vis or not ena or skip:
+                        continue
+                    await btn.click(timeout=timeout_ms, force=True)
+                    logger.info("Submit clicked via: %s [%d] text=%s", selector, i, text.strip()[:30])
+                    return True
+                except Exception as e:
+                    logger.debug("  btn[%d] error: %s", i, e)
+                    continue
+        except Exception as e:
+            logger.debug("Submit selector %s error: %s", selector, e)
             continue
 
     # Keyboard fallback

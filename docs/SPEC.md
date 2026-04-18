@@ -35,7 +35,7 @@
   - [D.1 — Google Flow UI gotchas](#d1--google-flow-ui-gotchas)
   - [D.2 — Playwright / Chrome gotchas](#d2--playwright--chrome-gotchas)
   - [D.3 — Server / DB gotchas](#d3--server--db-gotchas)
-  - [D.4 — Known bugs trong code hiện tại (B1-B15)](#d4--known-bugs-trong-code-hiện-tại-b1-b15)
+  - [D.4 — Known bugs trong code hiện tại (B1-B16)](#d4--known-bugs-trong-code-hiện-tại-b1-b16)
 - [PHẦN E — DEBUG PLAYBOOK](#phần-e--debug-playbook)
 - [PHẦN F — GLOSSARY](#phần-f--glossary)
 - [PHẦN G — EXTERNAL REFERENCES](#g--external-references)
@@ -1222,9 +1222,9 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 ---
 
-## D.4 — Known bugs trong code hiện tại (B1-B15)
+## D.4 — Known bugs trong code hiện tại (B1-B16)
 
-> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B15 là stash-triage cherry-picks (2026-04-17).
+> Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B16 là stash-triage cherry-picks (2026-04-17 triage, landed 2026-04-17/18).
 
 ### ~~B1 — Aspect ratio stub (P0)~~ ✅ FIXED (commit `b359c84`, Tier1 MCP-verified live 2026-04-17)
 - File: `flow/operations/generate.py` → `_set_aspect_ratio()`
@@ -1394,6 +1394,28 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
   - `test_type_extend_prompt_falls_back_to_last_slate` — Method 1 count=0 → Method 2 clicks `editors.nth(count-1)` (master's "last Slate" behavior preserved); log contains "slate editor".
   - `test_type_extend_prompt_preserves_placeholder_fallbacks` — H5 REJECTED contract: the 4 placeholder/aria-label selectors MUST still be probed when both Methods 1+2 miss. Prevents silent drift toward stash's removal.
 - Session report: `docs/session-reports/2026-04-17_B15_extend-panel-verify.md`.
+
+### ~~B16 — `click_submit` gives up on selector if `.first` is disabled (P1)~~ ✅ FIXED (commit `<B16-COMMIT>`)
+- Cherry-picked from `stash@{0}` via triage `docs/session-reports/2026-04-17_stash-triage_flow-refinements.md` §7.4 KEEP-7. One hunk on `flow/submit.py::click_submit`.
+- File: `flow/submit.py` — `click_submit` (selector-iteration loop body only; the module-level `SUBMIT_SELECTORS` list, `_SKIP_PATTERN` regex, keyboard fallback, and `submit_with_confirmation` wrapper are all untouched).
+- Triệu chứng: Master's `click_submit` calls `page.locator(selector).first` for each of the 6 submit selectors. If `.first` is a disabled match — loading state during generation, stale duplicate DOM node from a previous composer render, hidden shadow tree leftover from a closed dialog — master either clicks it anyway with `force=True` (silent no-op; user sees no generation) or skips on `is_visible=False` and falls through to the next selector. An ENABLED sibling matching the *same* selector is never probed. When all 6 selectors all hit the same stale `.first`, the flow falls to `Ctrl+Enter` which only works on some composer variants. Net effect: intermittent "submit click not registered" bugs with no log breadcrumb (master logs only `"Submit clicked via: <selector>"` on success, nothing on per-selector skip).
+- Runtime effect (pre-fix): job submits silently fail — generation never starts, `submit_with_confirmation` times out at 15s with the four confirmation signals (gen_id, operations API, card count, progress indicator) all negative. Post-mortem has no button-state trail. Stash's docstring cites duplicate DOM nodes as the trigger; common in the extend composer where the main composer's submit button and the extend panel's submit button can co-exist briefly during panel mount.
+- **Resolution (commit `<B16-COMMIT>`):**
+  - **Iterate all matches, not `.first`.** Per selector, call `page.locator(selector).count()` and iterate `for i in range(count)` via `locator.nth(i)`. For each button: probe `is_visible(timeout=500)`, then `is_enabled(timeout=300)` only if visible (short-circuit), then `inner_text()` for the `_SKIP_PATTERN` noise filter. Click the first match that is `visible AND enabled AND not _SKIP_PATTERN`. `_SKIP_PATTERN` (master's regex against `image|video|frames|ingredients|reference|9:16|16:9|x1-4|veo|lower priority`) is preserved *inside* the loop — the filter still runs per button, not replaced.
+  - **Per-button debug log.** `logger.debug("  btn[%d]: vis=%s ena=%s skip=%s text=%s", i, vis, ena, skip, text.strip()[:30])` — gives post-mortem visibility into every probed button's state. Plus a selector-entry log `logger.debug("Submit selector %s: count=%d", selector, count)`. Plus a selector-error log `logger.debug("Submit selector %s error: %s", selector, e)`. All at DEBUG level (silent at INFO baseline; opt-in via `logging.getLogger('flow.submit').setLevel(logging.DEBUG)`).
+  - **Success log includes the winning index.** `logger.info("Submit clicked via: %s [%d] text=%s", selector, i, text.strip()[:30])` — distinguishes a `.nth(3)` win from `.nth(0)` so operators can see whether the fix is doing real work in production.
+  - **Fall-through unchanged.** If every selector iterates to exhaustion with no clickable match, `click_submit` falls to the existing `page.keyboard.press("Control+Enter")` branch. The cherry-pick does NOT touch this path.
+  - **`submit_with_confirmation` untouched.** Phase A commit `5c7d625` (timeout-returns-False + NEW-api-calls delta snapshot) is orthogonal — the cherry-pick only modifies the inner loop of `click_submit`, not its caller. `git diff flow/submit.py` confirms zero lines changed outside the `for selector in SUBMIT_SELECTORS:` body.
+- Guard: `tests/test_submit.py` — 8 cases:
+  - `test_click_submit_iterates_all_buttons` — selector matches 3 buttons (disabled + invisible + enabled) → code iterates, clicks only the enabled one, INFO log includes `[2]` index.
+  - `test_click_submit_skip_disabled_first` — `.nth(0)` disabled + `.nth(1)` enabled → click `.nth(1)`; only ONE selector probed (no fall-through). Core contract trip-wire.
+  - `test_click_submit_skip_pattern_preserved` — btn[0] text `"Generate video"` matches `_SKIP_PATTERN` → skipped; btn[1] text `"Create"` clicked. Confirms the master noise filter still runs inside the per-button loop.
+  - `test_click_submit_no_enabled_button` — selector A has 2 disabled → fall through to selector B's enabled match. Selector-level fall-through (master's only strategy) still works on top of per-selector iteration.
+  - `test_click_submit_debug_log_per_button` — DEBUG records include `btn[0]`, `btn[1]`, and selector-level `count=`. Prevents silent drift to a single aggregate log.
+  - `test_click_submit_all_disabled_falls_back_to_keyboard` — every selector returns 1 disabled button → Ctrl+Enter fallback reached; INFO log mentions `"Ctrl+Enter"`. Guards against accidentally short-circuiting the fallback.
+  - `test_click_submit_zero_count_falls_through` — `count()` returns 0 → skip iteration, probe next selector.
+  - `test_click_submit_per_button_exception_does_not_abort` — `is_visible` raises on btn[0] → loop moves to btn[1] and clicks. Guards against a future refactor that flattens the per-button try/except into the outer `except Exception:`.
+- Session report: `docs/session-reports/2026-04-18_B16_submit-iterate.md`.
 
 ---
 
