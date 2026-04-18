@@ -20,7 +20,7 @@
   - [B1 — Aspect ratio stub](#b1--aspect-ratio-stub-p0)
   - [B2 — Bbox không verify](#b2--bbox-không-verify-p0)
   - [B3 — Camera preset không verify](#b3--camera-preset-không-verify-p0)
-  - [B4 — Chains table unused](#b4--chains-table-unused-p2-defer)
+  - [B4 — Chains table unused](#b4--chains-table-unused-p2-fixed)
 - [§4 — Test harness setup](#4--test-harness-setup)
 - [§5 — Manual E2E verification protocol](#5--manual-e2e-verification-protocol)
 - [§6 — Rollback plan](#6--rollback-plan)
@@ -90,7 +90,7 @@ Session con KHÔNG hoàn tất cho đến khi file report ở `docs/session-repo
 | 6 | **B1** aspect ratio | Thay đổi UI automation — cần manual browser test. |
 | 7 | **B2** bbox verify | Cùng domain UI automation — làm sau B1. |
 | 8 | **B3** camera preset verify | Tương tự B2. |
-| 9 | **B4** chains table | **DEFER** — không ảnh hưởng correctness. Có thể bỏ qua Phase A. |
+| 9 | **B4** chains table | **FIXED** post-Phase-A (2026-04-18). Persist metadata + derive status. |
 
 **Total estimate:** ~3-4 ngày làm việc (không tính browser test thực).
 
@@ -1191,15 +1191,43 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 
 ---
 
-### B4 — Chains table unused (P2, DEFER)
+### ~~B4 — Chains table unused (P2)~~ ✅ FIXED post-Phase-A (2026-04-18)
 
-#### Lý do defer
+#### Original defer rationale (2026-04-17, superseded)
 - Chain metadata có thể derive từ `SELECT chain_id, status FROM jobs GROUP BY chain_id`
 - Không ảnh hưởng correctness
 - Thêm chains INSERT/UPDATE logic = thêm 2 nơi có thể out-of-sync
 
-#### Action
-KHÔNG fix trong Phase A. Document trong SPEC.md §D.4 là "defer until UI needs chain-level stats".
+#### Resolution (Choice C — Hybrid, 2026-04-18)
+User approved fix post-Phase-A. Choice C was selected after comparing:
+- **Choice A (full sync)** — INSERT on POST + UPDATE chains.status on every job terminal transition. Rejected: two places storing the same truth creates drift risk if one UPDATE fails.
+- **Choice B (view-only)** — compute everything on-demand, never touch chains table. Rejected: leaves the CREATE TABLE literally unused, which is exactly the original smell.
+- **Choice C (hybrid, chosen)** — INSERT immutable metadata on POST (`id`, `profile`, `created_at`, `updated_at`), NEVER UPDATE. Aggregated status + progress derived on every GET from `SELECT id, status FROM jobs WHERE chain_id = ? ORDER BY created_at ASC`. The existing `chains.status` column stays at DEFAULT `'active'` — vestigial, not surfaced. Zero drift path by construction.
+
+#### Implementation
+- `server/models/chain.py` (NEW) — `Chain` (DB row) + `ChainAggregate` (API response) + `ChainProgress`.
+- `server/db/chain_store.py` (NEW) — `create_chain`, `get_chain_row` (raw + vestigial status, tests only), `get_chain_aggregate`, `compute_aggregated_status` (pure fn).
+- `server/routes/jobs.py` — `POST /api/chains` now calls `create_chain(Chain(id, profile))` before creating jobs. New `GET /api/chains/{id}` returns `ChainAggregate`.
+- `server/db/database.py` — schema unchanged. Minimal diff.
+- `tests/test_chains.py` — 17 cases covering: status rule unit tests (6), create/get row (2), POST persistence + GET aggregate (7), no-sync trip-wire (1), ordering (1).
+
+#### Aggregated status rules (priority order)
+1. any `failed` → `failed`
+2. any `running` or `claimed` → `running`
+3. any `pending` alongside `completed`/`cancelled` → `running` (in-progress)
+4. all `pending` → `pending`
+5. all `cancelled` → `cancelled`
+6. otherwise (≥1 completed, no failures) → `completed`
+
+#### Done criteria
+- [x] Choice C rationale documented (session report §7)
+- [x] chains row INSERTed on POST /api/chains
+- [x] GET /api/chains/{id} returns aggregated status + progress + ordered job ids
+- [x] Trip-wire test confirms no-sync invariant
+- [x] 17 new tests pass, full suite 80 pass (no regression from 63 baseline)
+- [x] `-W error::DeprecationWarning` clean
+- [x] SPEC.md §D.4 B4 strike-through + §C.1b Chain Schema + §C.3 GET /api/chains/{id}
+- [x] Session report `docs/session-reports/2026-04-18_B4_chains-table.md`
 
 ---
 
@@ -1248,7 +1276,7 @@ tests/
 
 ## §5 — Manual E2E verification protocol
 
-Sau khi tất cả 8 bug (trừ B4 defer) đã merged, chạy manual E2E test để verify real-world correctness.
+Sau khi tất cả 8 bug (bao gồm B4 fix post-Phase-A) đã merged, chạy manual E2E test để verify real-world correctness.
 
 ### 5.1 Chuẩn bị
 1. Chrome profile `ngoctuandt2` đã login Google account `ngoctuandt2@gmail.com`
@@ -1378,7 +1406,7 @@ Phase A coi là hoàn thành khi ALL items:
 - [ ] B1 merged (aspect ratio real impl)
 - [ ] B2 merged (bbox verify)
 - [ ] B3 merged (camera preset verify)
-- [ ] B4 documented as deferred (no code)
+- [x] B4 fixed post-Phase-A (commit `B4-COMMIT`) — chains table persisted + aggregated status endpoint
 
 ### Test
 - [ ] `pytest tests/` all pass
@@ -1387,7 +1415,7 @@ Phase A coi là hoàn thành khi ALL items:
 
 ### Docs
 - [ ] SPEC.md §D.4 B1-B8 strike-through với commit hash
-- [ ] SPEC.md §D.4 B4 mark "deferred (rationale...)"
+- [x] SPEC.md §D.4 B4 strike-through (FIXED commit `B4-COMMIT`) + §C.1b Chain Schema + §C.3 GET /api/chains/{id}
 - [ ] FLOW_UI_REFERENCE.md updated (aspect ratio, bbox overlay, camera active state)
 - [ ] WORKPLAN.md §8 "Discovered during work" populated nếu có
 - [ ] CLAUDE.md §6 "Epic History" thêm entry Phase A
@@ -1432,7 +1460,7 @@ Phase A coi là hoàn thành khi ALL items:
 | B1 | 3-4 giờ (inc. research) |
 | B2 | 4 giờ (inc. research) |
 | B3 | 3 giờ (inc. research) |
-| B4 | 0 (defer) |
+| B4 | 45 phút (post-Phase-A, 2026-04-18) |
 | **Buffer** (debug, test fail, rework) | 30% |
 | **Manual E2E §5** | 2-3 giờ |
 | **TOTAL** | **~22-26 giờ** ≈ **3-4 ngày làm việc** |
