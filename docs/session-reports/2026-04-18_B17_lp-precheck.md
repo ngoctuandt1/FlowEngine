@@ -30,11 +30,11 @@ dropdown was already closed before entering Step 2.7.
 ## 2. Commits landed
 
 ```
-<B17-COMMIT>  feat(model_selector): LP pre-check to avoid toggle-close in extend mode (B17 cherry-pick)
+f5dab42  feat(model_selector): LP pre-check to avoid toggle-close in extend mode (B17 cherry-pick)
 ```
 
 1 commit: 1 prod file + 1 new test file + SPEC + WORKPLAN + this report.
-Optional placeholder backfill commit (replacing `<B17-COMMIT>` → actual
+Optional placeholder backfill commit (replacing `f5dab42` → actual
 hash) follows the B14/B15 precedent (commits `a2293bf`/`a4e9092` for B14,
 `d11500f` for B15) and will be added after the feat commit is pushed.
 
@@ -129,11 +129,11 @@ in under 50ms each.
 - [x] §D.4 intro paragraph "B14-B15 là stash-triage cherry-picks
   (2026-04-17)" updated to "B14-B17 là stash-triage cherry-picks
   (2026-04-17 / 2026-04-18)" — reflects B17's 2026-04-18 date
-- [x] §D.4 B17 entry added (struck-through, `<B17-COMMIT>` placeholder)
+- [x] §D.4 B17 entry added (struck-through, `f5dab42` placeholder)
 - [x] WORKPLAN §8 B17 resolved entry added (struck-through,
-  `<B17-COMMIT>` placeholder)
+  `f5dab42` placeholder)
 
-Placeholder `<B17-COMMIT>` will be replaced with the actual hash by a
+Placeholder `f5dab42` will be replaced with the actual hash by a
 follow-up backfill commit (same pattern as B11/B12/B14/B15 used pre-hash
 — see commits `6612215`, `85e2f45`, `a2293bf`, `a4e9092`, `d11500f`).
 
@@ -233,7 +233,7 @@ current master body. Behavior is preserved; only the TRUTH of
 passing False is more honest). This is consistent with the stash's
 KEEP-1 intent.
 
-**4. Placeholder `<B17-COMMIT>` vs waiting for the hash.**
+**4. Placeholder `f5dab42` vs waiting for the hash.**
 Followed the B15 precedent (`caef3e9` commit had `<B15-COMMIT>` in
 SPEC/WORKPLAN; `d11500f` backfilled). Initial feat commit ships with
 the placeholder; a separate `docs(spec): replace B17-COMMIT placeholders
@@ -341,7 +341,7 @@ From supervisor prompt's `[DONE CRITERIA]`:
   2/2, B11 6/6, B12 7/7, B14 7/7, B15 12/12)
 - [x] DeprecationWarning-strict: clean (55/55 with `-W
   error::DeprecationWarning`)
-- [x] SPEC §D.4 B17 + WORKPLAN §8 B17 added (both with `<B17-COMMIT>`
+- [x] SPEC §D.4 B17 + WORKPLAN §8 B17 added (both with `f5dab42`
   placeholder)
 - [x] Stash@{0} còn (`git stash list` post-session confirms intact)
 - [x] Zero diff ngoài whitelist (only `flow/model_selector.py`,
