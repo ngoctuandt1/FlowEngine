@@ -5,7 +5,8 @@
 > specific Run 19 L2-unblock playbook). Read this first when opening a fresh
 > supervisor session on this repo.
 >
-> **Last updated:** 2026-04-20 after commit `58f47e7`.
+> **Last updated:** 2026-04-20 after CDP-fingerprint analysis + new doc
+> `docs/CHROME_LAUNCH_SECURITY.md`.
 
 ---
 
@@ -24,13 +25,14 @@ Repo: `D:/AI/FlowEngine` — branch `master`. Latest hash verified with `git log
 ## 2. Read first (authoritative, in order)
 
 1. `CLAUDE.md` — top-of-repo project context + code-quality directive
-2. `C:/Users/Tuan/.claude/projects/D--AI-FlowEngine/memory/MEMORY.md` — 11-entry index; **memory supersedes any doc when they conflict**
+2. `C:/Users/Tuan/.claude/projects/D--AI-FlowEngine/memory/MEMORY.md` — 12-entry index; **memory supersedes any doc when they conflict**
 3. `docs/SPEC.md` §D.4 — B1-B37 ledger (B38 entry pending), invariants INV-1 through INV-5
 4. `docs/FLOW_ENGINEERING_NOTES.md` — 497-line consolidated supervisor reference (§15 = in-flight state)
 5. `docs/HANDOFF.md` — Run 19 L2-unblock playbook (Step 1 full-reset policy 2026-04-20)
-6. `docs/E2E_RESULTS_PHASE_A.md` — append-only Run log (most-recent-first, Runs 1-15)
-7. `docs/session-reports/2026-04-19_Tier2_Run19_L2_chain_blocked.md` — current blocker diagnosis
-8. `docs/FLOW_BUTTON_EXACT.md` + `FLOW_UI_REFERENCE.md` + `FLOW_MULTILEVEL_JOBS.md` — selector catalog + UI ref + chain history
+6. `docs/CHROME_LAUNCH_SECURITY.md` — launch-path architecture + Google detection signals + H1/H2 Run 19 hypothesis (read before touching any launch code)
+7. `docs/E2E_RESULTS_PHASE_A.md` — append-only Run log (most-recent-first, Runs 1-15)
+8. `docs/session-reports/2026-04-19_Tier2_Run19_L2_chain_blocked.md` — current blocker diagnosis
+9. `docs/FLOW_BUTTON_EXACT.md` + `FLOW_UI_REFERENCE.md` + `FLOW_MULTILEVEL_JOBS.md` — selector catalog + UI ref + chain history
 
 Worst-case catch-up from these ≈ 15 min.
 
@@ -91,21 +93,37 @@ Commit ONLY after L2 extend completes end-to-end. Recommended split — 3 logica
 
 ## 6. Open blockers (prioritized)
 
-### P0 — L2 chain blocked
+### P0 — L2 chain blocked (two competing hypotheses as of 2026-04-20)
 
-Worker profile `ngoctuandt20` not authenticated. Full reset was done (backup
-preserved at `chrome-profiles/ngoctuandt20.bak-*`).
+Run 19 landed worker on Flow's marketing page instead of the editor SPA.
+Two hypotheses — Run 20 discriminates.
 
-Next action — follow `docs/HANDOFF.md` Steps 1-7, with STEP 3 updated to
-auto-login (commit `58f47e7`):
+- **H1 (original, from Run 19 session report):** cookies did not survive
+  warm → worker transition. Fix: full-reset + `warm_profile` (commit
+  `58f47e7` auto-login) already applied.
+- **H2 (new, 2026-04-20 analysis):** cookies are fine, but Google
+  fingerprints the CDP-attached Chrome + temp-cloned user-data-dir as a
+  device-trust mismatch and serves the marketing variant. Full analysis
+  + detection signals: `docs/CHROME_LAUNCH_SECURITY.md` §2 + §5.
 
-1. `powershell -NoProfile -File scripts/kill_engine_chrome.ps1` (selective kill, leaves user's personal Chrome alive)
-2. `rm -rf chrome-profiles/ngoctuandt20/` (already done — backup preserved)
-3. `python scripts/warm_profile.py ngoctuandt20` — auto-login via `flow.login.handle_login_redirect`, no user interaction
-4. Restart server + worker
-5. Query DB for full UUIDs: `sqlite3 data/flowengine.db "SELECT id, parent_job_id, chain_id, project_url, media_id FROM jobs WHERE chain_id LIKE '1871a218%' ORDER BY created_at DESC LIMIT 5"`
-6. POST new L2 extend under chain `1871a218` / parent `4a032d83` / media `df78a409`
-7. Monitor for `extend_1080p_*.mp4` (≥2 MB, `ffprobe` confirms 1920×1080)
+Run 20 plan (H1 vs H2 discriminator):
+
+1. `powershell -NoProfile -File scripts/kill_engine_chrome.ps1` — selective kill; leaves user's personal Chrome alive.
+2. Selective python kill by port 8080 + `run_worker.py` cmdline match; do NOT blanket `taskkill //F //IM python.exe`.
+3. Reset stuck-claimed job `7c41a24a-182b-4fc8-920d-0fa1e9883cc2` in DB (otherwise `project_lock` blocks the new L2 on the same `project_url`).
+4. `python scripts/warm_profile.py ngoctuandt20` — auto-login via `flow.login.handle_login_redirect` (no user interaction).
+5. Start server; start worker with **`FLOW_USE_BASE_PROFILE=1 WORKER_PROFILES=ngoctuandt20 python run_worker.py`** — this skips the temp-clone so the worker reads the same `chrome-profiles/ngoctuandt20/` the warm session wrote. Removes the cloned-user-data-dir signal. `project_lock` already serializes per project.
+6. Query DB for full UUIDs: `sqlite3 data/flowengine.db "SELECT id, parent_job_id, chain_id, project_url, media_id FROM jobs WHERE chain_id LIKE '1871a218%' ORDER BY created_at DESC LIMIT 5"`.
+7. POST new L2 extend under chain `1871a218` / parent `4a032d83` / media `df78a409`.
+8. Monitor for `extend_1080p_*.mp4` (≥2 MB, `ffprobe` confirms 1920×1080).
+
+Outcomes:
+
+| Result | Conclusion | Next |
+|---|---|---|
+| Editor loads, L2 completes | H1 confirmed (temp-clone dropped cookies) | Commit the 4 in-flight `.py` + `FLOW_USE_BASE_PROFILE=1` default in worker env docs |
+| Marketing landing again | H1 partial; H2 in play | Escalate to `CHROME_LAUNCH_SECURITY.md` §4 Option 2 (pipe) or Option 3 (stealth) — user decides |
+| New failure mode | Re-diagnose from logs | Session report; do not speculate in handoff |
 
 ### P2 — B38 session report missing
 
@@ -140,6 +158,7 @@ rồi, thì k được tự ý sửa, trừ khi tao bảo**".
 | 9 | Cross-check memory BEFORE pasting HANDOFF/playbook into a new-session prompt | `feedback_cross_check_memory_before_paste.md` | — |
 | 10 | Code passes senior-reviewer bar — user runs codex on every change | `feedback_code_quality_codex_review.md` | — |
 | 11 | Locked items (memory or trip-wire) cannot be changed without explicit user approval this turn | `feedback_locked_items_require_user_approval.md` | — |
+| 12 | Chrome launch must mimic a real user — Mode A only (subprocess + `connect_over_cdp`); no `--disable-blink-features=AutomationControlled` or other bot-hider flags; stealth/pipe-mode need user approval | `feedback_chrome_launch_real_user.md` + `docs/CHROME_LAUNCH_SECURITY.md` | — |
 
 **Additional locked code contracts** (memory indirect — trip-wires only):
 
@@ -183,11 +202,19 @@ python -W error::DeprecationWarning -m pytest tests/ -q
 
 ## 10. Immediate next action — pick one
 
-**A) Finish L2 unblock (continues Run 19)**
-- Follow `docs/HANDOFF.md` Steps 1-7 (already updated with full-reset + selective-kill + STEP 3 auto-login)
-- `warm_profile.py` auto-drives sign-in — no manual Gmail step needed
-- Post new L2 extend, monitor `extend_1080p_*.mp4`
-- On pass: commit the 4 in-flight `.py` files as 3 logical commits + Run 20 session report + update `E2E_RESULTS`
+**A) Finish L2 unblock (continues Run 19 — H1/H2 discriminator)**
+- Follow §6 P0 Run 20 plan (supersedes `docs/HANDOFF.md` Steps 1-7 where
+  the two disagree). Key change vs HANDOFF: worker runs with
+  `FLOW_USE_BASE_PROFILE=1` to skip temp-clone and eliminate the
+  cloned-user-data-dir signal.
+- `warm_profile.py` auto-drives sign-in — no manual Gmail step needed.
+- Post new L2 extend, monitor `extend_1080p_*.mp4`.
+- On pass (H1): commit the 4 in-flight `.py` files as 3 logical commits +
+  Run 20 session report + update `E2E_RESULTS` + document
+  `FLOW_USE_BASE_PROFILE=1` as the default worker env.
+- On marketing-landing again (H2): do NOT commit. Collect diagnostics per
+  the Run 20 playbook's fail path; user decides Option 2 vs Option 3
+  from `docs/CHROME_LAUNCH_SECURITY.md` §4.
 
 **B) Backfill B38 Run 17/18 session report** — docs-only, unblocks tag bump to `v0.7.0`.
 
@@ -202,7 +229,7 @@ python -W error::DeprecationWarning -m pytest tests/ -q
 - Main session is a **supervisor** — produces prompts, reviews diffs, syncs docs. Does NOT run heavy work (live Tier 2 + LP credits + long refactors) inline unless user says "chạy ngay" / "execute".
 - Claude-in-Chrome MCP is available for read-only DOM probes if a gap surfaces.
 - Ghost Chrome cleanup uses `scripts/kill_engine_chrome.ps1` (filters `--user-data-dir` against owned paths; leaves user's personal Chrome alone).
-- Current memory count: **11**. Trip-wire tests for 5 locked domains.
+- Current memory count: **12**. Trip-wire tests for 5 locked domains.
 - User is Vietnamese-speaking but fluent in English prompt text. Respond in Vietnamese when user's message is Vietnamese; mixing is OK.
 - User runs **codex** agent (parallel) for code review. Code quality bar is high. Ask before touching anything locked.
 - When in doubt: grep `memory/` + `docs/` first; ask only when artifacts don't answer.

@@ -8,6 +8,21 @@ Usage::
 
     async with FlowClient("my_profile") as client:
         await client.page.goto("https://labs.google/fx/tools/flow")
+
+Security note
+-------------
+Mode A is the only path that mimics a real-user Chrome launch closely
+enough to avoid Google's automation fingerprinting: the Chrome process
+starts under ``subprocess.Popen`` BEFORE Playwright attaches via
+``connect_over_cdp``, so Playwright does not inject its bootstrap hooks
+into page contexts. Mode B sets
+``--disable-blink-features=AutomationControlled`` and
+``ignore_default_args=["--enable-automation"]`` — the presence of those
+flags is itself a detection signal, which is why Mode B is gated behind
+Docker / non-Windows and should not be extended to Windows production.
+Adding bot-hider flags, stealth patches, or pipe-mode CDP requires
+explicit user approval. See ``docs/CHROME_LAUNCH_SECURITY.md`` and
+memory ``feedback_chrome_launch_real_user.md``.
 """
 
 from __future__ import annotations
