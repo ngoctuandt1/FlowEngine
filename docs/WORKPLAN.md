@@ -1267,10 +1267,12 @@ tests/
   test_aspect_ratio.py       (B1)
 ```
 
-### 4.3 CI target (tương lai)
-- GitHub Actions: chạy `pytest tests/` trên mỗi PR
-- Fail PR nếu coverage < target hoặc test fail
-- **Không implement trong Phase A** — nhưng prepare `pytest.ini` + `requirements-dev.txt` để sẵn
+### 4.3 CI target — ✅ implemented (post-Phase-A)
+- GitHub Actions workflow: `.github/workflows/tests.yml` (trigger: PR → `master`, push → `master`)
+- Runs `pytest tests/ -v` + `pytest tests/ -W error::DeprecationWarning` on Python 3.13, ubuntu-latest, 10m timeout
+- Fail PR nếu test fail hoặc có DeprecationWarning leak
+- Coverage gate deferred — 30 % baseline chưa đạt R-TEST-4 target 70 %, sẽ add khi Phase B boost coverage
+- ~~**Không implement trong Phase A** — nhưng prepare `pytest.ini` + `requirements-dev.txt` để sẵn~~ (done)
 
 ---
 
