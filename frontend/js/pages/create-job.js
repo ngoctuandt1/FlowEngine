@@ -11,31 +11,8 @@
     { id: 'camera', label: 'Camera', icon: 'videocam_off', shortLabel: 'Camera' },
   ];
 
-  const MODELS = [
-    { value: '', label: 'Default' },
-    { value: 'kling-v2.1', label: 'Kling v2.1' },
-    { value: 'kling-v2.0', label: 'Kling v2.0' },
-    { value: 'kling-v1.6', label: 'Kling v1.6' },
-    { value: 'kling-v1.5', label: 'Kling v1.5' },
-  ];
-
-  const ASPECT_RATIOS = [
-    { value: '', label: 'Default' },
-    { value: '16:9', label: '16:9 (Landscape)' },
-    { value: '9:16', label: '9:16 (Portrait)' },
-    { value: '1:1', label: '1:1 (Square)' },
-  ];
-
-  const CAMERA_PRESETS = [
-    'Orbit Left', 'Orbit Right',
-    'Pan Left', 'Pan Right',
-    'Pedestal Up', 'Pedestal Down',
-    'Tilt Up', 'Tilt Down',
-    'Zoom In', 'Zoom Out',
-    'Dolly In', 'Dolly Out',
-    'Crane Up',
-    'Roll CW', 'Roll CCW',
-  ];
+  // MODELS / ASPECT_RATIOS / CAMERA_PRESETS live in js/config.js (FlowConfig)
+  // and are shared with the Chain Builder — see P2a.
 
   let selectedType = 'text-to-video';
 
@@ -97,12 +74,12 @@
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">Model</label>
-            <select class="form-select" id="field-model">${renderOptions(MODELS)}</select>
+            <select class="form-select" id="field-model">${renderOptions(FlowConfig.MODELS)}</select>
           </div>
           ${selectedType === 'text-to-video' ? `
           <div class="form-group">
             <label class="form-label">Aspect Ratio</label>
-            <select class="form-select" id="field-aspect-ratio">${renderOptions(ASPECT_RATIOS)}</select>
+            <select class="form-select" id="field-aspect-ratio">${renderOptions(FlowConfig.ASPECT_RATIOS)}</select>
           </div>
           ` : ''}
         </div>
@@ -139,7 +116,7 @@
 
     // Camera direction (for camera type)
     if (selectedType === 'camera') {
-      const dirOptions = CAMERA_PRESETS.map(
+      const dirOptions = FlowConfig.CAMERA_PRESETS.map(
         (p) => `<option value="${p}">${p}</option>`
       ).join('');
       fields.push(`
@@ -196,14 +173,10 @@
   }
 
   function validate(data) {
-    if (data.type === 'text-to-video' && !data.prompt) {
-      return 'Prompt is required for Text-to-Video jobs.';
-    }
-    if (data.type === 'insert' && !data.prompt) {
-      return 'Prompt is required for Insert jobs.';
-    }
-    if (data.type === 'camera' && !data.camera_direction) {
-      return 'Camera direction is required.';
+    const missing = FlowConfig.missingRequiredLabel(data.type, data);
+    if (missing) {
+      const typeLabel = FlowConfig.TYPE_LABELS[data.type] || data.type;
+      return `${missing} is required for ${typeLabel} jobs.`;
     }
     if (data.type !== 'text-to-video' && !data.parent_job_id && !data.project_url) {
       return 'Parent Job ID or Project URL is required for this job type.';

@@ -11,19 +11,8 @@
     { id: 'camera', label: 'Camera', icon: 'videocam_off' },
   ];
 
-  const CAMERA_PRESETS = [
-    'Orbit Left', 'Orbit Right', 'Pan Left', 'Pan Right',
-    'Pedestal Up', 'Pedestal Down', 'Tilt Up', 'Tilt Down',
-    'Zoom In', 'Zoom Out', 'Dolly In', 'Dolly Out',
-    'Crane Up', 'Roll CW', 'Roll CCW',
-  ];
-
-  const MODELS = [
-    { value: '', label: 'Default' },
-    { value: 'kling-v2.1', label: 'Kling v2.1' },
-    { value: 'kling-v2.0', label: 'Kling v2.0' },
-    { value: 'kling-v1.6', label: 'Kling v1.6' },
-  ];
+  // MODELS / ASPECT_RATIOS / CAMERA_PRESETS live in js/config.js (FlowConfig)
+  // and are shared with the single-job Create page — see P2a.
 
   let steps = [];
 
@@ -111,7 +100,7 @@
 
     // Model (for t2v, extend, insert)
     if (['text-to-video', 'extend', 'insert'].includes(step.type)) {
-      const modelOpts = MODELS.map(
+      const modelOpts = FlowConfig.MODELS.map(
         (m) =>
           `<option value="${m.value}" ${step.model === m.value ? 'selected' : ''}>${App.escapeHtml(m.label)}</option>`
       ).join('');
@@ -125,22 +114,21 @@
 
     // Aspect ratio (t2v only)
     if (step.type === 'text-to-video') {
+      const aspectOpts = FlowConfig.ASPECT_RATIOS.map(
+        (a) =>
+          `<option value="${a.value}" ${step.aspect_ratio === a.value ? 'selected' : ''}>${App.escapeHtml(a.label)}</option>`
+      ).join('');
       html += `
         <div class="form-group" style="margin-bottom:12px">
           <label class="form-label">Aspect Ratio</label>
-          <select class="form-select step-field" data-step="${index}" data-field="aspect_ratio">
-            <option value="">Default</option>
-            <option value="16:9" ${step.aspect_ratio === '16:9' ? 'selected' : ''}>16:9</option>
-            <option value="9:16" ${step.aspect_ratio === '9:16' ? 'selected' : ''}>9:16</option>
-            <option value="1:1" ${step.aspect_ratio === '1:1' ? 'selected' : ''}>1:1</option>
-          </select>
+          <select class="form-select step-field" data-step="${index}" data-field="aspect_ratio">${aspectOpts}</select>
         </div>
       `;
     }
 
     // Camera direction
     if (step.type === 'camera') {
-      const camOpts = CAMERA_PRESETS.map(
+      const camOpts = FlowConfig.CAMERA_PRESETS.map(
         (p) =>
           `<option value="${p}" ${step.camera_direction === p ? 'selected' : ''}>${p}</option>`
       ).join('');
@@ -210,15 +198,12 @@
   function validateChain() {
     if (steps.length === 0) return 'Add at least one step to the chain.';
     if (steps[0].type !== 'text-to-video') return 'First step must be Text-to-Video.';
-    if (!steps[0].prompt.trim()) return 'First step requires a prompt.';
 
     for (let i = 0; i < steps.length; i++) {
-      const s = steps[i];
-      if (s.type === 'insert' && !s.prompt.trim()) {
-        return `Step ${i + 1} (Insert) requires a prompt.`;
-      }
-      if (s.type === 'camera' && !s.camera_direction) {
-        return `Step ${i + 1} (Camera) requires a direction.`;
+      const missing = FlowConfig.missingRequiredLabel(steps[i].type, steps[i]);
+      if (missing) {
+        const typeLabel = FlowConfig.TYPE_LABELS[steps[i].type] || steps[i].type;
+        return `Step ${i + 1} (${typeLabel}) requires ${missing.toLowerCase()}.`;
       }
     }
     return null;
