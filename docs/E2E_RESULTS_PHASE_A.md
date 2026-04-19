@@ -5,6 +5,63 @@
 
 ---
 
+## Tier 1.5 — 2026-04-19 — Tests 5/6/7 infra — ✅ **§5.2 INFRA INVARIANTS COVERED**
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-19 |
+| Tier | 1.5 — DB + claim-algorithm integration (no Chrome, no Flow submit) |
+| Scope | WORKPLAN §5.2 Tests **5** (INV-1 profile pinning), **6** (INV-4 project lock), **7** (stale recovery) |
+| Branch | `claude/epic-euclid-39ebf9` off `master` @ `159a6a0` |
+| Test file | `tests/test_e2e_invariants.py` (NEW — 5 cases, 270 lines) |
+| Session report | [`docs/session-reports/2026-04-19_tests_5-6-7_infra.md`](session-reports/2026-04-19_tests_5-6-7_infra.md) |
+
+### Why Tier 1.5 and not Tier 2
+
+These three WORKPLAN §5.2 tests assert **scheduler / persistence** behaviour, not Flow-UI interaction. The contracts live entirely inside `server/db/job_store.py::claim_next_job` and `::recover_stale_jobs`. A real Flow submit would only add latency + LP consumption without proving anything extra — the predicates are SQL, and `tests/conftest.py` already provides a temp-SQLite `db` fixture (B9). So: integration tests against the real DB layer, with `FlowClient` and `worker/dispatcher.py` deliberately not invoked.
+
+### Per-test verdict
+
+| # | Test | Invariant | Verdict | Evidence |
+|---|---|---|---|---|
+| 5 | `test_5_profile_pinning_l2_claim_respects_profile_list` | INV-1 (account binding) | ✅ PASS | Worker B with `['p2']` returns `None` on `claim_next_job`; Worker A with `['p1']` claims the L2 child whose parent ran on `p1` — `parent.profile IN (...)` predicate filters correctly. |
+| 5b | `test_5_profile_pinning_l1_with_null_profile_claimable_by_any` | INV-1 counter-case | ✅ PASS | Blast-radius guard: fresh L1 with `profile IS NULL` is claimable by any worker — otherwise first-run t2v would deadlock forever. |
+| 6 | `test_6_project_lock_serialises_two_l2_on_same_project_url` | INV-4 (serial per project_url) | ✅ PASS | Two L2 sharing `project_url`: first claim flips row to `'claimed'`, second claim returns `None` via NOT EXISTS subquery; after `update_job(..., status=COMPLETED)` on first, second claim succeeds on the next call. |
+| 7 | `test_7_stale_recovery_resets_claimed_and_reopens_for_claim` | Stale recovery | ✅ PASS | Backdated `updated_at` to `now - 40m` via direct SQL (prod path never writes past timestamps; test-only plumbing). `recover_stale_jobs(stale_minutes=30)` returned exactly 1 row, reset to `pending`, `worker_id=NULL`, `claimed_at=NULL`, error breadcrumb set; re-claim by a fresh worker succeeded. |
+| 7b | `test_7_stale_recovery_skips_fresh_claims` | Recovery safety | ✅ PASS | Blast-radius guard: a fresh claim survives the recovery call — `recover_stale_jobs` is a filtered reset, not a nuke. |
+
+### Suite totals
+
+| Metric | Before | After |
+|---|---|---|
+| Tests collected | 95 | **100** |
+| Pass | 95 | **100** |
+| Fail / skip / error | 0 | 0 |
+| DeprecationWarning (under `-W error::DeprecationWarning`) | 0 | 0 |
+| Runtime | ~7.8s | ~8.2s |
+
+Full suite command: `python -W error::DeprecationWarning -m pytest tests/` → `100 passed in 8.16s`.
+
+### Blast radius (what did NOT change)
+
+- Zero `.py` diff in `flow/`, `server/`, `worker/` — `git status --short` shows only the new test file + two `.md` updates (this log + the session report).
+- No SPEC §D.4 strike-through — this session adds coverage, does not close a B-numbered bug.
+- No change to `pytest.ini`, `tests/conftest.py`, or any fixture.
+
+### Remaining §5.2 coverage
+
+| §5.2 Test | Status | Covered by |
+|---|---|---|
+| Test 1 — single t2v (B1 aspect) | ✅ | Tier-2 Run 10 (J1) + `tests/test_aspect_ratio.py` |
+| Test 2 — 4-step chain | partial | Tier-2 Run 10 is 3-step (t2v → camera → insert); 4-step `+ extend` not yet exercised in live chain but individual extend covered by `tests/test_extend.py` |
+| Test 3 — bbox edge cases (B2) | ✅ | Tier-2 Run 10 (J3) + `tests/test_bbox.py` |
+| Test 4 — 3 camera presets (B3) | partial | Tier-2 Run 10 covered `"Dolly in"` only; `"Orbit left"` / `"Low"` need live exercise |
+| **Test 5 — profile pinning** | ✅ **this session** | `tests/test_e2e_invariants.py::test_5_*` |
+| **Test 6 — project lock** | ✅ **this session** | `tests/test_e2e_invariants.py::test_6_*` |
+| **Test 7 — stale recovery** | ✅ **this session** | `tests/test_e2e_invariants.py::test_7_*` |
+
+---
+
 ## Tier 2 — 2026-04-19 — Run 10 — ✅ **FULL 3-JOB CHAIN PASS** (B1 + B11 + B12 cross-locale verified; incidentally landed B27 engine simplification)
 
 | Field | Value |
