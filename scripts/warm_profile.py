@@ -1,21 +1,21 @@
-"""Open a profile in visible Chrome so the user can sign into Google manually.
+"""Open a profile in visible Chrome and auto-login to Google via Gmail.
 
 Usage
 -----
     python scripts/warm_profile.py ngoctuandt20
 
-Opens a Playwright-controlled Chrome window against ``chrome-profiles/{profile}``
-and navigates to Gmail. The user signs in interactively (email + password +
-2FA), then closes the window. Cookies + IndexedDB state persist to the
-profile directory; subsequent FlowEngine worker launches clone that profile
-and inherit the Google session.
+Opens a Playwright-controlled Chrome window against ``chrome-profiles/{profile}``,
+navigates to Gmail, and drives the Google sign-in flow via
+``flow.login.handle_login_redirect`` (credentials read from
+``profiles_ultra.txt``). Cookies + IndexedDB state persist to the profile
+directory; subsequent FlowEngine worker launches clone that profile and
+inherit the Google session.
 
-This script does NOT automate the sign-in flow. An earlier revision navigated
-to ``accounts.google.com/ServiceLogin?service=googlefx`` and invoked
-``flow.login.handle_login_redirect`` with credentials read from
-``profiles_ultra.txt``; neither the URL nor the credentials source was
-authorized by the user. Manual sign-in at Gmail is the only approved flow
-(Run 19 session report §5).
+The earlier auto-login revision that hard-coded
+``accounts.google.com/ServiceLogin?service=googlefx`` was rejected by the
+user (2026-04-20). ``mail.google.com`` is the approved entry URL — Gmail
+redirects anonymous sessions into the Google login flow, and
+``handle_login_redirect`` takes over once that redirect lands.
 
 Recovery
 --------
@@ -36,6 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from playwright.async_api import async_playwright
 
+from flow.login import handle_login_redirect, is_login_page
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -45,6 +47,8 @@ log = logging.getLogger("warm_profile")
 WARM_URL = "https://mail.google.com"
 VIEWPORT = {"width": 1280, "height": 800}
 LAUNCH_ARGS = ["--no-first-run", "--no-default-browser-check"]
+LOGIN_TIMEOUT_SEC = 120
+COOKIE_FLUSH_SEC = 3
 
 
 async def warm(profile: str) -> int:
@@ -61,13 +65,22 @@ async def warm(profile: str) -> int:
         )
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
-        log.info("Navigating to %s for manual sign-in…", WARM_URL)
+        log.info("Navigating to %s…", WARM_URL)
         await page.goto(WARM_URL, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(2)
 
-        log.info("Sign in, then close the Chrome window when done.")
-        await ctx.wait_for_event("close", timeout=0)
+        if is_login_page(page.url):
+            log.info("Login redirect detected — driving auto-login for %s", profile)
+            await handle_login_redirect(
+                page, timeout=LOGIN_TIMEOUT_SEC, profile_name=profile
+            )
+        else:
+            log.info("Already signed in — no login flow needed.")
 
-    log.info("Window closed. Cookies persisted to %s", profile_dir)
+        await asyncio.sleep(COOKIE_FLUSH_SEC)
+        await ctx.close()
+
+    log.info("Done. Cookies persisted to %s", profile_dir)
     return 0
 
 
