@@ -54,7 +54,7 @@ Project URL: `https://labs.google/fx/tools/flow/project/fb9728e5-a5f4-4bb5-8579-
 ```bash
 cd /d/AI/FlowEngine
 # 1. kill ghost Chromes first (tasklist usually shows 5-15)
-taskkill //F //IM chrome.exe
+powershell -NoProfile -File scripts/kill_engine_chrome.ps1
 
 # 2. try warm script — currently FAILS
 python scripts/warm_profile.py ngoctuandt20
@@ -83,7 +83,7 @@ Playwright call-log excerpt:
 > corruption from a Playwright kill mid-startup, not cache).
 
 ```bash
-taskkill //F //IM chrome.exe
+powershell -NoProfile -File scripts/kill_engine_chrome.ps1
 cp -r chrome-profiles/ngoctuandt20 chrome-profiles/ngoctuandt20.bak-$(date +%s)   # optional backup
 rm -rf chrome-profiles/ngoctuandt20
 python scripts/warm_profile.py ngoctuandt20
