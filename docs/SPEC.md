@@ -1698,6 +1698,24 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Guard: `tests/test_base.py` updated — `test_navigate_warns_on_media_id_mismatch` rewritten as `test_navigate_activates_target_tile_on_media_mismatch` (asserts `page.evaluate` is called with the target media_id). `tests/test_base.py` +3 new B32 cases: `test_activate_clip_tile_dispatches_mouse_events` (full 5-event sequence contract), `test_activate_clip_tile_returns_false_when_tile_absent` (wait_for timeout → no JS dispatch), `test_activate_clip_tile_returns_false_for_empty_media_id` (empty-string guard). `tests/test_claim_algorithm.py::test_b30_extend_parent_inherits_grandparic_media` + `test_b30_extend_chain_walks_up` updated: `edit_url` assertion now targets direct parent (B32 split), `media_id` still walks up (B30 unchanged).
 - Full-suite verification: **110 pass** (pre-B32 baseline 107 + 3 new; existing tests updated for the split). Zero DeprecationWarning under `-W error::DeprecationWarning`.
 
+### ~~B34 — 1080p download never succeeds live; `_upsampled` poll window (30s) too short for Flow's upscale latency (P1)~~ ✅ FIXED (2026-04-19)
+- Symptom: every live Tier 2 run (Run 10 + Run 12 + earlier Tests 2/3/4) downloaded 720p. `downloads/` folder had ZERO `_1080p_` files across all runs despite `flow/download.py::_download_via_api` trying 1080p first.
+- Root cause: `_api_download_with_retry(max_retries=3)` + `UPSCALE_POLL_INTERVAL=10s` = 30s total poll window. Flow's real upscale latency for 9:16 portrait 8s clips is **1-3 minutes**. API `media.getMediaUrlRedirect?name={media_id}_upsampled` returned 202/404 throughout the 30s window → code exhausted retries → fell through to the 720p URL. Fallback was silently-correct (job completed, output file stored) but user never received 1080p despite the code appearing to try for it.
+- Evidence: `downloads/*.mp4` filename audit — 20+ files, all `_720p_`, across three Tier 2 runs spanning 2026-04-18 through 2026-04-19. No `_1080p_` files.
+- File: `flow/download.py:14-16` (module-level constants).
+- **Fix (P1, quick-win):**
+  - `UPSCALE_POLL_INTERVAL` default 10 → **15 s** (env `FLOW_UPSCALE_POLL_INTERVAL_SEC` preserved).
+  - NEW `UPSCALE_MAX_RETRIES` (env `FLOW_UPSCALE_MAX_RETRIES`) default **12** (was hardcoded 3 inside `_api_download_with_retry`).
+  - Total poll window 15 × 12 = **180 s** (3 min) — matches observed Flow upscale envelope.
+  - `_api_download_with_retry(max_retries=None)` signature defaults to `UPSCALE_MAX_RETRIES` when None passed; callers that want the legacy 3-retry behavior can pass explicitly.
+  - Env overrides preserved so ops can tune for faster/slower Flow regions without code change.
+- Guard: `tests/test_download.py` (NEW, 2 cases):
+  - `test_upscale_poll_defaults_meet_minimum` — asserts default `POLL_INTERVAL × MAX_RETRIES ≥ 120s`. Prevents silent regression to pre-B34 30s window.
+  - `test_upscale_env_overrides_read_at_import` — asserts both env vars flow into module constants on import.
+- **Why P1 not P0:** 720p fallback is still functional — jobs complete + files download. But user-facing quality expectation is 1080p (code claims to try, docs claim 1080p is primary). B34 aligns reality with the claim.
+- Follow-up (deferred): Flow may expose an upscale-status API (vs. blind polling on `_upsampled` URL). If so, a status-check would drop wasted retries when upscale genuinely hasn't started. Not now — the 180s window is empirically sufficient on the regions tested.
+- Full-suite verification: **112 pass** (was 110 + 2 new B34 tests). Zero DeprecationWarning.
+
 ### ~~B33 — Camera-move `media_id` behavior is context-dependent, not always "mints NEW" (P2, docs-only)~~ ✅ FIXED (2026-04-19)
 - Root cause: INV-5 revision `3d7b884` (2026-04-19) asserted camera-move "mints NEW uuid" based on Tier 2 Run 10 evidence (J1 t2v → J2 camera at L2 direct off L1). Tier 2 Run 12 (2026-04-19, post-B32) contradicted this with a different chain position: J4 remove → J5 camera at L5 preserved `7d53d6fc` (did NOT mint new).
 - **Pattern (empirical):**

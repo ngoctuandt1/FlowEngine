@@ -12,7 +12,14 @@ logger = logging.getLogger(__name__)
 
 DOWNLOAD_DIR = os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")
 UPSCALE_MAX_WAIT = int(os.environ.get("FLOW_UPSCALE_MAX_WAIT_SEC", "180"))
-UPSCALE_POLL_INTERVAL = int(os.environ.get("FLOW_UPSCALE_POLL_INTERVAL_SEC", "10"))
+# B34 (2026-04-19): bumped from 10s → 15s + retries 3 → 12 (total
+# ~180s) to cover Flow's real upscale latency. Pre-B34 every live Tier
+# 2 run (Run 10 + Run 12) fell through to 720p because `_upsampled`
+# returned 202/404 at 30s cumulative poll (3 × 10s) — too short.
+# Evidence: `downloads/` folder had zero `_1080p_` files across all
+# runs until this bump. Env overrides preserved for ops tuning.
+UPSCALE_POLL_INTERVAL = int(os.environ.get("FLOW_UPSCALE_POLL_INTERVAL_SEC", "15"))
+UPSCALE_MAX_RETRIES = int(os.environ.get("FLOW_UPSCALE_MAX_RETRIES", "12"))
 MIN_FILE_SIZE = 100_000  # 100KB minimum for valid video
 
 
@@ -111,8 +118,15 @@ async def _api_download_with_retry(
     prefix: str,
     quality: str,
     output_dir: Path,
-    max_retries: int = 3,
+    max_retries: int | None = None,
 ) -> str | None:
+    # B34: default retries = UPSCALE_MAX_RETRIES (env-configurable 12) instead
+    # of the pre-B34 hardcoded 3. At UPSCALE_POLL_INTERVAL=15s, total wait is
+    # ~180s — matches observed Flow upscale latency envelope on 9:16/8s clips.
+    # Caller may override for 720p path (retries matter less there; no polling
+    # for upsample-ready, just network transient recovery).
+    if max_retries is None:
+        max_retries = UPSCALE_MAX_RETRIES
     """Download from API URL with upscale polling."""
     for attempt in range(max_retries):
         try:
