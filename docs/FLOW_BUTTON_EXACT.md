@@ -242,6 +242,39 @@ missed. Re-probe the selector.
 * **Expect:** new child clip appears in the video strip. URL stays
   `/edit/{same_slug}`. `media_id` is STABLE across extend.
 
+#### 3.1a Extend-output `/edit/` URL — sidebar present-but-disabled
+
+Live DOM probe on `ngoctuandt20` 2026-04-19 (session report
+`docs/session-reports/2026-04-19_B28_B29_probe.md`) confirmed that after
+`extend-video` mints a NEW `media_id`, direct `page.goto(/edit/{new_mid})`
+lands cleanly on the editor and the right rail contains all four mode
+buttons **with exact titles** — but only `Extend` is enabled; `Insert`,
+`Remove`, `Camera` are rendered as `<button disabled>`.
+
+| title      | icon                              | enabled on extend-output? |
+|------------|------------------------------------|----------------------------|
+| `Extend`   | `keyboard_double_arrow_right`      | ✅ yes                     |
+| `Insert`   | `add_box`                          | ❌ **disabled**            |
+| `Remove`   | `ink_eraser`                       | ❌ **disabled**            |
+| `Camera`   | `videocam`                         | ❌ **disabled**            |
+
+This is the machine-observable form of §5.1's "extend-child clip lockout"
+gotcha. The engine-side consequence: `click_action_button` (which only
+checks `is_visible`) tries to `.click()` the disabled button and times
+out, then the caller raises the misleading `"Failed to find X button"`
+error. Concrete detection selector:
+
+```
+button[title='Camera'][disabled]    # mode button present but locked out
+await page.locator("button[title='Camera']").is_enabled()   # → False
+```
+
+Until a `parent-clip select` workaround is implemented (candidate **B28**),
+chains where `extend-video` sits before `insert-object`/`remove-object`/
+`camera-move` are blocked regardless of what the error message says.
+
+---
+
 ### 3.2 Camera — **this is what B26 is for**
 
 * **Click:** `button[title='Camera']` — same label in both VI and EN —
@@ -342,6 +375,39 @@ child clip** until the user scrolls back to the original parent clip.
 Reproduced on both VI and EN sessions. Not a FlowEngine bug — Flow-side
 UX. FlowEngine works around this by navigating back to the parent clip's
 scroll position before attempting the next L2 on the base media_id.
+
+### 5.1a Stale L1 `/edit/{old_media_id}` after sibling extend
+
+Live DOM probe 2026-04-19 (`docs/session-reports/2026-04-19_B28_B29_probe.md`)
+confirmed candidate **B29**. Once an `extend-video` job runs on an L1 t2v
+parent and mints a NEW `media_id`, `page.goto(<L1's /edit/{old_mid}>)`
+is silently stripped by the Flow SPA — the page lands on the project
+library grid (`/project/{id}` with no `/edit/…` suffix). Telltale DOM
+signature:
+
+- `/edit/` is NOT in `page.url` after the goto settles.
+- Zero buttons with `title='Camera' | 'Insert' | 'Remove' | 'Extend'`.
+- A `videocam`-icon button IS still in DOM — but it's the nav-rail
+  "View videos" library filter at roughly `(x=20, y=124)`, NOT the
+  sidebar Camera mode button. Engine's icon-fallback clicks it and
+  logs a false-positive `Clicked mode button via icon='videocam'`.
+
+Fast detection inside `navigate_to_edit` (currently lets this through
+with `WARNING Video element not found after 15s — proceeding anyway`):
+
+```python
+await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+await asyncio.sleep(3)
+if "/edit/" not in page.url and target_url != page.url:
+    raise RuntimeError("SPA stripped /edit/ — stale media_id post-sibling-extend")
+```
+
+Until B29 is fixed, any L2+ job submitted with `parent_job_id=<L1>` after
+a sibling extend has run is unrecoverable — navigate to the extend
+output's `/edit/` instead (which is what B22 claim-time inheritance
+already does for chained `parent_job_id=<extend>` jobs).
+
+---
 
 ### 5.2 Two `arrow_forward` buttons on /edit/
 
