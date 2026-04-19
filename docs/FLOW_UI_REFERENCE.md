@@ -172,7 +172,7 @@ URL: `/fx/{locale}/tools/flow/project/{project_uuid}/edit/{media_uuid}`
 |---|---|---|---|
 | Back | ← | ← | `generic "Back"` / `generic "arrow_back"` |
 | Info | ⓘ | ⓘ | `generic "Get more info about this media"` / `generic "info"` |
-| Download | "📥 Tải xuống" | "📥 Download" | `generic "Download"` / `generic "download"` |
+| Download | (icon-only) | (icon-only) | `button` with child `<i>download</i>` — no `aria-label`, no `title` (see §Download UI) |
 | Show history | "Hiện nhật ký" | "Show history" | `generic "Show history"` / `generic "history"` |
 | Hide history | "Ẩn nhật ký" | "Hide history" | `generic "Hide history"` |
 | Done | "Xong" | "Done" | `generic "Done"` / `generic "check"` |
@@ -216,6 +216,95 @@ URL: `/fx/{locale}/tools/flow/project/{project_uuid}/edit/{media_uuid}`
 | **Insert** | insert-object | ❌ No | ⚠️ Optional | ✅ Yes (click-drag) |
 | **Remove** | remove-object | ❌ No | ❌ No (bbox only) | ✅ Yes (click-drag) |
 | **Camera** | camera-control | ❌ No | ❌ No (preset only) | ❌ No |
+
+## Download UI
+
+Two download entry points exist; both produce the same 4 quality options.
+Source: live DOM probe 2026-04-19 on `project/7eeb4acf-.../edit/0c22a9f0-...`
+(ngoctuandt20, EN locale). Full probe: `docs/session-reports/2026-04-19_download-probe.md`.
+
+### Entry 1 — `/edit/` top-right icon button
+
+- Icon-only `<button>` with child `<i>download</i>` (Material Icons ligature).
+- **No `aria-label`, no `title`, no visible "Download"/"Tải xuống" text** on the DOM
+  element (the previous doc claim was stale).
+- Position: top-right of editor dialog, right of `history`/`info` icons.
+
+### Entry 2 — Project-view tile overflow (⋮)
+
+Hovering any media tile in the project grid reveals 3 icons top-right:
+
+| Icon ligature | a11y name | Purpose |
+|---|---|---|
+| `favorite` | "Favorite" | toggle favorite |
+| `redo` | — | reuse prompt |
+| `more_vert` | "More" | open overflow menu (⋮) |
+
+Clicking `more_vert` opens a Radix popover `[role='menu'][data-state='open']`
+with 9 items. Item 3 is `<div role='menuitem'>` (not `<button>`) with icon
+`download` and `aria-haspopup='menu'` — hovering it expands a submenu inline
+(total 13 items) containing the 4 quality options.
+
+### Quality options (identical on both entry points)
+
+| # | textContent | `aria-disabled` | Notes |
+|---|---|---|---|
+| 1 | `270pAnimated GIF` | (unset) | low-res GIF export |
+| 2 | `720pOriginal Size` | (unset) | matches raw video resolution |
+| 3 | `1080pUpscaled` | `"false"` | **engine target**; flips to `"true"` while backend upscale pending |
+| 4 | `4KUpscaled · 50 credits` | `"false"` | ⚠️ **50 LP credits** — engine MUST NEVER auto-click |
+
+> textContent has no separator between resolution label and sub-label (adjacent
+> flex children). Safest unique match for 1080p:
+> `button[role='menuitem']:has-text('1080p')` — the literal string `1080p`
+> appears in only that item (not in 4K/720p/270p).
+
+### Locale-independent selectors (exact-text, per R-CODE-3)
+
+```
+# Entry 1 — /edit/ Download button
+btn = page.locator("button").filter(
+    has=page.locator("i").get_by_text("download", exact=True)
+).first
+
+# Entry 2 — tile ⋮ overflow button
+more = tile.locator("button").filter(
+    has=page.locator("i").get_by_text("more_vert", exact=True)
+).first
+
+# Submenu trigger (tile path) — DIV, not BUTTON
+download_mi = page.locator('[role="menu"][data-state="open"] [role="menuitem"]').filter(
+    has=page.locator("i").get_by_text("download", exact=True)
+)
+
+# 1080p click — anchor on unique '1080p' substring
+thousand_eighty = page.locator('[role="menu"][data-state="open"] [role="menuitem"]').filter(
+    has_text=re.compile(r'^1080pUpscaled$')  # anchored — excludes '4KUpscaled...'
+)
+```
+
+### API endpoint — modern UI uses a different path
+
+| Observation | Evidence |
+|---|---|
+| Engine's assumed endpoint `labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={id}_upsampled` | Returns **HTTP 404** (14 B `text/html`) — endpoint is dead for upsampled variant |
+| Non-`_upsampled` variant `?name={true_id}` | Works — this is exactly what `<video>.src` uses on project tiles (720p stream) |
+| Modern UI 1080p click | POST `aisandbox-pa.googleapis.com/v1/flow/uploadImage` → status 200, ~1.9s duration |
+| 1080p post-click toast | "Frame saved as image" (misleading name — the endpoint may not actually produce a video file) |
+
+### UUID dualism ⚠️
+
+Three different identifiers exist for the same media asset:
+
+| Source | UUID example | Role |
+|---|---|---|
+| `/edit/{slug}` URL path | `0c22a9f0-abe4-...` | **Routing slug** (SPA router) |
+| `[data-tile-id="fe_id_{slug}"]` | `fe_id_0c22a9f0-...` | Matches `/edit/` slug (strip `fe_id_` prefix) |
+| `<video>.src?name={id}` | `f3471304-f9c1-...` | **True API media_id** — DIFFERENT UUID |
+
+Engine MUST extract the `?name=` param value from the tile's `<video>.src` URL —
+the `/edit/` slug and `data-tile-id` are routing-layer identifiers and will
+404 if passed as `?name=` to the API.
 
 ## Camera Mode (2 tabs)
 

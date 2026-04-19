@@ -369,6 +369,70 @@ simultaneously. URL stayed on the extend-output throughout.
 
 ---
 
+### 3.5 Download — **this is what the download-probe 2026-04-19 is for**
+
+Two entry points. Both land on the same 4-quality popover. Pick by context:
+you're on `/edit/{slug}` already → use §3.5a; you're on the project grid → use §3.5b.
+Full DOM evidence: `docs/session-reports/2026-04-19_download-probe.md`.
+
+#### 3.5a `/edit/` top-right icon button
+
+* **Click:** `button:has(i:text-is('download'))` — **icon-only**. No `aria-label`,
+  no `title`, no visible text. (The old `FLOW_UI_REFERENCE.md` table entry
+  for "📥 Download/Tải xuống" was stale — corrected 2026-04-19.)
+* **Popover opens** with 4 items. Pick 1080p:
+  ```python
+  page.locator("[role='menu'][data-state='open'] [role='menuitem']").filter(
+      has_text=re.compile(r'^1080pUpscaled$')   # anchored — excludes 4K/720p/270p
+  ).click()
+  ```
+* **Never click `4KUpscaled · 50 credits`** — costs 50 LP. Use the anchored
+  regex above, not `has_text="1080p"` alone.
+
+#### 3.5b Project-grid tile ⋮ overflow
+
+* **Hover the tile** to reveal 3 icon buttons top-right:
+  `favorite`, `redo`, `more_vert`. Without hover they're not in the DOM.
+* **Click `more_vert`** (a11y name `"More"`):
+  ```python
+  tile.locator("button").filter(
+      has=page.locator("i").get_by_text("more_vert", exact=True)
+  ).click()
+  ```
+* **9-item menu opens.** Item 3 is `<div role='menuitem'>` (NOT `<button>`)
+  with icon `download` and `aria-haspopup='menu'`. Hover to expand submenu
+  inline (menu grows from 9 → 13 items, same container):
+  ```python
+  menu = page.locator("[role='menu'][data-state='open']").first
+  menu.locator("[role='menuitem']").filter(
+      has=page.locator("i").get_by_text("download", exact=True)
+  ).hover()
+  ```
+* **Click 1080p** with the same anchored regex as §3.5a.
+
+#### 3.5c Two gotchas the engine currently trips on
+
+1. **Stale API endpoint** — `media.getMediaUrlRedirect?name={id}_upsampled`
+   returns HTTP 404 (14 B `text/html`). Modern UI POSTs to
+   `aisandbox-pa.googleapis.com/v1/flow/uploadImage` instead. B34
+   (`d454155`) bumped the poll window 30s → 180s but the endpoint itself
+   is dead for the upsampled variant, so polling buys nothing.
+2. **UUID dualism** — `/edit/{slug}` (e.g. `0c22a9f0-...`) and
+   `[data-tile-id="fe_id_{slug}"]` match the **routing slug**, NOT the
+   true API `name`. The true `name` param (e.g. `f3471304-...`) lives in
+   the `?name=` query string of the tile's `<video>.src` URL. Engine must
+   extract from there, not from the URL path. Passing the routing slug
+   as `?name=` to the API → 404 on both 720p and 1080p paths.
+
+#### 3.5d Dismissing the popover
+
+* **Project grid context:** `Escape` safely closes the menu (no editor
+  dialog to collapse).
+* **`/edit/` context:** `Escape` closes the WHOLE editor dialog (same
+  gotcha as §5.5). Dismiss by clicking outside the popover instead.
+
+---
+
 ## 4. Chain invariants (NON-negotiable)
 
 These aren't buttons — they're the rules FlowEngine enforces at the worker
