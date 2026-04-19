@@ -154,6 +154,8 @@ async def handle_login_redirect(
 
     deadline = asyncio.get_event_loop().time() + timeout
     step = "detect"
+    stuck_key = None
+    stuck_count = 0
 
     while asyncio.get_event_loop().time() < deadline:
         current = page.url
@@ -178,6 +180,26 @@ async def handle_login_redirect(
         elif "myaccount.google.com" in current.lower():
             # After login, Google may land on myaccount — navigate to Flow
             step = "navigate_flow"
+
+        # Stuck detection: same (step, url) 3x in a row → reload to dismiss
+        # transient Google overlays like <div class="dKGsO" jsname="OQ2Y6">
+        # that intercept pointer events (feedback_login_stuck_reload.md).
+        key = (step, current[:120])
+        if key == stuck_key:
+            stuck_count += 1
+        else:
+            stuck_key = key
+            stuck_count = 1
+        if stuck_count >= 3 and step in ("email", "password", "totp", "challenge_select"):
+            logger.warning("Login stuck on %s for %d iterations — reloading URL", step, stuck_count)
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.warning("Reload failed: %s", e)
+            stuck_count = 0
+            stuck_key = None
+            continue
 
         logger.info("Login step: %s (url=%s)", step, current[:80])
 

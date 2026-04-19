@@ -38,9 +38,11 @@ async def download_video(
     """Download generated video(s).
 
     Fallback chain:
-    1. API-driven: media.getMediaUrlRedirect?name={id}_upsampled (1080p)
+    1. UI-driven 1080p upscale (flow/upscale.py) — primary when quality=="1080p"
+       since the `_upsampled` API endpoint returns 404 permanently (see
+       session-reports/2026-04-19_download-probe.md §5.4).
     2. API-driven: ?name={id} (720p)
-    3. UI-driven: right-click card -> Download -> 1080p
+    3. UI-driven: right-click card -> Download -> 1080p (legacy fallback)
     4. Blob URL: fetch video blob in browser
 
     Returns list of downloaded file paths.
@@ -48,6 +50,38 @@ async def download_video(
     page = client.page
     output_dir = Path(DOWNLOAD_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # B38: UI-driven 1080p upscale is the primary path for 1080p. The API
+    # `_upsampled` endpoint has been 404 for all probes (see probe report
+    # §5.4). Only the UI-triggered POST uploadImage + toast-poll flow works.
+    # Fall through to 720p API only if the UI path fails.
+    if quality == "1080p":
+        # Determine target media_id for /edit/ deep-link (upscale module
+        # navigates if page is still on project root after L1 generate).
+        first_mid = None
+        if media_ids:
+            first_mid = media_ids[0]
+        else:
+            evts = getattr(client, "_media_id_events", [])
+            for evt in evts:
+                if evt.get("mid"):
+                    first_mid = evt["mid"]
+                    break
+
+        try:
+            from flow.upscale import upscale_and_download_1080p
+
+            ui_path = await upscale_and_download_1080p(
+                client,
+                prefix=prefix,
+                output_dir=DOWNLOAD_DIR,
+                media_id=first_mid,
+            )
+            if ui_path:
+                return [ui_path]
+            logger.info("UI 1080p path returned None; falling back to 720p API")
+        except Exception as e:
+            logger.warning("UI 1080p upscale raised: %s; falling back to API", e)
 
     # Collect media IDs if not provided
     if not media_ids:
@@ -77,10 +111,13 @@ async def download_video(
         result = await _download_via_ui(client, prefix, output_dir)
         return [result] if result else []
 
+    # B38: When the caller asked for 1080p and we're past the UI path above,
+    # skip the stale `_upsampled` API poll — go straight to 720p. Saves ~6min.
+    api_quality = "720p" if quality == "1080p" else quality
+
     downloaded = []
     for mid in media_ids:
-        # Try API download (1080p first, then 720p)
-        path = await _download_via_api(client, mid, prefix, quality, output_dir)
+        path = await _download_via_api(client, mid, prefix, api_quality, output_dir)
         if path:
             downloaded.append(path)
             continue

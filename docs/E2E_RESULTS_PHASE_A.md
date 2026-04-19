@@ -5,6 +5,72 @@
 
 ---
 
+## Tier 2 — 2026-04-19 — Run 17 — ✅ **PASS (1/1 1080p)** — B38 UI-driven 1080p upscale verified live
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-19 19:15–20:36 local (UTC+7); ~1h20m across 6 sub-iterations (17a–17f) |
+| Tier | 2 — full engine-driven single-job via REST API |
+| Profile | `ngoctuandt20` |
+| Scope | Validate B38 cherry-pick (`flow/upscale.py` NEW + `flow/download.py` + `flow/login.py`) — replaces broken `_upsampled` API poll with UI-driven `/edit/` → icon Download → `1080pUpscaled` menu → `uploadImage` POST flow. Pre-B38 historical count of `t2v_1080p_*.mp4` across all runs: **0** |
+| Branch | `claude/blissful-almeida-59b7fc` (worktree off `master` @ `26ca413`) |
+| Final job ID | `581287d2-8eeb-4ae0-9d65-fedfe6ad096c` (Run 17f) |
+
+### Result
+
+| # | Job id (short) | prompt | AR | status | media_id | output |
+|---|---|---|---|---|---|---|
+| 17f | `581287d2` | a bamboo forest in autumn with soft wind through leaves | 16:9 | ✅ 20:34:14 | `7ca5e9c9-70ad-4832-9c2a-6d9f1dfcff6b` | `downloads\t2v_1080p_1776605652.mp4` (**38 434 315 B / 38.4 MB** — first live 1080p in project history) |
+
+**Verdict: ✅ PASS.** Live reproducible UI-driven upscale path. Upscale proper took 63s (20:33:08 busy toast → 20:34:12 done toast); total claim → complete 2m49s.
+
+### Iterations (6 sub-runs to reach pass)
+
+| # | Change | Result | Lesson |
+|---|---|---|---|
+| 17a | first live of async upscale port | login stuck on Google `<div class="dKGsO" jsname="OQ2Y6">` overlay (pointer intercept) | login.py needs stuck-escape — user feedback: *"load lại url là bypass"* |
+| 17b | login.py stuck-detect + `page.reload()` after 3× same-step fail | login recovered; upscale hit `Download button not found` | post-L1 page is project root, not /edit/ |
+| 17c | added `page.url` + button candidate-count logging | confirmed page.url=`/project/{pid}` → candidates: 0 | need /edit/ navigation |
+| 17d | `_ensure_edit_view` via `page.goto(/edit/{api_media_id})` | SPA bounced to `/project/{pid}` → 720p fallback | API media_id ≠ routing slug (UUID dualism confirmed) |
+| 17e | read `data-tile-id="fe_id_{X}"` → goto `/edit/{X}` | bounced again (post-click URL `edit/4ed94c32…` vs tile `fe_id_54ce98c9…` — different UUIDs) | `fe_id_` ≠ routing slug; `page.goto` never sets up SPA state |
+| **17f** | **`tile.click()`** → SPA router owns slug resolution | ✅ SPA landed on `/edit/{correct_slug}`; icon button found; 1080pUpscaled clicked; 63s upscale; 38.4 MB file saved | **UI-click is the only reliable /edit/ navigation** |
+
+### Success trace (Run 17f, `logs/worker.log.run17f`)
+
+```
+20:33:03 flow.upscale: [UPSCALE] Clicking tile for SPA nav to /edit/ view
+20:33:04 flow.upscale: [UPSCALE] SPA landed on /edit/: .../edit/4ed94c32-a4b1-4c19-898a-133d8e7d0573
+20:33:05 flow.upscale: [UPSCALE] Attempt 1/2
+20:33:05 flow.upscale: [UPSCALE] Current URL: .../edit/4ed94c32-a4b1-4c                 ← /edit/ stable
+20:33:05 flow.upscale: [UPSCALE] i-tag candidate buttons: 1                              ← button found
+20:33:05 flow.upscale: [UPSCALE] Clicked /edit/ download button (i-tag match)
+20:33:05 flow.upscale: [UPSCALE] Clicked 1080pUpscaled menu item
+20:33:08 flow.upscale: [UPSCALE] Upscaling in progress...
+20:34:12 flow.upscale: [UPSCALE] Complete (63s)
+20:34:13 flow.upscale: [UPSCALE] Saved: downloads\t2v_1080p_1776605652.mp4 (38434315 bytes)
+20:34:14 worker.dispatcher: text-to-video DONE | files=1 media_id=7ca5e9c9-70ad-4832-9c2a-6d9f1dfcff6b
+```
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✅ | single profile `ngoctuandt20`; no switch |
+| INV-3 Store Everything | ✅ | `project_url` + `media_id` + `output_files` + `completed_at` all persisted |
+| R-CODE-3 Locale-Independent | ✅ | `^1080pUpscaled$` + `^(close\|dismiss\|đóng)$` + VI/EN toast regexes |
+| R-CODE-7 Download Fallback Chain | ✅ | tier 1 (UI 1080p, B38) → tier 2 (API 720p) → tier 3 (UI right-click) → tier 4 (blob) |
+| Model Panel Dismiss (CLAUDE.md §7) | ✅ | `_close_toast` clicks Close button, never Escape |
+| B35 force x1 | ✅ | `Output count set to x1 (chip verified)` logged, `files=1` |
+| **B38 UI 1080p path** | ✅ | `Saved: t2v_1080p_…` + 38 MB file (vs pre-B38: 0 files ever) |
+
+### Residual / out of scope
+
+- B38 validated for L1 t2v only. Chain L2+ ops (extend / insert / remove / camera) not tested with 1080p. They likely land on `/edit/` already (no tile-click needed) but should be confirmed in Run 18.
+- Probe §5.5 claim "`fe_id_{slug}` == routing slug" is stale/wrong per Run 17e evidence. Flagged as P3 doc fix.
+- login.py stuck-detect only fires on (email / password / totp / challenge_select). Other stuck surfaces (recaptcha, device-verify) not covered — out of scope for B38.
+
+---
+
 ## Tier 2 — 2026-04-19 — Run 15 — ✅ **PASS (3/3)** — B37 harvest + B35 x1 verified across 3 diverse t2v jobs
 
 | Field | Value |
