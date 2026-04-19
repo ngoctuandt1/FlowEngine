@@ -8,7 +8,10 @@ from fastapi import APIRouter, HTTPException, Query
 from server.models.chain import Chain
 from server.models.job import Job, JobCreate, JobStatus, ChainCreate
 from server.db.chain_store import create_chain, get_chain_aggregate
-from server.db.job_store import create_job, get_job, list_jobs, get_children, delete_job, get_job_counts, recover_stale_jobs
+from server.db.job_store import (
+    create_job, get_job, list_jobs, get_children, delete_job,
+    delete_jobs_by_status, get_job_counts, recover_stale_jobs,
+)
 from server.routes.ws import broadcast_job_update
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -162,6 +165,23 @@ async def get_job_children(job_id: str):
     if parent is None:
         raise HTTPException(404, f"Job {job_id} not found")
     return await get_children(job_id)
+
+
+@router.delete("/jobs")
+async def bulk_delete_jobs(status: str = Query(..., description="Job status to bulk-delete")):
+    """Bulk-delete every job matching a single status.
+
+    Replaces the Settings page's N+1 `DELETE /api/jobs/{id}` loop with one
+    parameterised SQL DELETE. The caller is responsible for confirming the
+    destructive action — the endpoint itself performs no extra guard beyond
+    validating that *status* is one of the known JobStatus values.
+    """
+    valid = {s.value for s in JobStatus}
+    if status not in valid:
+        raise HTTPException(400, f"Unknown status '{status}'. Valid: {sorted(valid)}")
+
+    count = await delete_jobs_by_status(status)
+    return {"deleted": count, "status": status}
 
 
 @router.delete("/jobs/{job_id}")

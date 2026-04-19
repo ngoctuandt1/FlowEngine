@@ -116,23 +116,16 @@
         });
       }
 
-      // Clear completed button
+      // Clear completed button (P2b: single bulk DELETE, was N+1 loop)
       const clearBtn = document.getElementById('settings-clear-completed-btn');
       if (clearBtn) {
         clearBtn.addEventListener('click', async () => {
           if (!confirm('Delete ALL completed jobs? This cannot be undone.')) return;
           try {
             clearBtn.disabled = true;
-            const jobs = await API.jobs.list({ status: 'completed' });
-            const jobList = Array.isArray(jobs) ? jobs : jobs.jobs || [];
-            let deleted = 0;
-            for (const job of jobList) {
-              try {
-                await API.jobs.delete(job.id || job.job_id);
-                deleted++;
-              } catch (e) { /* skip */ }
-            }
-            App.toast(`Deleted ${deleted} completed job(s)`, 'success');
+            const result = await API.fetch('/api/jobs?status=completed', { method: 'DELETE' });
+            const count = (result && typeof result.deleted === 'number') ? result.deleted : 0;
+            App.toast(`Deleted ${count} completed job(s)`, 'success');
           } catch (err) {
             App.toast('Clear failed: ' + err.message, 'error');
           } finally {

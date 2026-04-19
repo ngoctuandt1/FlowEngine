@@ -1075,6 +1075,13 @@ GET /api/jobs/{id}/children
 
 DELETE /api/jobs/{id}
   Response: 204 | 404
+
+DELETE /api/jobs?status=<JobStatus>   (P2b — bulk-delete by status)
+  Query:   status ∈ {pending, claimed, running, completed, failed, cancelled}
+  Response: 200 {deleted: int, status: str} | 400 if unknown status
+  Semantics: single parameterised SQL DELETE WHERE status = ?; no per-row
+             WS broadcast (callers that need per-row events should use the
+             single-id endpoint).
 ```
 
 ### Worker Endpoints

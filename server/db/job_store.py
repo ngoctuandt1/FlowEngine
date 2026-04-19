@@ -484,3 +484,17 @@ async def delete_job(job_id: str) -> bool:
         cursor = await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
         await db.commit()
         return cursor.rowcount > 0
+
+
+async def delete_jobs_by_status(status: str) -> int:
+    """Bulk-delete every job in the given status. Returns the rowcount.
+
+    A single parameterised DELETE — cheaper than the per-id loop the Settings
+    page used to run, and atomic w.r.t. concurrent inserts.
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            "DELETE FROM jobs WHERE status = ?", (status,)
+        )
+        await db.commit()
+        return cursor.rowcount

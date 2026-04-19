@@ -11,7 +11,13 @@ and the caller did NOT explicitly supply `completed_at`, the DB layer stamps
 
 from datetime import UTC, datetime, timedelta
 
-from server.db.job_store import create_job, get_job, update_job
+from server.db.job_store import (
+    create_job,
+    delete_jobs_by_status,
+    get_job,
+    list_jobs,
+    update_job,
+)
 from server.models.job import Job, JobStatus, JobType, JobUpdate
 
 
@@ -85,3 +91,57 @@ async def test_completed_at_not_set_on_non_terminal_status(db):
     assert updated.completed_at is None, (
         "Non-terminal status transitions must not populate completed_at"
     )
+
+
+# ---------------------------------------------------------------------------
+# P2b — bulk-delete by status
+# ---------------------------------------------------------------------------
+
+async def _make_job_with_status(job_id: str, status: JobStatus) -> Job:
+    """Helper: insert a job and update it to the requested status."""
+    await create_job(_make_pending_job(job_id))
+    if status != JobStatus.PENDING:
+        await update_job(job_id, JobUpdate(status=status))
+    return (await get_job(job_id))
+
+
+async def test_bulk_delete_only_touches_target_status(db):
+    """P2b: DELETE WHERE status=target leaves jobs in other statuses intact."""
+    # Seed a mixed workload: 3 completed, 2 pending, 1 failed.
+    for i in range(3):
+        await _make_job_with_status(f"done-{i}", JobStatus.COMPLETED)
+    for i in range(2):
+        await _make_job_with_status(f"pend-{i}", JobStatus.PENDING)
+    await _make_job_with_status("fail-0", JobStatus.FAILED)
+
+    deleted = await delete_jobs_by_status("completed")
+
+    assert deleted == 3, "should report rowcount of removed jobs"
+    # Target status cleared.
+    assert await list_jobs(status=JobStatus.COMPLETED) == []
+    # Other statuses preserved.
+    remaining_pending = await list_jobs(status=JobStatus.PENDING)
+    assert len(remaining_pending) == 2
+    remaining_failed = await list_jobs(status=JobStatus.FAILED)
+    assert len(remaining_failed) == 1
+    # Individual jobs still retrievable.
+    for i in range(2):
+        assert await get_job(f"pend-{i}") is not None
+    assert await get_job("fail-0") is not None
+    # Deleted jobs gone.
+    for i in range(3):
+        assert await get_job(f"done-{i}") is None
+
+
+async def test_bulk_delete_empty_result_returns_zero(db):
+    """P2b: bulk-delete against an empty status bucket returns 0 and no error."""
+    # Only non-completed jobs in the DB.
+    await _make_job_with_status("p-1", JobStatus.PENDING)
+    await _make_job_with_status("r-1", JobStatus.RUNNING)
+
+    deleted = await delete_jobs_by_status("completed")
+
+    assert deleted == 0
+    # Other jobs still there.
+    assert await get_job("p-1") is not None
+    assert await get_job("r-1") is not None
