@@ -5,6 +5,70 @@
 
 ---
 
+## Tier 2 — 2026-04-19 — Tests 2/3/4 — ⚠️ **PARTIAL / BLOCKED** (Test 3 ✅ · Test 2 PARTIAL · Test 4 ❌ · 2 bug-candidates + 1 SPEC INV-5 contradiction surfaced)
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-19 11:52–12:05 local (UTC+7); ~13 min run |
+| Tier | 2 — full engine-driven chain via REST API |
+| Profile | `ngoctuandt20` (EN-locale) |
+| Scope | WORKPLAN §5.2 Tests **2** (5-op chain) · **3** (bbox out-of-range) · **4** (3 camera presets) |
+| Branch | `claude/sweet-hawking-9c8ebb` off `master` @ `2dbe544` |
+| Chain id | `4a0d03b5-e31b-449b-9fcc-99ac9d1dc583` |
+| Session report | [`docs/session-reports/2026-04-19_tests_2-3-4_ui.md`](session-reports/2026-04-19_tests_2-3-4_ui.md) |
+
+### Test 2 — 5-op chain (t2v → extend → insert → remove → camera Orbit left)
+
+| # | Job id (short) | type | status | media_id | output |
+|---|---|---|---|---|---|
+| J1 | `cea64458` | text-to-video | ✅ completed 11:56:02 | `6842325d-…` | `downloads\t2v_720p_1776574562.mp4` |
+| J2 | `a125c084` | extend-video | ✅ completed 11:58:25 | `1a6e3b77-…` (**NEW uuid** — SPEC INV-5 contradiction, see below) | `downloads\ext_720p_1776574672.mp4` + `1776574705.mp4` |
+| J3 | `de5487da` | insert-object | ❌ failed 11:58:45 | — | `RuntimeError: Failed to find Insert button` on `/edit/1a6e3b77-…` after `Video element loaded` |
+| J4 | `8ed20a7d` | remove-object | ⏸ never claimed | — | blocked by J3 failure |
+| J5 | `346d19e9` | camera-move (Orbit left) | ⏸ never claimed | — | blocked by J4 pending |
+
+**Verdict: PARTIAL — 2/5 completed.** J1 + J2 validate B1 (aspect-ratio real impl + chip `crop_9_16`) + B22 (L2 claim-time inherit). J3 failed via new-bug candidate (see below). J4/J5 never claimed because `claim_next_job` L2+ predicate requires `parent.status='completed'`.
+
+### Test 3 — bbox out-of-range {x:1.5, y:0, w:0.5, h:0.5}
+
+**Verdict: ✅ PASS.** `POST /api/jobs` with `parent_job_id=J1` returned **HTTP 422** — Pydantic `server/models/job.py::BBox` `Field(ge=0, le=1)` caught the out-of-range coord at the API boundary. Body: `{"detail":[{"type":"less_than_equal","loc":["body","bbox","x"],"msg":"Input should be less than or equal to 1","input":1.5}]}`. Request never reached the engine; the B2/B11 in-engine overflow-clamp path (`flow/operations/_base.py::draw_bbox_on_video`) remains a defense-in-depth layer, covered by `tests/test_bbox.py`. Key negative guard ("NOT `RuntimeError`") holds — the boundary rejection is deterministic.
+
+### Test 4 — 3 camera presets as J1 children + 1 diagnostic
+
+| Job id | direction | parent | status | failure |
+|---|---|---|---|---|
+| `4a0a2bfb` | Orbit left | J1 | ❌ failed 12:01:23 | `Failed to find camera preset: Orbit left` — preceded by `Video element not found after 15s — proceeding anyway` |
+| `df7fa268` | Low | J1 | ❌ failed 12:01:46 | same pattern |
+| `3a99988e` | Dolly out | J1 | ❌ failed 12:02:11 | same pattern |
+| `76d81c00` | Orbit left (diagnostic) | J2 (extend output) | ❌ failed 12:04:28 | `Failed to find **Camera button**` — different failure: `Video element loaded` succeeded on `/edit/1a6e3b77-…` but action sidebar had no Camera button |
+
+**Verdict: ❌ FAIL.** All 3 Test-4 presets failed on J1 parent's `/edit/{old_media_id}` URL (video element not found — likely stale after sibling extend created new media). Diagnostic on J2 parent failed one step earlier (Camera button absent from sidebar). The "Low"-must-not-match-"Lower" trip wire could not be exercised because the upstream `_click_preset` found 0 candidates.
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✅ | All 9 jobs (5 chain + 3 Test-4 + 1 diagnostic) stored `profile=ngoctuandt20`; worker claimed only profile-matching rows |
+| INV-2 Navigate by `edit_url` | ✅ | `navigate_to_edit` log `Navigating to edit URL: .../edit/{media_id}` on every L2+ dispatch |
+| INV-3 Store Everything | ✅ | J1 & J2 persisted `project_url` + `media_id` + `edit_url` + `output_files` + `completed_at`; B22 claim-time inherit visible on J2/J3 rows |
+| INV-4 Serial per Project | ✅ | `Project lock ACQUIRED` / `RELEASED` pairs around every dispatch; 4 Test-4 jobs ran serially on shared `project_url` |
+| INV-5 `media_id` per op | ❌ **SPEC contradiction** | J2 `extend-video` minted NEW `media_id` (`6842325d` → `1a6e3b77`) — SPEC §A.1 INV-5 matrix claims `extend-video` is "Preserved (Flow updates in-place)". Re-extracted by `finalize_operation` from post-submit `page.url`. See §7 of session report. |
+| R-CODE-3 Locale-Independent | ✅ | B18 `add_2` homepage · B19 `crop_9_16` chip · B26 `arrow_forward` submit · B12 computed-color preset verify — all icon/exact-text, no locale-string deps |
+
+### New findings (NOT fixed — supervisor action required)
+
+1. **[B28-candidate · P0] Action sidebar missing on extend-output `/edit/` URL.** Chain with `extend-video` in the middle cannot proceed to L3 (insert | remove | camera) because the extend-output's `/edit/{new_media_id}` renders without the Insert/Camera/Remove action buttons in the right sidebar. Reproduced by J3 (`Failed to find Insert button`) + diagnostic (`Failed to find Camera button`). Belongs in Tier-1 DOM-probe follow-up to capture the difference vs. t2v or camera-output edit mode.
+2. **[B29-candidate · P0] L1 `/edit/{media_id}` URL breaks after a sibling `extend-video` runs.** Navigation succeeds (URL matches) but `Video element not found after 15s`; action sidebar not rendered. All 3 Test-4 camera attempts on J1 parent showed this. Likely Flow-SPA treats extend output as the project's new "current" media; the prior `/edit/` URL becomes stale. Blocks any L2 op parallelism on an L1 after a completed extend.
+3. **[INV-5 contradiction]** `extend-video` empirically mints a NEW `media_id` (not preserved in-place). SPEC INV-5 matrix needs revision — the "Preserved" row should either split or reclassify `extend-video`. Tier-2 Run 10 (cited as evidence for INV-5) did not exercise `extend-video` — so the "preserved" claim for extend rests solely on `FLOW_MULTILEVEL_JOBS.md §10` (2026-04-16, different account), which appears to have aged out. Worth re-verifying before SPEC edit.
+
+### What this session did NOT change
+
+- Zero `.py` diff (test-execution + docs only).
+- No SPEC.md edit — task rule "append 'verified' nếu pass"; did not pass, so no append.
+- No B-numbered bug closed. New bug-candidate tickets **B28** and **B29** should be opened by supervisor if `extend-video` is a supported chain primitive.
+
+---
+
 ## Tier 1.5 — 2026-04-19 — Tests 5/6/7 infra — ✅ **§5.2 INFRA INVARIANTS COVERED**
 
 | Field | Value |
