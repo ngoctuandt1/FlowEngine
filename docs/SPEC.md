@@ -294,6 +294,12 @@ Fail on DeprecationWarning (pre-release sanity — used by B8):
 pytest tests/ -W error::DeprecationWarning
 ```
 
+**CI (post-Phase-A):** the two commands above run automatically on every PR and
+push to `master` via `.github/workflows/tests.yml` (ubuntu-latest, Python 3.13,
+10-minute timeout). A CI failure blocks merge. Coverage measurement is
+deferred — add once Phase B pushes `server/` + `worker/` past the 70 % target
+in R-TEST-4.
+
 Fixtures exposed by `tests/conftest.py`:
 - `temp_db_path` — fresh SQLite file under a tempdir; patches both env var and
   already-imported `DATABASE_PATH` bindings. Prevents tests hitting the dev DB.
