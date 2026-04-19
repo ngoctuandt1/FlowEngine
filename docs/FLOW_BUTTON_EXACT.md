@@ -87,12 +87,22 @@ The aspect chip is a Radix Tabs trigger. B1 (Phase A) fixed this.
 * **Expect after pick:** chip collapses, now shows `crop_9_16` + `arrow_drop_down`.
   The composer's preview frame swaps to 9:16.
 
-### 1.4 (Optional) Set output count — "x1"
+### 1.4 Force output count — "x1" (B35, 2026-04-19 — NOW MANDATORY)
 
-* **Look for:** a small counter button (same row as aspect chip).
-  Default is `x1`. Change only if you want multiple variants per submit.
-* **Left alone** for the B26 walkthroughs — every test used x1 so that
-  `media_id` extraction was unambiguous.
+* **Why mandatory.** Flow's per-account default is NOT x1. On
+  `ngoctuandt20` it's `x2` — silently doubles LP credit on every L1 submit
+  AND mints 2 clips per submit (ambiguous `media_id` extraction; DB only
+  stored 1 of 2). Run 10 + Run 12 + earlier Tier 2 runs all submitted x2
+  without catching the leak until user flagged a composer screenshot on
+  2026-04-19. **Engine MUST force x1.**
+* **Selector path (same Radix tablist pattern as Aspect Ratio in §1.3):**
+  * Open chip panel: `button[aria-haspopup='menu']:has-text('crop_9_16'|'crop_16_9')` (same chip — Quantity is row 4 of the panel contents).
+  * Click Quantity trigger: `[id$="-trigger-1"]` via `Locator.click()` (real pointer — Radix requires it).
+  * Wait for `data-state="active"` on the trigger.
+  * Close panel via click-outside at `(10, 10)` (NEVER Escape — closes composer per B8).
+  * Verify chip `innerText` contains `"x1"` post-close.
+* **FlowEngine implementation.** `flow/operations/generate.py::_set_output_count(page, count=1)` — mirrors `_set_aspect_ratio` exactly. Called from `text_to_video` Step 4.5, between `_set_aspect_ratio` and `_type_prompt`. Wrapped in try/except — selector drift warns, doesn't hard-fail (credit leak is recoverable; a hard generate failure is not).
+* **Scope: L1 only.** L2 composers (extend/camera/insert/remove) do NOT expose the Quantity tablist — they inherit from the source media. No wire-up needed in `extend.py` / `camera.py` / `insert.py` / `remove.py` unless a future Flow release exposes it.
 
 ### 1.5 Focus the prompt editor
 

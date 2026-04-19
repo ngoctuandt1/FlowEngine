@@ -217,6 +217,20 @@ async def text_to_video(
     logger.info(f"Step 4: Aspect ratio = {aspect_ratio}")
     await _set_aspect_ratio(page, aspect_ratio)
 
+    # === Step 4.5: Force output count to x1 ===
+    # B35 (2026-04-19): Flow account default may be x2/x3/x4 → multiplies
+    # LP credit cost AND mints multiple clips per submit (ambiguous
+    # media_id extraction). Engine always pins x1. See
+    # memory/feedback_output_count_x1.md + SPEC §D.4 B35.
+    logger.info("Step 4.5: Force output count = x1")
+    try:
+        await _set_output_count(page, 1)
+    except Exception as e:
+        logger.warning(
+            "Failed to force output count x1: %s — submit may use account default (potential credit leak)",
+            e,
+        )
+
     # === Step 5: Type prompt ===
     logger.info(f"Step 5: Type prompt ({len(prompt)} chars)")
     await _type_prompt(page, prompt)
@@ -636,6 +650,65 @@ async def _set_aspect_ratio(page, ratio: str):
         )
     else:
         logger.info("Aspect ratio set to %s (chip verified: %s)", ratio, expected_icon)
+
+
+async def _set_output_count(page, count: int = 1):
+    """B35: force Flow composer count chip to x{count} (default x1).
+
+    Flow's per-account default may be x2/x3/x4 — submitting without setting
+    this burns 2-4× LP credit per job AND mints multiple clips per submit
+    (ambiguous `media_id` extraction). Engine must always pin x1.
+
+    Selector reference: ``docs/FLOW_UI_REFERENCE.md`` §Model Chip Panel row 4
+    (Quantity tablist). Same Radix-tab pattern as aspect ratio (B1a): trigger
+    IDs end with ``-trigger-{N}`` for N in 1..4.
+
+    Flow (mirrors ``_set_aspect_ratio`` exactly):
+      1. open chip panel if ``data-state != "open"``
+      2. click ``[id$="-trigger-{count}"]`` via real ``Locator.click`` (Radix
+         needs pointerdown — JS ``.click()`` leaves data-state unchanged).
+      3. wait for ``data-state="active"`` on that trigger
+      4. click-outside to close
+      5. verify chip innerText contains ``x{count}``
+    """
+    if count < 1 or count > 4:
+        raise ValueError(f"count must be 1..4, got {count}")
+
+    chip_btn = page.locator(
+        'button[aria-haspopup="menu"]:has-text("crop_9_16"), '
+        'button[aria-haspopup="menu"]:has-text("crop_16_9")'
+    ).first
+
+    current_state = await chip_btn.get_attribute("data-state", timeout=2000)
+    if current_state != "open":
+        await chip_btn.click(timeout=3000)
+
+    await page.locator('[role="menu"][data-state="open"]').wait_for(
+        state="visible", timeout=3000,
+    )
+
+    trigger = page.locator(f'[id$="-trigger-{count}"]').first
+    await trigger.click(timeout=3000)
+
+    await page.wait_for_function(
+        f'() => document.querySelector(\'[id$="-trigger-{count}"]\')?.dataset.state === "active"',
+        timeout=3000,
+    )
+
+    await page.mouse.click(10, 10)
+    await page.locator('[role="menu"][data-state="open"]').wait_for(
+        state="hidden", timeout=2000,
+    )
+
+    chip_text = await chip_btn.inner_text(timeout=2000)
+    expected = f"x{count}"
+    if expected not in chip_text:
+        logger.warning(
+            "Output count set to x%d but chip verify failed: chip_text=%r expected substring %r",
+            count, chip_text, expected,
+        )
+    else:
+        logger.info("Output count set to x%d (chip verified)", count)
 
 
 async def _count_visible_cards(page) -> int:

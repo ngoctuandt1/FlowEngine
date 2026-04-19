@@ -1698,6 +1698,29 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Guard: `tests/test_base.py` updated — `test_navigate_warns_on_media_id_mismatch` rewritten as `test_navigate_activates_target_tile_on_media_mismatch` (asserts `page.evaluate` is called with the target media_id). `tests/test_base.py` +3 new B32 cases: `test_activate_clip_tile_dispatches_mouse_events` (full 5-event sequence contract), `test_activate_clip_tile_returns_false_when_tile_absent` (wait_for timeout → no JS dispatch), `test_activate_clip_tile_returns_false_for_empty_media_id` (empty-string guard). `tests/test_claim_algorithm.py::test_b30_extend_parent_inherits_grandparic_media` + `test_b30_extend_chain_walks_up` updated: `edit_url` assertion now targets direct parent (B32 split), `media_id` still walks up (B30 unchanged).
 - Full-suite verification: **110 pass** (pre-B32 baseline 107 + 3 new; existing tests updated for the split). Zero DeprecationWarning under `-W error::DeprecationWarning`.
 
+### ~~B35 — Engine relies on Flow's per-account x1/x2/x3/x4 default; silent credit leak on accounts defaulting to x≥2 (P0)~~ ✅ FIXED (2026-04-19)
+- Symptom: user screenshot 2026-04-19 showed a stale-job L1 submit on `ngoctuandt20` running `Video x2` (2 variants = 2× LP cost) with 9%/9% progress on both clips. Pre-B35 engine never touched the output-count chip — it relied entirely on whatever the Flow account had set as default. `ngoctuandt20` default is x2; Run 10 + Run 12 + every earlier Tier 2 run silently burned 2× credit per L1 submit without being caught (DB only stored 1 of the 2 resulting media_ids — ambiguity hid).
+- Root cause: no code path in `flow/operations/generate.py::text_to_video` interacts with the Quantity tablist (row 4 of the model chip panel — see `docs/FLOW_UI_REFERENCE.md` §Model Chip Panel). Aspect ratio (B1) DID touch the same panel via the Aspect tablist, so the pattern was already available; the quantity row was simply never wired up.
+- Evidence:
+  - User screenshot 2026-04-19 (chip text reads `"Video 📱 x2"`).
+  - `downloads/` folder — 20+ files across all Tier 2 runs all named `*_720p_*.mp4` (no x-count-doubling markers in filenames, but 2× clips per submit inflates Flow-side LP counter).
+  - User rule (verbatim, memory `feedback_output_count_x1.md`): "every L1 t2v and L2 extend MUST force count=x1 before submit; don't rely on Flow account default".
+- File: `flow/operations/generate.py` — new `_set_output_count(page, count)` helper + Step 4.5 call between `_set_aspect_ratio` and `_type_prompt`.
+- **Fix:**
+  - New `_set_output_count(page, count=1)` helper mirrors `_set_aspect_ratio` exactly: open chip panel (if `data-state != "open"`), click `[id$="-trigger-{count}"]` via real `Locator.click`, wait for `data-state="active"`, click-outside to close, verify chip `innerText` contains `x{count}`. Uses the same `:has-text("crop_9_16")` OR `:has-text("crop_16_9")` chip locator as B1. Rejects `count < 1` or `count > 4` with `ValueError` (Flow only exposes 1-4).
+  - `text_to_video` Step 4.5 calls `_set_output_count(page, 1)` before `_type_prompt`. Wrapped in `try/except` so a selector drift warns but doesn't hard-fail the job (credit leak is recoverable; generate failure is not).
+  - Memory `feedback_output_count_x1.md` added so future sessions honor the rule without a reminder.
+- **Scope — L1 only:**
+  - L2 ops (extend / camera / insert / remove) do NOT expose a quantity tablist (per `docs/FLOW_UI_REFERENCE.md` §Model Chip Panel — quantity + aspect are both L1-composer-only; L2 inherits from source media). No code change needed in `extend.py` / `camera.py` / `insert.py` / `remove.py`.
+- Guard: `tests/test_output_count.py` (NEW, 5 cases):
+  - `test_set_output_count_x1_happy_path` — open → click trigger-1 → close-outside → verify chip (mirrors B1 happy-path test).
+  - `test_set_output_count_skips_open_when_already_open` — Radix `data-state='open'` pre-state → skip open-click (B19 toggle-close guard).
+  - `test_set_output_count_chip_verify_failure_warns` — chip post-close still reads `x2` → WARNING, no raise.
+  - `test_set_output_count_rejects_out_of_range` — `count=0` or `count=5` → `ValueError`.
+  - `test_text_to_video_calls_set_output_count` — **source trip-wire**: `inspect.getsource(text_to_video)` contains `_set_output_count(`. Prevents silent regression where someone removes the Step 4.5 call and engine reverts to account-default.
+- Full-suite verification: **117 pass** (was 112 + 5 new B35 tests). Zero DeprecationWarning under `-W error::DeprecationWarning`.
+- **Follow-up (deferred):** if a future Flow UI release exposes Quantity on L2 composers, audit `extend.py` / `camera.py` / `insert.py` / `remove.py` for the same wire-up. For now the L2 composer does not have the control.
+
 ### ~~B34 — 1080p download never succeeds live; `_upsampled` poll window (30s) too short for Flow's upscale latency (P1)~~ ✅ FIXED (2026-04-19)
 - Symptom: every live Tier 2 run (Run 10 + Run 12 + earlier Tests 2/3/4) downloaded 720p. `downloads/` folder had ZERO `_1080p_` files across all runs despite `flow/download.py::_download_via_api` trying 1080p first.
 - Root cause: `_api_download_with_retry(max_retries=3)` + `UPSCALE_POLL_INTERVAL=10s` = 30s total poll window. Flow's real upscale latency for 9:16 portrait 8s clips is **1-3 minutes**. API `media.getMediaUrlRedirect?name={media_id}_upsampled` returned 202/404 throughout the 30s window → code exhausted retries → fell through to the 720p URL. Fallback was silently-correct (job completed, output file stored) but user never received 1080p despite the code appearing to try for it.
