@@ -192,10 +192,12 @@ def _patch_extend_deps(monkeypatch, *, verify=True, submit=True):
 
 
 async def test_extend_raises_when_panel_not_open(monkeypatch):
-    """B15 KEEP-4 Step 3.5: Extend click succeeds but panel never opens →
-    `_verify_extend_panel` returns False → `extend_video` raises RuntimeError
-    with panel-specific message. Fails fast BEFORE submit (submit mock
-    should not be awaited)."""
+    """Post-B31 (2026-04-19): Extend panel is default-active on /edit/ per
+    discrete-2job-verify_en.md:119 ("Extend mode is default active"). So
+    extend_video probes panel state FIRST; only clicks Extend button if panel
+    isn't open; re-verifies after click. When click succeeds but panel still
+    doesn't open, raise panel-specific message. _verify_extend_panel is
+    called twice in this path. Fails fast BEFORE submit."""
     page = _mock_page()
     client = _mock_client(page)
     mocks = _patch_extend_deps(monkeypatch, verify=False)
@@ -205,7 +207,9 @@ async def test_extend_raises_when_panel_not_open(monkeypatch):
     with pytest.raises(RuntimeError, match="Extend panel did not open"):
         await extend_video(client, job, prompt="hello")
 
-    mocks["_verify_extend_panel"].assert_awaited_once()
+    # Probe (False → need click), re-verify after click (still False → raise)
+    assert mocks["_verify_extend_panel"].await_count == 2
+    mocks["click_action_button"].assert_awaited_once()
     # Fail-fast: must raise BEFORE submit / finalize
     mocks["submit_with_confirmation"].assert_not_awaited()
     mocks["finalize_operation"].assert_not_awaited()

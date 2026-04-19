@@ -67,68 +67,79 @@ async def extend_video(
     # Step 2: Wait for video
     await wait_for_video_loaded(page)
 
-    # Step 3: Click Extend button
-    # Wait for action buttons to render after entering edit mode
-    await asyncio.sleep(2)
+    # Step 3: Ensure Extend panel open.
+    #
+    # Flow UI opens an edit URL with one of the 4 modes already selected
+    # (usually Extend for videos with remaining extend budget). In that
+    # state the Extend button is already the active mode — clicking it
+    # again is a no-op at best or a toggle-close at worst, and the click
+    # locator may not match because Flow marks the active mode specially.
+    #
+    # So: probe panel state FIRST. If already open → skip the click.
+    # If not open → click Extend button, then re-verify.
+    await asyncio.sleep(2)  # let action rail render
 
-    clicked = await click_action_button(page, EXTEND_BUTTONS)
-    if not clicked:
-        # Try icon-based fallbacks
-        for sel in EXTEND_ICON_SELECTORS:
-            try:
-                icon_btn = page.locator(sel).first
-                if await icon_btn.is_visible(timeout=2000):
-                    await icon_btn.click(timeout=3000)
-                    clicked = True
-                    logger.info("Clicked Extend via icon: %s", sel)
-                    await asyncio.sleep(0.5)
-                    break
-            except Exception:
-                continue
-
-    if not clicked:
-        # JS fallback: scan for extend-like buttons
-        try:
-            clicked = await page.evaluate("""() => {
-                const btns = document.querySelectorAll('button, [role="button"]');
-                for (const btn of btns) {
-                    const text = (btn.innerText || '').toLowerCase();
-                    if (text.includes('extend') || text.includes('mở rộng')
-                        || text.includes('keyboard_double_arrow_right')) {
-                        btn.click();
-                        return true;
-                    }
-                }
-                return false;
-            }""")
-            if clicked:
-                logger.info("Clicked Extend via JS fallback")
-                await asyncio.sleep(0.5)
-        except Exception:
-            pass
-
-    if not clicked:
-        # Debug: log visible buttons to help diagnose
-        try:
-            buttons = await page.evaluate("""() => {
-                const btns = document.querySelectorAll('button, [role="button"]');
-                return Array.from(btns).slice(0, 30).map(b => ({
-                    text: (b.innerText || '').trim().substring(0, 60),
-                    w: Math.round(b.getBoundingClientRect().width),
-                    vis: getComputedStyle(b).display !== 'none',
-                })).filter(b => b.vis && b.w > 30);
-            }""")
-            logger.error("Extend button not found. Visible buttons: %s", buttons)
-        except Exception:
-            pass
-        raise RuntimeError("Failed to find Extend button")
-
-    # Step 3.5: Verify extend panel opened
-    # Extend panel adds a SECOND Slate editor. Wait for it.
-    await asyncio.sleep(1)
     panel_open = await _verify_extend_panel(page)
-    if not panel_open:
-        raise RuntimeError("Extend panel did not open after clicking Extend button")
+    if panel_open:
+        logger.info("Extend panel already open — skipping Extend button click")
+    else:
+        clicked = await click_action_button(page, EXTEND_BUTTONS)
+        if not clicked:
+            # Try icon-based fallbacks
+            for sel in EXTEND_ICON_SELECTORS:
+                try:
+                    icon_btn = page.locator(sel).first
+                    if await icon_btn.is_visible(timeout=2000):
+                        await icon_btn.click(timeout=3000)
+                        clicked = True
+                        logger.info("Clicked Extend via icon: %s", sel)
+                        await asyncio.sleep(0.5)
+                        break
+                except Exception:
+                    continue
+
+        if not clicked:
+            # JS fallback: scan for extend-like buttons
+            try:
+                clicked = await page.evaluate("""() => {
+                    const btns = document.querySelectorAll('button, [role="button"]');
+                    for (const btn of btns) {
+                        const text = (btn.innerText || '').toLowerCase();
+                        if (text.includes('extend') || text.includes('mở rộng')
+                            || text.includes('keyboard_double_arrow_right')) {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""")
+                if clicked:
+                    logger.info("Clicked Extend via JS fallback")
+                    await asyncio.sleep(0.5)
+            except Exception:
+                pass
+
+        if not clicked:
+            # Debug: log visible buttons to help diagnose
+            try:
+                buttons = await page.evaluate("""() => {
+                    const btns = document.querySelectorAll('button, [role="button"]');
+                    return Array.from(btns).slice(0, 30).map(b => ({
+                        text: (b.innerText || '').trim().substring(0, 60),
+                        w: Math.round(b.getBoundingClientRect().width),
+                        vis: getComputedStyle(b).display !== 'none',
+                    })).filter(b => b.vis && b.w > 30);
+                }""")
+                logger.error("Extend button not found. Visible buttons: %s", buttons)
+            except Exception:
+                pass
+            raise RuntimeError("Failed to find Extend button (panel was not already open)")
+
+        # Step 3.5: Verify extend panel opened after click
+        await asyncio.sleep(1)
+        panel_open = await _verify_extend_panel(page)
+        if not panel_open:
+            raise RuntimeError("Extend panel did not open after clicking Extend button")
 
     # Step 4: Type prompt (optional)
     if prompt:
