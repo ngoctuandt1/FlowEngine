@@ -5,6 +5,83 @@
 
 ---
 
+## Tier 2 — 2026-04-19 — Run 12 — ✅ **PASS (5/5)** — B32 chain-with-extend-middle verified live
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-19 14:15:25–14:25:04 local (UTC+7); ~9m39s rerun (full session ~27m incl. aborted attempt + queue cleanup) |
+| Tier | 2 — full engine-driven chain via REST API |
+| Profile | `ngoctuandt20` (EN-locale) |
+| Scope | B32 architectural-fix live verification on 5-op chain (t2v 9:16 → extend → insert → remove → camera Orbit left) |
+| Branch | `claude/admiring-maxwell-1064c0` off `master` @ `b4e99f6` |
+| Chain id | `2b0f2667-b854-4af2-901d-429aac266c6d` |
+| Project url | `https://labs.google/fx/tools/flow/project/0d6ced8a-5207-4359-959e-2fc6408ca2fe` |
+| Session report | [`docs/session-reports/2026-04-19_Tier2_Run12_B32_verify.md`](session-reports/2026-04-19_Tier2_Run12_B32_verify.md) |
+
+### 5-op chain result
+
+| # | Job id (short) | type | status | media_id | output |
+|---|---|---|---|---|---|
+| J1 | `01ab28d0` | text-to-video (9:16) | ✅ completed 14:17:05 | `a33b2e9d-…` | `downloads\t2v_720p_1776583024.mp4` |
+| J2 | `a0ed1ab6` | extend-video | ✅ completed 14:19:38 | `7d53d6fc-…` (**NEW** — INV-5 mint) | `downloads\ext_720p_1776583177.mp4` |
+| J3 | `3f31cc22` | insert-object (bbox=0.6,0.6,0.2,0.2) | ✅ completed 14:21:12 | `7d53d6fc-…` (preserved) | `downloads\ins_720p_1776583271.mp4` |
+| J4 | `2922a34c` | remove-object (bbox=0.3,0.5,0.4,0.4) | ✅ completed 14:23:22 | `7d53d6fc-…` (preserved) | `downloads\rm_720p_1776583401.mp4` |
+| J5 | `f66f5718` | camera-move (Orbit left) | ✅ completed 14:25:04 | `7d53d6fc-…` (**NOT minted** — see Finding 1) | `downloads\cam_720p_1776583503.mp4` |
+
+**Verdict: ✅ PASS — B32 architectural fix confirmed on chain-with-extend-middle pattern.** 5/5 jobs completed end-to-end serial (J1→J2→J3→J4→J5). Zero `Mode button disabled` errors. Chain-with-extend-middle pattern (which was the Run 11 blocker before B32 landed) now fully unblocked.
+
+### B32 signals captured (`logs/worker.log`)
+
+**Signal 1 — J2 dispatch (tile-click fallback landed on wrong clip):**
+
+```
+14:17:10 flow.operations._base: On project view — clicking video tile to enter edit mode  (B27 SPA-bounce fallback)
+14:17:12 flow.operations._base: Clicked first [data-tile-id] tile
+14:17:15 flow.operations._base: Edit mode entered: .../edit/7d53d6fc-…  (wrong clip)
+14:17:15 flow.operations._base: URL media differs from target: url=7d53d6fc-c9bd-4211-9 target=a33b2e9d-98ec-4288-b — activating target tile
+14:17:16 flow.operations._base: Activated clip tile for media=a33b2e9d-98ec-4288-b
+14:17:16 flow.operations._base: Video element loaded
+```
+
+**Signal 2 — J3 dispatch (direct child of extend — the key test):**
+
+```
+14:19:39 flow.operations._base: Navigating to edit URL: .../edit/7d53d6fc-…  (J2.edit_url via B22 direct parent)
+14:19:43 flow.operations._base: URL media differs from target: url=7d53d6fc-c9bd-4211-9 target=a33b2e9d-98ec-4288-b — activating target tile  (B30 walk-up past extend)
+14:19:45 flow.operations._base: Activated clip tile for media=a33b2e9d-98ec-4288-b
+14:19:45 flow.operations._base: Video element loaded
+14:19:45 flow.operations._base: Clicked mode button via title='Insert'  ← enabled (B32 architectural fix confirmed)
+14:19:46 flow.operations._base: Drew bbox on canvas: x=0.60 y=0.60 w=0.20 h=0.20 canvas=390x694
+```
+
+**J4 + J5 did NOT fire B32** (expected): B30 walk-up for J4 (parent=J3 insert, non-extend) stops at J3 → target `7d53d6fc` == URL media → no activation needed. Same for J5 (parent=J4 remove). Both mode buttons (`title='Remove'`, `title='Camera'`) clicked enabled on first try.
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✅ | All 5 jobs stored `profile=ngoctuandt20` |
+| INV-2 Navigate by `edit_url` | ✅ | Every L2+ dispatch log shows `Navigating to edit URL: .../edit/{media_id}` |
+| INV-3 Store Everything | ✅ | Each completed job persisted `project_url` + `media_id` + `edit_url` + `output_files` |
+| INV-4 Serial per Project | ✅ | `Project lock ACQUIRED/RELEASED` pairs bracket every dispatch; J1→J2→J3→J4→J5 strict order |
+| INV-5 `media_id` re-extracted per op | ⚠️ partial | J1→J2 extend minted new (✅), J3+J4 in-place preserve (✅), **J5 camera-move did NOT mint new (contradicts post-Run-10 SPEC revision — see Finding 1)** |
+| R-CODE-3 Locale-Independent | ✅ | B19/B26/title-attr/B12-computed-color selectors held on EN profile |
+| **B32 architectural fix** | ✅ | 2× firings (J2 + J3); 0× `Mode button disabled` errors; downstream mode-button clicks all enabled |
+
+### Findings (NOT fixed — supervisor review)
+
+1. **[B33-candidate · P2] J5 camera-move did NOT mint new `media_id`.** Run 10 (J2 camera-move directly on J1 t2v) minted new uuid — evidence basis for current SPEC INV-5 revision. Run 12 (J5 camera-move after extend→insert→remove) kept `7d53d6fc` (same as parents J3/J4). Hypothesis: camera-submit doesn't bump `page.url` when the active clip is already deep in project history, so engine's post-op URL re-extraction reads the stale uuid. Not a B32 regression — chain completed and the mp4 download succeeded (`cam_720p_1776583503.mp4`, 1712500 B, file distinct). SPEC INV-5 revision may need a context-sensitivity note, or engine-side camera-move may need a URL-bump-wait.
+
+2. **Queue hygiene (ops-only note, not engineering).** During startup, I found 23 pending + 3 claimed stray jobs on `ngoctuandt20` from prior test sessions (chains `b5582b10`, `71013075`, `2141a50e`, `15f5602c`, `93e940fb`, `4046ea7d`, `a1cc6a67`, `cd8ec66b`). My first worker died mid-J1-download (no traceback — possibly `run_in_background` lifecycle at ~131s; `nohup` + `disown` used for the rerun worked fine). Respawned worker consumed ≥2 LP of strays before I cleaned up via `DELETE /api/jobs/{id}` × 20 + `DELETE` old chain × 5. Worker restart via `nohup ... & disown` survived the full 10-min rerun.
+
+### What this session did NOT change
+
+- Zero `.py` / profile-creds / config diff (verification + docs only).
+- No new B-numbered fix; only **B32 verification marker** appended in `SPEC.md` §D.4 (`· Tier2 Run 12 verified live 2026-04-19`).
+- Finding 1 is surfaced as **B33-candidate** but not opened/fixed — supervisor call.
+
+---
+
 ## Tier 2 — 2026-04-19 — Tests 2/3/4 — ⚠️ **PARTIAL / BLOCKED** (Test 3 ✅ · Test 2 PARTIAL · Test 4 ❌ · 2 bug-candidates + 1 SPEC INV-5 contradiction surfaced)
 
 | Field | Value |
