@@ -22,16 +22,19 @@
 
 ## 2. Commits landed
 
-Run 10 began as a **pure verification session** (3-job chain on VI profile). Post-run, supervisor requested applying the direct-goto simplification surfaced by §7 probe. Resulting commits:
+Run 10 began as a **pure verification session** (3-job chain on VI profile). Post-run, supervisor requested two follow-on changes surfaced by the discoveries (B27 direct-goto + INV-5 wording revision). Resulting commits on branch `claude/peaceful-hofstadter-7e4c70`:
 
 ```
 9519c06  refactor(_base): direct goto(edit_url) primary + tile-click fallback (B27)
+797dee9  docs: backfill B27 commit hash 9519c06 in SPEC + session report
+3d7b884  docs(INV-5): revise media_id invariant — engine re-extracts per op
 ```
 
-Run 10 verification docs (session report + E2E prepend + SPEC §D.4 B1/B11/B12 markers) were bundled into the same commit as the B27 code change, since the probe that motivated B27 ran immediately after Run 10.b's PASS and the same supervisor-attested session produced both.
+Run 10 verification docs (this report + E2E prepend + SPEC §D.4 B1/B11/B12 markers + new B27 entry) were bundled into `9519c06` since the probe that motivated B27 ran immediately after Run 10.b's PASS and the same supervisor-attested session produced both. `3d7b884` closed out the second §7 discovery (INV-5 wording) post-session; see §7 for the scope-checked empirical basis (camera-move mints new — verified; extend/insert/remove preserve — per 4-op test + Run 10 J2→J3).
 
 - Verification: J1+J2+J3 all ✅ on EN-switched `ngoctuandt20` (see §4).
 - B27 code change: `flow/operations/_base.py::navigate_to_edit` now `goto(edit_url)` first; tile-click path kept as defensive fallback when the SPA bounces to /project/. `tests/test_base.py` +2 cases (primary goto trip-wire + fallback path). Full suite 95 pass (was 93 + 2 new).
+- INV-5 revision: docs-only propagation across SPEC §A.1 + §B.8 + §D.4 B14, DESIGN.md §1.3, CLAUDE.md, WORKPLAN.md Test 2, FLOW_BUTTON_EXACT.md, plus 2 test_base.py docstrings (no test-logic change).
 
 ---
 
@@ -114,7 +117,7 @@ No SPEC restructure. Markers are append-only on existing status lines per WORKPL
 - [x] **INV-2 Navigate by `edit_url`** — `_base.py::navigate_to_edit(job)` used `project_url` + `media_id` → built `edit_url`. No `video_index` or DOM card-counting.
 - [x] **INV-3 Store Everything** — J1 persisted `project_url` + `media_id` + `edit_url` on completion; J2 + J3 inherited all 3 at claim time (B22 path); J2 + J3 stored their own `media_id` + output file post-completion.
 - [x] **INV-4 Serial per Project** — chain ran sequentially (J1 20:31→20:34, J2 20:34→20:36, J3 20:36→20:37 all UTC). `ProjectLock` behavior unchanged.
-- [⚠️] **INV-5 `media_id` stable** — J1 media_id `5920c395` != J2/J3 media_id `e219fc6c`. Flow created a new media on camera-move (NOT stable across camera operation). J3 insert-object preserved J2's media_id. **This is pre-existing Flow-SPA behavior, not a regression** — matches observation from Run 8/9 on the same engine. The invariant as worded in SPEC implies stability across ALL L2+ operations; real Flow behavior is: insert/remove preserve; camera-move + extend mint new. Flag as **out-of-scope discovery** (§7) — may require SPEC wording revision.
+- [⚠️ → ✅] **INV-5 `media_id` stable** — J1 media_id `5920c395` != J2/J3 media_id `e219fc6c`. Flow created a new media on camera-move (NOT stable across camera operation). J3 insert-object preserved J2's media_id. **This is pre-existing Flow-SPA behavior, not a regression** — matches observation from Run 8/9 on the same engine. Original invariant wording claimed stability across ALL L2+ ops. **SPEC wording revision landed in commit `3d7b884`** per §7 — see that section for the revised wording (engine re-extracts per op; behavior matrix distinguishes in-place preserve ops vs camera-move mint-new).
 - [x] **R-CODE-3 Locale-Independent** — engine selectors (B18 `add_2` icon, B19 `crop_9_16` ligature, B26 `arrow_forward` exact-text, B12 computed-color signal) all locale-agnostic. The VI-account blocker was Flow-SPA URL rewriting (not engine selector), resolved by account-level language switch, not code.
 - [x] **R-CODE-10 No `datetime.utcnow()`** — no code change.
 - [x] **R-CC-1 KHÔNG restructure kiến trúc** — verification-only session.
@@ -176,11 +179,12 @@ NOT a B22 regression. NOT a B1/B11/B12 regression. Pure locale-SPA interaction �
   Tests: +2 in `tests/test_base.py` — `test_navigate_uses_edit_url_as_primary_goto` (source trip-wire asserts first `page.goto` call carries `/edit/` + media_id) + `test_navigate_falls_back_to_tile_click_when_spa_bounces` (defensive fallback still reachable).
   Why landed mid-session (not deferred): supervisor's direct message (`load url được mà, lỗi gì à` → `vậy sửa pipeline đoạn này luôn, load url nhanh hơn nhiều`) — probe v1 "FAIL" verdict was false-positive on `"[...catchAll]"` string match; probe v2 confirmed path works. Change is narrow (~12 lines), fully covered by existing tile-click fallback tests + 2 new trip-wires.
 
-- **SPEC INV-5 wording revision — `media_id` NOT stable across camera-move.**
+- **~~SPEC INV-5 wording revision — `media_id` NOT stable across camera-move.~~ ✅ LANDED post-session — commit `3d7b884`.**
   Run 10 concrete evidence: J1 media_id `5920c395-465d-4970-b22e-5c5359a3c147`; J2 (camera Dolly in) produced new `media_id e219fc6c-ee61-4a42-a1b7-731e9f95ae53`; J3 (insert-object) preserved J2's.
-  Current SPEC `§A.1 INV-5` states "media_id stable — same UUID survives extend, insert, remove operations." Real Flow-SPA behavior: **camera-move + extend mint new media_id; insert + remove preserve.**
-  Priority: **P2 docs-only** — engine already handles this correctly (INV-3 Store Everything: each job stores its own post-completion media_id; claim-time B22 inheritance uses parent's final media_id as navigation target). INV-5 wording just needs to match observed reality.
-  Propose revised wording: *"media_id propagates via B22 claim-time inheritance from parent's completion record. Not necessarily stable across camera-move + extend (Flow creates new media); engine re-extracts post-op media_id via `finalize_operation`."*
+  Original SPEC `§A.1 INV-5` stated "media_id stable — same UUID survives extend, insert, remove operations."
+  **Empirical reality (scope-checked):** `camera-move` mints new (Run 10 J1→J2 direct evidence); `extend-video` / `insert-object` / `remove-object` preserve (2026-04-16 4-op test in `docs/FLOW_MULTILEVEL_JOBS.md` §10 + Run 10 J2→J3). An earlier draft of this section claimed "camera-move + extend both mint new" — retracted: extend preservation is evidenced by the 4-op test and Run 10 did not re-test extend, so the SPEC revision only asserts camera-move minting.
+  Priority was **P2 docs-only** — engine already handles this correctly (INV-3 Store Everything: each job stores its own post-completion media_id; B22 claim-time inheritance uses parent's final media_id as navigation target).
+  **Landed revision (`3d7b884`)** — new INV-5: *"Engine re-extracts `media_id` per operation; chain inherits parent's FINAL media_id via B22."* Adds empirical behavior matrix (in-place ops preserve; camera-move mints new) with evidence citations. Propagated to `docs/DESIGN.md` §1.3 #5, `CLAUDE.md` (Critical fields + Chain invariants), `docs/WORKPLAN.md` Test 2 per-op verify, `docs/FLOW_BUTTON_EXACT.md` invariant #5, `docs/SPEC.md` §B.8 camera step 8 (SAME → NEW uuid) + B14 narrative wording, `tests/test_base.py` 2 docstrings. 95 tests pass.
 
 ---
 
@@ -191,7 +195,7 @@ NOT a B22 regression. NOT a B1/B11/B12 regression. Pure locale-SPA interaction �
 - **Profile `ngoctuandt20` state:** **EN locale as of 2026-04-19 ~03:20.** Future runs on this profile use canonical `/fx/tools/flow/...` URLs.
 - **Other profiles:** unknown locale state. Per `feedback_english_locale.md` memory, any new Flow account must be switched to EN at `myaccount.google.com/language` before first engine run.
 - **Probe scripts retained:** `scripts/probe_nav_direct.py` (locale detection + language-settings tab helper) and `scripts/probe_direct_edit_url.py` (direct edit-URL probe). Useful if this class of bug resurfaces; do not delete.
-- **Next session:** if Phase A closeout needed, proceed to tag `v0.2.0-phase-a` per WORKPLAN §7.4. If picking up B27 proposal, see §7 Out-of-scope discoveries above.
+- **Next session:** both §7 out-of-scope items (B27 + INV-5 wording) have now landed (commits `9519c06` and `3d7b884`). Remaining Phase A closeout: tag `v0.2.0-phase-a` per WORKPLAN §7.4 after push + merge of `claude/peaceful-hofstadter-7e4c70` → `master`.
 - **Tasks terminated:** background server (`bsco5lykg`) + worker (`bjqx8tz5c`) both stopped via TaskStop. Free ports + profile locks.
 
 ---
@@ -212,7 +216,9 @@ From WORKPLAN §5 Manual E2E protocol + Run 10 scope:
 - [x] Session report (this file)
 - [x] Locale-switch constraint captured as `feedback_english_locale.md` memory
 - [x] `git status` clean (doc-only commit)
-- [x] No .py files in `flow/`, `worker/`, `server/`, `tests/` touched
+- [x] No .py files in `flow/`, `worker/`, `server/` touched (`tests/test_base.py` docstrings updated post-session as part of INV-5 propagation — no test-logic change)
+- [x] B27 engine simplification landed mid-session (commit `9519c06`) — see §7
+- [x] INV-5 wording revision landed post-session (commit `3d7b884`) — see §7
 
 ---
 
