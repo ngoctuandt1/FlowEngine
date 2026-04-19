@@ -276,14 +276,21 @@ async def test_l2_claim_inherits_when_parent_edit_url_null(db):
 
 
 async def test_b30_extend_parent_inherits_grandparent_media(db):
-    """B30: L2 parent is extend-video → child inherits GRANDPARENT's media.
+    """B30+B32 (2026-04-19): walk-up semantics split.
 
     Chain: L1 t2v (media-A1) → L2 extend (media-E2, NEW per INV-5) → L3 insert.
-    Without B30, L3 would inherit L2's media-E2 and edit_url pointing at the
-    extend-output, whose Insert sidebar button is DISABLED (B28 extend-child
-    lockout). With B30, the claim layer walks up past L2 and takes L1's
-    media-A1 so the worker navigates to a stable parent URL where the
-    sidebar buttons are enabled.
+
+    - **media_id** (semantic target) walks up past the extend to L1's A1 — this
+      is the clip the L3 operation wants to edit. Worker uses it to activate
+      the target clip via history-panel tile click (see `_activate_clip_tile`
+      in `flow/operations/_base.py`), which re-enables Insert/Remove/Camera
+      on the target even though the sidebar was disabled for the extend-child
+      (B28 lockout).
+    - **edit_url** (navigation target) comes from the DIRECT parent L2's
+      extend-output URL. Navigating directly to L1's /edit/{old_media} after a
+      sibling extend triggers the B29 SPA-strip (verified live 2026-04-19 on
+      project 513d580b: `goto(/edit/{L1_media})` → URL rewritten to
+      `/project/{id}` library grid). Direct parent's edit_url is always fresh.
     """
     await create_profile(_make_profile("b30-prof-a"))
     # L1 t2v — original media
@@ -328,11 +335,15 @@ async def test_b30_extend_parent_inherits_grandparent_media(db):
     assert claimed.profile == "b30-prof-a"
     assert claimed.media_id == "media-b30a-L1", (
         "B30: extend-video parent must be skipped — child inherits "
-        "grandparent's media_id, not extend-output's"
+        "grandparent's media_id as the semantic target"
     )
     assert claimed.edit_url == (
-        "https://labs.google/fx/tools/flow/project/p-b30a/edit/media-b30a-L1"
-    ), "B30: edit_url must also point at grandparent's /edit/{media}"
+        "https://labs.google/fx/tools/flow/project/p-b30a/edit/media-b30a-L2-extend"
+    ), (
+        "B32 split: edit_url comes from the DIRECT parent (L2 extend-output) "
+        "not the walk-up ancestor — avoids B29 stale-URL strip. Worker clicks "
+        "the target-media tile after nav to activate L1 on the sidebar."
+    )
     # project_url is invariant across the chain — still inherited.
     assert claimed.project_url == (
         "https://labs.google/fx/tools/flow/project/p-b30a"
@@ -401,8 +412,10 @@ async def test_b30_extend_chain_walks_up(db):
         "B30: walk-up must climb past BOTH extend ancestors to L1, "
         "not stop at the immediate grandparent (another extend)"
     )
+    # B32 split: edit_url = direct parent (L3 extend-output), not the
+    # walked-up L1. Worker will click the L1 tile after nav.
     assert claimed.edit_url == (
-        "https://labs.google/fx/tools/flow/project/p-b30b/edit/media-b30b-L1"
+        "https://labs.google/fx/tools/flow/project/p-b30b/edit/media-b30b-L3-extend"
     )
 
 

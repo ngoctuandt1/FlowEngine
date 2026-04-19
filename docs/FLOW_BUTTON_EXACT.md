@@ -269,9 +269,28 @@ button[title='Camera'][disabled]    # mode button present but locked out
 await page.locator("button[title='Camera']").is_enabled()   # → False
 ```
 
-Until a `parent-clip select` workaround is implemented (candidate **B28**),
-chains where `extend-video` sits before `insert-object`/`remove-object`/
-`camera-move` are blocked regardless of what the error message says.
+**Parent-clip select workaround (B32, 2026-04-19) — IMPLEMENTED.** The
+right-side history panel renders each project clip as a
+`<div data-tile-id="fe_id_{media_id}">`. Dispatching a full
+`MouseEvent` sequence (`pointerdown → mousedown → pointerup → mouseup
+→ click`) via `page.evaluate` on the tile corresponding to the L1
+parent's `media_id` flips all four mode buttons (`Extend`, `Insert`,
+`Remove`, `Camera`) from `disabled=true` → `disabled=false` **without
+changing `page.url`**. Plain `tile.click()` doesn't fire Flow's
+styled-components handler — the explicit MouseEvent dispatch is
+load-bearing.
+
+Engine integration (see `flow/operations/_base.py`):
+- `_activate_clip_tile(page, target_media_id)` helper does the dispatch.
+- `navigate_to_edit` now calls it automatically when the URL's media
+  differs from the job's target `media_id` (B30 walk-up case: L3
+  insert/remove/camera inherits the L1 grandparent's `media_id` but
+  navigates to the direct parent L2 extend-output's `edit_url`).
+
+Live-verified on 2026-04-19 (project `513d580b-…`, extend-output
+`/edit/1a6e3b77-…`): clicking `[data-tile-id="fe_id_6842325d-…"]`
+(L1 parent media tile) re-enabled all 4 sidebar mode buttons
+simultaneously. URL stayed on the extend-output throughout.
 
 ---
 

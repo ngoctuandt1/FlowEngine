@@ -107,20 +107,98 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             f"Media may be stale post-sibling-extend. Check B22 inheritance."
         )
 
-    # Log if we landed on a different media than requested (but proceed —
-    # Flow SPA often redirects edit URLs; the important thing is being in
-    # edit mode for *some* video in the correct project).
+    # B32 (2026-04-19): job.media_id is the SEMANTIC target (what the
+    # operation wants to edit), which after B30 walk-up may differ from
+    # the direct parent's edit_url media (e.g. L3 insert after L2 extend
+    # inherits L1 grandparent's media_id but parent's edit_url). If the
+    # URL's media differs from the target, activate the target clip via
+    # history-panel tile click — Flow's SPA then enables Insert/Remove/
+    # Camera on the target clip even though the URL still shows the
+    # extend-output. Verified live 2026-04-19 on project 513d580b (B32
+    # probe session): clicking [data-tile-id="fe_id_{target_media_id}"]
+    # in the right sidebar flips all 4 mode buttons from disabled →
+    # enabled without changing page.url.
     current_media = extract_media_id(current)
     if media_id and current_media and current_media != media_id:
-        logger.warning(
-            "Edit mode entered for different media: requested=%s actual=%s — proceeding",
-            media_id[:20], current_media[:20],
+        logger.info(
+            "URL media differs from target: url=%s target=%s — activating target tile",
+            current_media[:20], media_id[:20],
         )
+        activated = await _activate_clip_tile(page, media_id)
+        if not activated:
+            logger.warning(
+                "Could not activate target clip tile for media=%s — sidebar may be disabled (B28 lockout)",
+                media_id[:20],
+            )
 
     locale = detect_locale(page.url)
     project_id = extract_project_id(page.url) or ""
 
     return edit_url_val, project_id, locale
+
+
+async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 3.0) -> bool:
+    """Click the history-panel clip tile for `media_id` to activate it.
+
+    Used after `navigate_to_edit` when the URL's media differs from the
+    semantic target (B30 walk-up case: L3 insert/remove/camera after an
+    extend-video parent inherits L1's grandparent media_id but lands on
+    the extend-output's edit URL).
+
+    Live evidence 2026-04-19 (project 513d580b probe): the history panel
+    renders each project clip as a `<div data-tile-id="fe_id_{media_id}">`
+    at the right side. The tile has no button ancestor — a DOM-level
+    click handler on the DIV switches the active clip. Dispatching a
+    real MouseEvent (not `.click()` which may not trigger styled-
+    components) re-enables Insert/Remove/Camera for the targeted clip.
+
+    Args:
+      page: Playwright Page inside the /edit/ composer.
+      media_id: Target media UUID — typically from `job["media_id"]` after
+        B30 walk-up (the nearest non-extend ancestor).
+
+    Returns:
+      True if the tile was found and clicked, False otherwise.
+    """
+    if not media_id:
+        return False
+    # Wait briefly for the history panel to render
+    try:
+        tile = page.locator(f"[data-tile-id='fe_id_{media_id}']").first
+        await tile.wait_for(state="attached", timeout=int(timeout_sec * 1000))
+    except Exception:
+        logger.debug("Clip tile not found for media=%s within %.1fs", media_id[:20], timeout_sec)
+        return False
+    try:
+        # The tile is a <div> with no button ancestor; click() may miss
+        # the custom handler. Dispatch a full pointer sequence via JS.
+        ok = await page.evaluate(
+            """(mid) => {
+                const tile = document.querySelector(
+                    `[data-tile-id="fe_id_${mid}"]`
+                );
+                if (!tile) return false;
+                const rect = tile.getBoundingClientRect();
+                const cx = rect.x + rect.width / 2;
+                const cy = rect.y + rect.height / 2;
+                for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+                    tile.dispatchEvent(new MouseEvent(type, {
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: cx, clientY: cy, button: 0,
+                    }));
+                }
+                return true;
+            }""",
+            media_id,
+        )
+        if ok:
+            # Give Flow a beat to swap active clip + re-enable sidebar
+            await asyncio.sleep(1)
+            logger.info("Activated clip tile for media=%s", media_id[:20])
+            return True
+    except Exception as e:
+        logger.warning("Tile click dispatch failed for media=%s: %s", media_id[:20], e)
+    return False
 
 
 async def wait_for_video_loaded(page, timeout_sec: float = 15.0):

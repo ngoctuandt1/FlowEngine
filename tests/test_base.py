@@ -38,6 +38,7 @@ import pytest
 
 from flow.operations import _base
 from flow.operations._base import (
+    _activate_clip_tile,
     _click_video_tile,
     click_action_button,
     navigate_to_edit,
@@ -94,36 +95,51 @@ def _make_client(url: str, profile: str = "test-profile"):
 # ---------------------------------------------------------------------------
 
 
-async def test_navigate_warns_on_media_id_mismatch(caplog):
-    """KEEP-2: URL landed on a DIFFERENT media_id than requested → WARNING,
-    but function still returns (non-fatal — INV-5 has the engine re-extract
-    post-op media_id via `finalize_operation`; SPA redirect to a sibling
-    video in the same project is acceptable since the stored value will
-    match the actual landed id, not the requested one)."""
-    # Requested MEDIA_ID_A, but page ended up on MEDIA_ID_B (both in same
-    # project, so /edit/ is present — just a different media UUID).
-    client, _page = _make_client(_edit_url(MEDIA_ID_B))
+async def test_navigate_activates_target_tile_on_media_mismatch(caplog):
+    """B32 (2026-04-19): URL landed on a DIFFERENT media than the target
+    (B30 walk-up scenario — L3 insert after L2 extend inherits L1 grandparent's
+    media but nav lands on L2 extend-output's URL). `navigate_to_edit` must
+    invoke `_activate_clip_tile(page, target_media_id)` to switch the active
+    clip in Flow's history panel so Insert/Remove/Camera re-enable on the
+    target (B28 lockout workaround). Non-fatal: returns normally even if the
+    tile isn't found — the caller's mode-click will surface the B28 guard."""
+    client, page = _make_client(_edit_url(MEDIA_ID_B))
+    # Stub the locator call used inside _activate_clip_tile to claim the
+    # tile exists and pretend the JS evaluate returned True.
+    tile_locator = MagicMock()
+    tile_locator.first.wait_for = AsyncMock()
+    page.locator = MagicMock(return_value=tile_locator)
+    page.evaluate = AsyncMock(return_value=True)
 
     job = {
-        "edit_url": _edit_url(MEDIA_ID_A),
+        "edit_url": _edit_url(MEDIA_ID_B),  # direct parent's URL (fresh)
         "project_url": _project_url(),
-        "media_id": MEDIA_ID_A,
+        "media_id": MEDIA_ID_A,              # walked-up target (grandparent)
     }
 
-    with caplog.at_level(logging.WARNING, logger="flow.operations._base"):
+    with caplog.at_level(logging.INFO, logger="flow.operations._base"):
         edit_url, project_id, _locale = await navigate_to_edit(client, job)
 
     # Non-fatal: returns normally
-    assert edit_url == _edit_url(MEDIA_ID_A)
+    assert edit_url == _edit_url(MEDIA_ID_B)
     assert project_id == PROJECT_ID
 
-    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    # _activate_clip_tile must have evaluated the click-dispatch JS with the
+    # target media_id (not the URL's media_id)
+    page.evaluate.assert_awaited()
+    eval_args = page.evaluate.await_args
+    assert eval_args.args[1] == MEDIA_ID_A, (
+        f"Activate-tile JS must be called with target media_id={MEDIA_ID_A!r}, "
+        f"got args={eval_args.args!r}"
+    )
+    # And the INFO log tells us why
+    infos = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
     assert any(
-        "different media" in w.lower()
-        and MEDIA_ID_A[:20] in w
-        and MEDIA_ID_B[:20] in w
-        for w in warnings
-    ), f"Expected media_id mismatch WARNING with both ids, got: {warnings}"
+        "url media differs from target" in i.lower()
+        and MEDIA_ID_A[:20] in i
+        and MEDIA_ID_B[:20] in i
+        for i in infos
+    ), f"Expected B32 activation INFO log with both ids, got: {infos}"
 
 
 async def test_navigate_no_warning_on_media_id_match(caplog):
@@ -413,3 +429,69 @@ async def test_navigate_to_edit_passes_when_url_intact():
 
     assert edit_url == _edit_url(MEDIA_ID_A)
     assert project_id == PROJECT_ID
+
+
+# ---------------------------------------------------------------------------
+# B32: _activate_clip_tile — history-panel tile click workaround for
+# extend-child lockout (B28). Verified live 2026-04-19 on project 513d580b
+# per `docs/session-reports/2026-04-19_B32_*` — clicking the tile
+# `[data-tile-id="fe_id_{media_id}"]` in the right history panel flips
+# Insert/Remove/Camera from disabled → enabled without changing page.url.
+# ---------------------------------------------------------------------------
+
+
+async def test_activate_clip_tile_dispatches_mouse_events():
+    """B32: `_activate_clip_tile` dispatches a full MouseEvent sequence
+    (pointerdown → mousedown → pointerup → mouseup → click) via JS, not
+    `.click()` — Flow's tile handler is on a `<div>` without a button
+    ancestor and ignores plain `.click()` calls. Confirms the helper
+    calls `page.evaluate` with the target media_id and returns True."""
+    client, page = _make_client(_edit_url(MEDIA_ID_B))
+    tile_locator = MagicMock()
+    tile_locator.first.wait_for = AsyncMock()
+    page.locator = MagicMock(return_value=tile_locator)
+    page.evaluate = AsyncMock(return_value=True)
+
+    ok = await _activate_clip_tile(page, MEDIA_ID_A)
+    assert ok is True
+
+    # Selector goes through the data-tile-id attribute with the fe_id_ prefix
+    page.locator.assert_called_with(f"[data-tile-id='fe_id_{MEDIA_ID_A}']")
+
+    # JS script is dispatched with the target media_id
+    page.evaluate.assert_awaited_once()
+    js_src, mid_arg = page.evaluate.await_args.args
+    assert mid_arg == MEDIA_ID_A
+    # Contract: all 5 pointer/mouse event types are fired
+    for ev in ("pointerdown", "mousedown", "pointerup", "mouseup", "click"):
+        assert ev in js_src, f"Dispatch JS must fire {ev}"
+
+
+async def test_activate_clip_tile_returns_false_when_tile_absent():
+    """B32: tile `wait_for(attached)` times out → return False, no JS
+    dispatch. Caller logs a warning + the subsequent mode-button click
+    will either succeed (URL media already matches the target, no
+    activation needed) or raise the B28 extend-child-lockout error."""
+    client, page = _make_client(_edit_url(MEDIA_ID_B))
+    tile_locator = MagicMock()
+    tile_locator.first.wait_for = AsyncMock(side_effect=Exception("timeout"))
+    page.locator = MagicMock(return_value=tile_locator)
+    page.evaluate = AsyncMock()
+
+    ok = await _activate_clip_tile(page, MEDIA_ID_A)
+    assert ok is False
+    page.evaluate.assert_not_awaited()
+
+
+async def test_activate_clip_tile_returns_false_for_empty_media_id():
+    """B32: guard against empty `media_id` — e.g. a malformed job row where
+    B30 walk-up hit the root without finding a non-extend ancestor. Skip
+    the locator call entirely."""
+    client, page = _make_client(_edit_url(MEDIA_ID_B))
+    page.locator = MagicMock()
+    page.evaluate = AsyncMock()
+
+    ok = await _activate_clip_tile(page, "")
+    assert ok is False
+    page.locator.assert_not_called()
+    page.evaluate.assert_not_awaited()

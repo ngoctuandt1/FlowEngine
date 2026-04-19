@@ -287,22 +287,32 @@ async def claim_next_job(
                 if parent_row is not None:
                     bound_profile = parent_row["profile"]
                     bound_project_url = parent_row["project_url"]
+                    # B32 (2026-04-19): edit_url comes from the DIRECT parent
+                    # (not B30 walk-up). Navigating /edit/{grandparent_media}
+                    # after a sibling extend triggers SPA strip (B29 evidence)
+                    # — the direct parent's edit_url is always fresh because
+                    # the parent just completed successfully on that URL.
+                    bound_edit_url: Optional[str] = parent_row["edit_url"]
                 else:
                     bound_profile = None
                     bound_project_url = None
+                    bound_edit_url = None
 
-                # B30 walk-up: start at the direct parent and climb past
-                # extend-video ancestors until a non-extend ancestor (or
-                # the root) is reached. The ancestor's media_id/edit_url
-                # is what the child inherits.
+                # B30 walk-up: find the nearest non-extend-video ancestor's
+                # media_id. This is the SEMANTIC target of the child op —
+                # for L3 insert/remove/camera after an extend, this is L1's
+                # media (the clip we actually want to edit).
+                # B32 split: edit_url uses direct parent (above); media_id
+                # walks up here. Worker navigates to edit_url then activates
+                # bound_media_id's clip via history-panel tile click (see
+                # navigate_to_edit in flow/operations/_base.py).
                 ancestor_id: Optional[str] = job_dict["parent_job_id"]
                 bound_media_id: Optional[str] = None
-                bound_edit_url: Optional[str] = None
                 for _ in range(16):  # safety bound on chain depth
                     if ancestor_id is None:
                         break
                     anc_cur = await db.execute(
-                        "SELECT type, parent_job_id, media_id, edit_url "
+                        "SELECT type, parent_job_id, media_id "
                         "FROM jobs WHERE id = ?",
                         (ancestor_id,),
                     )
@@ -310,11 +320,10 @@ async def claim_next_job(
                     if anc_row is None:
                         break
                     if anc_row["type"] == "extend-video" and anc_row["parent_job_id"]:
-                        # Skip this extend; keep climbing.
+                        # Skip this extend; keep climbing for media_id target.
                         ancestor_id = anc_row["parent_job_id"]
                         continue
                     bound_media_id = anc_row["media_id"]
-                    bound_edit_url = anc_row["edit_url"]
                     break
 
                 await db.execute(
