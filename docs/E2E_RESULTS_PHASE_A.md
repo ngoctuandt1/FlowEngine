@@ -5,6 +5,121 @@
 
 ---
 
+## Tier 2 — 2026-04-19 — Run 14 — ⚠️ **PARTIAL** (B35 re-verified · surfaced B37 download-harvest bug · fix landed same session)
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-19 18:00:24–18:01:51 local (UTC+7); ~1m27s |
+| Tier | 2 — full engine-driven single-job via REST API |
+| Profile | `ngoctuandt20` |
+| Scope | Re-run B35 verify (user: "chạy cái mới") — chain surfaced media-id harvest bug |
+| Branch | `claude/stupefied-feistel-707bac` |
+| Job id | `da2eb837-22d0-45de-9e7a-8a3b352975cc` |
+
+### Single-job result
+
+| # | Job id (short) | type | status | media_id | output |
+|---|---|---|---|---|---|
+| J1 | `da2eb837` | text-to-video (16:9, veo-3.1-fast-lp) | ✅ completed 18:01:51 | **`None`** (harvest failed — see B37) | `downloads\t2v_blob_1776596510.mp4` (1 934 639 B · blob fallback) |
+
+**Verdict: ⚠️ PARTIAL.** B35 x1 force ✅ confirmed again (`Step 4.5: Force output count = x1` + `Output count set to x1 (chip verified)` + `files=1`). But `media_id=None` stored to DB + fell through to `_download_blob` instead of 720p API download → surfaced B37 (download-harvest key mismatch). Same worktree fixed B37 in-session; fix landed + 2 trip-wire tests added (119 pass).
+
+### B35 signals captured (`logs/worker.log`)
+
+```
+18:00:46 flow.operations.generate: Step 4.5: Force output count = x1
+18:00:46 flow.operations.generate: Output count set to x1 (chip verified)
+18:00:48 flow.submit: Submit confirmed: cards 0 -> 2
+18:01:46 flow.wait: Completion via DOM (new video at 57%) after 58s
+18:01:48 flow.operations.generate: Generation complete!
+18:01:48 flow.operations.generate: Step 8: Download video
+18:01:48 [WARNING] flow.download: No media IDs found for download
+18:01:50 flow.download: Blob download: downloads\t2v_blob_1776596510.mp4 (1934639 bytes)
+18:01:51 worker.dispatcher: text-to-video DONE | files=1 media_id=None
+```
+
+(`cards 0 -> 2` is Flow SPA's card-layout quirk — the actual generated clip count is 1 per `files=1`. Pre-B35 submits showed `cards 0 -> 4` with `files=2`.)
+
+### B37 discovery
+
+Comparing Run 13 (17:49, `media_id=7c4fa302` ✅) vs Run 14 (18:00, `media_id=None` ⚠️) on the same account/model/aspect — non-deterministic. Code inspection found two issues:
+
+1. **Key mismatch (primary):** `flow/download.py:50` reads `evt["media_id"]` but `client.py:506` writes `{"mid": ...}`. Primary harvest path always empty.
+2. **List-of-dicts passed as string (secondary fallback):** `_video_urls` iterator passed each dict to `media_id_from_url`, which stringified it. Accidentally worked when the URL carried `?name=…` (Run 13), failed when captures were direct `.mp4` (Run 14).
+
+**In-session fix** — `flow/download.py:49-67`:
+- `evt["mid"]` instead of `evt["media_id"]`
+- unwrap `entry["url"]` before `media_id_from_url(url)`
+
+**Tests** — `tests/test_download.py` +2 source trip-wires locking both contracts. Full suite 119 pass.
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✅ | `profile=ngoctuandt20` on claim + completion |
+| INV-3 Store Everything | ⚠️ partial | `project_url` + `output_files` persisted, `media_id=None` (B37 pre-fix — any L2 child of this job would fail) |
+| **B35 force x1** | ✅ | `Step 4.5: Force output count = x1` + `Output count set to x1 (chip verified)` + `files=1` |
+| **B37 download-harvest** | ❌ surfaced → ✅ fixed same session | See root cause + fix above |
+
+### What this session changed
+
+- `flow/download.py:49-67` — B37 fix (harvest key rename + list-of-dicts unwrap).
+- `tests/test_download.py` +2 trip-wires.
+- `docs/SPEC.md` — appended new B37 entry above B35; B35 header updated with Run 14 re-verify marker.
+- `docs/E2E_RESULTS_PHASE_A.md` — this entry.
+
+---
+
+## Tier 2 — 2026-04-19 — Run 13 — ✅ **PASS (1/1)** — B35 output-count x1 force verified live
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-19 17:49:00–17:53:31 local (UTC+7); ~4m31s single-job run |
+| Tier | 2 — full engine-driven single-job via REST API |
+| Profile | `ngoctuandt20` (default quantity = x2 — the exact account B35 was written to protect) |
+| Scope | B35 live verification — force count=x1 before submit on L1 `text-to-video` |
+| Branch | `claude/stupefied-feistel-707bac` off `master` |
+| Job id | `45f7ccf6-7ea5-4943-a4ea-4ce8ee9dc4ef` |
+
+### Single-job result
+
+| # | Job id (short) | type | status | media_id | output |
+|---|---|---|---|---|---|
+| J1 | `45f7ccf6` | text-to-video (16:9, veo-3.1-fast-lp) | ✅ completed 17:53:30 | `7c4fa302-357a-48c3-952b-08e1e7deb71b` | `downloads\t2v_720p_1776596010.mp4` (17 903 542 B) |
+
+**Verdict: ✅ PASS — B35 confirmed.** `files=1` (single clip, not two) + single `media_id` recorded + worker log proves the Quantity tablist was clicked to x1.
+
+### B35 signals captured (`logs/worker.log`)
+
+```
+17:49:00 worker: Claimed job 45f7ccf6 [text-to-video] profile=ngoctuandt20
+17:49:00 worker.dispatcher: text-to-video START | prompt='B35 live verify x1 - a zen garden at sunset' model=veo-3.1-fast-lp profile=ngoctuandt20
+17:49:16 flow.operations.generate: Step 4.5: Force output count = x1
+17:49:16 flow.operations.generate: Output count set to x1 (chip verified)
+17:53:30 worker.dispatcher: text-to-video DONE | files=1 media_id=7c4fa302-357a-48c3-952b-08e1e7deb71b
+17:53:31 worker: Job 45f7ccf6 result sent -> completed
+```
+
+The `(chip verified)` suffix fires only when `_set_output_count` successfully matches `x1` in the chip's post-close `innerText` — i.e. Flow accepted the x1 selection and the panel actually rendered it. `files=1` from the downstream download path independently confirms the x2→x1 reduction.
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✅ | `profile=ngoctuandt20` on claim + completion |
+| INV-3 Store Everything | ✅ | `project_url` + `media_id` + `output_files` persisted |
+| R-CODE-3 Locale-Independent | ✅ | `_set_output_count` uses the Radix `[id$="-trigger-1"]` selector — no locale strings |
+| **B35 force x1** | ✅ | `Step 4.5: Force output count = x1` + `Output count set to x1 (chip verified)` logs |
+
+### What this session did NOT change
+
+- Zero `.py` diff (verification-only).
+- SPEC.md §D.4 B35: appended `· Tier2 Run 13 verified live 2026-04-19 (job 45f7ccf6, files=1 media_id=7c4fa302, chip verified x1)` marker.
+- No new B-numbered ticket.
+
+---
+
 ## Tier 2 — 2026-04-19 — Run 12 — ✅ **PASS (5/5)** — B32 chain-with-extend-middle verified live
 
 | Field | Value |

@@ -46,9 +46,9 @@ async def download_video(
     # Collect media IDs if not provided
     if not media_ids:
         media_ids = [
-            evt["media_id"]
+            evt["mid"]
             for evt in getattr(client, "_media_id_events", [])
-            if evt.get("media_id")
+            if evt.get("mid")
         ]
 
     if not media_ids:
@@ -59,7 +59,8 @@ async def download_video(
             media_id_from_url = None
 
         if media_id_from_url:
-            for url in getattr(client, "_video_urls", [])[-5:]:
+            for entry in getattr(client, "_video_urls", [])[-5:]:
+                url = entry["url"] if isinstance(entry, dict) else entry
                 mid = media_id_from_url(url)
                 if mid:
                     media_ids.append(mid)
