@@ -114,13 +114,35 @@ const WS = {
   // ---- Private ----
 
   _handleMessage(data) {
-    const { type, payload } = data;
-    if (!type) return;
+    // Server currently emits {event, data}. Older format was {type, payload}.
+    // Accept both — explicit `event` wins when both are present.
+    const eventName = data.event || data.type;
+    const payload = data.data !== undefined ? data.data : data.payload;
 
-    // Emit specific event type
-    this._emit(type, payload);
+    if (!eventName) return;
 
-    // Also emit generic 'message' for any listener
+    // Server emits a single generic "job_update" for every job-state change.
+    // Split it into granular events keyed off `status` so page handlers don't
+    // need to branch on the payload themselves.
+    if (eventName === 'job_update' && payload && typeof payload === 'object') {
+      const status = payload.status;
+      if (status === 'completed') {
+        this._emit('job_completed', payload);
+      } else if (status === 'failed') {
+        this._emit('job_failed', payload);
+      } else if (status === 'cancelled') {
+        this._emit('job_deleted', payload.id || payload.job_id);
+      } else {
+        // pending / claimed / running — upsert signal for listeners
+        this._emit('job_updated', payload);
+      }
+      // Generic catch-all for listeners that want every transition
+      this._emit('job_update', payload);
+    } else {
+      this._emit(eventName, payload);
+    }
+
+    // Always emit generic 'message' for any listener
     this._emit('message', data);
   },
 

@@ -5,6 +5,18 @@
 (() => {
   let wsCleanup = [];
 
+  // In-memory view state for incremental WS updates (P1).
+  // `knownJobs` caches the last-seen job object per id so we can diff the
+  // status transition and apply the correct stat-counter delta. `currentCounts`
+  // mirrors the stats-grid numbers so we avoid refetching /api/jobs/counts
+  // on every WS tick (chain of 5 ops × 2 LP × 3 profiles = dozens of bursts).
+  const knownJobs = new Map();
+  let currentCounts = {
+    pending: 0, claimed: 0, running: 0,
+    completed: 0, failed: 0, cancelled: 0,
+  };
+  const MAX_GRID_CARDS = 20;
+
   function renderStatCard(icon, label, count, statusClass) {
     return `
       <div class="stat-card">
@@ -135,6 +147,18 @@
         console.warn('[Dashboard] API not available, showing empty state:', err.message);
       }
 
+      // Prime the view-state cache so subsequent WS deltas compute correctly.
+      currentCounts = {
+        pending: 0, claimed: 0, running: 0,
+        completed: 0, failed: 0, cancelled: 0,
+        ...counts,
+      };
+      knownJobs.clear();
+      for (const j of jobs) {
+        const id = j.id || j.job_id;
+        if (id) knownJobs.set(id, j);
+      }
+
       const totalPending = (counts.pending || 0) + (counts.claimed || 0);
 
       const statsHtml = `
@@ -212,18 +236,15 @@
         });
       }
 
-      // WebSocket listeners for real-time updates
-      const refresh = () => {
-        if (App.currentPage === 'dashboard') {
-          App._loadPage('dashboard');
-        }
-      };
-
-      const unsub1 = WS.on('job_created', refresh);
-      const unsub2 = WS.on('job_updated', refresh);
-      const unsub3 = WS.on('job_completed', refresh);
-      const unsub4 = WS.on('job_failed', refresh);
-      const unsub5 = WS.on('job_deleted', refresh);
+      // WebSocket listeners — incremental DOM updates (P1). We upsert the
+      // affected card and adjust stat counters in place. A full reload only
+      // happens on page-mount or via the manual refresh button, so a burst of
+      // events during a long chain no longer fires 2 REST calls per tick.
+      const unsub1 = WS.on('job_created', DashboardPage.onJobCreated);
+      const unsub2 = WS.on('job_updated', DashboardPage.onJobUpdated);
+      const unsub3 = WS.on('job_completed', DashboardPage.onJobCompleted);
+      const unsub4 = WS.on('job_failed', DashboardPage.onJobFailed);
+      const unsub5 = WS.on('job_deleted', DashboardPage.onJobDeleted);
       wsCleanup = [unsub1, unsub2, unsub3, unsub4, unsub5];
     },
 
@@ -252,7 +273,98 @@
         App.toast('Failed to delete job: ' + err.message, 'error');
       }
     },
+
+    // ---- P1: Incremental WS handlers (module-level, bound below) ----
+
+    onJobCreated(job) { upsertFromWs(job); },
+    onJobUpdated(job) { upsertFromWs(job); },
+    onJobCompleted(job) { upsertFromWs(job); },
+    onJobFailed(job) { upsertFromWs(job); },
+    onJobDeleted(payload) {
+      if (App.currentPage !== 'dashboard') return;
+      const id = typeof payload === 'string'
+        ? payload
+        : (payload && (payload.id || payload.job_id));
+      if (!id) return;
+      const prev = knownJobs.get(id);
+      knownJobs.delete(id);
+      if (prev) applyStatusDelta(prev.status, null);
+      removeCard(id);
+    },
   };
+
+  // Shared upsert path for all "job arrived / changed" events.
+  function upsertFromWs(job) {
+    if (App.currentPage !== 'dashboard') return;
+    if (!job || typeof job !== 'object') return;
+    const id = job.id || job.job_id;
+    if (!id) return;
+
+    const prev = knownJobs.get(id);
+    knownJobs.set(id, job);
+    applyStatusDelta(prev ? prev.status : null, job.status);
+    upsertCard(job);
+  }
+
+  function applyStatusDelta(oldStatus, newStatus) {
+    if (oldStatus === newStatus) return;
+    if (oldStatus && currentCounts[oldStatus] !== undefined) {
+      currentCounts[oldStatus] = Math.max(0, currentCounts[oldStatus] - 1);
+    }
+    if (newStatus && currentCounts[newStatus] !== undefined) {
+      currentCounts[newStatus] = (currentCounts[newStatus] || 0) + 1;
+    }
+    renderStatsGrid();
+  }
+
+  function renderStatsGrid() {
+    const grid = document.querySelector('.stats-grid');
+    if (!grid) return;
+    const totalPending = (currentCounts.pending || 0) + (currentCounts.claimed || 0);
+    grid.innerHTML = `
+      ${renderStatCard('hourglass_empty', 'Pending', totalPending, 'pending')}
+      ${renderStatCard('play_circle', 'Running', currentCounts.running || 0, 'running')}
+      ${renderStatCard('check_circle', 'Completed', currentCounts.completed || 0, 'completed')}
+      ${renderStatCard('cancel', 'Failed', currentCounts.failed || 0, 'failed')}
+    `;
+  }
+
+  function upsertCard(job) {
+    const id = job.id || job.job_id;
+    const grid = document.getElementById('jobs-grid');
+    // Empty-state has no grid container — fall back to a one-shot reload so
+    // the first job still appears without a manual refresh.
+    if (!grid) {
+      if (App.currentPage === 'dashboard') App._loadPage('dashboard');
+      return;
+    }
+
+    const selector = `.job-card[data-job-id="${cssEscape(id)}"]`;
+    const existing = grid.querySelector(selector);
+    const tmp = document.createElement('div');
+    tmp.innerHTML = renderJobCard(job).trim();
+    const fresh = tmp.firstElementChild;
+    if (!fresh) return;
+
+    if (existing) {
+      existing.replaceWith(fresh);
+    } else {
+      grid.insertAdjacentElement('afterbegin', fresh);
+      const cards = grid.querySelectorAll('.job-card');
+      for (let i = MAX_GRID_CARDS; i < cards.length; i++) cards[i].remove();
+    }
+  }
+
+  function removeCard(id) {
+    const grid = document.getElementById('jobs-grid');
+    if (!grid) return;
+    const el = grid.querySelector(`.job-card[data-job-id="${cssEscape(id)}"]`);
+    if (el) el.remove();
+  }
+
+  function cssEscape(s) {
+    return window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s).replace(/"/g, '\\"');
+  }
 
   // Expose for modal button onclick
   window.DashboardPage = DashboardPage;
