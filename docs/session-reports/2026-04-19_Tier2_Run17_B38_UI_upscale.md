@@ -145,9 +145,52 @@ Zero new unit tests added (live E2E is the definitive verification for this fix 
 - [x] SPEC.md §D.4 B38 entry prepended
 - [x] E2E_RESULTS_PHASE_A.md Run 17 block prepended
 - [x] Session report written (this file)
-- [ ] Commit on `claude/blissful-almeida-59b7fc`
+- [x] Commit on `claude/blissful-almeida-59b7fc` — `d326e33`
+- [x] Run 18 stability validation — 3/3 live (see §11 below)
 - [ ] Supervisor review
 
 ---
 
-_Sign-off: ✅ Ready for supervisor review._
+## 11. Run 18 — stability validation (3× t2v, mixed AR)
+
+Added 2026-04-19 22:07–22:16 local, after Run 17f landed green. Goal: rule out the one-off-fluke hypothesis by exercising three jobs on the same commit (`d326e33`) with mixed orientations + mixed prompt styles.
+
+### Jobs
+
+| # | Job id (short) | prompt | AR | claim → complete | upscale | output | size | ffprobe |
+|---|---|---|---|---|---|---|---|---|
+| J1 | `22c84f49` | a dramatic lighthouse at dusk… | 16:9 | 22:09:?? → 22:11:18 | 66s | `t2v_1080p_1776611477.mp4` | 10 954 416 B / 10.9 MB | 1920×1080 h264 24fps 8.0s |
+| J2 | `09fd6ef7` | a close-up of a violin on a wooden table… | 9:16 | 22:11:?? → 22:13:37 | 51s | `t2v_1080p_1776611618.mp4` | 11 885 371 B / 11.9 MB | 1920×1080 h264 24fps 8.0s |
+| J3 | `87b26c12` | a quiet river flowing through a mossy forest… | 16:9 | 22:14:?? → 22:16:29 | 96s | `t2v_1080p_1776611789.mp4` | 32 573 938 B / 32.6 MB | 1920×1080 h264 24fps 8.0s |
+
+**Verdict: ✅ 3/3 PASS.** Combined with Run 17f: **4/4 live** — B38 upgraded from "first successful run" to **stable** for L1 t2v.
+
+### Observations
+
+- **Orientation-agnostic:** 2× LANDSCAPE + 1× PORTRAIT all hit `tile.click → /edit/ → 1080pUpscaled → save` cleanly, no 720p fallback.
+- **Upscale time 51–96s.** Well inside our retry window (B34b 360s). No retries triggered.
+- **Frame is always 1920×1080 h264** regardless of composer AR. Flow's 1080p upscale pipeline outputs landscape frame; PORTRAIT content is letterboxed inside the same frame. Expected — not a bug, but worth noting if downstream expects 1080×1920 for vertical.
+- **DB invariants:** all 3 jobs have `status=completed` + `output_files=['downloads\\t2v_1080p_*.mp4']` + `media_id` set. INV-3 (store-everything) held across 3/3.
+- **No login-stuck recurrence** — worker hot-reused profile `ngoctuandt20` across all three without reload (the B38 login stuck-detect code is present but wasn't exercised this run; it was the cold-start hazard in 17a).
+
+### Log trace (J2 — PORTRAIT, 51s — fastest of the three)
+
+```
+22:12:41 flow.upscale: [UPSCALE] Clicking tile for SPA nav to /edit/ view
+22:12:41 flow.upscale: [UPSCALE] SPA landed on /edit/: .../project/2e957cd2-…/edit/c5d36ed6-42f2-4f38-87db-477874b2ea08
+22:12:43 flow.upscale: [UPSCALE] i-tag candidate buttons: 1
+22:12:43 flow.upscale: [UPSCALE] Clicked /edit/ download button (i-tag match)
+22:12:43 flow.upscale: [UPSCALE] Clicked 1080pUpscaled menu item
+22:12:46 flow.upscale: [UPSCALE] Upscaling in progress...
+22:13:37 flow.upscale: [UPSCALE] Complete (51s)
+```
+
+### Still open
+
+- **L2+ chain with 1080p download (Run 19)** — extend / insert / remove / camera at L2+ not yet live-verified. The worker should already start on `/edit/` for L2+ (tile-activated by `navigation.py` B32), so `_ensure_edit_view` is expected to short-circuit on the first `if "/edit/" in page.url: return` branch — but not verified.
+- **Concurrent multi-profile (Run 20)** — needs a second English-locale account before scheduling.
+- **Negative paths (Run P3)** — out-of-credit upscale, hard toast failure paths.
+
+---
+
+_Sign-off: ✅ Run 17 + Run 18 — B38 stable for L1 t2v. Ready for supervisor review._

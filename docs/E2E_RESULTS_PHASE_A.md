@@ -5,6 +5,60 @@
 
 ---
 
+## Tier 2 — 2026-04-19 — Run 18 — ✅ **PASS (3/3 1080p)** — B38 stability validation across mixed AR
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-19 22:07–22:16 local (UTC+7); ~9m total for 3 serial jobs |
+| Tier | 2 — full engine-driven 3-job batch via REST API (no chaining — all L1 t2v on fresh projects) |
+| Profile | `ngoctuandt20` |
+| Scope | Rule out Run 17f one-off-fluke hypothesis by exercising the same commit (`d326e33`) across 3 fresh jobs with mixed orientations and content |
+| Branch | `claude/blissful-almeida-59b7fc` (worktree off `master` @ `26ca413`; B38 at `d326e33`) |
+| Job ids | `22c84f49-6cd1-4f22-afda-a3c267bb4ffa` / `09fd6ef7-f4b4-4165-8ac2-70494d28251d` / `87b26c12-8aef-4d22-83c9-bca836c94695` |
+
+### Result
+
+| # | Job id (short) | prompt | AR | upscale | output | size | ffprobe |
+|---|---|---|---|---|---|---|---|
+| J1 | `22c84f49` | a dramatic lighthouse at dusk… | 16:9 | 66s | `downloads\t2v_1080p_1776611477.mp4` | 10 954 416 B / 10.9 MB | 1920×1080 h264 24fps 8.0s |
+| J2 | `09fd6ef7` | a close-up of a violin on a wooden table… | 9:16 | 51s | `downloads\t2v_1080p_1776611618.mp4` | 11 885 371 B / 11.9 MB | 1920×1080 h264 24fps 8.0s |
+| J3 | `87b26c12` | a quiet river flowing through a mossy forest… | 16:9 | 96s | `downloads\t2v_1080p_1776611789.mp4` | 32 573 938 B / 32.6 MB | 1920×1080 h264 24fps 8.0s |
+
+**Verdict: ✅ 3/3 PASS.** Combined with Run 17f: **B38 live pass rate = 4/4**. Stability confirmed for L1 t2v across:
+- Both orientations (LANDSCAPE 16:9 + PORTRAIT 9:16) — no AR coupling
+- Upscale duration range 51–96s (well inside 360s B34b retry window — zero retries triggered)
+- Variable content complexity (simple lighthouse, close-up violin, moving water+foliage) — size varies 10.9→32.6 MB, quality consistent
+
+### Observations
+
+- **Orientation-agnostic nav:** J2 PORTRAIT hit the same `tile.click → /edit/` path cleanly. No AR-specific branch needed in `_ensure_edit_view`.
+- **Frame is always 1920×1080 h264** regardless of composer AR. Flow's 1080p upscale pipeline outputs landscape frame for all orientations; PORTRAIT content is letterboxed inside that frame. Expected — but worth noting for downstream consumers that expect 1080×1920 for vertical video.
+- **DB invariants held 3/3:** `status=completed` + `output_files=['downloads\\t2v_1080p_*.mp4']` + `media_id` populated for all three. INV-3 clean.
+- **No login-stuck event** (all 3 jobs hot-reused an already-authenticated Chrome context; B38 login reload-on-stuck code is present but wasn't exercised — it was Run 17a's cold-start hazard).
+- **`tile.click()` 3/3 successful**: `SPA landed on /edit/` logged within ~1s of click each time. No `page.goto` bounce regressions.
+
+### Log trace (J2 — 9:16 PORTRAIT, 51s — fastest)
+
+```
+22:12:41 flow.upscale: [UPSCALE] Clicking tile for SPA nav to /edit/ view
+22:12:41 flow.upscale: [UPSCALE] SPA landed on /edit/: .../project/2e957cd2-…/edit/c5d36ed6-42f2-4f38-87db-477874b2ea08
+22:12:43 flow.upscale: [UPSCALE] i-tag candidate buttons: 1
+22:12:43 flow.upscale: [UPSCALE] Clicked /edit/ download button (i-tag match)
+22:12:43 flow.upscale: [UPSCALE] Clicked 1080pUpscaled menu item
+22:12:46 flow.upscale: [UPSCALE] Upscaling in progress...
+22:13:37 flow.upscale: [UPSCALE] Complete (51s)
+```
+
+### Gaps / still open
+
+- **Run 19** — L2+ chain (extend / insert / remove / camera) with 1080p download. Worker should already be on `/edit/` for L2+ (B32 tile activation), so `_ensure_edit_view` is expected to short-circuit; not yet live-proven.
+- **Run 20** — concurrent multi-profile. Needs a second English-locale Google account provisioned.
+- **Run P3** — negative paths: out-of-LP-credit upscale, hard toast failure.
+
+See `docs/session-reports/2026-04-19_Tier2_Run17_B38_UI_upscale.md` §11 for the Run 18 stability addendum.
+
+---
+
 ## Tier 2 — 2026-04-19 — Run 17 — ✅ **PASS (1/1 1080p)** — B38 UI-driven 1080p upscale verified live
 
 | Field | Value |
