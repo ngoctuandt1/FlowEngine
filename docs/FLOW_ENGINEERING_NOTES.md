@@ -59,12 +59,13 @@ Each job = fresh browser context + DB-backed metadata recovery. Verified live: `
 | INV-2 | Navigate by `edit_url` only — no DOM card counting, no `video_index` | ✅ | `flow/operations/_base.py::navigate_to_edit` (B27: direct goto primary) |
 | INV-3 | Store Everything after op — `project_url` / `media_id` / `edit_url` / `profile` / `output_files` / `completed_at` | ✅ | `_base.py::finalize_operation` + B22 claim-time propagation |
 | INV-4 | Serial per Project — 2 jobs same `project_url` never concurrent | ✅ | `worker/project_lock.py` + `claim_next_job` `NOT EXISTS active` clause |
-| INV-5 | `media_id` re-extracted per op; **extend + camera mint NEW uuid**, insert/remove preserve (empirical 2026-04-19) | ✅ (revised 3×) | Chain inherits parent's FINAL `media_id` via B22; B30 walks up past extend ancestors |
+| INV-5 | `media_id` re-extracted per op. **Extend mints NEW always**; **camera mints NEW on early-chain (L2 off L1), preserves on deep-chain (L3+ after B32 tile-activation)**; insert/remove preserve in-place (empirical 2026-04-19 Run 10 + Run 12) | ✅ (revised 4×) | Chain inherits parent's FINAL `media_id` via B22; B30 walks up past extend ancestors for `media_id` only; `edit_url` comes from direct parent (B32 split) |
 
 **INV-5 revision history:**
 1. Original: "stable across all L2 ops" (Phase A wording)
 2. 2026-04-19 `3d7b884`: camera mints new; extend/insert/remove preserve
 3. 2026-04-19 Tests 2/3/4 + B30: extend ALSO mints new (empirical J1 → J2 extend = new uuid); insert/remove still TBD (empirically unverified because B28 blocks L3-on-extend chain)
+4. 2026-04-19 post-B32 + Run 12 (B33): camera is **context-dependent** — mints NEW on early-chain (L2 direct off L1 t2v, per Run 10), preserves on deep-chain (L3+ where B32 tile-activation pins URL to active clip, per Run 12 J5). Insert/remove confirmed preserve on deep-chain (Run 12 J3/J4). Engine handles both camera modes correctly via `finalize_operation` re-extraction — no engine-side fix needed, INV-5 wording just needs the nuance.
 
 ---
 
@@ -147,7 +148,7 @@ Each job = fresh browser context + DB-backed metadata recovery. Verified live: `
 2. Click Camera mode button (icon `videocam`)
 3. Grid of presets renders → click preset by exact text (B12)
 4. Verify via `getComputedStyle(labelDiv).color` (B12)
-5. Submit → **mints NEW `media_id`** (INV-5 revised, camera)
+5. Submit → `media_id` context-dependent: NEW on early-chain (L2 off L1), preserves on deep-chain (after B32 tile-activation) (INV-5 revised, B33 nuance)
 6. Download
 
 ### L2 — insert-object
@@ -155,7 +156,7 @@ Each job = fresh browser context + DB-backed metadata recovery. Verified live: `
 2. Click Insert mode (icon `add_box`)
 3. Type prompt (describes what to insert)
 4. `draw_bbox_on_video` (B11 canvas target + pointer-trust)
-5. Submit → preserves `media_id` (INV-5 revised — TBD empirical, not yet verified post-B28)
+5. Submit → preserves `media_id` in-place (INV-5 revised — verified Run 12 post-B32)
 6. Download
 
 ### L2 — remove-object

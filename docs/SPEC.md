@@ -90,32 +90,39 @@
 ### INV-5: Engine Re-Extracts `media_id` per Operation
 > **Sau mỗi operation, engine PHẢI re-extract `media_id` từ `page.url` / network và lưu DB. Chain tiếp sau inherit parent's FINAL media_id qua B22 + B30 walk-up — KHÔNG assume `media_id` stable qua mọi op.**
 
-**Behavior matrix (empirical, revised 2026-04-19 post-B28/B29/B30):**
+**Behavior matrix (empirical, revised 2026-04-19 post-B28/B29/B30; refined post-B32/Run12):**
 
 | Operation | `media_id` post-op | Chain inherits from |
 |---|---|---|
 | `extend-video` | **NEW uuid** — /edit/{new_media} is the extend-output (sidebar disabled) | **Grandparent** (B30 walk-up) |
-| `camera-move` | **NEW uuid** — Flow mints new media | Direct parent (B22) |
-| `insert-object` / `remove-object` | Preserved — **TBD** (not empirically re-verified post-2026-04-19) | Direct parent (B22) |
+| `camera-move` | **Context-dependent** — mints NEW on early positions (L2 directly off L1 t2v), **preserves** on deep-chain positions where URL is pinned to an active clip via B32 tile-activation | Direct parent (B22) |
+| `insert-object` / `remove-object` | Preserved (in-place on active clip) — verified Tier 2 Run 12 post-B32 on deep-chain positions | Direct parent (B22) |
 
 **Evidence:**
-- Tier 2 Run 10 (2026-04-19) — J1 t2v `5920c395-…` → J2 camera-move `e219fc6c-…` (NEW) → J3 insert-object `e219fc6c-…` (preserved at camera→insert boundary). See `docs/E2E_RESULTS_PHASE_A.md`.
+- Tier 2 Run 10 (2026-04-19) — J1 t2v `5920c395-…` → J2 camera-move `e219fc6c-…` (**NEW** — camera at L2 direct-off-L1) → J3 insert-object `e219fc6c-…` (preserved). See `docs/E2E_RESULTS_PHASE_A.md`.
+- Tier 2 Run 12 (2026-04-19, post-B32) — chain `t2v → extend → insert → remove → camera` on ngoctuandt20: J1 t2v `a33b2e9d` → J2 extend `7d53d6fc` (**NEW** per extend) → J3 insert `7d53d6fc` (preserved) → J4 remove `7d53d6fc` (preserved) → **J5 camera-move `7d53d6fc`** (preserved — **did NOT mint new**). See `docs/session-reports/2026-04-19_Tier2_Run12_B32_verify.md` §7 finding-1.
 - WORKPLAN §5.2 Tests 2/3/4 (2026-04-19) — full-chain live runs confirm extend-video mints NEW media_id; chain skips extend-output via B22+B30 inheritance.
 - `docs/session-reports/2026-04-19_B28_B29_probe.md` — DOM probe: extend-output /edit/{new_media} has Insert/Remove/Camera buttons visible but `[disabled]` (extend-child lockout); stale L1 /edit/{old_media} gets `/edit/` stripped by SPA post-sibling-extend.
-- `insert-object` / `remove-object` preservation claim from `FLOW_MULTILEVEL_JOBS.md` §10 (2026-04-16) is **superseded** for extend-video — other two preservations are not empirically re-verified and remain TBD pending a Tier-2 insert/remove-chain run.
+
+**Camera-move nuance (B33, 2026-04-19):** camera-move's media_id behavior is context-dependent:
+- **Early chain (L2 direct off L1 t2v):** Flow mints NEW media — new clip added to project, URL transitions from `/edit/{L1}` → `/edit/{new}`. B22 inheritance for next L3 op captures the NEW uuid correctly.
+- **Deep chain (L3+ after insert/remove/extend where URL is pinned via B32 tile-activation):** Flow applies camera motion IN-PLACE on the active clip — preserves media_id. The post-op URL stays on the existing active clip. B22 inheritance captures the preserved uuid.
+
+This is not an engine bug — Flow's behavior genuinely differs by context, and `finalize_operation` re-extracts from `page.url` correctly in both cases (INV-3 Store Everything still holds). Downstream ops read the final stored `media_id` via B22 and work correctly regardless of whether the value changed.
 
 **Hệ quả:**
-- Chain qua `extend-video` PHẢI dùng B30 walk-up: claim-layer skip extend ancestor(s) đến first non-extend ancestor. Worker navigate đến URL này để tránh B28 (sidebar disabled) + B29 (URL strip).
-- Chain qua `camera-move` dùng J[camera]'s **post-op** media_id trực tiếp (non-extend → B22 baseline, B30 no-op).
-- `extend-video`: URL sau = `/edit/{new_media_id}`; Insert/Remove/Camera sidebar buttons DISABLED trên URL này.
-- `camera-move`: URL sau = `/edit/{new_media_id}`; sidebar buttons enabled.
-- Wrong-tile click trong multi-video project = vi phạm INV-5 (engine acts on WRONG media_id — sibling video thay vì target). B14 `_click_video_tile` media_id-aware guard đúng cho tình huống này bất kể op preserve hay mint new.
+- Chain qua `extend-video` PHẢI dùng B30 walk-up: claim-layer skip extend ancestor(s) đến first non-extend ancestor. B32 split: `edit_url` from direct parent (fresh), `media_id` from walk-up (semantic target). Worker navigates to direct parent's URL, then `_activate_clip_tile(target_media_id)` switches Flow's active clip → sidebar Insert/Remove/Camera re-enable.
+- Chain qua `camera-move` dùng J[camera]'s **post-op** media_id trực tiếp (non-extend → B22 baseline, B30 no-op). `media_id` may be NEW (early-chain) or preserved (deep-chain) — engine handles both via `finalize_operation` re-extraction.
+- `extend-video`: URL sau = `/edit/{new_media_id}`; Insert/Remove/Camera sidebar buttons DISABLED on this URL (B28 extend-child lockout). Use B32 tile activation to re-enable on target clip.
+- `camera-move`: URL sau = `/edit/{active_media_id}` (may be new or same as parent); sidebar buttons enabled.
+- Wrong-tile click trong multi-video project = vi phạm INV-5 (engine acts on WRONG media_id — sibling video thay vì target). B14 `_click_video_tile` media_id-aware guard + B32 `_activate_clip_tile` by target media_id guard against this in both nav-fallback and post-nav activation paths.
 
 **Kiểm tra:**
 - `flow/operations/_base.py:finalize_operation` re-extract media_id từ `page.url` / network — KHÔNG return input media_id.
 - `flow/operations/_base.py:click_action_button` B28 `is_enabled()` check raises "extend-child lockout" diagnostic khi nhắm sai media.
 - `flow/operations/_base.py:navigate_to_edit` B29 final URL check raises "SPA stripped" khi stale media bị SPA strip `/edit/`.
-- `server/db/job_store.py:claim_next_job` L2+ branch walks up past `extend-video` ancestors (B30), then inherits project_url / media_id / edit_url từ non-extend ancestor's completion record (B22 foundation).
+- `flow/operations/_base.py:_activate_clip_tile` B32 dispatches MouseEvent sequence on `[data-tile-id='fe_id_{media_id}']` to switch active clip when URL media ≠ target media.
+- `server/db/job_store.py:claim_next_job` L2+ branch: B22 direct-parent inheritance for `profile` + `project_url` + `edit_url`; B30 walk-up past `extend-video` ancestors for `media_id` only (B32 split).
 
 ---
 
@@ -1690,6 +1697,21 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
   - L1 t2v → L2 extend → L3 extend → L4 insert: worker claims with `edit_url=/edit/{L3_extend}` (direct parent, fresh) + `media_id=L1.media` (walk-up past both extends). Goto L3's URL, activate L1 tile → Insert sidebar enabled.
 - Guard: `tests/test_base.py` updated — `test_navigate_warns_on_media_id_mismatch` rewritten as `test_navigate_activates_target_tile_on_media_mismatch` (asserts `page.evaluate` is called with the target media_id). `tests/test_base.py` +3 new B32 cases: `test_activate_clip_tile_dispatches_mouse_events` (full 5-event sequence contract), `test_activate_clip_tile_returns_false_when_tile_absent` (wait_for timeout → no JS dispatch), `test_activate_clip_tile_returns_false_for_empty_media_id` (empty-string guard). `tests/test_claim_algorithm.py::test_b30_extend_parent_inherits_grandparic_media` + `test_b30_extend_chain_walks_up` updated: `edit_url` assertion now targets direct parent (B32 split), `media_id` still walks up (B30 unchanged).
 - Full-suite verification: **110 pass** (pre-B32 baseline 107 + 3 new; existing tests updated for the split). Zero DeprecationWarning under `-W error::DeprecationWarning`.
+
+### ~~B33 — Camera-move `media_id` behavior is context-dependent, not always "mints NEW" (P2, docs-only)~~ ✅ FIXED (2026-04-19)
+- Root cause: INV-5 revision `3d7b884` (2026-04-19) asserted camera-move "mints NEW uuid" based on Tier 2 Run 10 evidence (J1 t2v → J2 camera at L2 direct off L1). Tier 2 Run 12 (2026-04-19, post-B32) contradicted this with a different chain position: J4 remove → J5 camera at L5 preserved `7d53d6fc` (did NOT mint new).
+- **Pattern (empirical):**
+  - **Early chain** (L2 camera direct off L1 t2v — Run 10 J1→J2 evidence): Flow surfaces a new `/edit/{new_media}` URL transition → mints NEW uuid.
+  - **Deep chain** (L5 camera after B32 tile-activation has pinned the URL to the active clip — Run 12 J4→J5 evidence): Flow applies camera motion in-place on the active clip → preserves media_id.
+- **Not an engine bug.** Flow's SPA genuinely treats these two contexts differently. `finalize_operation` re-extracts from `page.url` in both cases and stores the final value correctly — INV-3 Store Everything still holds. Downstream L3+ jobs read the stored value via B22 and operate on the correct media regardless of whether the uuid changed.
+- **Fix — docs-only:**
+  - SPEC.md §A.1 INV-5 matrix row for camera-move: "Context-dependent — mints NEW on early positions (L2 directly off L1 t2v), **preserves** on deep-chain positions where URL is pinned to an active clip via B32 tile-activation".
+  - Evidence citations updated with both Run 10 (NEW) and Run 12 (preserved) concrete media_id values.
+  - Consequence note added: `finalize_operation` re-extraction handles both modes transparently; no engine-side fix needed.
+  - `CLAUDE.md §4` critical fields + chain invariants synced with context-dependent wording.
+  - `docs/FLOW_ENGINEERING_NOTES.md` INV-5 row + revision history updated (4th revision).
+- **Why P2 not P0:** engine already works correctly in both modes (Run 12 chain completed end-to-end with J5 camera preserved). B33 is a wording clarity issue for future operators reading INV-5, not a correctness bug. If a future engine-side enhancement wants to force camera to always mint new (for downstream chain signal consistency), candidate would be a post-camera-submit URL-bump wait in `flow/operations/camera.py` + re-extract — but not needed now.
+- Guard: source trip-wire not added — the matrix wording is the "test". A future regression to "camera always mints" would surface in Run 10's assertion that J2 camera has a DIFFERENT media than J1 t2v (which still holds — early-chain behavior unchanged).
 
 ### ~~B30 — `claim_next_job` L2+ inherits extend-output media_id instead of walking past extend ancestor (P0)~~ ✅ FIXED (combined commit with B28+B29, 2026-04-19; refined by B32 2026-04-19)
 - Root cause: INV-5 re-revision (2026-04-19) — empirical Tier 2 Run 10 + WORKPLAN §5.2 Tests 2/3/4 show that `extend-video` mints a NEW `media_id` (was "preserved" in the pre-2026-04-19 behavior matrix). B22 inherit-from-direct-parent landed the worker on `/edit/{new_media}` (the extend-output), whose sidebar buttons are disabled (B28) and whose raw L1 sibling URL can be stripped by the SPA (B29). Both are unrecoverable at the worker layer.
