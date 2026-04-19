@@ -5,6 +5,81 @@
 
 ---
 
+## Tier 2 — 2026-04-19 — Run 15 — ✅ **PASS (3/3)** — B37 harvest + B35 x1 verified across 3 diverse t2v jobs
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-19 18:33:38–18:47:04 local (UTC+7); ~13m26s serial |
+| Tier | 2 — full engine-driven parallel-queue / serial-execute via REST API |
+| Profile | `ngoctuandt20` (1 profile → worker runs 3 jobs serially) |
+| Scope | Regression check for B37 (`7914020`) + B35 (`dc486a7`) across 3 diverse prompts and mixed aspect ratios (16:9 / 9:16 / 16:9) |
+| Branch | `claude/condescending-mcnulty-82b9c3` (worktree off `master` @ `7914020`) |
+| Job IDs | `a0333bca`, `4f60e9f7`, `36c845bb` |
+
+### Three-job result
+
+| # | Job id (short) | prompt | AR | status | media_id | output |
+|---|---|---|---|---|---|---|
+| J1 | `a0333bca` | cinematic aerial shot of a coastal lighthouse at golden hour | 16:9 | ✅ 18:38:16 | `3e9f60e2-caec-4031-a9de-a9c7bf271ec0` | `downloads\t2v_720p_1776598695.mp4` (5 137 569 B) |
+| J2 | `4f60e9f7` | a hummingbird hovering near bright red hibiscus flowers | 9:16 | ✅ 18:42:45 | `988440e4-41a5-4431-bfa6-c481e047db7f` | `downloads\t2v_720p_1776598965.mp4` (2 439 801 B) |
+| J3 | `36c845bb` | sunrise over a snowy mountain ridge reflected in a lake | 16:9 | ✅ 18:47:04 | `0c70a870-d799-4c22-984e-c7a0db5c84f8` | `downloads\t2v_720p_1776599223.mp4` (3 973 522 B) |
+
+**Verdict: ✅ PASS.** All pass criteria met across 3/3 jobs with zero regressions vs Run 14's post-fix state.
+
+### Pass-criteria scorecard
+
+| Criterion | Expected | Observed | Verdict |
+|---|---|---|---|
+| B35 `Output count set to x1 (chip verified)` | 3× | 3× (18:34:04 / 18:38:35 / 18:43:01) | ✅ |
+| B37 dispatcher DONE `media_id=<uuid>` not `None` | 3× | 3× (`3e9f60e2` / `988440e4` / `0c70a870`) | ✅ |
+| B37 output file `t2v_720p_*.mp4` (API path) | 3× | 3× | ✅ |
+| B37 output file `t2v_blob_*.mp4` (fallback path) | 0× | 0× | ✅ |
+| `files=1` (B35 x1 downstream) | 3× | 3× | ✅ |
+| `Traceback` / `ERROR` / `FAILED` / `No media IDs` | 0 each | 0 / 0 / 0 / 0 | ✅ |
+
+### B35 signals captured (`logs/worker.log`, deduplicated)
+
+```
+18:34:04 flow.operations.generate: Step 4.5: Force output count = x1                         (J1)
+18:34:04 flow.operations.generate: Output count set to x1 (chip verified)                    (J1)
+18:38:35 flow.operations.generate: Aspect ratio set to 9:16 (chip verified: crop_9_16)       (J2)
+18:38:35 flow.operations.generate: Output count set to x1 (chip verified)                    (J2)
+18:43:01 flow.operations.generate: Output count set to x1 (chip verified)                    (J3)
+```
+
+### B37 signals captured (`logs/worker.log`, deduplicated)
+
+```
+18:38:15 flow.download: Downloaded 720p: downloads\t2v_720p_1776598695.mp4 (5137569 bytes)   (J1)
+18:38:16 worker.dispatcher: text-to-video DONE | files=1 media_id=3e9f60e2-caec-4031-...
+18:42:45 flow.download: Downloaded 720p: downloads\t2v_720p_1776598965.mp4 (2439801 bytes)   (J2)
+18:42:45 worker.dispatcher: text-to-video DONE | files=1 media_id=988440e4-41a5-4431-...
+18:47:03 flow.download: Downloaded 720p: downloads\t2v_720p_1776599223.mp4 (3973522 bytes)   (J3)
+18:47:04 worker.dispatcher: text-to-video DONE | files=1 media_id=0c70a870-d799-4c22-...
+```
+
+### Invariants observed
+
+| Invariant | Status | Evidence |
+|---|---|---|
+| INV-1 Account Binding | ✅ | All 3 jobs stored `profile=ngoctuandt20`; worker only claimed profile-matching rows |
+| INV-3 Store Everything | ✅ | 3/3 persisted `project_url` + `media_id` (real UUIDv4) + `output_files` + `completed_at` — Run 14's `media_id=None` regression fully suppressed |
+| R-CODE-3 Locale-Independent | ✅ | J2 9:16 chip via `crop_9_16` selector (B19); all 3 x1 chips via Radix `[id$="-trigger-1"]` (B35) |
+| **B35 force x1** | ✅ | 3× `Output count set to x1 (chip verified)` + 3× `files=1` |
+| **B37 harvest key** | ✅ | 3× `media_id=<uuid>` in DONE logs + 3× API path + 0× blob fallback |
+
+### What this session did NOT change
+
+- Zero `.py` diff (verification-only).
+- No SPEC.md §D.4 change (B35/B37 markers already present from Run 13 / Run 14).
+- Session report committed: `docs/session-reports/2026-04-19_Tier2_Run15_B37_verify.md`.
+
+### Residual observation (out of scope, P3)
+
+All 3 jobs fell through to 720p after exhausting `FLOW_UPSCALE_MAX_RETRIES=12 × 15s = 180s` polling on the `_upsampled` endpoint. `downloads/` historical count: 0 `t2v_1080p_*` files across all runs. B34's window-extension (30s → 180s) is still insufficient for Flow's actual upscale latency on `veo-3.1-fast-lp`. Not investigated — 1080p is not required for this task. Future option: bump `FLOW_UPSCALE_MAX_RETRIES` via env var (zero code change; already env-configurable at [`flow/download.py:21-22`](flow/download.py:21)) or open B38-candidate to probe Flow's actual upscale behavior.
+
+---
+
 ## Tier 2 — 2026-04-19 — Run 14 — ⚠️ **PARTIAL** (B35 re-verified · surfaced B37 download-harvest bug · fix landed same session)
 
 | Field | Value |
