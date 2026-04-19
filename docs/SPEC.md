@@ -35,7 +35,7 @@
   - [D.1 — Google Flow UI gotchas](#d1--google-flow-ui-gotchas)
   - [D.2 — Playwright / Chrome gotchas](#d2--playwright--chrome-gotchas)
   - [D.3 — Server / DB gotchas](#d3--server--db-gotchas)
-  - [D.4 — Known bugs trong code hiện tại (B1-B27)](#d4--known-bugs-trong-code-hiện-tại-b1-b27)
+  - [D.4 — Known bugs trong code hiện tại (B1-B30)](#d4--known-bugs-trong-code-hiện-tại-b1-b30)
 - [PHẦN E — DEBUG PLAYBOOK](#phần-e--debug-playbook)
 - [PHẦN F — GLOSSARY](#phần-f--glossary)
 - [PHẦN G — EXTERNAL REFERENCES](#g--external-references)
@@ -88,28 +88,34 @@
 **Implementation:** `worker/project_lock.py` + điều kiện `NO active claim on project_url` trong `claim_next_job`.
 
 ### INV-5: Engine Re-Extracts `media_id` per Operation
-> **Sau mỗi operation, engine PHẢI re-extract `media_id` từ `page.url` / network và lưu DB. Chain tiếp sau inherit parent's FINAL media_id qua B22 — KHÔNG assume `media_id` stable qua mọi op.**
+> **Sau mỗi operation, engine PHẢI re-extract `media_id` từ `page.url` / network và lưu DB. Chain tiếp sau inherit parent's FINAL media_id qua B22 + B30 walk-up — KHÔNG assume `media_id` stable qua mọi op.**
 
-**Behavior matrix (empirical):**
+**Behavior matrix (empirical, revised 2026-04-19 post-B28/B29/B30):**
 
-| Operation | `media_id` post-op |
-|---|---|
-| `extend-video` / `insert-object` / `remove-object` | Preserved (Flow updates in-place) |
-| `camera-move` | **NEW uuid** — Flow mints new media |
+| Operation | `media_id` post-op | Chain inherits from |
+|---|---|---|
+| `extend-video` | **NEW uuid** — /edit/{new_media} is the extend-output (sidebar disabled) | **Grandparent** (B30 walk-up) |
+| `camera-move` | **NEW uuid** — Flow mints new media | Direct parent (B22) |
+| `insert-object` / `remove-object` | Preserved — **TBD** (not empirically re-verified post-2026-04-19) | Direct parent (B22) |
 
 **Evidence:**
-- `docs/FLOW_MULTILEVEL_JOBS.md` §10 — 4-op test 2026-04-16: extend / insert / remove preserve same `1eb6fea7-f1d4-4fcc-a25f-7ca3e06470be`.
-- Tier 2 Run 10 (2026-04-19) — J1 t2v `5920c395-…` → J2 camera-move `e219fc6c-…` (NEW) → J3 insert-object `e219fc6c-…` (preserved). See `docs/E2E_RESULTS_PHASE_A.md`.
+- Tier 2 Run 10 (2026-04-19) — J1 t2v `5920c395-…` → J2 camera-move `e219fc6c-…` (NEW) → J3 insert-object `e219fc6c-…` (preserved at camera→insert boundary). See `docs/E2E_RESULTS_PHASE_A.md`.
+- WORKPLAN §5.2 Tests 2/3/4 (2026-04-19) — full-chain live runs confirm extend-video mints NEW media_id; chain skips extend-output via B22+B30 inheritance.
+- `docs/session-reports/2026-04-19_B28_B29_probe.md` — DOM probe: extend-output /edit/{new_media} has Insert/Remove/Camera buttons visible but `[disabled]` (extend-child lockout); stale L1 /edit/{old_media} gets `/edit/` stripped by SPA post-sibling-extend.
+- `insert-object` / `remove-object` preservation claim from `FLOW_MULTILEVEL_JOBS.md` §10 (2026-04-16) is **superseded** for extend-video — other two preservations are not empirically re-verified and remain TBD pending a Tier-2 insert/remove-chain run.
 
 **Hệ quả:**
-- Chain qua `camera-move` PHẢI dùng J[camera]'s **post-op** media_id, không phải pre-op. Engine handle đúng qua INV-3 Store Everything + B22 inherit-from-parent's-completion-record.
-- In-place ops (extend / insert / remove): URL sau = URL trước; history +1 entry.
-- `camera-move`: URL sau = `/edit/{new_media_id}`; history vẫn +1 entry.
+- Chain qua `extend-video` PHẢI dùng B30 walk-up: claim-layer skip extend ancestor(s) đến first non-extend ancestor. Worker navigate đến URL này để tránh B28 (sidebar disabled) + B29 (URL strip).
+- Chain qua `camera-move` dùng J[camera]'s **post-op** media_id trực tiếp (non-extend → B22 baseline, B30 no-op).
+- `extend-video`: URL sau = `/edit/{new_media_id}`; Insert/Remove/Camera sidebar buttons DISABLED trên URL này.
+- `camera-move`: URL sau = `/edit/{new_media_id}`; sidebar buttons enabled.
 - Wrong-tile click trong multi-video project = vi phạm INV-5 (engine acts on WRONG media_id — sibling video thay vì target). B14 `_click_video_tile` media_id-aware guard đúng cho tình huống này bất kể op preserve hay mint new.
 
 **Kiểm tra:**
 - `flow/operations/_base.py:finalize_operation` re-extract media_id từ `page.url` / network — KHÔNG return input media_id.
-- `server/db/job_store.py:claim_next_job` L2+ branch inherit project_url / media_id / edit_url từ parent's completion record (B22).
+- `flow/operations/_base.py:click_action_button` B28 `is_enabled()` check raises "extend-child lockout" diagnostic khi nhắm sai media.
+- `flow/operations/_base.py:navigate_to_edit` B29 final URL check raises "SPA stripped" khi stale media bị SPA strip `/edit/`.
+- `server/db/job_store.py:claim_next_job` L2+ branch walks up past `extend-video` ancestors (B30), then inherits project_url / media_id / edit_url từ non-extend ancestor's completion record (B22 foundation).
 
 ---
 
@@ -1297,7 +1303,7 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 
 ---
 
-## D.4 — Known bugs trong code hiện tại (B1-B27)
+## D.4 — Known bugs trong code hiện tại (B1-B30)
 
 > Các bug này là **gap** sau khi 7 bug cũ (#2-#8) đã fix. Trong Phase A sẽ đóng. B10-B13 là residual discoveries (B10 từ B8, B11-B13 từ Tier1 DOM validation 2026-04-17). B14-B17 là stash-triage cherry-picks (2026-04-17 / 2026-04-18). B18 là Tier2 2026-04-18 discovery (homepage locale-hardcoded selector blocked every T2V job on non-EN Google account). B19 là Tier2 2026-04-18 post-B18 discovery (aspect-ratio chip selector depended on model-name text + pre-open Radix state — both surfaced only once B18 unblocked code flow past homepage). B22 là Tier2 2026-04-18 post-B19 discovery (L2+ claim branch inherited only `profile`, not `project_url`/`media_id`/`edit_url` — surfaced only when a chain successfully reached J2 for the first time). B26 là Tier2 2026-04-19 post-B22 discovery (during live-extension E2E verification of the B22 fix): `_switch_to_video_tab`'s JS fallback used `lower.includes('videocam')` which also matched /edit/ Camera mode-switch button (innerText `"videocam\nCamera"`) — clicking it silently redirected the composer from /edit/ to /project/ between `select_model` and `submit_with_confirmation`, so the submit POST never fired. Same class of fuzzy-text leak also lived in `flow/submit.py` (submit selector) and `flow/operations/_base.py::click_action_button` (mode button selector) — B26 fixed all three via Playwright `:text-is(...)` exact-match engine on Material Icon `<i>` ligature children.
 
@@ -1652,6 +1658,36 @@ Hiện tại không có auth trên WS. LAN/localhost OK, nhưng deploy public ph
 - Full-suite verification: **95 pass** (pre-B27 baseline 93 + 2 new). Zero DeprecationWarning under `-W error::DeprecationWarning`. No other test file touched.
 - Comment in `navigate_to_edit` updated — old comment claimed "Direct /edit/ URLs often fail because the Flow SPA needs the project context loaded first", which was true on VI-locale accounts but false on EN. New comment cites the 2026-04-19 probe and flags VI-locale as the known edge case handled by the fallback.
 - Reference: `scripts/probe_direct_edit_url.py` (kept in tree as a repeatable probe if this path's behavior shifts in a future Flow release). Session report: `docs/session-reports/2026-04-19_Tier2_Run10_VI_final.md` §7 "Out-of-scope discoveries".
+
+### ~~B28 — `click_action_button` silent timeout on extend-child lockout (P0)~~ ✅ FIXED (combined commit with B30+B29, 2026-04-19)
+- Discovered via DOM probe 2026-04-19 after B22 landed: extend-output `/edit/{new_media}` renders the Insert/Remove/Camera sidebar buttons as `<button disabled>` ("extend-child lockout" — Flow disallows operating directly on an extend-output URL). Pre-B28 `click_action_button` reached the `.click(timeout=5000)` call on a disabled button and Playwright raised a generic timeout surfaced to the operator as `"Failed to find Camera button"` — a misleading diagnostic that pointed at selector authoring rather than the B22/B30 inheritance root cause.
+- File: `flow/operations/_base.py::click_action_button` — both Pass 1 (title selector) and Pass 2 (icon fallback) now add an `is_enabled()` check after `is_visible()`. On visible-but-disabled, raise `RuntimeError(f"Mode button {title!r} disabled — extend-child lockout (FLOW_BUTTON_EXACT §5.1). Check B22 inheritance.")`. The generic `except Exception: continue` inside each Pass is preceded by `except RuntimeError: raise` so the diagnostic propagates instead of being swallowed by the next-selector fallback.
+- **Why safe:** the `is_visible` precondition is unchanged; the new `is_enabled` check only adds an early raise when the button is both visible AND disabled (the extend-child-lockout shape specifically). Pass 1 and Pass 2 remain reachable on all other shapes.
+- Interaction with B30: once B30 walk-up inherits the grandparent's media_id, the worker navigates to a non-extend URL where sidebar buttons are enabled → B28 never trips in the happy path. B28 remains the diagnostic backstop if a future regression re-introduces extend-output targeting.
+- Guard: `tests/test_base.py` +2 B28 cases — `test_click_action_button_raises_on_disabled` (RED pre-B28), `test_click_action_button_clicks_when_enabled` (regression guard).
+- Session report: `docs/session-reports/2026-04-19_B30_B28_B29_combined.md`.
+
+### ~~B29 — `navigate_to_edit` silent fallback on SPA-stripped /edit/ URL (P0)~~ ✅ FIXED (combined commit with B30+B28, 2026-04-19)
+- Discovered via DOM probe 2026-04-19: when an L1 `/edit/{original_media}` points at media that's been consumed by a sibling extend, the Flow SPA strips `/edit/` and leaves the page on `/project/{id}`. Pre-B29 `navigate_to_edit` fell through to the tile-click fallback, which (if anything remotely visible matched) landed on an arbitrary sibling video — silently violating INV-5. If the fallback also failed, the final raise read `"Failed to enter edit mode"`, again pointing operators at selectors/navigation rather than the B22 inheritance root cause.
+- File: `flow/operations/_base.py::navigate_to_edit` — the final URL check (`if "/edit/" not in current`) now raises `RuntimeError(f"SPA stripped /edit/ segment → {page.url}. Media may be stale post-sibling-extend. Check B22 inheritance.")` instead of the generic message. Check is at the END of `navigate_to_edit` so the existing tile-click fallback (B27 `_click_video_tile` media_id-aware) still runs first for legitimate SPA-bounce cases; only after that fallback also fails does B29 fire.
+- **Why safe:** the guard replaces an already-existing raise at the same point. No new code paths are added; the message and diagnostic hint change. Tile-click fallback behavior is untouched.
+- Interaction with B30: once B30 walk-up navigates via the grandparent's stable `/edit/{original_media}` URL, B29 never trips because the SPA doesn't strip that URL. B29 remains the diagnostic backstop if a future regression re-introduces stale-media targeting.
+- Guard: `tests/test_base.py` +2 B29 cases — `test_navigate_to_edit_raises_on_url_strip` (RED pre-B29), `test_navigate_to_edit_passes_when_url_intact` (regression guard). Existing `test_navigate_raises_when_not_in_edit_mode` match regex updated from `"edit mode"` → `"SPA stripped"` to track the revised message.
+- Session report: `docs/session-reports/2026-04-19_B30_B28_B29_combined.md`.
+
+### ~~B30 — `claim_next_job` L2+ inherits extend-output media_id instead of walking past extend ancestor (P0)~~ ✅ FIXED (combined commit with B28+B29, 2026-04-19)
+- Root cause: INV-5 re-revision (2026-04-19) — empirical Tier 2 Run 10 + WORKPLAN §5.2 Tests 2/3/4 show that `extend-video` mints a NEW `media_id` (was "preserved" in the pre-2026-04-19 behavior matrix). B22 inherit-from-direct-parent landed the worker on `/edit/{new_media}` (the extend-output), whose sidebar buttons are disabled (B28) and whose raw L1 sibling URL can be stripped by the SPA (B29). Both are unrecoverable at the worker layer.
+- File: `server/db/job_store.py::claim_next_job` L2+ branch — replaces the single-SELECT B22 inheritance with a walk-up loop (bounded to 16 iterations for malformed-chain safety):
+  1. Direct parent still supplies `profile` + `project_url` (invariant across the chain).
+  2. For `media_id` + `edit_url`: start at the direct parent and follow `parent_job_id` while `type == 'extend-video' AND parent_job_id IS NOT NULL`. Stop at the first non-extend ancestor (or the root) and inherit its `media_id` + `edit_url`.
+- **Chain behavior:**
+  - L1 t2v → L2 extend → L3 insert: L3 claims L1's media (skips L2).
+  - L1 t2v → L2 extend → L3 extend → L4 insert: L4 claims L1's media (skips L2 + L3).
+  - L1 t2v → L2 camera-move → L3 insert: L3 claims L2's media (camera-move is non-extend → B22 baseline preserved; B30 walk-up is a no-op).
+- **Why safe:** the walk-up only activates when `type == 'extend-video'` — for the ~75% of L2+ jobs whose parent is camera-move/insert-object/remove-object/text-to-video, the loop terminates at the direct parent on the first iteration. The 16-iteration bound prevents infinite loops on malformed chains (e.g. a hypothetical self-referencing `parent_job_id`). The existing B22 contract for non-extend parents is preserved bit-for-bit.
+- Guard: `tests/test_claim_algorithm.py` +3 B30 cases — `test_b30_extend_parent_inherits_grandparent_media` (single extend ancestor), `test_b30_extend_chain_walks_up` (two extend ancestors), `test_b30_non_extend_parent_uses_parent_media` (camera-move baseline regression guard). All 4 pre-existing B22 cases still pass unmodified (they use `TEXT_TO_VIDEO` parent → non-extend → walk-up is a no-op).
+- Full-suite verification: **107 pass** (pre-B28/B29/B30 baseline 100 + 7 new). Zero DeprecationWarning under `-W error::DeprecationWarning`.
+- Session report: `docs/session-reports/2026-04-19_B30_B28_B29_combined.md`.
 
 ---
 

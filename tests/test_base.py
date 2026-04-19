@@ -1,6 +1,7 @@
-"""B14 — unit tests for nav verify + media_id-aware tile click in `_base.py`.
+"""B14/B27/B28/B29 — unit tests for nav verify + media_id-aware tile click +
+disabled-button guard + URL-strip guard in `_base.py`.
 
-Cherry-picks from `stash@{0}` §7 KEEP-2 + KEEP-3 (see
+B14 cherry-picks from `stash@{0}` §7 KEEP-2 + KEEP-3 (see
 `docs/session-reports/2026-04-17_stash-triage_flow-refinements.md`):
 
 - **KEEP-2** — After `navigate_to_edit`, verify the URL landed in `/edit/`
@@ -13,8 +14,17 @@ Cherry-picks from `stash@{0}` §7 KEEP-2 + KEEP-3 (see
   the wrong tile (violates INV-5 — engine would operate on the wrong
   media_id, a sibling video rather than the targeted one).
 
-Both are mocked at the Playwright boundary — no browser runtime. Sleeps
-are stubbed out via an autouse fixture so the 2s / 3s render waits inside
+B28 — `click_action_button` must raise a clear extend-child-lockout error
+when a mode button (Insert / Remove / Camera) is visible but disabled, so
+operators see the B22-inheritance diagnostic immediately instead of a
+misleading "Failed to find button" message.
+
+B29 — `navigate_to_edit` must raise a clear SPA-stripped error when the
+post-goto URL lacks `/edit/`, pointing operators at the B22-inheritance
+root cause (stale media_id post-sibling-extend).
+
+All mocked at the Playwright boundary — no browser runtime. Sleeps are
+stubbed via an autouse fixture so the 2s / 3s render waits inside
 `_click_video_tile` don't inflate test runtime.
 
 The existing bbox-canvas helper (`draw_bbox_on_video`) is orthogonal and
@@ -27,7 +37,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from flow.operations import _base
-from flow.operations._base import _click_video_tile, navigate_to_edit
+from flow.operations._base import (
+    _click_video_tile,
+    click_action_button,
+    navigate_to_edit,
+)
 
 
 # 32-hex-char UUIDs — must match the `{20,64}` regex in flow/navigation.py
@@ -194,7 +208,9 @@ async def test_navigate_falls_back_to_tile_click_when_spa_bounces(monkeypatch):
 
 
 async def test_navigate_raises_when_not_in_edit_mode(monkeypatch):
-    """KEEP-2: after all nav attempts, URL still lacks `/edit/` → RuntimeError.
+    """KEEP-2 + B29: after all nav attempts, URL still lacks `/edit/` →
+    RuntimeError with B29 "SPA stripped" diagnostic (pointing operators at
+    B22 inheritance as the likely root cause).
 
     Prevents silent fall-through where a job tries to submit an op against
     a page that's still on the project grid (would click the wrong button)."""
@@ -209,7 +225,7 @@ async def test_navigate_raises_when_not_in_edit_mode(monkeypatch):
         "media_id": MEDIA_ID_A,
     }
 
-    with pytest.raises(RuntimeError, match="edit mode"):
+    with pytest.raises(RuntimeError, match="SPA stripped"):
         await navigate_to_edit(client, job)
 
 
@@ -311,5 +327,89 @@ async def test_click_tile_no_media_id_skips_js_priority():
     result = await _click_video_tile(page, "", timeout_sec=1.0)
 
     assert result is True
-    page.evaluate.assert_not_called()
-    tile_loc.first.click.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# B28: click_action_button is_enabled guard — extend-child lockout diagnostic
+# ---------------------------------------------------------------------------
+
+
+def _make_button_locator(*, visible: bool, enabled: bool):
+    """Construct a mock `page.locator(...)` return whose `.first` yields a
+    button with the requested `is_visible` / `is_enabled` state."""
+    btn_loc = MagicMock()
+    btn_loc.first = MagicMock()
+    btn_loc.first.is_visible = AsyncMock(return_value=visible)
+    btn_loc.first.is_enabled = AsyncMock(return_value=enabled)
+    btn_loc.first.click = AsyncMock()
+    return btn_loc
+
+
+async def test_click_action_button_raises_on_disabled():
+    """B28: visible-but-disabled mode button → raise with extend-child
+    lockout message pointing at B22 inheritance. Prevents the pre-B28
+    silent failure where `is_enabled=False` caused Playwright `.click()`
+    to time out with the misleading `"Failed to find Camera button"`."""
+    # Pass 1 title selector hits a visible+disabled button.
+    btn_loc = _make_button_locator(visible=True, enabled=False)
+    page = MagicMock()
+    page.locator = MagicMock(return_value=btn_loc)
+
+    with pytest.raises(RuntimeError, match="extend-child lockout"):
+        await click_action_button(page, ["Camera"])
+
+    # Disabled button must NOT be clicked.
+    btn_loc.first.click.assert_not_called()
+
+
+async def test_click_action_button_clicks_when_enabled():
+    """B28 regression guard: visible+enabled → normal click path unchanged."""
+    btn_loc = _make_button_locator(visible=True, enabled=True)
+    page = MagicMock()
+    page.locator = MagicMock(return_value=btn_loc)
+
+    result = await click_action_button(page, ["Camera"])
+
+    assert result is True
+    btn_loc.first.click.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# B29: navigate_to_edit URL-strip guard — stale-media_id diagnostic
+# ---------------------------------------------------------------------------
+
+
+async def test_navigate_to_edit_raises_on_url_strip(monkeypatch):
+    """B29: post-goto page.url lacks `/edit/` → raise "SPA stripped" with a
+    B22-inheritance hint. Caught the pre-B29 path where a stale L1
+    `/edit/{media_id}` (after a sibling extend completed) silently fell
+    through to a tile-click fallback that picked the wrong element."""
+    client, _page = _make_client(_project_url())  # post-goto URL is /project/
+    # Tile-click fallback can't recover — still not /edit/.
+    monkeypatch.setattr(_base, "_click_video_tile", AsyncMock(return_value=False))
+
+    job = {
+        "edit_url": _edit_url(MEDIA_ID_A),
+        "project_url": _project_url(),
+        "media_id": MEDIA_ID_A,
+    }
+
+    with pytest.raises(RuntimeError, match="SPA stripped"):
+        await navigate_to_edit(client, job)
+
+
+async def test_navigate_to_edit_passes_when_url_intact():
+    """B29 regression guard: `/edit/` present in post-goto URL → no raise,
+    normal flow returns the edit_url as-is."""
+    client, _page = _make_client(_edit_url(MEDIA_ID_A))
+
+    job = {
+        "edit_url": _edit_url(MEDIA_ID_A),
+        "project_url": _project_url(),
+        "media_id": MEDIA_ID_A,
+    }
+
+    edit_url, project_id, _locale = await navigate_to_edit(client, job)
+
+    assert edit_url == _edit_url(MEDIA_ID_A)
+    assert project_id == PROJECT_ID

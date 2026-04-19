@@ -96,8 +96,16 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     # Verify we're in edit mode for the right media
     current = page.url
     if "/edit/" not in current:
-        logger.error("Failed to enter edit mode. URL: %s", current[:100])
-        raise RuntimeError("Failed to enter edit mode")
+        # B29 (2026-04-19): when an L1 /edit/{media_id} points at a media
+        # that's been consumed by a sibling extend, the SPA strips `/edit/`
+        # and leaves us on /project/ — the tile-click fallback then can't
+        # recover. Surface this as a B22-inheritance hint so operators
+        # look at the claim-time ancestor rather than hunt DOM changes.
+        logger.error("SPA stripped /edit/ segment. URL: %s", current[:100])
+        raise RuntimeError(
+            f"SPA stripped /edit/ segment → {current}. "
+            f"Media may be stale post-sibling-extend. Check B22 inheritance."
+        )
 
     # Log if we landed on a different media than requested (but proceed —
     # Flow SPA often redirects edit URLs; the important thing is being in
@@ -161,10 +169,22 @@ async def click_action_button(page, button_texts: list[str], timeout_ms: int = 5
         try:
             btn = page.locator(f"button[title='{text}']").first
             if await btn.is_visible(timeout=1500):
+                # B28 (2026-04-19): on extend-output /edit/{new_media} the
+                # Insert/Remove/Camera buttons render but Flow sets them
+                # disabled ("extend-child lockout"). Pre-B28 the click would
+                # time out with a misleading "Failed to find button" error.
+                # Raise early with the B22-inheritance diagnostic instead.
+                if not await btn.is_enabled():
+                    raise RuntimeError(
+                        f"Mode button {text!r} disabled — extend-child lockout "
+                        f"(FLOW_BUTTON_EXACT §5.1). Check B22 inheritance."
+                    )
                 await btn.click(timeout=timeout_ms)
                 logger.info("Clicked mode button via title=%r", text)
                 await asyncio.sleep(0.5)
                 return True
+        except RuntimeError:
+            raise
         except Exception:
             continue
 
@@ -177,10 +197,17 @@ async def click_action_button(page, button_texts: list[str], timeout_ms: int = 5
         try:
             btn = page.locator(f"button:has(i:text-is('{icon}'))").first
             if await btn.is_visible(timeout=1500):
+                if not await btn.is_enabled():
+                    raise RuntimeError(
+                        f"Mode button {text!r} disabled — extend-child lockout "
+                        f"(FLOW_BUTTON_EXACT §5.1). Check B22 inheritance."
+                    )
                 await btn.click(timeout=timeout_ms)
                 logger.info("Clicked mode button via icon=%r (requested title=%r)", icon, text)
                 await asyncio.sleep(0.5)
                 return True
+        except RuntimeError:
+            raise
         except Exception:
             continue
 

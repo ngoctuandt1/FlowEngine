@@ -260,10 +260,24 @@ async def claim_next_job(
 
             if row is not None:
                 job_dict = dict(row)
-                # B4 profile + B22 target-field inheritance — parent is the
-                # single source of truth. Without project_url/media_id/edit_url
-                # the worker's navigate_to_edit has no target and every L2+
-                # op fails before touching Flow (INV-2 + INV-3 gap).
+                # B4 profile + B22 target-field inheritance + B30 extend
+                # walk-up. The direct parent supplies `profile` and
+                # `project_url` (both invariant across the chain), but
+                # `media_id`/`edit_url` must come from the nearest
+                # non-`extend-video` ancestor. Rationale (2026-04-19):
+                #
+                #   * extend-video mints a NEW media_id (INV-5) and its
+                #     /edit/{new_media} URL is the extend-output, which
+                #     has Insert/Remove/Camera sidebar buttons DISABLED
+                #     (B28 extend-child lockout).
+                #   * The L1 /edit/{original_media} URL also goes stale
+                #     post-sibling-extend — SPA strips `/edit/` (B29).
+                #
+                # Skipping extend-video ancestors lets the child land on
+                # a stable parent (L1 t2v, or an L2 camera/insert/remove
+                # whose media_id is still current) where sidebar buttons
+                # are enabled. The walk has a hard bound to guarantee
+                # termination on malformed chains.
                 parent_cur = await db.execute(
                     "SELECT profile, project_url, media_id, edit_url "
                     "FROM jobs WHERE id = ?",
@@ -273,13 +287,35 @@ async def claim_next_job(
                 if parent_row is not None:
                     bound_profile = parent_row["profile"]
                     bound_project_url = parent_row["project_url"]
-                    bound_media_id = parent_row["media_id"]
-                    bound_edit_url = parent_row["edit_url"]
                 else:
                     bound_profile = None
                     bound_project_url = None
-                    bound_media_id = None
-                    bound_edit_url = None
+
+                # B30 walk-up: start at the direct parent and climb past
+                # extend-video ancestors until a non-extend ancestor (or
+                # the root) is reached. The ancestor's media_id/edit_url
+                # is what the child inherits.
+                ancestor_id: Optional[str] = job_dict["parent_job_id"]
+                bound_media_id: Optional[str] = None
+                bound_edit_url: Optional[str] = None
+                for _ in range(16):  # safety bound on chain depth
+                    if ancestor_id is None:
+                        break
+                    anc_cur = await db.execute(
+                        "SELECT type, parent_job_id, media_id, edit_url "
+                        "FROM jobs WHERE id = ?",
+                        (ancestor_id,),
+                    )
+                    anc_row = await anc_cur.fetchone()
+                    if anc_row is None:
+                        break
+                    if anc_row["type"] == "extend-video" and anc_row["parent_job_id"]:
+                        # Skip this extend; keep climbing.
+                        ancestor_id = anc_row["parent_job_id"]
+                        continue
+                    bound_media_id = anc_row["media_id"]
+                    bound_edit_url = anc_row["edit_url"]
+                    break
 
                 await db.execute(
                     """

@@ -1,21 +1,38 @@
-"""B22 regression — L2+ `claim_next_job` must inherit parent's target fields.
+"""B22 + B30 regression — L2+ `claim_next_job` inheritance behavior.
 
-Before B22: `claim_next_job` SELECTed only `parent.profile` and UPDATEd only
-`jobs.profile` on the L2+ branch. The child job's `project_url` / `media_id` /
-`edit_url` stayed NULL even when the parent had those fields populated after
-its own completion. The worker's `navigate_to_edit` then had no target → every
-L2 extend / insert / remove / camera failed before any Flow interaction.
+**B22 (2026-04-18)** — `claim_next_job` L2+ branch must inherit
+`profile`, `project_url`, `media_id`, `edit_url` from the parent row.
+Before B22 only `profile` was inherited; worker's `navigate_to_edit` had
+no target so every L2 op failed before any Flow interaction.
 
-Chain invariants gap:
+**B30 (2026-04-19, this file extension)** — when the parent is
+`extend-video`, its media_id + edit_url point at the extend-output
+`/edit/{new_media}` URL, which has Insert/Remove/Camera sidebar buttons
+DISABLED (B28 extend-child lockout). Its L1-grandparent `/edit/{old_media}`
+URL also becomes stale after the extend completes (B29 SPA-strip).
+Both classes are unrecoverable at the worker layer. B30 resolves them at
+the queue layer: on L2+ claim, walk up through extend-video ancestors
+until a non-extend ancestor is found, and inherit that ancestor's
+media_id / edit_url. For chain:
+
+  L1 t2v → L2 extend-video → L3 insert
+
+L3 claims with L1's media_id (skips L2 extend-output). For:
+
+  L1 t2v → L2 extend → L3 extend → L4 insert
+
+L4 claims with L1's media_id (skips BOTH extends). Non-extend parents
+(camera-move, insert-object, remove-object) still inherit from the direct
+parent — B22 behavior preserved.
+
+Chain invariants gap (pre-B22):
 - INV-2 (Navigate by edit_url) — caller had no `edit_url` to navigate to.
-- INV-3 (Store everything) — child row persisted without the inherited context
-  that the chain needs to make progress.
+- INV-3 (Store everything) — child row persisted without inherited context.
 
-After B22: the same IMMEDIATE transaction that inherits `profile` also inherits
-`project_url`, `media_id`, `edit_url` from the parent row. Parent is the single
-source of truth — if the child row had stale values from an earlier API request
-(edge case, normally these are NULL at POST time), the parent values still win.
-L1 claims (priority-2 branch) are untouched.
+INV-5 re-revision (post-B30): `extend-video` mints a NEW media_id
+(empirically confirmed Tests 2/3/4 + B28 probe). Chain skips extend-output
+via B22+B30 inheritance. `insert-object` / `remove-object` preservation
+remains TBD (not empirically verified post-2026-04-19).
 """
 
 from datetime import UTC, datetime
@@ -44,18 +61,24 @@ def _make_completed_parent(
     project_url: str,
     media_id: str,
     edit_url: Optional[str] = None,
+    *,
+    job_type: JobType = JobType.TEXT_TO_VIDEO,
+    job_level: int = 1,
+    parent_job_id: Optional[str] = None,
 ) -> Job:
     now = datetime.now(UTC)
     return Job(
         id=job_id,
-        type=JobType.TEXT_TO_VIDEO,
+        type=job_type,
         status=JobStatus.COMPLETED,
-        job_level=1,
+        job_level=job_level,
+        parent_job_id=parent_job_id,
         profile=profile,
         project_url=project_url,
         media_id=media_id,
         edit_url=edit_url,
-        prompt="parent prompt",
+        prompt="parent prompt" if job_type == JobType.TEXT_TO_VIDEO else None,
+        direction="Dolly in" if job_type == JobType.CAMERA_MOVE else None,
         created_at=now,
         updated_at=now,
         completed_at=now,
@@ -69,15 +92,17 @@ def _make_pending_child(
     project_url: Optional[str] = None,
     media_id: Optional[str] = None,
     edit_url: Optional[str] = None,
+    job_type: JobType = JobType.CAMERA_MOVE,
+    job_level: int = 2,
 ) -> Job:
     now = datetime.now(UTC)
     return Job(
         id=job_id,
-        type=JobType.CAMERA_MOVE,
+        type=job_type,
         status=JobStatus.PENDING,
-        job_level=2,
+        job_level=job_level,
         parent_job_id=parent_id,
-        direction="Dolly in",
+        direction="Dolly in" if job_type == JobType.CAMERA_MOVE else None,
         project_url=project_url,
         media_id=media_id,
         edit_url=edit_url,
@@ -242,4 +267,197 @@ async def test_l2_claim_inherits_when_parent_edit_url_null(db):
     assert claimed.media_id == "media-ddd-0004"
     assert claimed.edit_url is None, (
         "inherit must copy NULL when parent has NULL — no synthesis"
+    )
+
+
+# ---------------------------------------------------------------------------
+# B30 — extend-video ancestor walk-up (skip extend-output /edit/ URLs)
+# ---------------------------------------------------------------------------
+
+
+async def test_b30_extend_parent_inherits_grandparent_media(db):
+    """B30: L2 parent is extend-video → child inherits GRANDPARENT's media.
+
+    Chain: L1 t2v (media-A1) → L2 extend (media-E2, NEW per INV-5) → L3 insert.
+    Without B30, L3 would inherit L2's media-E2 and edit_url pointing at the
+    extend-output, whose Insert sidebar button is DISABLED (B28 extend-child
+    lockout). With B30, the claim layer walks up past L2 and takes L1's
+    media-A1 so the worker navigates to a stable parent URL where the
+    sidebar buttons are enabled.
+    """
+    await create_profile(_make_profile("b30-prof-a"))
+    # L1 t2v — original media
+    await create_job(
+        _make_completed_parent(
+            "b30-l1-a",
+            profile="b30-prof-a",
+            project_url="https://labs.google/fx/tools/flow/project/p-b30a",
+            media_id="media-b30a-L1",
+            edit_url="https://labs.google/fx/tools/flow/project/p-b30a/edit/media-b30a-L1",
+            job_type=JobType.TEXT_TO_VIDEO,
+            job_level=1,
+        )
+    )
+    # L2 extend — mints NEW media (INV-5) pointing at extend-output
+    await create_job(
+        _make_completed_parent(
+            "b30-l2-a",
+            profile="b30-prof-a",
+            project_url="https://labs.google/fx/tools/flow/project/p-b30a",
+            media_id="media-b30a-L2-extend",
+            edit_url="https://labs.google/fx/tools/flow/project/p-b30a/edit/media-b30a-L2-extend",
+            job_type=JobType.EXTEND_VIDEO,
+            job_level=2,
+            parent_job_id="b30-l1-a",
+        )
+    )
+    # L3 pending insert-object child of L2
+    await create_job(
+        _make_pending_child(
+            "b30-l3-a",
+            "b30-l2-a",
+            job_type=JobType.INSERT_OBJECT,
+            job_level=3,
+        )
+    )
+
+    claimed = await claim_next_job("worker-1", ["b30-prof-a"])
+
+    assert claimed is not None
+    assert claimed.id == "b30-l3-a"
+    assert claimed.profile == "b30-prof-a"
+    assert claimed.media_id == "media-b30a-L1", (
+        "B30: extend-video parent must be skipped — child inherits "
+        "grandparent's media_id, not extend-output's"
+    )
+    assert claimed.edit_url == (
+        "https://labs.google/fx/tools/flow/project/p-b30a/edit/media-b30a-L1"
+    ), "B30: edit_url must also point at grandparent's /edit/{media}"
+    # project_url is invariant across the chain — still inherited.
+    assert claimed.project_url == (
+        "https://labs.google/fx/tools/flow/project/p-b30a"
+    )
+
+
+async def test_b30_extend_chain_walks_up(db):
+    """B30: multi-extend chain → walk past ALL extend-video ancestors.
+
+    Chain: L1 t2v → L2 extend → L3 extend → L4 insert. Each extend mints a
+    new media_id (INV-5). The claim walk-up must climb past BOTH L3 and L2
+    until it hits L1, the first non-extend ancestor. Without a loop, a
+    naive grandparent-only lookup would still land on L2 (another extend)
+    and the B28 lockout would fire again.
+    """
+    await create_profile(_make_profile("b30-prof-b"))
+    await create_job(
+        _make_completed_parent(
+            "b30-l1-b",
+            profile="b30-prof-b",
+            project_url="https://labs.google/fx/tools/flow/project/p-b30b",
+            media_id="media-b30b-L1",
+            edit_url="https://labs.google/fx/tools/flow/project/p-b30b/edit/media-b30b-L1",
+            job_type=JobType.TEXT_TO_VIDEO,
+            job_level=1,
+        )
+    )
+    await create_job(
+        _make_completed_parent(
+            "b30-l2-b",
+            profile="b30-prof-b",
+            project_url="https://labs.google/fx/tools/flow/project/p-b30b",
+            media_id="media-b30b-L2-extend",
+            edit_url="https://labs.google/fx/tools/flow/project/p-b30b/edit/media-b30b-L2-extend",
+            job_type=JobType.EXTEND_VIDEO,
+            job_level=2,
+            parent_job_id="b30-l1-b",
+        )
+    )
+    await create_job(
+        _make_completed_parent(
+            "b30-l3-b",
+            profile="b30-prof-b",
+            project_url="https://labs.google/fx/tools/flow/project/p-b30b",
+            media_id="media-b30b-L3-extend",
+            edit_url="https://labs.google/fx/tools/flow/project/p-b30b/edit/media-b30b-L3-extend",
+            job_type=JobType.EXTEND_VIDEO,
+            job_level=3,
+            parent_job_id="b30-l2-b",
+        )
+    )
+    await create_job(
+        _make_pending_child(
+            "b30-l4-b",
+            "b30-l3-b",
+            job_type=JobType.INSERT_OBJECT,
+            job_level=4,
+        )
+    )
+
+    claimed = await claim_next_job("worker-1", ["b30-prof-b"])
+
+    assert claimed is not None
+    assert claimed.id == "b30-l4-b"
+    assert claimed.media_id == "media-b30b-L1", (
+        "B30: walk-up must climb past BOTH extend ancestors to L1, "
+        "not stop at the immediate grandparent (another extend)"
+    )
+    assert claimed.edit_url == (
+        "https://labs.google/fx/tools/flow/project/p-b30b/edit/media-b30b-L1"
+    )
+
+
+async def test_b30_non_extend_parent_uses_parent_media(db):
+    """B30 blast-radius guard: non-extend parent → keep B22 behavior.
+
+    Chain: L1 t2v → L2 camera-move (mints NEW media per INV-5, non-extend) →
+    L3 insert. The walk-up must NOT run because L2's type != 'extend-video'.
+    L3 claims L2's camera-output media_id, preserving pre-B30 behavior for
+    camera-move/insert-object/remove-object parents. This is the critical
+    guardrail that keeps the B22 contract intact for ~75% of L2+ jobs.
+    """
+    await create_profile(_make_profile("b30-prof-c"))
+    await create_job(
+        _make_completed_parent(
+            "b30-l1-c",
+            profile="b30-prof-c",
+            project_url="https://labs.google/fx/tools/flow/project/p-b30c",
+            media_id="media-b30c-L1",
+            edit_url="https://labs.google/fx/tools/flow/project/p-b30c/edit/media-b30c-L1",
+            job_type=JobType.TEXT_TO_VIDEO,
+            job_level=1,
+        )
+    )
+    # Camera-move parent — mints NEW media_id (INV-5) but non-extend, so
+    # B30 walk-up must NOT activate.
+    await create_job(
+        _make_completed_parent(
+            "b30-l2-c",
+            profile="b30-prof-c",
+            project_url="https://labs.google/fx/tools/flow/project/p-b30c",
+            media_id="media-b30c-L2-camera",
+            edit_url="https://labs.google/fx/tools/flow/project/p-b30c/edit/media-b30c-L2-camera",
+            job_type=JobType.CAMERA_MOVE,
+            job_level=2,
+            parent_job_id="b30-l1-c",
+        )
+    )
+    await create_job(
+        _make_pending_child(
+            "b30-l3-c",
+            "b30-l2-c",
+            job_type=JobType.INSERT_OBJECT,
+            job_level=3,
+        )
+    )
+
+    claimed = await claim_next_job("worker-1", ["b30-prof-c"])
+
+    assert claimed is not None
+    assert claimed.id == "b30-l3-c"
+    assert claimed.media_id == "media-b30c-L2-camera", (
+        "B30 guardrail: non-extend parent (camera-move) must keep B22 "
+        "behavior — inherit directly from parent, not grandparent"
+    )
+    assert claimed.edit_url == (
+        "https://labs.google/fx/tools/flow/project/p-b30c/edit/media-b30c-L2-camera"
     )
