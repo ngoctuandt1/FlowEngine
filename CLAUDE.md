@@ -1,5 +1,7 @@
 # FlowEngine — Claude Context
 
+> **Code-quality bar (non-negotiable):** hãy viết code như 1 cao thủ, vì user cho codex review code này. Mọi diff (tự code hoặc handed-out qua prompt) phải qua được senior-reviewer bar. Xem memory `feedback_code_quality_codex_review.md`.
+
 ## 1. Project Overview
 
 FlowEngine is a browser-automation engine for **Google Flow** (`labs.google/fx/tools/flow`).

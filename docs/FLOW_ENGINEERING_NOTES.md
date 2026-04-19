@@ -8,6 +8,7 @@
 > first before grep/read.
 >
 > **Written:** 2026-04-19 (after reading 30+ session reports).
+> **Last updated:** 2026-04-20 (B32-B38 + Run 12-19 + 2 new memories).
 > **Maintainer:** supervisor (Claude Opus 4.7 — 1M context).
 > **Scope:** notes and cross-references only. No SPEC/decision-making
 > authority. Update this file when my mental model shifts, not when the
@@ -47,7 +48,14 @@ Each job = fresh browser context + DB-backed metadata recovery. Verified live: `
 
 **Key distinction.** `project_id` (in URL) and `media_id` (in `/edit/{…}`) are different UUIDs. `project_id` is stable per project; `media_id` identifies a specific clip within the project.
 
+**B38 discovery (2026-04-19 Run 17d/17e):** the slug after `/edit/` is NOT always the captured API `media_id` and NOT always the `fe_id_{X}` attribute on tiles. It's the SPA's internal **routing slug** resolved by the router's `pushState`. Consequence:
+- `page.goto(/edit/{media_id})` may bounce back to `/project/{pid}` root.
+- Captured `fe_id_{X}` may be a third UUID that also differs from the routing slug.
+- **Reliable path:** click the tile (`[data-tile-id^="fe_id_"]`) — SPA handles slug resolution internally. See `flow/upscale.py::_ensure_edit_view`. Saved as memory `feedback_flow_edit_nav_click.md`.
+
 **Locale caveat** (`feedback_english_locale.md`): Flow SPA rewrites `/fx/tools/flow/…` → `/fx/vi/tools/flow/…` on VI-locale Google accounts. Direct `page.goto(edit_url)` on VI profile lands on a Next.js catch-all. **All Flow accounts MUST be configured EN at myaccount.google.com/language before first engine run.** The engine uses canonical `/fx/tools/flow/…` URLs; selectors are locale-independent, URLs are not.
+
+**Profile-auth caveat (2026-04-19 Run 19 block):** unauthenticated visitors to `/edit/{X}` get served the **Flow marketing landing page** — "Where the next wave of storytelling happens" / "Create with Flow". The worker may hang silently or trigger false-positive DOM errors (POLICY on footer "Privacy Policy"). Root cause: worker-profile SSO cookies not present / expired / stripped by clone-to-temp. See memory `feedback_profile_full_reset.md` for the prescribed full-delete + fresh sign-in recovery.
 
 ---
 
@@ -108,6 +116,14 @@ Each job = fresh browser context + DB-backed metadata recovery. Verified live: `
 
 **B31 (2026-04-19, this session):** extend Step 3 now probes `_verify_extend_panel` FIRST — if panel already open (default case), skip click. Avoids the "click active mode = toggle-close" trap.
 
+### Edit-view top-right Download button + Radix menu (B36 probe → B38 UI upscale)
+| Mục | Selector | Notes |
+|---|---|---|
+| Download button (icon-only) | `page.locator("button").filter(has=page.locator("i").get_by_text("download", exact=True))` | B38 primary. Icon ligature `<i>download</i>` — NOT text `"Download"`. Anchored selector excludes "Download app" etc. See `flow/upscale.py::_click_edit_download_button`. |
+| Radix menu — 1080pUpscaled item | `page.locator('[role="menuitem"]').filter(has_text=re.compile(r"^1080pUpscaled$", re.IGNORECASE))` | B38. Anchored `^…$` regex EXCLUDES the sibling `4KUpscaled · 50 credits` which would cost 50 LP per click. Fallback: substring `1080p` (4K doesn't contain "1080p"). |
+| Upscale "done" toast | scan body/aria-live/snackbar/toast for `/upscal\w* complete\|đã tăng độ phân giải xong\|1080p ready/i` | `flow/upscale.py::_DONE_RE` / `_popup_state`. Flow surfaces both EN + VI messages depending on account locale. |
+| Upscale "busy" / "failed" toast | `/upscaling\|đang tăng độ phân giải/i` · `/upscale failed\|unable to upscale\|không thể tăng/i` | Same scanner. Engine decides `continue` (busy = wait ≤360s), `done` (re-click to pull mp4), `failed` (bail attempt). |
+
 ### Camera presets (after Camera click)
 | Mục | Selector | Notes |
 |---|---|---|
@@ -128,10 +144,14 @@ Each job = fresh browser context + DB-backed metadata recovery. Verified live: `
 ### L1 — text-to-video
 1. Homepage → `+ New project` (B18 icon selector)
 2. Aspect chip (B19) → pick ratio (B1 Radix tab) → close panel (click outside at `(10, 10)`, NOT Escape)
-3. Focus Slate editor → type prompt
-4. Open model chip → pick LP (B17 pre-check if items already visible)
-5. Submit (B26 canonical) → URL pushes to `/edit/{new_media_id}`
-6. Extract `media_id` from URL or network response (`flow/media_id.py`)
+3. Open model chip → pick LP (B17 pre-check if items already visible)
+4. (composer still open) `_set_aspect_ratio` (B1/B19)
+5. **Step 4.5: `_set_output_count(page, 1)` (B35)** — force Quantity tablist to `x1` via Radix `[id$="-trigger-1"]`. Without this, accounts defaulting to x≥2 silently submit 2-4 clips = 2-4× LP cost.
+6. Focus Slate editor → type prompt
+7. Submit (B26 canonical) → URL pushes to `/edit/{new_media_id}`
+8. Wait completion (`flow/wait.py`)
+9. **Download via UI upscale (B38 primary for 1080p)** — `flow/upscale.py::upscale_and_download_1080p`: `_ensure_edit_view` (tile.click if on project root) → `_click_edit_download_button` → `_click_menu_1080p` (anchored regex EXCLUDES `4KUpscaled · 50 credits`) → poll toast for done/busy/failed, re-click on done, save via `expect_download`. Fallback chain: B38 UI 1080p → 720p API (`_download_via_api`) → UI-text `_download_via_ui` → blob capture. B37 fix makes the 720p harvest deterministic (`evt["mid"]` key).
+10. Extract `media_id` from URL or network response (`flow/media_id.py`)
 
 ### L2 — extend-video
 **Entry state:** `/edit/{parent.media_id}` — Extend mode DEFAULT ACTIVE.
@@ -200,14 +220,16 @@ L1 t2v → L2 extend → L3 insert
 | t2v → remove | ⚠️ code ready, live-untested | Same fix as insert; likely works |
 | t2v → extend | ✅ works (Run 10 J2, discrete-2job) | — |
 | t2v → extend → extend → … | ✅ likely works | Extend button stays enabled on extend-output |
-| **t2v → extend → insert / remove / camera** | ❌ **BLOCKED** | B28 extend-child lockout (sidebar disabled) + B29 L1 stale URL. B30 walk-up + guards ≠ solved; workaround not implemented. |
-| **Parallel L2 siblings on L1** | ❌ **BLOCKED** | B29 — L1 /edit/ stale after sibling extend. Serial chains work; parallel L2 forks don't. |
+| **t2v → extend → insert / remove / camera** | ✅ **UNBLOCKED (B32, Run 12)** | `_activate_clip_tile` fires MouseEvent sequence on `[data-tile-id="fe_id_{target}"]` when URL media ≠ target media. 5-op chain (t2v → extend → insert → remove → camera) completed live 2026-04-19. |
+| **Parallel L2 siblings on L1** | ❌ **BLOCKED** | B29 — L1 /edit/ stale after sibling extend. Serial chains work; parallel L2 forks don't (not pursued). |
+| **L2 extend on clean new profile (Run 19 pattern)** | ❌ **BLOCKED — profile-auth** | Worker-profile cookies not inherited → Flow serves marketing landing at `/edit/`. Not a chain-logic issue. Fix via `scripts/warm_profile.py` + full profile reset (see `feedback_profile_full_reset.md`). |
 
 ### Defensive guards (raise loud instead of silent-fail)
-- **B28 guard** (`click_action_button`): visible + disabled → raise "extend-child lockout (FLOW_BUTTON_EXACT §5.1). Check B22 inheritance."
-- **B29 guard** (`navigate_to_edit`): post-goto `"/edit/" not in page.url` → raise "SPA stripped /edit/ — stale media_id post-sibling-extend."
+- **B28 guard** (`click_action_button`): visible + disabled → was "raise" (fc31a54), now `logger.warning` + fall through (post-B32 semantics: B32 tile-activation re-enables the sidebar, so a disabled button is recoverable not fatal).
+- **B29 guard** (`navigate_to_edit`): post-goto `"/edit/" not in page.url` → raise "SPA stripped /edit/ — stale media_id post-sibling-extend." Still valid — surfaces the SPA-strip condition that B32 can't always resolve (parallel siblings).
+- **B38 guard** (`flow/upscale.py::_ensure_edit_view`): if page on `/project/{pid}` root, click `[data-tile-id^="fe_id_"]` first; if not, warn and return (caller falls back to 720p). NEVER `page.goto(/edit/)` — bounces per feedback_flow_edit_nav_click.md.
 
-**Warning:** B28 guard was initially implemented as immediate raise (fc31a54 session). That caused Run 11 J2 extend to fail false-positive on healthy t2v-output (Extend button briefly disabled during Flow progressive render). B31 inverted the logic — `extend_video` now probes panel FIRST and only clicks Extend if not default-active. Pattern to match existing wait-for-ready logic (B15 `_verify_extend_panel`, B19 Radix `data-state` wait).
+**Warning (historical):** B28 guard initially shipped as immediate raise (fc31a54). That caused Run 11 J2 extend false-positive on healthy t2v-output (Extend button briefly disabled during Flow progressive render). B31 inverted the logic — `extend_video` now probes `_verify_extend_panel` FIRST (Extend is default-active on /edit/) and only clicks if not open. Pattern to mirror: B15 panel verify, B19 Radix `data-state` wait, B31 probe-first.
 
 ---
 
@@ -244,10 +266,18 @@ L1 t2v → L2 extend → L3 insert
 | B29 | URL-strip guard | `fc31a54` | Post-goto `"/edit/" in page.url` check |
 | B30 | extend-ancestor walk-up | `fc31a54` | Skip extend ancestors in claim inheritance |
 | B31 | extend panel probe-first | `6aace7f` | Probe `_verify_extend_panel` before click (Extend default active) |
+| B32 | navigate_to_edit tile-activation | (post-B30 refinement) | `_activate_clip_tile(page, media_id)` dispatches MouseEvent sequence on `[data-tile-id="fe_id_{id}"]` when URL media ≠ target — re-enables sidebar on chain-with-extend-middle. Run 12 PASS 5-op. |
+| B33 | camera-move media_id context | (docs-only, INV-5 nuance) | Camera mints NEW on early-chain (L2 off L1, Run 10); preserves on deep-chain (L3+ after tile-activation, Run 12 J5). Engine handles via `finalize_operation` re-extract. |
+| B34 | 1080p upscale poll window | `d454155` | `UPSCALE_POLL_INTERVAL 10→15s` + `UPSCALE_MAX_RETRIES 3→12` (180s). Env-configurable. |
+| B34b | upscale retry bump | `26ca413` | Retries 12→24 (360s). **Superseded by B38** — `_upsampled` API endpoint returns 404 permanently, so API polling can never succeed. Env knob preserved for 720p transient recovery. |
+| B35 | force output count x1 | `dc486a7` | `_set_output_count(page, 1)` via Radix `[id$="-trigger-1"]` + chip inner_text verify. Prevents x2-default credit leak on accounts like ngoctuandt20. Run 13 + Run 14 + Run 15 all verified `files=1`. |
+| B36 | UI-driven download (probe) | `a59d280` | PROBE ONLY, not implemented — icon-only Download button + Radix 1080pUpscaled + tile ⋮ alternate path + UUID dualism documented. Superseded by B38 (B38 ate B36's implementation scope). |
+| B37 | download_video harvest key | `7914020` | `evt["mid"]` (was `evt["media_id"]` — silent mismatch w/ `client.py::_record_media_id` storage key) + unwrap `_video_urls` list-of-dicts before `media_id_from_url`. Makes harvest deterministic. Surfaced Run 14, verified Run 15 3/3. |
+| B38 | UI-driven 1080p upscale | (uncommitted, Run 17/18 implemented, L2 live-block Run 19) | New `flow/upscale.py` (~405 lines): anchored `^1080pUpscaled$` menu item, toast-poll for done/busy/failed, re-click on done, `expect_download`. `download_video` routes `quality=="1080p"` → UI path first, falls back to 720p API. L1 verified Run 18; L2 blocked by profile-auth not B38 itself. |
 
-**Current tag:** `v0.6.0-chain-complete` @ `fc31a54` (pre-B31). B31 lives on master but tag not bumped yet.
+**Current tag:** `v0.6.0-chain-complete` @ `fc31a54` (pre-B31, stale). Actual master HEAD ≥ `26ca413`. Tag bump deferred until L2 chain end-to-end validated on the uncommitted B38 branch.
 
-**Total: 29 bugs fixed** (B25 skipped in numbering).
+**Total: 36 bugs addressed** (B25 skipped in numbering; B36 was probe-only absorbed by B38). Fixed-and-committed: 34. In-flight uncommitted: B38.
 
 ---
 
@@ -272,8 +302,10 @@ L1 t2v → L2 extend → L3 insert
 | `tests/test_model_selector.py` | B17 LP pre-check + B20 no-fuzzy-Veo |
 | `tests/test_generate.py` | B18 homepage selectors |
 | `tests/test_e2e_invariants.py` | INV-1/4/stale-recovery infra tests (no Flow) |
+| `tests/test_output_count.py` | B35 `_set_output_count` happy-path + Radix pre-open guard + verify-failure warn + 1..4 range + source trip-wire on `text_to_video` |
+| `tests/test_download.py` | B34/B34b upscale-window env contract + B37 source trip-wires (`evt["mid"]` + `entry["url"]` unwrap) |
 
-**Count at master `fc31a54`: 107 tests pass.** CI: `.github/workflows/tests.yml` — pytest on PR + push to master.
+**Count at master ≥ `26ca413`: 119 tests pass.** After PR#18 frontend-optim merge: 121 tests pass (+2 bulk-delete cases). CI: `.github/workflows/tests.yml` — pytest on PR + push to master.
 
 **Source-level trip-wires** (prevent silent regression):
 - `test_bbox_evaluate_script_targets_canvas` — bbox JS uses `canvas` + `300`, not `querySelector('video')`
@@ -327,6 +359,15 @@ L1 t2v → L2 extend → L3 insert
 | 2026-04-19 | Run 10 VI post-language-switch, INV-5 revision | Cross-locale verification |
 | 2026-04-19 | Tests 2/3/4 (chain 5-op) → B28/B29 probe | 5-op chain surfaces extend-child lockout |
 | 2026-04-19 | B30 + B28/B29 guards + B31 | Inheritance walk-up + defensive guards + extend probe-first |
+| 2026-04-19 | B32 tile-activation + Run 12 verify | 5-op chain-with-extend-middle PASS; `_activate_clip_tile` re-enables sidebar |
+| 2026-04-19 | B33 INV-5 nuance + B34 upscale window | Camera context-dependent; retries 3→12 (180s) |
+| 2026-04-19 | B35 force x1 + Run 13 verify | Credit leak fixed; `_set_output_count` via Radix; Run 13 PASS |
+| 2026-04-19 | Run 14 + B37 surfaced + fix same session | `evt["mid"]` key rename makes harvest deterministic; `t2v_blob_` fallback path exposed the regression |
+| 2026-04-19 | Run 15 3/3 PASS + B34b retry bump | B37 regression check across 3 diverse t2v; retries bumped 12→24 (360s) before B38 superseded |
+| 2026-04-19 | B38 UI upscale (parallel session) + Run 17/18 | `flow/upscale.py` NEW; L1 1080p via UI primary path; L2 block separate issue |
+| 2026-04-19 | Run 19 L2 BLOCKED + HANDOFF | Profile-auth → marketing landing on `/edit/`; warm_profile.py crash |
+| 2026-04-19 | Frontend-optim parallel session — PR#18 | Incremental WS + shared form constants + bulk-delete endpoint; 121/121 pass |
+| 2026-04-20 | NOTES overhaul + 3 new memories | Code-quality codex-review rule + prompt-delivery + cross-check-memory patterns |
 
 ---
 
@@ -346,6 +387,16 @@ For my future-self:
 
 **Meta:** Codex (session con) has outperformed me this session on most landed commits — B18/B19/B22/B23/B24/B26/B27/B30 were all executor sessions, I only committed B31 directly + some docs housekeeping. If supervisor authority is questioned again, the honest answer is: I am useful for chronology/merges/tracking/user-facing updates, not for debug/fix work at this codebase's current complexity.
 
+**2026-04-20 add-ons:**
+
+6. **Pasted HANDOFF.md verbatim without cross-checking memory.** L2-unblock prompt cited HANDOFF Step 1 "wipe Cache preserve Cookies" bisect; `feedback_profile_full_reset.md` (newer) prescribed full delete — user called this out. Saved `feedback_cross_check_memory_before_paste.md`. **Lesson:** `ls ~/.claude/.../memory/` + grep keywords BEFORE paste. Memory wins over doc when they conflict; the outgoing prompt must flag stale doc lines.
+
+7. **Didn't spot the unauthorized ServiceLogin URL in `warm_profile.py`.** I read the file carefully enough to summarize it, but didn't cross-check against what the user actually instructed — the parallel session changed strategy from "mail.google.com + manual sign-in" (Run 19 §5) to "ServiceLogin + auto-credentials" without authorization. **Lesson:** when reviewing handed-back code from a parallel session, explicitly scan for choices the user didn't dictate (URLs, credentials, new deps, new routes). Ask before propagating.
+
+8. **Saved supervisor workflow memories only after user called it out.** `feedback_prompt_delivery_workflow.md` and `feedback_cross_check_memory_before_paste.md` could have been written after the first "cho prompt" turn in the session. Waited until 10+ turns in. **Lesson:** when user instruction is repeated or landed as a clear preference, save the memory the first time, not the third.
+
+9. **Didn't flag B34b as moot when B38 landed.** The two changes are interleaved in time but B38's "`_upsampled` 404 permanent" finding makes B34/B34b retry bumps dead code for the 1080p path. I kept quoting "119 pass +2 B37 trip-wires" without noting B38 made the constants near-obsolete. Flagged retroactively in SPEC §D.4 but not promptly.
+
 ---
 
 ## 13. When Something Breaks — Where to Look First
@@ -362,6 +413,13 @@ For my future-self:
 | Aspect ratio set but chip text doesn't change | B19 — chip pre-open guard missed. Check `data-state !== "open"` before click. |
 | Unicode/mojibake in worker log on Windows | stdout `cp1252` — set `PYTHONIOENCODING=utf-8` (B-candidate, never filed formally). |
 | "Failed to find '+ New project' button" | B18 — homepage locale. Check account is EN at myaccount.google.com/language. Icon selector `add_2` should work regardless. |
+| `files=2` or `cards 0 → 4` on L1 t2v with no explicit `output_count` | B35 — Step 4.5 `_set_output_count(page, 1)` missing or failed to match the Radix trigger. Check chip inner_text post-close contains `x1`. Account default may be x2/x4. |
+| `text-to-video DONE \| files=1 media_id=None` + `t2v_blob_*.mp4` fallback | B37 regression — `download_video` reading wrong key from `client._media_id_events` (must be `evt["mid"]`, not `evt["media_id"]`). |
+| Every live run falls through to 720p, zero `_1080p_*.mp4` ever appears | B38 — `_upsampled` API is 404 permanent, must go through UI upscale. Check `quality=="1080p"` routes to `flow.upscale.upscale_and_download_1080p` BEFORE `_download_via_api`. |
+| Worker logs POLICY error at `progress=0s` right after `/edit/` nav | Pre-B38 wait.py regex false-positive on footer "Privacy Policy" links. B38 session tightened regex — confirm running latest `flow/wait.py`. |
+| `/edit/` URL renders marketing landing ("Where the next wave of storytelling") | Profile-auth lost. See `feedback_profile_full_reset.md` — full delete `chrome-profiles/<profile>/`, re-warm, user signs in fresh. |
+| `warm_profile.py` crashes `TargetClosedError` + Chrome exit `0x80000003` | `STATUS_BREAKPOINT`. Profile dir corrupted from Playwright kill mid-startup. Full delete is the fix — memory `feedback_profile_full_reset.md` explicitly rejects cache-preserve-cookies bisect. |
+| Login loops on same step ("Email step failed: Timeout 2000ms") | Google overlay intercepts pointer events. Current `flow/login.py` auto-reloads after 3 stuck iterations — see `feedback_login_stuck_reload.md`. |
 
 ---
 
@@ -380,7 +438,59 @@ For my future-self:
 | Per-task evidence | `docs/session-reports/YYYY-MM-DD_<task>_*.md` |
 | Project/user context | `CLAUDE.md` |
 | Supervisor's notes (this file) | `docs/FLOW_ENGINEERING_NOTES.md` |
-| Memory (user-level, cross-session) | `~/.claude/projects/D--AI-FlowEngine/memory/` |
+| Memory (user-level, cross-session) | `~/.claude/projects/D--AI-FlowEngine/memory/` (8 files as of 2026-04-20) |
+| L2 unblock playbook (latest) | `docs/HANDOFF.md` (Step 1 updated 2026-04-20 to full-reset per memory) |
+
+### Memory files (8) — quick index
+| File | Domain |
+|---|---|
+| `feedback_english_locale.md` | Flow accounts MUST be EN locale before first run |
+| `feedback_output_count_x1.md` | Every L1 t2v MUST force x1; never trust account default |
+| `feedback_login_stuck_reload.md` | Google overlay pointer-intercept → page.reload after 3 stuck iterations |
+| `feedback_flow_edit_nav_click.md` | `/edit/` nav via `tile.click`, NOT `page.goto` (SPA routing slug is opaque) |
+| `feedback_profile_full_reset.md` | warm_profile TargetClosedError → full delete profile, NOT cache-preserve bisect |
+| `feedback_prompt_delivery_workflow.md` | Supervisor hands out self-contained prompts for parallel sessions; main session doesn't execute heavy work |
+| `feedback_cross_check_memory_before_paste.md` | Before pasting HANDOFF/session-report into a new-session prompt, grep memory/ first — memory wins if conflict |
+| `feedback_code_quality_codex_review.md` | All code (direct + handed-out) must pass codex senior-reviewer bar; user runs codex on every change |
+
+---
+
+## 15. In-Flight State (as of 2026-04-20)
+
+**Master HEAD:** `26ca413` (B34b retry bump). PR#18 (frontend-optim) pending merge at 121 pass, adds server/routes bulk-delete + shared frontend constants + WS incremental.
+
+**Uncommitted (main working tree, branch `master`) — gated on L2 validation:**
+| File | Status | Origin |
+|---|---|---|
+| `flow/upscale.py` (new, 405 lines) | Validated at L1 Run 18; L2 block separate issue | Run 17/19 parallel session |
+| `flow/download.py` | B38 UI upscale wired as primary for 1080p; env knob preserved | Run 17 |
+| `flow/wait.py` | POLICY regex tightened + screenshot/HTML dump on every DOM error | Run 19 |
+| `flow/login.py` | Stuck-detection + page.reload after 3 repeats (per memory) | Run 19 |
+| `scripts/warm_profile.py` (new) | ⚠️ broken (TargetClosedError) AND ⚠️ uses unapproved ServiceLogin URL — pending user decision on revert to mail.google.com manual-signin strategy | Run 19 |
+| `docs/HANDOFF.md` (new) | Playbook, Step 1 updated 2026-04-20 to full-reset policy | Run 19 + this session |
+| `docs/session-reports/2026-04-19_Tier2_Run19_L2_chain_blocked.md` (new) | Diagnosis of Run 19 block | Run 19 |
+| `docs/FLOW_ENGINEERING_NOTES.md` (this file) | Expanded to cover B32-B38 + new memories + in-flight state | this session |
+
+**Do NOT commit with `git add -A`** — always stage explicit files. Parallel sessions may touch different file sets; `-A` would conflate their uncommitted work.
+
+**Open blockers (prioritized):**
+1. **L2 chain blocked by profile-auth (Run 19).** Next action = full delete `chrome-profiles/ngoctuandt20/`, run `scripts/warm_profile.py` (after reverting the ServiceLogin URL issue), user signs in fresh. Once verified → post new L2 extend under chain `1871a218` parent `4a032d83` → if pass, commit the 5 in-flight `.py` files.
+2. **`warm_profile.py` uses unapproved ServiceLogin URL** — pending user decision among: (a) revert to `mail.google.com` + `wait_for_event("close")` manual flow from Run 19 §5, (b) different URL user specifies, (c) add confirm-prompt before navigation.
+3. **B38 session report missing** — Run 17/18 referenced from HANDOFF but never written. `docs/session-reports/2026-04-19_Tier2_Run17_B38_UI_upscale.md` does NOT exist in the repo. The parallel session should have authored it.
+
+**Safe-to-run (no block):**
+- All merged Phase A fixes (B1-B37) + B34b retry bump.
+- L1 t2v on an already-warmed profile (Run 13/14/15 all PASS on ngoctuandt20 while SSO was still valid).
+
+**Reconstructable from artifacts if this file drifts:**
+- `docs/session-reports/*.md` (authoritative per-run evidence, never deleted).
+- `docs/E2E_RESULTS_PHASE_A.md` (append-only log, Runs 1-15).
+- `docs/SPEC.md` §D.4 (B1-B37 ledger, B38 entry pending).
+- `git log master` (all committed fixes with hashes).
+- `logs/worker.log.run{13,14,15}` (archived per-run logs).
+- `~/.claude/.../memory/*.md` (user-level persistence across sessions).
+
+Worst-case next-session catch-up = ~10 min reading the above; no knowledge is lost if this NOTES file falls behind.
 
 ---
 
