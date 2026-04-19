@@ -25,10 +25,13 @@ import os
 
 
 def test_upscale_poll_defaults_meet_minimum():
-    """B34 contract: default poll window ≥ 120s.
+    """B34/B34b contract: default poll window ≥ 300s.
 
-    Prevents a silent regression to the pre-B34 30s total that caused
-    every live run to return 720p instead of 1080p.
+    Prevents a silent regression below the B34b threshold (24 × 15 =
+    360s). Run 15 (2026-04-19) proved the pre-B34b 180s was still too
+    short for Flow upscale on 9:16 / 16:9 fast-LP clips — all 3 jobs
+    fell through to 720p within 180s. Keeping ≥ 300s as the guard
+    floor leaves a 60s safety margin above the last observed miss.
     """
     # Fresh import without env overrides
     env_keys = (
@@ -41,8 +44,8 @@ def test_upscale_poll_defaults_meet_minimum():
         import flow.download as dl  # noqa: E402
         importlib.reload(dl)
         total = dl.UPSCALE_POLL_INTERVAL * dl.UPSCALE_MAX_RETRIES
-        assert total >= 120, (
-            f"B34: default poll window must be ≥ 120s to cover Flow upscale "
+        assert total >= 300, (
+            f"B34b: default poll window must be ≥ 300s to cover Flow upscale "
             f"latency. Got {dl.UPSCALE_POLL_INTERVAL}s × {dl.UPSCALE_MAX_RETRIES} "
             f"retries = {total}s."
         )

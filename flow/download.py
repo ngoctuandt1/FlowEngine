@@ -18,8 +18,14 @@ UPSCALE_MAX_WAIT = int(os.environ.get("FLOW_UPSCALE_MAX_WAIT_SEC", "180"))
 # returned 202/404 at 30s cumulative poll (3 × 10s) — too short.
 # Evidence: `downloads/` folder had zero `_1080p_` files across all
 # runs until this bump. Env overrides preserved for ops tuning.
+# B34b (2026-04-19, Run 15 residual P3): bumped retries 12 → 24 (total
+# ~360s) because Run 15's 3 t2v jobs all still fell through to 720p
+# at 180s. Flow's upscale on 9:16 / 16:9 fast-LP clips is longer than
+# initially estimated. 720p fallback is stable (B37 fix makes the
+# harvest deterministic), so this is purely a quality upgrade — no
+# correctness / credit impact.
 UPSCALE_POLL_INTERVAL = int(os.environ.get("FLOW_UPSCALE_POLL_INTERVAL_SEC", "15"))
-UPSCALE_MAX_RETRIES = int(os.environ.get("FLOW_UPSCALE_MAX_RETRIES", "12"))
+UPSCALE_MAX_RETRIES = int(os.environ.get("FLOW_UPSCALE_MAX_RETRIES", "24"))
 MIN_FILE_SIZE = 100_000  # 100KB minimum for valid video
 
 
