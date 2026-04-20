@@ -126,7 +126,20 @@ async def wait_for_completion(
             last_progress = dom["progress"]
             last_signal_time = time.monotonic()
         if dom["error"]:
-            logger.error("DOM error: %s", dom["error"])
+            snippet = dom.get("snippet") or "(no snippet)"
+            logger.error("DOM error: %s | match: %s", dom["error"], snippet[:240])
+            # Dump a screenshot + HTML for post-mortem diagnosis.
+            try:
+                from pathlib import Path
+                Path("logs").mkdir(exist_ok=True)
+                ts = int(time.time())
+                shot = Path("logs") / f"error_{dom['error']}_{ts}.png"
+                html = Path("logs") / f"error_{dom['error']}_{ts}.html"
+                await page.screenshot(path=str(shot), full_page=True)
+                html.write_text(await page.content(), encoding="utf-8")
+                logger.error("DOM error artifacts: %s + %s", shot, html)
+            except Exception as dump_exc:  # pragma: no cover
+                logger.warning("error-dump failed: %s", dump_exc)
             return _result(False, error=dom["error"])
         # New <video> element detected at any progress level = done
         if dom["new_video"]:
@@ -285,10 +298,11 @@ async def _check_new_media_cards(page) -> bool:
 _OBSERVER_JS = """() => {
     if (window.__flowObserverActive) return;
     window.__flowObserverActive = true;
-    window.__flowProgress   = 0;
-    window.__flowError      = '';
-    window.__flowNewVideo   = false;
-    window.__flowVideoCount = document.querySelectorAll('video').length;
+    window.__flowProgress       = 0;
+    window.__flowError          = '';
+    window.__flowErrorSnippet   = '';
+    window.__flowNewVideo       = false;
+    window.__flowVideoCount     = document.querySelectorAll('video').length;
 
     setInterval(() => {
         try {
@@ -305,15 +319,30 @@ _OBSERVER_JS = """() => {
                 }
             }
 
-            // Detect error states
+            // Detect error states. Capture ±80 chars around the match
+            // so the Python side can log what actually triggered.
+            const captureSnippet = (label, re) => {
+                const m = body.match(re);
+                if (m) {
+                    window.__flowError = label;
+                    const idx = m.index ?? body.search(re);
+                    const start = Math.max(0, idx - 80);
+                    const end = Math.min(body.length, idx + m[0].length + 80);
+                    window.__flowErrorSnippet = body.slice(start, end).replace(/\\s+/g, ' ').trim();
+                }
+            };
             if (/all.*failed|generation.*failed/i.test(body)) {
-                window.__flowError = 'ALL_FAILED';
+                captureSnippet('ALL_FAILED', /.{0,80}(all.*failed|generation.*failed).{0,80}/i);
             }
             if (/no.*credits/i.test(body) && /insufficient/i.test(body)) {
-                window.__flowError = 'NO_CREDITS';
+                captureSnippet('NO_CREDITS', /.{0,80}(no.*credits|insufficient).{0,80}/i);
             }
-            if (/policy|violated/i.test(body)) {
-                window.__flowError = 'POLICY';
+            // Tightened: match only real content-policy error phrasings, not
+            // footer links like "Privacy Policy". Requires "content" or
+            // "violat" near "policy" — eliminates false positives on Flow's
+            // persistent legal footer.
+            if (/content\\s+policy|policy\\s+(violation|violated)|violat(es|ed|ing)\\s+.{0,30}\\s*polic/i.test(body)) {
+                captureSnippet('POLICY', /.{0,80}(content\\s+policy|policy\\s+(violation|violated)|violat(es|ed|ing)\\s+.{0,30}\\s*polic).{0,80}/i);
             }
 
             // Detect new <video> elements
@@ -326,9 +355,10 @@ _OBSERVER_JS = """() => {
 }"""
 
 _READ_OBSERVER_JS = """() => ({
-    progress:  window.__flowProgress  || 0,
-    error:     window.__flowError     || '',
-    new_video: window.__flowNewVideo  || false,
+    progress:  window.__flowProgress    || 0,
+    error:     window.__flowError       || '',
+    snippet:   window.__flowErrorSnippet|| '',
+    new_video: window.__flowNewVideo    || false,
 })"""
 
 

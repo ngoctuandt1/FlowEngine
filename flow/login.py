@@ -27,6 +27,12 @@ _LOGIN_PATTERNS = [
     "consent",
 ]
 
+# Gmail serves authenticated users at `mail.google.com/mail/u/<N>/...`;
+# the pre-redirect `mail.google.com/` and the anonymous redirect target
+# `accounts.google.com/v3/signin/...` both lack this token, so a single
+# substring match cleanly separates the three landing states.
+_GMAIL_INBOX_URL_TOKEN = "mail.google.com/mail/u/"
+
 LOGIN_TIMEOUT = 90
 
 # Path to profiles_ultra.txt for credentials
@@ -52,6 +58,19 @@ class NeedAutoLogin(RuntimeError):
 def is_login_page(url: str) -> bool:
     url_lower = url.lower()
     return any(pat in url_lower for pat in _LOGIN_PATTERNS)
+
+
+def is_gmail_inbox(url: str) -> bool:
+    """True when the URL indicates an authenticated Gmail session.
+
+    Used as the positive "logged-in" signal for Gmail-entry warm flows,
+    paired with :func:`is_login_page` as the negative signal. Checking
+    only for the absence of a sign-in URL is unsafe — Gmail's
+    anonymous redirect may briefly pass through `mail.google.com/` or
+    `workspace.google.com/gmail/about/`, neither of which matches the
+    sign-in patterns but neither means logged-in either.
+    """
+    return _GMAIL_INBOX_URL_TOKEN in url.lower()
 
 
 # ======================================================================
@@ -154,13 +173,18 @@ async def handle_login_redirect(
 
     deadline = asyncio.get_event_loop().time() + timeout
     step = "detect"
+    stuck_key = None
+    stuck_count = 0
 
     while asyncio.get_event_loop().time() < deadline:
         current = page.url
 
-        # Success check
-        if _is_on_flow(current):
-            logger.info("Login complete — back on Flow!")
+        # Success check: either `continue=` target (Flow or Gmail inbox)
+        # is terminal. Entry via mail.google.com lands on the inbox, not
+        # on Flow — accepting both keeps warm-profile and worker callers
+        # on one code path.
+        if _is_on_flow(current) or is_gmail_inbox(current):
+            logger.info("Login complete (url=%s)", current[:80])
             await asyncio.sleep(2)
             return True
 
@@ -178,6 +202,26 @@ async def handle_login_redirect(
         elif "myaccount.google.com" in current.lower():
             # After login, Google may land on myaccount — navigate to Flow
             step = "navigate_flow"
+
+        # Stuck detection: same (step, url) 3x in a row → reload to dismiss
+        # transient Google overlays like <div class="dKGsO" jsname="OQ2Y6">
+        # that intercept pointer events (feedback_login_stuck_reload.md).
+        key = (step, current[:120])
+        if key == stuck_key:
+            stuck_count += 1
+        else:
+            stuck_key = key
+            stuck_count = 1
+        if stuck_count >= 3 and step in ("email", "password", "totp", "challenge_select"):
+            logger.warning("Login stuck on %s for %d iterations — reloading URL", step, stuck_count)
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=15000)
+                await asyncio.sleep(2)
+            except Exception as e:
+                logger.warning("Reload failed: %s", e)
+            stuck_count = 0
+            stuck_key = None
+            continue
 
         logger.info("Login step: %s (url=%s)", step, current[:80])
 
