@@ -533,8 +533,8 @@ async def finalize_operation(
 
     # Canonical chain media_id is the settled /edit/{slug} route.
     # Captured result["media_ids"] are redirect IDs used for download.
-    current_url = page.url
     media_id = await _extract_settled_route_media_id(page, fallback=job.get("media_id"))
+    current_url = page.url
     download_media_ids = result.get("media_ids") or []
 
     # Build edit_url

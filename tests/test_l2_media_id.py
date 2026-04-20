@@ -133,6 +133,20 @@ async def test_finalize_operation_keeps_route_slug_for_chain_and_redirect_for_do
     assert download.await_args.kwargs["media_ids"] == ["redirect-name"]
 
 
+async def test_finalize_operation_edit_url_fallback_uses_settled_current_url(monkeypatch):
+    first_url = f"https://labs.google/fx/tools/flow/project/{PROJECT_ID}/preview/first"
+    second_url = f"https://labs.google/fx/tools/flow/project/{PROJECT_ID}/preview/second"
+    page = StickyURLPage(first_url, second_url)
+    client = _client(page)
+    monkeypatch.setattr(_base, "wait_for_completion", AsyncMock(return_value={"done": True, "media_ids": []}))
+    monkeypatch.setattr(_base, "download_video", AsyncMock(return_value=["x.mp4"]))
+
+    result = await _base.finalize_operation(client, {"media_id": OLD_SLUG}, "insert-object", "", "", "insert")
+
+    assert result["media_id"] == OLD_SLUG
+    assert result["edit_url"] == second_url
+
+
 async def test_finalize_operation_serial_ops_keep_distinct_route_media_ids(monkeypatch):
     page = MagicMock()
     page.url = _edit(NEW_SLUG)
