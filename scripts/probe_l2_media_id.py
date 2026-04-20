@@ -14,7 +14,9 @@ from typing import Any
 import requests
 
 
-ROUTE_SLUG_RE = re.compile(r"^[0-9a-f]{32}$")
+ROUTE_SLUG_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 POLL_INTERVAL_SECONDS = 5
 DEFAULT_SERVER = "http://127.0.0.1:8080"
 DEFAULT_PROMPT = "probe cat walking"
