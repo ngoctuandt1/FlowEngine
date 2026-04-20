@@ -21,6 +21,7 @@ from flow.navigation import extract_media_id, extract_project_id, flow_url
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.operations.frames_to_video import (
+    COMPOSER_MENU_SELECTORS,
     _click_new_project,
     _close_composer_menu,
 )
@@ -36,14 +37,6 @@ from flow.operations.generate import (
 logger = logging.getLogger(__name__)
 
 INGREDIENT_PLUS_SELECTOR = "button:not([title*='Add Media']):has(i:text-is('add'))"
-COMPOSER_MENU_SELECTORS = [
-    "button[aria-haspopup='menu']:has(i:text-is('crop_9_16'))",
-    "button[aria-haspopup='menu']:has(i:text-is('crop_16_9'))",
-    "button[aria-haspopup='menu']:has(i:text-is('crop_square'))",
-    'button[aria-haspopup="menu"]:has-text("crop_9_16")',
-    'button[aria-haspopup="menu"]:has-text("crop_16_9")',
-    'button[aria-haspopup="menu"]:has-text("crop_square")',
-]
 
 
 async def ingredients_to_video(
