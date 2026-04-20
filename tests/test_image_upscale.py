@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -252,11 +253,12 @@ async def test_download_video_image_branch_iterates_multiple_mids(monkeypatch, t
 
 @pytest.mark.asyncio
 async def test_download_video_image_branch_falls_back_to_api_for_failed_mids(
-    monkeypatch, tmp_path, image_client
+    monkeypatch, tmp_path, image_client, caplog
 ):
     client, _ = image_client
     media_ids = ["mid-1", "mid-2", "mid-3"]
     monkeypatch.setattr(download, "DOWNLOAD_DIR", str(tmp_path))
+    caplog.set_level(logging.WARNING, logger="flow.download")
 
     async def upscale_side_effect(*args, **kwargs):
         if kwargs["media_id"] == "mid-2":
@@ -287,6 +289,9 @@ async def test_download_video_image_branch_falls_back_to_api_for_failed_mids(
     api_mock.assert_awaited_once()
     assert api_mock.await_args.args[1] == "mid-2"
     ui_mock.assert_not_awaited()
+    assert caplog.text.count(
+        "quality downgraded from 2k to original for mid=mid-2"
+    ) == 1
 
 
 @pytest.mark.asyncio

@@ -143,6 +143,12 @@ async def download_video(
                     media_kind,
                 )
                 if api_path:
+                    logger.warning(
+                        "Image quality downgraded from %s to original for mid=%s "
+                        "(UI upscale failed, API fallback succeeded)",
+                        requested_image_quality,
+                        mid,
+                    )
                     downloaded_paths.append(api_path)
                 else:
                     logger.warning(
