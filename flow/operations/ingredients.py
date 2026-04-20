@@ -153,6 +153,8 @@ async def ingredients_to_video(
         media_ids=result.get("media_ids", [media_id] if media_id else []),
         prefix="ingredients",
     )
+    if not output_files:
+        raise RuntimeError("ingredients-to-video: no output file captured")
 
     project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     return {
