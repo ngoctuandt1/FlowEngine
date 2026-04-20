@@ -181,7 +181,27 @@ async def _ensure_frames_mode(page) -> None:
     await _click_tab(page, "Frames")
 
 
+async def _composer_menu_is_open(page) -> bool:
+    open_selectors = (
+        "button[aria-haspopup='menu'][data-state='open']",
+        "[role='menu'][data-state='open']",
+    )
+    for sel in open_selectors:
+        try:
+            if await page.locator(sel).first.is_visible(timeout=500):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def _open_composer_menu(page) -> None:
+    # The composer chip is a toggle. Re-clicking it while the menu is already
+    # open can close the menu and break re-entrant callers that still expect the
+    # Image/Video tabs to be visible.
+    if await _composer_menu_is_open(page):
+        return
+
     for sel in COMPOSER_MENU_SELECTORS:
         try:
             chip = page.locator(sel).first
