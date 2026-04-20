@@ -53,6 +53,7 @@ async def create_job(job: Job) -> Job:
                 id, type, status, job_level, parent_job_id, chain_id,
                 profile, project_url, media_id, edit_url,
                 prompt, model, aspect_ratio, bbox_json, direction,
+                start_image_path, end_image_path,
                 output_files_json, generation_id,
                 worker_id, claimed_at, completed_at, error,
                 created_at, updated_at
@@ -60,6 +61,7 @@ async def create_job(job: Job) -> Job:
                 ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
+                ?, ?,
                 ?, ?,
                 ?, ?, ?, ?,
                 ?, ?
@@ -81,6 +83,8 @@ async def create_job(job: Job) -> Job:
                 job.aspect_ratio,
                 json.dumps(job.bbox.model_dump()) if job.bbox else None,
                 job.direction,
+                job.start_image_path,
+                job.end_image_path,
                 json.dumps(job.output_files) if job.output_files else None,
                 job.generation_id,
                 job.worker_id,

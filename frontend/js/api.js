@@ -191,6 +191,19 @@ const API = {
       });
     },
   },
+
+  // ---- Uploads ----
+
+  uploads: {
+    async create(file) {
+      const form = new FormData();
+      form.append('file', file);
+      return API.fetch('/api/uploads', {
+        method: 'POST',
+        body: form,
+      });
+    },
+  },
 };
 
 

@@ -9,6 +9,7 @@ import uuid
 
 class JobType(str, Enum):
     TEXT_TO_VIDEO = "text-to-video"
+    FRAMES_TO_VIDEO = "frames-to-video"
     EXTEND_VIDEO = "extend-video"
     INSERT_OBJECT = "insert-object"
     REMOVE_OBJECT = "remove-object"
@@ -55,6 +56,8 @@ class JobCreate(BaseModel):
     # Operation-specific
     bbox: Optional[BBox] = None
     direction: Optional[str] = None  # Camera preset name
+    start_image_path: Optional[str] = None
+    end_image_path: Optional[str] = None
 
 
 class ChainCreate(BaseModel):
@@ -86,6 +89,8 @@ class Job(BaseModel):
     aspect_ratio: str = "16:9"
     bbox: Optional[BBox] = None
     direction: Optional[str] = None
+    start_image_path: Optional[str] = None
+    end_image_path: Optional[str] = None
 
     # Output
     output_files: list[str] = Field(default_factory=list)

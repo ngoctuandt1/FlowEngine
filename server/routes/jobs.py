@@ -30,6 +30,8 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
         media_id=req.media_id,
         bbox=req.bbox,
         direction=req.direction,
+        start_image_path=req.start_image_path,
+        end_image_path=req.end_image_path,
         profile=profile,
         job_level=job_level,
     )
