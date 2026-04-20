@@ -8,7 +8,7 @@ Image `/edit/` download menu labels are live-unverified. The selector lists for
 `2k` and `4k` therefore use ordered anchored→legacy→loose regexes, and log
 every visible menuitem text before clicking so future probes have DOM evidence.
 
-NEVER press Escape on /edit/ view — it closes the entire editor dialog
+NEVER press Escape on /edit/ view - it closes the entire editor dialog
 (see CLAUDE.md §7 Common Gotchas). Menus dismiss by clicking the trigger again
 or outside the menu.
 """
@@ -19,7 +19,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Awaitable, Callable, Literal
 
 from flow.landing import recover_from_flow_landing
 
@@ -27,11 +27,13 @@ logger = logging.getLogger(__name__)
 
 _DONE_RE = re.compile(
     r"(đã tăng độ phân giải xong|tăng độ phân giải xong|"
-    r"upscal\w* complete|upscal\w* done|1080p ready)",
+    r"upscal\w* complete|upscal\w* done|upscale complete|"
+    r"(1080p|2k|4k) ready)",
     re.IGNORECASE,
 )
 _BUSY_RE = re.compile(
-    r"(đang tăng độ phân giải|tăng độ phân giải|upscaling|processing 1080)",
+    r"(đang tăng độ phân giải|tăng độ phân giải|"
+    r"upscaling|processing (1080|2k|4k))",
     re.IGNORECASE,
 )
 _FAIL_RE = re.compile(
@@ -50,7 +52,7 @@ _IMAGE_MENU_PATTERNS: dict[IMAGE_TARGET_QUALITY, tuple[str, ...]] = {
 }
 
 
-async def _popup_state(page):
+async def _popup_state(page) -> str | None:
     """Scan toast/alert popups. Returns 'done' | 'busy' | 'failed' | None."""
     try:
         texts = await page.evaluate(
@@ -76,12 +78,12 @@ async def _popup_state(page):
         )
     except Exception:
         return None
-    for t in (texts or []):
-        if _FAIL_RE.search(t):
+    for text in texts or []:
+        if _FAIL_RE.search(text):
             return "failed"
-        if _DONE_RE.search(t):
+        if _DONE_RE.search(text):
             return "done"
-        if _BUSY_RE.search(t):
+        if _BUSY_RE.search(text):
             return "busy"
     return None
 
@@ -127,11 +129,10 @@ async def _click_edit_download_button(page, wait_sec: int = 10) -> bool:
 
     Waits up to `wait_sec` for the button to appear (post-generation /edit/ view
     may still be hydrating). Anchored to buttons whose textContent is exactly
-    'download' (the Material Icons ligature text) — avoids 'Download app' etc.
+    'download' (the Material Icons ligature text) - avoids 'Download app' etc.
     """
     logger.info("[UPSCALE] Current URL: %s", page.url[:100])
 
-    # Wait for any candidate button to show up (post-gen /edit/ view hydration)
     deadline = time.time() + wait_sec
     btn = page.locator("button").filter(
         has=page.locator("i").get_by_text("download", exact=True)
@@ -151,30 +152,36 @@ async def _click_edit_download_button(page, wait_sec: int = 10) -> bool:
             await btn.first.click(timeout=3000)
             logger.info("[UPSCALE] Clicked /edit/ download button (i-tag match)")
             return True
-    except Exception as e:
-        logger.warning("[UPSCALE] i-tag match click failed: %s", e)
+    except Exception as exc:
+        logger.warning("[UPSCALE] i-tag match click failed: %s", exc)
 
-    # Fallback: button whose total text is exactly 'download' (case-insensitive)
     btn2 = page.locator("button").filter(
         has_text=re.compile(r"^\s*download\s*$", re.IGNORECASE)
     )
     try:
-        c2 = await btn2.count()
-        logger.info("[UPSCALE] text-match candidate buttons: %d", c2)
-        if c2 > 0:
+        count = await btn2.count()
+        logger.info("[UPSCALE] text-match candidate buttons: %d", count)
+        if count > 0:
             await btn2.first.click(timeout=3000)
             logger.info("[UPSCALE] Clicked /edit/ download button (text match)")
             return True
-    except Exception as e:
-        logger.warning("[UPSCALE] text-match click failed: %s", e)
+    except Exception as exc:
+        logger.warning("[UPSCALE] text-match click failed: %s", exc)
 
     logger.warning("[UPSCALE] Download button not found")
     return False
 
 
 async def _open_edit_download_menu(page, wait_sec: int = 10) -> bool:
-    """Open the /edit/ download menu and return whether the trigger click worked."""
-    return await _click_edit_download_button(page, wait_sec=wait_sec)
+    """Open the /edit/ download menu and verify menu items are visible."""
+    if not await _click_edit_download_button(page, wait_sec=wait_sec):
+        return False
+    try:
+        await page.wait_for_selector('[role="menuitem"]', timeout=3000)
+        return True
+    except Exception as exc:
+        logger.warning("[UPSCALE] Download menu did not open: %s", exc)
+        return False
 
 
 async def _log_menuitem_texts(page, *, prefix: str) -> list[str]:
@@ -189,6 +196,34 @@ async def _log_menuitem_texts(page, *, prefix: str) -> list[str]:
     return texts
 
 
+async def _wait_for_download_or_popup(page, downloads: list, rounds: int = 5) -> str | None:
+    """Race a download event against popup state for roughly `rounds * 3` seconds."""
+    state = None
+    for _ in range(rounds):
+        await asyncio.sleep(3)
+        if downloads:
+            return None
+        state = await _popup_state(page)
+        if state in ("busy", "done", "failed"):
+            return state
+    return state
+
+
+async def _capture_download_from_menu(
+    page,
+    open_menu: Callable[[], Awaitable[bool]],
+    click_item: Callable[[], Awaitable[bool]],
+    timeout_ms: int = 60_000,
+):
+    """Open the menu, click an item, and return the Playwright download object."""
+    async with page.expect_download(timeout=timeout_ms) as dl_info:
+        if not await open_menu():
+            return None
+        if not await click_item():
+            return None
+    return await dl_info.value
+
+
 async def _click_menu_video_1080p(page) -> bool:
     """Click the video menu's `1080pUpscaled` item.
 
@@ -201,7 +236,6 @@ async def _click_menu_video_1080p(page) -> bool:
     except Exception:
         pass
 
-    # Anchored: textContent must be EXACTLY '1080pUpscaled' per 2026-04-19 probe.
     q = page.locator('[role="menuitem"]').filter(
         has_text=re.compile(r"^1080pUpscaled$", re.IGNORECASE)
     )
@@ -210,10 +244,9 @@ async def _click_menu_video_1080p(page) -> bool:
             await q.first.click(timeout=3000)
             logger.info("[UPSCALE] Clicked 1080pUpscaled menu item")
             return True
-    except Exception as e:
-        logger.warning("[UPSCALE] anchored 1080p click failed: %s", e)
+    except Exception as exc:
+        logger.warning("[UPSCALE] anchored 1080p click failed: %s", exc)
 
-    # Fallback: any menuitem containing '1080p' (still excludes 4K)
     q2 = page.locator('[role="menuitem"]').filter(
         has_text=re.compile(r"1080p", re.IGNORECASE)
     )
@@ -222,8 +255,8 @@ async def _click_menu_video_1080p(page) -> bool:
             await q2.first.click(timeout=3000)
             logger.info("[UPSCALE] Clicked 1080p menu item (substring match)")
             return True
-    except Exception as e:
-        logger.warning("[UPSCALE] substring 1080p click failed: %s", e)
+    except Exception as exc:
+        logger.warning("[UPSCALE] substring 1080p click failed: %s", exc)
 
     logger.warning("[UPSCALE] 1080p menu item not found")
     return False
@@ -244,13 +277,18 @@ async def _save_download(download, prefix: str, quality: str, out_dir: Path) -> 
             return None
         logger.info("[UPSCALE] Saved: %s (%d bytes)", path, size)
         return str(path)
-    except Exception as e:
-        logger.warning("[UPSCALE] Save failed: %s", e)
+    except Exception as exc:
+        logger.warning("[UPSCALE] Save failed: %s", exc)
         return None
 
 
-async def _save_image_download(download, prefix: str, quality: IMAGE_TARGET_QUALITY, out_dir: Path) -> str | None:
-    """Save an image download using Flow's shared content-type→extension mapping."""
+async def _save_image_download(
+    download,
+    prefix: str,
+    quality: IMAGE_TARGET_QUALITY,
+    out_dir: Path,
+) -> str | None:
+    """Save an image download using Flow's shared content-type->extension mapping."""
     out_dir.mkdir(parents=True, exist_ok=True)
     temp_path = None
     try:
@@ -297,22 +335,22 @@ def _content_type_from_bytes(body: bytes) -> str:
 
 async def _ensure_edit_view(page, media_id: str | None = None) -> None:
     """Ensure page is on `/edit/{routing_slug}`. After L1 generation the page
-    sits on `/project/{pid}` root — but the icon-only Download button only
+    sits on `/project/{pid}` root - but the icon-only Download button only
     exists on `/project/{pid}/edit/{routing_slug}`.
 
     Two facts from Run 17d/17e live evidence:
       1. The captured API `media_id` is NOT the /edit/ routing slug
-         (`page.goto(/edit/{media_id})` → SPA bounces back to project root).
-      2. `data-tile-id="fe_id_{X}"` on project tiles — `X` is ALSO NOT the
-         routing slug (Run 17e: tile id 54ce98c9… → SPA landed on /edit/
-         4ed94c32…, different UUID). Probe §5.5's claim that `fe_id_` prefix
+         (`page.goto(/edit/{media_id})` -> SPA bounces back to project root).
+      2. `data-tile-id="fe_id_{X}"` on project tiles - `X` is ALSO NOT the
+         routing slug (Run 17e: tile id 54ce98c9... -> SPA landed on /edit/
+         4ed94c32..., different UUID). Probe §5.5's claim that `fe_id_` prefix
          equals the routing slug is stale / situational.
 
-    Reliable path: **click the tile**. Flow's SPA router owns the slug
-    resolution; clicking triggers its `pushState` + state setup and settles
-    on the correct `/edit/{routing_slug}` URL. The `media_id` arg is kept
-    for future reference (e.g. multi-tile disambiguation) but is unused here
-    — after fresh L1 t2v there is exactly one tile on the project view.
+    Reliable path: click the tile. Flow's SPA router owns the slug resolution;
+    clicking triggers its `pushState` + state setup and settles on the correct
+    `/edit/{routing_slug}` URL. The `media_id` arg is kept for future reference
+    (e.g. multi-tile disambiguation) but is unused here - after fresh L1 t2v
+    there is exactly one tile on the project view.
     """
     if await recover_from_flow_landing(page, logger, page.url):
         await asyncio.sleep(1)
@@ -336,15 +374,15 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
     logger.info("[UPSCALE] Clicking tile for SPA nav to /edit/ view")
     try:
         await tile.click(timeout=5000)
-    except Exception as e:
-        logger.warning("[UPSCALE] Tile click failed: %s", e)
+    except Exception as exc:
+        logger.warning("[UPSCALE] Tile click failed: %s", exc)
         return
 
     deadline = time.time() + 10
     while time.time() < deadline:
         if "/edit/" in page.url:
             logger.info("[UPSCALE] SPA landed on /edit/: %s", page.url[:120])
-            await asyncio.sleep(1.5)  # let view hydrate (button mount, icons)
+            await asyncio.sleep(1.5)
             return
         await asyncio.sleep(0.2)
     logger.warning(
@@ -365,10 +403,10 @@ async def upscale_and_download_1080p(
 
     Flow:
       0. Ensure page is on /edit/{media_id} (deep-link if on project root).
-      1. Click Download button → click 1080pUpscaled.
+      1. Click Download button -> click 1080pUpscaled.
       2. Poll ~15 s: if a download fires immediately (cached), save and return.
-         If a 'busy' toast appears → wait up to upscale_timeout_sec for 'done'.
-         If 'done' or 'failed' → act accordingly.
+         If a 'busy' toast appears -> wait up to upscale_timeout_sec for 'done'.
+         If 'done' or 'failed' -> act accordingly.
       3. After upscale 'done': re-click Download + 1080pUpscaled inside
          `expect_download` to capture the real mp4.
 
@@ -383,8 +421,8 @@ async def upscale_and_download_1080p(
 
     downloads: list = []
 
-    def _on_download(d):
-        downloads.append(d)
+    def _on_download(download) -> None:
+        downloads.append(download)
 
     page.on("download", _on_download)
 
@@ -395,21 +433,11 @@ async def upscale_and_download_1080p(
             if not await _open_edit_download_menu(page):
                 await asyncio.sleep(1.5)
                 continue
-
             if not await _click_menu_video_1080p(page):
                 await asyncio.sleep(1)
                 continue
 
-            # Race: download arrives fast (cached) OR busy/done/failed toast shows.
-            state = None
-            for _ in range(5):
-                await asyncio.sleep(3)
-                if downloads:
-                    break
-                state = await _popup_state(page)
-                if state in ("busy", "done", "failed"):
-                    break
-
+            state = await _wait_for_download_or_popup(page, downloads)
             if downloads:
                 path = await _save_download(downloads[0], prefix, "1080p", out_dir)
                 if path:
@@ -417,7 +445,6 @@ async def upscale_and_download_1080p(
                 downloads.clear()
 
             if state == "done":
-                # Already upscaled (rare race). Re-click to pull file.
                 await _close_toast(page)
                 path = await _redownload_1080p(page, prefix, out_dir)
                 if path:
@@ -444,11 +471,12 @@ async def upscale_and_download_1080p(
                 continue
 
             logger.warning(
-                "[UPSCALE] No download/toast after 15s on attempt %d", attempt
+                "[UPSCALE] No download/toast after 15s on attempt %d",
+                attempt,
             )
 
         logger.warning(
-            "[UPSCALE] All %d attempts failed — caller falls back to 720p",
+            "[UPSCALE] All %d attempts failed - caller falls back to 720p",
             max_retries,
         )
         return None
@@ -464,20 +492,21 @@ async def _redownload_1080p(page, prefix: str, out_dir: Path) -> str | None:
     logger.info("[UPSCALE] Re-triggering 1080p download...")
     await asyncio.sleep(0.5)
     try:
-        async with page.expect_download(timeout=60_000) as dl_info:
-            if not await _open_edit_download_menu(page):
-                return None
-            if not await _click_menu_video_1080p(page):
-                return None
-        download = await dl_info.value
+        download = await _capture_download_from_menu(
+            page,
+            lambda: _open_edit_download_menu(page),
+            lambda: _click_menu_video_1080p(page),
+        )
+        if download is None:
+            return None
         return await _save_download(download, prefix, "1080p", out_dir)
-    except Exception as e:
-        logger.warning("[UPSCALE] Re-download failed: %s", e)
+    except Exception as exc:
+        logger.warning("[UPSCALE] Re-download failed: %s", exc)
         return None
 
 
 async def _click_menu_image_target(page, target_quality: IMAGE_TARGET_QUALITY) -> bool:
-    """Click an image upscale target using anchored→legacy→loose regexes.
+    """Click an image upscale target using anchored->legacy->loose regexes.
 
     The image menu labels are not yet probe-confirmed, so each quality keeps an
     ordered regex list:
@@ -485,11 +514,11 @@ async def _click_menu_image_target(page, target_quality: IMAGE_TARGET_QUALITY) -
     2. legacy collapsed label, e.g. `2KUpscaled`
     3. loose `2K`/`4K` token fallback for diagnosis-oriented resilience
     """
-    await _log_menuitem_texts(page, prefix=f"[UPSCALE][IMAGE][{target_quality}]")
     try:
         await page.wait_for_selector('[role="menuitem"]', timeout=3000)
     except Exception:
         pass
+    await _log_menuitem_texts(page, prefix=f"[UPSCALE][IMAGE][{target_quality}]")
 
     for pattern in _IMAGE_MENU_PATTERNS[target_quality]:
         locator = page.locator('[role="menuitem"]').filter(
@@ -533,16 +562,114 @@ async def upscale_and_download_image(
     page = client.page
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    downloads: list = []
+
+    def _on_download(download) -> None:
+        downloads.append(download)
 
     try:
         await _ensure_edit_view(page, media_id)
-        async with page.expect_download(timeout=60_000) as dl_info:
+        page.on("download", _on_download)
+
+        for attempt in range(1, 3):
+            logger.info(
+                "[UPSCALE][IMAGE] Attempt %d/2 for %s",
+                attempt,
+                target_quality,
+            )
+            downloads.clear()
+
             if not await _open_edit_download_menu(page):
-                return None
+                await asyncio.sleep(1.5)
+                continue
             if not await _click_menu_image_target(page, target_quality):
-                return None
-        download = await dl_info.value
-        return await _save_image_download(download, prefix, target_quality, out_dir)
+                await asyncio.sleep(1)
+                continue
+
+            state = await _wait_for_download_or_popup(page, downloads)
+            if downloads:
+                path = await _save_image_download(
+                    downloads[0],
+                    prefix,
+                    target_quality,
+                    out_dir,
+                )
+                if path:
+                    return path
+                downloads.clear()
+
+            if state == "busy":
+                wait_result = await _wait_upscale(page, UPSCALE_TIMEOUT_SEC)
+                await _close_toast(page)
+                if downloads:
+                    path = await _save_image_download(
+                        downloads[0],
+                        prefix,
+                        target_quality,
+                        out_dir,
+                    )
+                    if path:
+                        return path
+                    downloads.clear()
+                if wait_result == "done":
+                    download = await _capture_download_from_menu(
+                        page,
+                        lambda: _open_edit_download_menu(page),
+                        lambda: _click_menu_image_target(page, target_quality),
+                    )
+                    if download is None:
+                        continue
+                    path = await _save_image_download(
+                        download,
+                        prefix,
+                        target_quality,
+                        out_dir,
+                    )
+                    if path:
+                        return path
+                continue
+
+            if state == "done":
+                await _close_toast(page)
+                download = await _capture_download_from_menu(
+                    page,
+                    lambda: _open_edit_download_menu(page),
+                    lambda: _click_menu_image_target(page, target_quality),
+                )
+                if download is None:
+                    continue
+                path = await _save_image_download(
+                    download,
+                    prefix,
+                    target_quality,
+                    out_dir,
+                )
+                if path:
+                    return path
+                continue
+
+            if state == "failed":
+                logger.warning(
+                    "[UPSCALE][IMAGE] Failed toast on attempt %d for %s",
+                    attempt,
+                    target_quality,
+                )
+                await _close_toast(page)
+                continue
+
+            logger.warning(
+                "[UPSCALE][IMAGE] No download/toast after 15s for %s on attempt %d",
+                target_quality,
+                attempt,
+            )
+            return None
+
+        return None
     except Exception as exc:
         logger.warning("[UPSCALE][IMAGE] %s download failed: %s", target_quality, exc)
         return None
+    finally:
+        try:
+            page.remove_listener("download", _on_download)
+        except Exception:
+            pass
