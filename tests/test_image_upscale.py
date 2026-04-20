@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -251,10 +252,13 @@ async def test_download_video_image_branch_iterates_multiple_mids(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_download_video_image_branch_skips_failed_mids(monkeypatch, tmp_path, image_client):
+async def test_download_video_image_branch_falls_back_to_api_for_failed_mids(
+    monkeypatch, tmp_path, image_client, caplog
+):
     client, _ = image_client
     media_ids = ["mid-1", "mid-2", "mid-3"]
     monkeypatch.setattr(download, "DOWNLOAD_DIR", str(tmp_path))
+    caplog.set_level(logging.WARNING, logger="flow.download")
 
     async def upscale_side_effect(*args, **kwargs):
         if kwargs["media_id"] == "mid-2":
@@ -262,7 +266,7 @@ async def test_download_video_image_branch_skips_failed_mids(monkeypatch, tmp_pa
         return str(tmp_path / f'{kwargs["media_id"]}.png')
 
     upscale_mock = AsyncMock(side_effect=upscale_side_effect)
-    api_mock = AsyncMock()
+    api_mock = AsyncMock(return_value=str(tmp_path / "mid-2_api.png"))
     ui_mock = AsyncMock()
     monkeypatch.setattr(upscale, "upscale_and_download_image", upscale_mock)
     monkeypatch.setattr(download, "_download_via_api", api_mock)
@@ -276,10 +280,18 @@ async def test_download_video_image_branch_skips_failed_mids(monkeypatch, tmp_pa
         media_kind="image",
     )
 
-    assert result == [str(tmp_path / "mid-1.png"), str(tmp_path / "mid-3.png")]
+    assert result == [
+        str(tmp_path / "mid-1.png"),
+        str(tmp_path / "mid-2_api.png"),
+        str(tmp_path / "mid-3.png"),
+    ]
     assert [call.kwargs["media_id"] for call in upscale_mock.await_args_list] == media_ids
-    api_mock.assert_not_awaited()
+    api_mock.assert_awaited_once()
+    assert api_mock.await_args.args[1] == "mid-2"
     ui_mock.assert_not_awaited()
+    assert caplog.text.count(
+        "quality downgraded from 2k to original for mid=mid-2"
+    ) == 1
 
 
 @pytest.mark.asyncio
@@ -307,4 +319,35 @@ async def test_download_video_image_branch_falls_through_when_all_fail(monkeypat
     assert result == api_paths
     assert [call.kwargs["media_id"] for call in upscale_mock.await_args_list] == media_ids
     assert [call.args[1] for call in api_mock.await_args_list] == media_ids
+    ui_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_download_video_image_branch_seeds_all_events_when_media_ids_empty(
+    monkeypatch, tmp_path, image_client
+):
+    client, _ = image_client
+    client._media_id_events = [{"mid": "a"}, {"mid": "b"}, {"mid": "c"}]
+    monkeypatch.setattr(download, "DOWNLOAD_DIR", str(tmp_path))
+
+    upscale_mock = AsyncMock(
+        side_effect=[str(tmp_path / "a.png"), str(tmp_path / "b.png"), str(tmp_path / "c.png")]
+    )
+    api_mock = AsyncMock()
+    ui_mock = AsyncMock()
+    monkeypatch.setattr(upscale, "upscale_and_download_image", upscale_mock)
+    monkeypatch.setattr(download, "_download_via_api", api_mock)
+    monkeypatch.setattr(download, "_download_via_ui", ui_mock)
+
+    result = await download.download_video(
+        client,
+        media_ids=[],
+        prefix="img",
+        quality="2k",
+        media_kind="image",
+    )
+
+    assert result == [str(tmp_path / "a.png"), str(tmp_path / "b.png"), str(tmp_path / "c.png")]
+    assert [call.kwargs["media_id"] for call in upscale_mock.await_args_list] == ["a", "b", "c"]
+    api_mock.assert_not_awaited()
     ui_mock.assert_not_awaited()

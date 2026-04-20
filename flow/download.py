@@ -96,42 +96,68 @@ async def download_video(
         target_mids = list(media_ids) if media_ids else []
         if not target_mids:
             evts = getattr(client, "_media_id_events", [])
+            seen_mids = set()
             for evt in evts:
-                if evt.get("mid"):
-                    target_mids.append(evt["mid"])
-                    break
+                mid = evt.get("mid")
+                if mid and mid not in seen_mids:
+                    target_mids.append(mid)
+                    seen_mids.add(mid)
 
-        upscaled_paths = []
-        mid = None
-        try:
+        if target_mids:
+            downloaded_paths = []
             from flow.upscale import upscale_and_download_image
 
             for mid in target_mids:
-                ui_path = await upscale_and_download_image(
-                    client,
-                    prefix=prefix,
-                    output_dir=DOWNLOAD_DIR,
-                    media_id=mid,
-                    target_quality=requested_image_quality,
-                )
+                ui_path = None
+                try:
+                    ui_path = await upscale_and_download_image(
+                        client,
+                        prefix=prefix,
+                        output_dir=DOWNLOAD_DIR,
+                        media_id=mid,
+                        target_quality=requested_image_quality,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Image UI %s upscale raised for mid=%s: %s; falling back to API",
+                        requested_image_quality,
+                        mid,
+                        e,
+                    )
+
                 if ui_path:
-                    upscaled_paths.append(ui_path)
+                    downloaded_paths.append(ui_path)
                     continue
+
                 logger.info(
                     "Image UI %s path returned None for mid=%s; will try API fallback",
                     requested_image_quality,
                     mid,
                 )
-        except Exception as e:
-            logger.warning(
-                "Image UI %s upscale raised for mid=%s: %s",
-                requested_image_quality,
-                mid,
-                e,
-            )
+                api_path = await _download_via_api(
+                    client,
+                    mid,
+                    prefix,
+                    "original",
+                    output_dir,
+                    media_kind,
+                )
+                if api_path:
+                    logger.warning(
+                        "Image quality downgraded from %s to original for mid=%s "
+                        "(UI upscale failed, API fallback succeeded)",
+                        requested_image_quality,
+                        mid,
+                    )
+                    downloaded_paths.append(api_path)
+                else:
+                    logger.warning(
+                        "Image API fallback failed for mid=%s after %s UI attempt",
+                        mid,
+                        requested_image_quality,
+                    )
 
-        if upscaled_paths:
-            return upscaled_paths
+            return downloaded_paths
 
     # Collect media IDs if not provided
     if not media_ids:
