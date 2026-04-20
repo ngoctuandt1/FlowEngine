@@ -1,5 +1,6 @@
 """FlowEngine FastAPI application."""
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,6 +14,10 @@ from server.routes import jobs_router, worker_router, profiles_router, ws_router
 
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+# Worker writes output mp4s to FLOW_DOWNLOAD_DIR (see flow/download.py).
+# Keep this resolution in lockstep so the dashboard "download" links
+# produced from Job.output_files resolve against the same directory.
+DOWNLOAD_DIR = Path(os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")).resolve()
 
 
 @asynccontextmanager
@@ -55,6 +60,11 @@ if FRONTEND_DIR.is_dir():
         sub_path = FRONTEND_DIR / subdir
         if sub_path.is_dir():
             app.mount(f"/{subdir}", StaticFiles(directory=str(sub_path)), name=subdir)
+
+# Expose generated video outputs so the dashboard can link to them.
+# Created on first run if missing; worker needs the same dir to exist.
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/downloads", StaticFiles(directory=str(DOWNLOAD_DIR)), name="downloads")
 
 
 @app.get("/")

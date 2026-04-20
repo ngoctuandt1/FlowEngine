@@ -39,6 +39,11 @@ class JobCreate(BaseModel):
     model: str = "veo-3.1-fast-lp"
     aspect_ratio: str = "16:9"
 
+    # Pin an L1 job to a specific Chrome profile (Google account). For
+    # L2+ the profile is inherited from the completed parent and this
+    # field is ignored.
+    profile: Optional[str] = None
+
     # Multi-level chain
     parent_job_id: Optional[str] = None
     chain_id: Optional[str] = None

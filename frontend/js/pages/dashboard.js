@@ -98,8 +98,31 @@
       )
       .join('');
 
+    const outputs = Array.isArray(job.output_files) ? job.output_files : [];
+    let downloadsHtml = '';
+    if (outputs.length) {
+      const links = outputs
+        .map((p) => {
+          const base = String(p).split(/[\\/]/).pop();
+          const url = '/downloads/' + encodeURIComponent(base);
+          return `
+            <a class="btn btn-sm btn-outline" href="${url}" download="${App.escapeHtml(base)}" target="_blank" rel="noopener">
+              <span class="material-icons" style="font-size:16px">download</span>
+              ${App.escapeHtml(base)}
+            </a>
+          `;
+        })
+        .join('');
+      downloadsHtml = `
+        <div class="detail-row" style="align-items:flex-start">
+          <span class="detail-label">Output</span>
+          <span class="detail-value" style="display:flex;flex-direction:column;gap:6px">${links}</span>
+        </div>
+      `;
+    }
+
     return `
-      <div class="detail-list">${rows}</div>
+      <div class="detail-list">${rows}${downloadsHtml}</div>
       <div style="margin-top: 20px; display: flex; gap: 8px;">
         <button class="btn btn-danger btn-sm" onclick="DashboardPage._deleteJob('${App.escapeHtml(
           job.id || job.job_id || ''

@@ -45,14 +45,16 @@ async def create_single_job(req: JobCreate):
     and inherit profile / project_url / media_id from the completed parent.
     """
     job_level = 1
-    profile = None
+    profile = req.profile  # L1 pin (ignored when parent present, see below)
 
     if req.parent_job_id:
         parent = await get_job(req.parent_job_id)
         if parent is None:
             raise HTTPException(404, f"Parent job {req.parent_job_id} not found")
         job_level = parent.job_level + 1
-        # Inherit context from completed parent
+        # L2+ inherits profile from completed parent — INV-1 account binding.
+        # The request's `profile` hint is discarded to avoid accidental cross-
+        # account routing on a chain.
         if parent.status == JobStatus.COMPLETED:
             profile = parent.profile
             if req.project_url is None:
