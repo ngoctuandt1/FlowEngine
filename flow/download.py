@@ -93,35 +93,45 @@ async def download_video(
             logger.warning("UI 1080p upscale raised: %s; falling back to API", e)
 
     if media_kind == "image" and requested_image_quality in IMAGE_UPSCALE_QUALITIES:
-        first_mid = media_ids[0] if media_ids else None
-        if not first_mid:
+        target_mids = list(media_ids) if media_ids else []
+        if not target_mids:
             evts = getattr(client, "_media_id_events", [])
             for evt in evts:
                 if evt.get("mid"):
-                    first_mid = evt["mid"]
+                    target_mids.append(evt["mid"])
                     break
+
+        upscaled_paths = []
+        mid = None
         try:
             from flow.upscale import upscale_and_download_image
 
-            ui_path = await upscale_and_download_image(
-                client,
-                prefix=prefix,
-                output_dir=DOWNLOAD_DIR,
-                media_id=first_mid,
-                target_quality=requested_image_quality,
-            )
-            if ui_path:
-                return [ui_path]
-            logger.info(
-                "Image UI %s path returned None; falling back to original API",
-                requested_image_quality,
-            )
+            for mid in target_mids:
+                ui_path = await upscale_and_download_image(
+                    client,
+                    prefix=prefix,
+                    output_dir=DOWNLOAD_DIR,
+                    media_id=mid,
+                    target_quality=requested_image_quality,
+                )
+                if ui_path:
+                    upscaled_paths.append(ui_path)
+                    continue
+                logger.info(
+                    "Image UI %s path returned None for mid=%s; will try API fallback",
+                    requested_image_quality,
+                    mid,
+                )
         except Exception as e:
             logger.warning(
-                "Image UI %s upscale raised: %s; falling back to original API",
+                "Image UI %s upscale raised for mid=%s: %s",
                 requested_image_quality,
+                mid,
                 e,
             )
+
+        if upscaled_paths:
+            return upscaled_paths
 
     # Collect media IDs if not provided
     if not media_ids:
