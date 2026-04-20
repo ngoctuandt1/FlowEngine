@@ -51,14 +51,6 @@ IMAGE_RATIO_IDS = {
     "9:16": "PORTRAIT",
 }
 
-IMAGE_CHIP_SELECTORS = [
-    "button[aria-haspopup='menu']:has(i:text-is('crop_16_9'))",
-    "button[aria-haspopup='menu']:has(i:text-is('crop_landscape'))",
-    "button[aria-haspopup='menu']:has(i:text-is('crop_square'))",
-    "button[aria-haspopup='menu']:has(i:text-is('crop_portrait'))",
-    "button[aria-haspopup='menu']:has(i:text-is('crop_9_16'))",
-]
-
 
 async def text_to_image(
     client,
@@ -359,7 +351,7 @@ async def _set_image_output_count(page, count: int) -> None:
 
 
 async def _locate_image_chip(page):
-    for sel in IMAGE_CHIP_SELECTORS + COMPOSER_MENU_SELECTORS:
+    for sel in COMPOSER_MENU_SELECTORS:
         chip = page.locator(sel).first
         try:
             if await chip.is_visible(timeout=1000):

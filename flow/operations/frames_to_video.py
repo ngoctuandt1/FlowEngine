@@ -1,8 +1,9 @@
 """Frames-to-video - Level 1 operation.
 
 Authoritative selectors from the 2026-04-20 live probe:
-- Composer chip: `button[aria-haspopup='menu']:has(i:text-is('crop_9_16'))`
-  / `button[aria-haspopup='menu']:has(i:text-is('crop_16_9'))`
+- Composer chip: supports video-aspect icons (`crop_9_16`, `crop_16_9`) and
+  image-mode icons (`crop_landscape`, `crop_square`, `crop_portrait`) because
+  Flow persists the last-used composer mode per account.
 - Output/sub-mode tabs: `[role='tab']:text-is('Video')`, `[role='tab']:text-is('Frames')`
 """
 
@@ -29,8 +30,13 @@ from flow.operations.generate import (
 logger = logging.getLogger(__name__)
 
 COMPOSER_MENU_SELECTORS = [
+    # Video-aspect chip icons.
     "button[aria-haspopup='menu']:has(i:text-is('crop_9_16'))",
     "button[aria-haspopup='menu']:has(i:text-is('crop_16_9'))",
+    # Image-mode chip icons.
+    "button[aria-haspopup='menu']:has(i:text-is('crop_landscape'))",
+    "button[aria-haspopup='menu']:has(i:text-is('crop_square'))",
+    "button[aria-haspopup='menu']:has(i:text-is('crop_portrait'))",
 ]
 
 
@@ -185,7 +191,36 @@ async def _open_composer_menu(page) -> None:
                 return
         except Exception:
             continue
-    raise RuntimeError("Could not open composer menu for frames-to-video")
+    visible_menu_buttons = await _collect_visible_menu_button_texts(page)
+    logger.warning(
+        "_open_composer_menu: no composer chip matched %d selectors; visible menu buttons=%s",
+        len(COMPOSER_MENU_SELECTORS),
+        visible_menu_buttons,
+    )
+    raise RuntimeError(
+        f"Could not open composer chip (tried {len(COMPOSER_MENU_SELECTORS)} icon variants). "
+        "Flow may have introduced a new chip icon - run the probe to update."
+    )
+
+
+async def _collect_visible_menu_button_texts(page) -> list[str]:
+    return await page.evaluate(
+        """() => {
+            const visible = (el) => {
+                const style = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && rect.width > 0
+                    && rect.height > 0;
+            };
+
+            return Array.from(document.querySelectorAll("button[aria-haspopup='menu']"))
+                .filter((el) => visible(el))
+                .map((el) => (el.innerText || el.textContent || '').trim())
+                .filter((text) => text.length > 0);
+        }"""
+    )
 
 
 async def _click_tab(page, label: str) -> None:
