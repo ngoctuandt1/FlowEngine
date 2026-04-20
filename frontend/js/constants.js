@@ -11,20 +11,21 @@
 const CONST = (() => {
   // Keep in sync with JobType enum in server/models/job.py.
   const JOB_TYPES = [
-    { id: 'text-to-video',  label: 'Text to Video', icon: 'videocam',       shortLabel: 'T2V' },
-    { id: 'extend-video',   label: 'Extend',        icon: 'add_to_queue',   shortLabel: 'Extend' },
-    { id: 'insert-object',  label: 'Insert',        icon: 'add_box',        shortLabel: 'Insert' },
-    { id: 'remove-object',  label: 'Remove',        icon: 'delete_sweep',   shortLabel: 'Remove' },
-    { id: 'camera-move',    label: 'Camera',        icon: 'videocam_off',   shortLabel: 'Camera' },
+    { id: 'text-to-video', label: 'Text to Video', icon: 'videocam', shortLabel: 'T2V' },
+    { id: 'extend-video', label: 'Extend', icon: 'add_to_queue', shortLabel: 'Extend' },
+    { id: 'insert-object', label: 'Insert', icon: 'add_box', shortLabel: 'Insert' },
+    { id: 'remove-object', label: 'Remove', icon: 'delete_sweep', shortLabel: 'Remove' },
+    { id: 'camera-move', label: 'Camera', icon: 'videocam_off', shortLabel: 'Camera' },
   ];
 
   // Veo 3.1 family exposed by Flow's model dropdown. LP = Lower Priority
   // (free tier). Default matches flow/model_selector.py DEFAULT_MODEL.
   const MODELS = [
-    { value: 'veo-3.1-fast-lp', label: 'Veo 3.1 — Fast [LP, free]' },
-    { value: 'veo-3.1-lite-lp', label: 'Veo 3.1 — Lite [LP, free]' },
-    { value: 'veo-3.1-fast',    label: 'Veo 3.1 — Fast [paid]' },
-    { value: 'veo-3.1',         label: 'Veo 3.1 — Full [paid]' },
+    { value: 'veo-3.1-fast-lp', label: 'Veo 3.1 - Fast [Lower Priority]' },
+    { value: 'veo-3.1-lite-lp', label: 'Veo 3.1 - Lite [Lower Priority]' },
+    { value: 'veo-3.1-lite', label: 'Veo 3.1 - Lite' },
+    { value: 'veo-3.1-fast', label: 'Veo 3.1 - Fast [paid]' },
+    { value: 'veo-3.1-quality', label: 'Veo 3.1 - Quality [paid]' },
   ];
   const DEFAULT_MODEL = 'veo-3.1-fast-lp';
 
@@ -35,7 +36,7 @@ const CONST = (() => {
   ];
   const DEFAULT_ASPECT = '16:9';
 
-  // Camera move presets — Flow UI labels, passed through as `direction`.
+  // Camera move presets - Flow UI labels, passed through as `direction`.
   const CAMERA_PRESETS = [
     'Orbit Left', 'Orbit Right',
     'Pan Left', 'Pan Right',
