@@ -67,7 +67,7 @@ Communication is plain HTTP — worker calls `worker/remote_api.py` to claim job
 
 ### Critical fields on every job
 ```
-type          text-to-video | extend-video | insert-object | remove-object | camera-move
+type          text-to-video | frames-to-video | ingredients-to-video | text-to-image | extend-video | insert-object | remove-object | camera-move
 job_level     1 or 2+
 parent_job_id link to L1 (or previous L2) job
 chain_id      shared across all jobs in one chain
