@@ -16,7 +16,7 @@
     JOB_TYPES, MODELS, DEFAULT_MODEL, IMAGE_MODELS, DEFAULT_IMAGE_MODEL,
     ASPECT_RATIOS, ASPECT_RATIOS_IMAGE, DEFAULT_ASPECT,
     CAMERA_PRESETS,
-    TYPES_WITH_PROMPT, TYPES_WITH_BBOX, TYPES_WITH_MODEL, TYPES_WITH_ASPECT, TYPES_WITH_IMAGES,
+    TYPES_WITH_PROMPT, TYPES_WITH_BBOX, TYPES_WITH_MODEL, TYPES_WITH_ASPECT, TYPES_WITH_IMAGES, TYPES_WITH_INGREDIENTS,
   } = CONST;
 
   let mode = 'single';               // 'single' | 'batch'
@@ -25,7 +25,9 @@
   let startImagePath = '';
   let endImagePath = '';
   let refImagePath = '';
-  const LEVEL_1_TYPES = new Set(['text-to-video', 'frames-to-video', 'text-to-image']);
+  let ingredientImagePaths = [];
+  const MAX_INGREDIENT_IMAGES = 10;
+  const LEVEL_1_TYPES = new Set(['text-to-video', 'frames-to-video', 'ingredients-to-video', 'text-to-image']);
 
   // ---- helpers --------------------------------------------------------------
 
@@ -86,6 +88,7 @@
     if (TYPES_WITH_PROMPT.has(selectedType)) {
       const required = selectedType === 'text-to-video'
         || selectedType === 'frames-to-video'
+        || selectedType === 'ingredients-to-video'
         || selectedType === 'text-to-image'
         || selectedType === 'insert-object';
       fields.push(`
@@ -139,6 +142,10 @@
 
     if (TYPES_WITH_IMAGES.has(selectedType)) {
       fields.push(renderImageUploads());
+    }
+
+    if (TYPES_WITH_INGREDIENTS.has(selectedType)) {
+      fields.push(renderIngredientsUploads());
     }
 
     // Profile pin — only meaningful for L1 (no parent). Still render for
@@ -225,6 +232,40 @@
     `;
   }
 
+  function renderIngredientsUploads() {
+    const cards = ingredientImagePaths.length > 0
+      ? ingredientImagePaths.map((path, index) => `
+        <div class="card" style="padding:12px; position:relative;">
+          <button type="button" class="icon-btn ingredient-remove" data-index="${index}"
+                  title="Remove reference"
+                  style="position:absolute; top:8px; right:8px; width:28px; height:28px;">
+            <span class="material-icons" style="font-size:18px;">close</span>
+          </button>
+          <img src="/${App.escapeHtml(path)}" alt="Reference ${index + 1}"
+               style="width:100%; height:120px; object-fit:cover; border-radius:10px; border:1px solid var(--border-color);">
+          <div class="form-hint" style="margin-top:8px; word-break:break-all;">${App.escapeHtml(path)}</div>
+        </div>
+      `).join('')
+      : `<div class="form-hint">No reference images uploaded yet.</div>`;
+
+    return `
+      <div class="form-group">
+        <label class="form-label">Reference Images <span class="required">*</span></label>
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+          <button type="button" class="btn btn-outline btn-sm" id="add-ingredient-image">
+            <span class="material-icons">add_photo_alternate</span> Add reference image
+          </button>
+          <span class="form-hint">${ingredientImagePaths.length}/${MAX_INGREDIENT_IMAGES} uploaded</span>
+        </div>
+        <input type="file" id="field-ingredient-images" accept="image/png,image/jpeg,image/webp" multiple hidden>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px;">
+          ${cards}
+        </div>
+        <span class="form-hint" style="margin-top:8px; display:block;">Upload 1-10 reference images. Each file is stored via <code>/api/uploads</code> before submit.</span>
+      </div>
+    `;
+  }
+
   function renderImageUploadField({ id, label, required, path }) {
     const preview = path ? `
       <div style="margin-top:8px;">
@@ -268,6 +309,9 @@
       if (startImagePath) data.start_image_path = startImagePath;
       if (endImagePath) data.end_image_path = endImagePath;
     }
+    if (selectedType === 'ingredients-to-video' && ingredientImagePaths.length > 0) {
+      data.ingredient_image_paths = [...ingredientImagePaths];
+    }
     if (selectedType === 'text-to-image' && refImagePath) data.ref_image_path = refImagePath;
 
     if (TYPES_WITH_BBOX.has(selectedType)) {
@@ -292,6 +336,13 @@
     if (data.type === 'text-to-video' && !data.prompt) return 'Prompt is required for Text-to-Video.';
     if (data.type === 'frames-to-video' && !data.prompt) return 'Prompt is required for Frames to Video.';
     if (data.type === 'frames-to-video' && !data.start_image_path) return 'Start image is required for Frames to Video.';
+    if (data.type === 'ingredients-to-video' && !data.prompt) return 'Prompt is required for Ingredients to Video.';
+    if (data.type === 'ingredients-to-video' && (!Array.isArray(data.ingredient_image_paths) || data.ingredient_image_paths.length === 0)) {
+      return 'At least one reference image is required for Ingredients to Video.';
+    }
+    if (data.type === 'ingredients-to-video' && data.ingredient_image_paths.length > MAX_INGREDIENT_IMAGES) {
+      return `Ingredients to Video supports at most ${MAX_INGREDIENT_IMAGES} reference images per job.`;
+    }
     if (data.type === 'text-to-image' && !data.prompt) return 'Prompt is required for Text to Image.';
     if (data.type === 'insert-object' && !data.prompt) return 'Prompt is required for Insert.';
     if (data.type === 'camera-move' && !data.direction) return 'Camera direction is required.';
@@ -444,9 +495,11 @@
       });
       document.getElementById('job-fields').innerHTML = renderFields();
       bindImageInputs();
+      bindIngredientInputs();
     });
 
     bindImageInputs();
+    bindIngredientInputs();
 
     document.getElementById('submit-job')?.addEventListener('click', async () => {
       const data = collectSingle();
@@ -531,6 +584,7 @@
       startImagePath = '';
       endImagePath = '';
       refImagePath = '';
+      ingredientImagePaths = [];
       App._loadPage('create');
     });
   }
@@ -563,6 +617,49 @@
         refImagePath = await uploadImage(file, e.target, 'Reference image');
         App._loadPage('create');
       } catch {}
+    });
+  }
+
+  function bindIngredientInputs() {
+    if (!TYPES_WITH_INGREDIENTS.has(selectedType)) return;
+
+    document.getElementById('add-ingredient-image')?.addEventListener('click', () => {
+      if (ingredientImagePaths.length >= MAX_INGREDIENT_IMAGES) {
+        App.toast(`You can upload up to ${MAX_INGREDIENT_IMAGES} reference images.`, 'warning');
+        return;
+      }
+      document.getElementById('field-ingredient-images')?.click();
+    });
+
+    document.getElementById('field-ingredient-images')?.addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
+
+      const remaining = MAX_INGREDIENT_IMAGES - ingredientImagePaths.length;
+      if (files.length > remaining) {
+        App.toast(`Only ${remaining} more reference image${remaining === 1 ? '' : 's'} can be added.`, 'warning');
+      }
+
+      for (const file of files.slice(0, remaining)) {
+        try {
+          const path = await uploadImage(file, e.target, 'Reference image');
+          ingredientImagePaths.push(path);
+        } catch {
+          break;
+        }
+      }
+
+      e.target.value = '';
+      App._loadPage('create');
+    });
+
+    document.querySelectorAll('.ingredient-remove').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const index = Number.parseInt(btn.dataset.index, 10);
+        if (Number.isNaN(index)) return;
+        ingredientImagePaths.splice(index, 1);
+        App._loadPage('create');
+      });
     });
   }
 

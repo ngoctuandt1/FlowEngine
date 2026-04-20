@@ -251,11 +251,18 @@ const App = {
   jobTypeIcon(type) {
     const icons = {
       'text-to-video': 'videocam',
+      'frames-to-video': 'image',
+      'ingredients-to-video': 'photo_library',
+      'text-to-image': 'photo',
       't2v': 'videocam',
       'extend': 'add_to_queue',
+      'extend-video': 'add_to_queue',
       'insert': 'add_box',
+      'insert-object': 'add_box',
       'remove': 'delete_sweep',
+      'remove-object': 'delete_sweep',
       'camera': 'videocam_off',
+      'camera-move': 'videocam_off',
     };
     return icons[type] || 'work';
   },
@@ -266,11 +273,18 @@ const App = {
   jobTypeClass(type) {
     const classes = {
       'text-to-video': 't2v',
+      'frames-to-video': 't2v',
+      'ingredients-to-video': 't2v',
+      'text-to-image': 'insert',
       't2v': 't2v',
       'extend': 'extend',
+      'extend-video': 'extend',
       'insert': 'insert',
+      'insert-object': 'insert',
       'remove': 'remove',
+      'remove-object': 'remove',
       'camera': 'camera',
+      'camera-move': 'camera',
     };
     return classes[type] || '';
   },
