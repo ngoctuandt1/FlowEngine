@@ -143,6 +143,38 @@ async def handle_frames_to_video(job: dict) -> dict:
     return result
 
 
+async def handle_text_to_image(job: dict) -> dict:
+    """Text-to-image: create a new image project with optional reference image."""
+    from flow.operations.image import text_to_image
+
+    profile = job.get("profile", "")
+    if not profile:
+        raise RuntimeError("No profile assigned for text-to-image job")
+
+    logger.info(
+        "text-to-image START | ref=%s model=%s profile=%s",
+        job.get("ref_image_path"),
+        job.get("model"),
+        profile,
+    )
+
+    async with _make_client(profile) as client:
+        result = await text_to_image(
+            client,
+            prompt=job.get("prompt", ""),
+            ref_image_path=_resolve_upload_path(job.get("ref_image_path")),
+            model=job.get("model", "nano-banana-pro"),
+            aspect_ratio=job.get("aspect_ratio", "16:9"),
+        )
+
+    logger.info(
+        "text-to-image DONE | files=%d media_id=%s",
+        len(result.get("output_files", [])),
+        result.get("media_id"),
+    )
+    return result
+
+
 async def handle_extend(job: dict) -> dict:
     """Extend-video: navigate to edit URL, extend with prompt + LP model."""
     from flow.operations.extend import extend_video
@@ -253,6 +285,7 @@ async def handle_camera(job: dict) -> dict:
 HANDLER_MAP: dict[str, Callable[[dict], Coroutine]] = {
     "text-to-video": handle_text_to_video,
     "frames-to-video": handle_frames_to_video,
+    "text-to-image": handle_text_to_image,
     "extend-video": handle_extend,
     "insert-object": handle_insert,
     "remove-object": handle_remove,

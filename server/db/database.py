@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     direction       TEXT,
     start_image_path TEXT,
     end_image_path  TEXT,
+    ref_image_path  TEXT,
 
     -- Output
     output_files_json TEXT,        -- JSON serialised list[str]
@@ -100,6 +101,7 @@ async def init_db() -> None:
         await db.executescript(_SCHEMA_SQL)
         await _ensure_job_column(db, "start_image_path", "start_image_path TEXT")
         await _ensure_job_column(db, "end_image_path", "end_image_path TEXT")
+        await _ensure_job_column(db, "ref_image_path", "ref_image_path TEXT")
         await db.commit()
 
 

@@ -27,6 +27,7 @@ UPSCALE_MAX_WAIT = int(os.environ.get("FLOW_UPSCALE_MAX_WAIT_SEC", "180"))
 UPSCALE_POLL_INTERVAL = int(os.environ.get("FLOW_UPSCALE_POLL_INTERVAL_SEC", "15"))
 UPSCALE_MAX_RETRIES = int(os.environ.get("FLOW_UPSCALE_MAX_RETRIES", "24"))
 MIN_FILE_SIZE = 100_000  # 100KB minimum for valid video
+IMAGE_MIN_FILE_SIZE = 1_000
 
 
 async def download_video(
@@ -34,6 +35,7 @@ async def download_video(
     media_ids: list[str] | None = None,
     prefix: str = "vid",
     quality: str = "1080p",
+    media_kind: str = "video",
 ) -> list[str]:
     """Download generated video(s).
 
@@ -55,7 +57,7 @@ async def download_video(
     # `_upsampled` endpoint has been 404 for all probes (see probe report
     # §5.4). Only the UI-triggered POST uploadImage + toast-poll flow works.
     # Fall through to 720p API only if the UI path fails.
-    if quality == "1080p":
+    if media_kind == "video" and quality == "1080p":
         # Determine target media_id for /edit/ deep-link (upscale module
         # navigates if page is still on project root after L1 generate).
         first_mid = None
@@ -113,17 +115,17 @@ async def download_video(
 
     # B38: When the caller asked for 1080p and we're past the UI path above,
     # skip the stale `_upsampled` API poll — go straight to 720p. Saves ~6min.
-    api_quality = "720p" if quality == "1080p" else quality
+    api_quality = "720p" if media_kind == "video" and quality == "1080p" else quality
 
     downloaded = []
     for mid in media_ids:
-        path = await _download_via_api(client, mid, prefix, api_quality, output_dir)
+        path = await _download_via_api(client, mid, prefix, api_quality, output_dir, media_kind)
         if path:
             downloaded.append(path)
             continue
 
         # Fallback: UI download
-        path = await _download_via_ui(client, prefix, output_dir)
+        path = await _download_via_ui(client, prefix, output_dir, media_kind)
         if path:
             downloaded.append(path)
 
@@ -131,7 +133,7 @@ async def download_video(
 
 
 async def _download_via_api(
-    client, media_id: str, prefix: str, quality: str, output_dir: Path
+    client, media_id: str, prefix: str, quality: str, output_dir: Path, media_kind: str
 ) -> str | None:
     """Download via API redirect URL."""
     page = client.page
@@ -143,7 +145,7 @@ async def _download_via_api(
             f"media.getMediaUrlRedirect?name={media_id}_upsampled"
         )
         path = await _api_download_with_retry(
-            page, url_1080, prefix, "1080p", output_dir
+            page, url_1080, prefix, "1080p", output_dir, media_kind
         )
         if path:
             return path
@@ -153,7 +155,7 @@ async def _download_via_api(
         "https://labs.google/fx/api/trpc/"
         f"media.getMediaUrlRedirect?name={media_id}"
     )
-    return await _api_download_with_retry(page, url_720, prefix, "720p", output_dir)
+    return await _api_download_with_retry(page, url_720, prefix, "720p", output_dir, media_kind)
 
 
 async def _api_download_with_retry(
@@ -162,6 +164,7 @@ async def _api_download_with_retry(
     prefix: str,
     quality: str,
     output_dir: Path,
+    media_kind: str,
     max_retries: int | None = None,
 ) -> str | None:
     # B34: default retries = UPSCALE_MAX_RETRIES (env-configurable 12) instead
@@ -179,11 +182,11 @@ async def _api_download_with_retry(
 
             if response.status == 200:
                 content_type = response.headers.get("content-type", "")
-                if "video" in content_type or "octet-stream" in content_type:
+                if _response_matches_media(content_type, media_kind):
                     body = await response.body()
-                    if len(body) > MIN_FILE_SIZE:
+                    if len(body) > _minimum_size_for(media_kind):
                         ts = int(time.time())
-                        filename = f"{prefix}_{quality}_{ts}.mp4"
+                        filename = f"{prefix}_{quality}_{ts}{_extension_for(content_type, media_kind)}"
                         filepath = output_dir / filename
                         filepath.write_bytes(body)
                         logger.info(
@@ -198,7 +201,7 @@ async def _api_download_with_retry(
                 redirect_url = response.headers.get("location")
                 if redirect_url:
                     return await _fetch_and_save(
-                        page, redirect_url, prefix, quality, output_dir
+                        page, redirect_url, prefix, quality, output_dir, media_kind
                     )
 
             elif response.status in (202, 404) and "upsampled" in url:
@@ -220,16 +223,17 @@ async def _api_download_with_retry(
 
 
 async def _fetch_and_save(
-    page, url: str, prefix: str, quality: str, output_dir: Path
+    page, url: str, prefix: str, quality: str, output_dir: Path, media_kind: str
 ) -> str | None:
     """Fetch a direct URL via browser and save."""
     try:
         response = await page.request.get(url, timeout=60000)
         if response.status == 200:
             body = await response.body()
-            if len(body) > MIN_FILE_SIZE:
+            if len(body) > _minimum_size_for(media_kind):
                 ts = int(time.time())
-                filename = f"{prefix}_{quality}_{ts}.mp4"
+                content_type = response.headers.get("content-type", "")
+                filename = f"{prefix}_{quality}_{ts}{_extension_for(content_type, media_kind)}"
                 filepath = output_dir / filename
                 filepath.write_bytes(body)
                 logger.info(
@@ -241,7 +245,7 @@ async def _fetch_and_save(
     return None
 
 
-async def _download_via_ui(client, prefix: str, output_dir: Path) -> str | None:
+async def _download_via_ui(client, prefix: str, output_dir: Path, media_kind: str) -> str | None:
     """Download via UI right-click menu on video card."""
     page = client.page
 
@@ -272,11 +276,13 @@ async def _download_via_ui(client, prefix: str, output_dir: Path) -> str | None:
 
             download = await dl_info.value
             ts = int(time.time())
-            filename = f"{prefix}_ui_{ts}.mp4"
+            suggested = download.suggested_filename or ""
+            suffix = Path(suggested).suffix or _extension_for("", media_kind)
+            filename = f"{prefix}_ui_{ts}{suffix}"
             filepath = output_dir / filename
             await download.save_as(str(filepath))
 
-            if filepath.stat().st_size > MIN_FILE_SIZE:
+            if filepath.stat().st_size > _minimum_size_for(media_kind):
                 logger.info("UI download: %s", filepath)
                 return str(filepath)
     except Exception as e:
@@ -324,3 +330,26 @@ async def _download_blob(page, prefix: str, output_dir: Path) -> str | None:
         logger.warning("Blob download failed: %s", e)
 
     return None
+
+
+def _response_matches_media(content_type: str, media_kind: str) -> bool:
+    if media_kind == "image":
+        return "image/" in content_type or "octet-stream" in content_type
+    return "video" in content_type or "octet-stream" in content_type
+
+
+def _extension_for(content_type: str, media_kind: str) -> str:
+    content_type = (content_type or "").lower()
+    if media_kind == "image":
+        if "png" in content_type:
+            return ".png"
+        if "webp" in content_type:
+            return ".webp"
+        if "jpeg" in content_type or "jpg" in content_type:
+            return ".jpg"
+        return ".png"
+    return ".mp4"
+
+
+def _minimum_size_for(media_kind: str) -> int:
+    return IMAGE_MIN_FILE_SIZE if media_kind == "image" else MIN_FILE_SIZE

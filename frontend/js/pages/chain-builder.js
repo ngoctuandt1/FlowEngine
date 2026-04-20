@@ -17,7 +17,7 @@
 
   // First step must be t2v. Subsequent steps exclude t2v.
   const FIRST_TYPE = 'text-to-video';
-  const L1_ONLY_TYPES = new Set(['text-to-video', 'frames-to-video']);
+  const L1_ONLY_TYPES = new Set(['text-to-video', 'frames-to-video', 'text-to-image']);
   const SUBSEQUENT_TYPES = JOB_TYPES.filter((t) => !L1_ONLY_TYPES.has(t.id));
 
   let steps = [];

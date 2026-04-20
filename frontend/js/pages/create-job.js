@@ -13,7 +13,8 @@
  */
 (() => {
   const {
-    JOB_TYPES, MODELS, DEFAULT_MODEL, ASPECT_RATIOS, DEFAULT_ASPECT,
+    JOB_TYPES, MODELS, DEFAULT_MODEL, IMAGE_MODELS, DEFAULT_IMAGE_MODEL,
+    ASPECT_RATIOS, ASPECT_RATIOS_IMAGE, DEFAULT_ASPECT,
     CAMERA_PRESETS,
     TYPES_WITH_PROMPT, TYPES_WITH_BBOX, TYPES_WITH_MODEL, TYPES_WITH_ASPECT, TYPES_WITH_IMAGES,
   } = CONST;
@@ -23,7 +24,8 @@
   let profiles = [];                 // populated on mount
   let startImagePath = '';
   let endImagePath = '';
-  const LEVEL_1_TYPES = new Set(['text-to-video', 'frames-to-video']);
+  let refImagePath = '';
+  const LEVEL_1_TYPES = new Set(['text-to-video', 'frames-to-video', 'text-to-image']);
 
   // ---- helpers --------------------------------------------------------------
 
@@ -82,7 +84,10 @@
     const fields = [];
 
     if (TYPES_WITH_PROMPT.has(selectedType)) {
-      const required = selectedType === 'text-to-video' || selectedType === 'insert-object';
+      const required = selectedType === 'text-to-video'
+        || selectedType === 'frames-to-video'
+        || selectedType === 'text-to-image'
+        || selectedType === 'insert-object';
       fields.push(`
         <div class="form-group">
           <label class="form-label">Prompt ${required ? '<span class="required">*</span>' : '(optional)'}</label>
@@ -112,18 +117,21 @@
 
     const showModel = TYPES_WITH_MODEL.has(selectedType);
     const showAspect = TYPES_WITH_ASPECT.has(selectedType);
+    const modelOptions = selectedType === 'text-to-image' ? IMAGE_MODELS : MODELS;
+    const defaultModel = selectedType === 'text-to-image' ? DEFAULT_IMAGE_MODEL : DEFAULT_MODEL;
+    const aspectOptions = selectedType === 'text-to-image' ? ASPECT_RATIOS_IMAGE : ASPECT_RATIOS;
     if (showModel || showAspect) {
       fields.push(`
         <div class="form-row">
           ${showModel ? `
           <div class="form-group">
             <label class="form-label">Model</label>
-            <select class="form-select" id="field-model">${renderOptions(MODELS, { selected: DEFAULT_MODEL })}</select>
+            <select class="form-select" id="field-model">${renderOptions(modelOptions, { selected: defaultModel })}</select>
           </div>` : ''}
           ${showAspect ? `
           <div class="form-group">
             <label class="form-label">Aspect Ratio</label>
-            <select class="form-select" id="field-aspect-ratio">${renderOptions(ASPECT_RATIOS, { selected: DEFAULT_ASPECT })}</select>
+            <select class="form-select" id="field-aspect-ratio">${renderOptions(aspectOptions, { selected: DEFAULT_ASPECT })}</select>
           </div>` : ''}
         </div>
       `);
@@ -186,6 +194,19 @@
   }
 
   function renderImageUploads() {
+    if (selectedType === 'text-to-image') {
+      return `
+        <div class="form-row">
+          ${renderImageUploadField({
+            id: 'field-ref-image',
+            label: 'Reference',
+            required: false,
+            path: refImagePath,
+          })}
+        </div>
+      `;
+    }
+
     return `
       <div class="form-row">
         ${renderImageUploadField({
@@ -247,6 +268,7 @@
       if (startImagePath) data.start_image_path = startImagePath;
       if (endImagePath) data.end_image_path = endImagePath;
     }
+    if (selectedType === 'text-to-image' && refImagePath) data.ref_image_path = refImagePath;
 
     if (TYPES_WITH_BBOX.has(selectedType)) {
       const x = val('field-bbox-x');
@@ -270,6 +292,7 @@
     if (data.type === 'text-to-video' && !data.prompt) return 'Prompt is required for Text-to-Video.';
     if (data.type === 'frames-to-video' && !data.prompt) return 'Prompt is required for Frames to Video.';
     if (data.type === 'frames-to-video' && !data.start_image_path) return 'Start image is required for Frames to Video.';
+    if (data.type === 'text-to-image' && !data.prompt) return 'Prompt is required for Text to Image.';
     if (data.type === 'insert-object' && !data.prompt) return 'Prompt is required for Insert.';
     if (data.type === 'camera-move' && !data.direction) return 'Camera direction is required.';
     if (!LEVEL_1_TYPES.has(data.type) && !data.parent_job_id && !data.project_url) {
@@ -507,6 +530,7 @@
       selectedType = 'text-to-video';
       startImagePath = '';
       endImagePath = '';
+      refImagePath = '';
       App._loadPage('create');
     });
   }
@@ -528,6 +552,15 @@
       if (!file) return;
       try {
         endImagePath = await uploadImage(file, e.target, 'End image');
+        App._loadPage('create');
+      } catch {}
+    });
+
+    document.getElementById('field-ref-image')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        refImagePath = await uploadImage(file, e.target, 'Reference image');
         App._loadPage('create');
       } catch {}
     });
