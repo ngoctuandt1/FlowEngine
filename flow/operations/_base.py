@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from flow.navigation import flow_url, extract_project_id, extract_media_id, detect_locale
+from flow.landing import recover_from_flow_landing
 from flow.login import is_login_page, handle_login_redirect
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
@@ -70,7 +71,9 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
         await asyncio.sleep(3)
 
     # Detect homepage redirect — means project doesn't belong to this account
+    await _recover_editor_landing(page, target_url)
     current = page.url
+
     if "/project/" not in current and "/edit/" not in current:
         # Landed on Flow homepage instead of project page
         logger.error(
@@ -92,6 +95,7 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             logger.info("Tile click failed — trying direct edit URL: %s", edit_url_val[:80])
             await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(5)
+            await _recover_editor_landing(page, target_url)
 
     # Verify we're in edit mode for the right media
     current = page.url
@@ -135,6 +139,11 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     project_id = extract_project_id(page.url) or ""
 
     return edit_url_val, project_id, locale
+
+
+async def _recover_editor_landing(page, target_url: str) -> bool:
+    """Recover if Flow rendered the marketing landing over the intended route."""
+    return await recover_from_flow_landing(page, logger, target_url)
 
 
 async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 3.0) -> bool:
@@ -203,6 +212,7 @@ async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 3.0) -> 
 
 async def wait_for_video_loaded(page, timeout_sec: float = 15.0):
     """Wait until a video element is visible on the edit page."""
+    await _recover_editor_landing(page, page.url)
     try:
         video = page.locator("video").first
         await video.wait_for(state="visible", timeout=timeout_sec * 1000)

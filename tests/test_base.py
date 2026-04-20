@@ -223,6 +223,52 @@ async def test_navigate_falls_back_to_tile_click_when_spa_bounces(monkeypatch):
     tile_click.assert_awaited()  # fallback triggered
 
 
+async def test_navigate_recovers_from_flow_landing_via_cta(monkeypatch):
+    """If Flow lands on marketing after login, click CTA before failing.
+
+    User-observed on 2026-04-20: after Google login, opening a project/edit
+    URL may stall on `labs.google/fx/.../tools/flow` until the page's
+    "Create with Flow" CTA is clicked. `navigate_to_edit` should attempt that
+    recovery before raising the generic homepage-access error.
+    """
+    client, page = _make_client("https://labs.google/fx/vi/tools/flow")
+
+    recover = AsyncMock(side_effect=lambda *a, **kw: setattr(page, "url", _project_url()) or True)
+    monkeypatch.setattr(_base, "recover_from_flow_landing", recover)
+
+    tile_click = AsyncMock(side_effect=lambda *a, **kw: setattr(page, "url", _edit_url(MEDIA_ID_A)) or True)
+    monkeypatch.setattr(_base, "_click_video_tile", tile_click)
+
+    job = {
+        "edit_url": _edit_url(MEDIA_ID_A),
+        "project_url": _project_url(),
+        "media_id": MEDIA_ID_A,
+    }
+
+    edit_url, _pid, _locale = await navigate_to_edit(client, job)
+
+    assert edit_url == _edit_url(MEDIA_ID_A)
+    recover.assert_awaited_once()
+    tile_click.assert_awaited_once()
+
+
+async def test_wait_for_video_loaded_recovers_landing_before_wait(monkeypatch):
+    """Landing CTA wins over an `/edit/` URL before video detection runs."""
+    page = MagicMock()
+    page.url = _edit_url(MEDIA_ID_A)
+    video = MagicMock()
+    video.wait_for = AsyncMock()
+    page.locator.return_value.first = video
+
+    recover = AsyncMock(return_value=True)
+    monkeypatch.setattr(_base, "_recover_editor_landing", recover)
+
+    await _base.wait_for_video_loaded(page)
+
+    recover.assert_awaited_once_with(page, page.url)
+    video.wait_for.assert_awaited_once()
+
+
 async def test_navigate_raises_when_not_in_edit_mode(monkeypatch):
     """KEEP-2 + B29: after all nav attempts, URL still lacks `/edit/` →
     RuntimeError with B29 "SPA stripped" diagnostic (pointing operators at
