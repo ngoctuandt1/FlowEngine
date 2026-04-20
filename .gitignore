@@ -34,6 +34,7 @@ downloads/
 # Output
 output/
 flow_output/
+scripts/probe_runs/
 
 # Chrome profiles (contain login cookies!)
 profiles/
