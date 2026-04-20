@@ -1,21 +1,12 @@
-"""2K upscale + download via UI (cherry-picked from AI-Engine3-Project
-modules/upscale_unified.py; async port + /edit/ view adaptation).
+"""UI-driven upscale helpers for Flow download menus.
 
-B38 (2026-04-19): The `_upsampled` endpoint that `flow/download.py` polls
-returns HTTP 404 permanently (see session-reports/2026-04-19_download-probe.md
-§5.4) — so B34/B34b poll-window bumps could never succeed. Modern UI triggers
-upscale via `POST aisandbox-pa.googleapis.com/v1/flow/uploadImage` (probe §5.3).
-This module replaces the broken API poll with a UI-driven flow:
+Video `/edit/` download menu facts are probed and stable enough to automate:
+- `1080pUpscaled` is the only safe upscaled target for video.
+- `4KUpscaled · 50 credits` exists on the same video menu and must never match.
 
-On `/edit/{media_id}` view (primary entry after generate / extend / camera):
-1. Click icon-only Download button (top-right). DOM: `<button><i>download</i></button>`.
-2. Menu opens with 3 items: 1K Original size · 2K Upscaled · 4K Upscaled (all free as of 2026-04-20 probe).
-3. Click `2KUpscaled` → triggers upscale (if not cached) OR downloads immediately.
-4. On upscale: wait for "Upscaling complete!" toast (EN) / "Đã tăng độ phân giải xong!" (VI).
-5. Re-click Download button → menu → `2KUpscaled` → real mp4 download.
-
-Safety: `4KUpscaled` remains intentionally skipped. 2K/4K are currently both
-free, but we anchor on `^2KUpscaled$` to preserve the previous mid-tier behavior.
+Image `/edit/` download menu labels are live-unverified. The selector lists for
+`2k` and `4k` therefore use ordered anchored→legacy→loose regexes, and log
+every visible menuitem text before clicking so future probes have DOM evidence.
 
 NEVER press Escape on /edit/ view — it closes the entire editor dialog
 (see CLAUDE.md §7 Common Gotchas). Menus dismiss by clicking the trigger again
@@ -28,6 +19,7 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Literal
 
 from flow.landing import recover_from_flow_landing
 
@@ -51,6 +43,11 @@ MIN_FILE_SIZE = 100_000
 
 UPSCALE_TIMEOUT_SEC = int(os.environ.get("FLOW_UPSCALE_TIMEOUT_SEC", "360"))
 UPSCALE_POLL_SEC = 3
+IMAGE_TARGET_QUALITY = Literal["2k", "4k"]
+_IMAGE_MENU_PATTERNS: dict[IMAGE_TARGET_QUALITY, tuple[str, ...]] = {
+    "2k": (r"^2K\s*Upscaled$", r"^2KUpscaled$", r"\b2K\b"),
+    "4k": (r"^4K\s*Upscaled$", r"^4KUpscaled$", r"\b4K\b"),
+}
 
 
 async def _popup_state(page):
@@ -175,41 +172,60 @@ async def _click_edit_download_button(page, wait_sec: int = 10) -> bool:
     return False
 
 
-async def _click_menu_2k_upscaled(page) -> bool:
-    """In an open Radix menu, click the '2KUpscaled' item.
+async def _open_edit_download_menu(page, wait_sec: int = 10) -> bool:
+    """Open the /edit/ download menu and return whether the trigger click worked."""
+    return await _click_edit_download_button(page, wait_sec=wait_sec)
 
-    Uses anchored regex to exclude the '4KUpscaled' sibling.
+
+async def _log_menuitem_texts(page, *, prefix: str) -> list[str]:
+    """Return and log the current open menuitem texts for DOM diagnostics."""
+    try:
+        menuitems = page.locator('[role="menu"][data-state="open"] [role="menuitem"]')
+        texts = [text.strip() for text in await menuitems.all_inner_texts() if text.strip()]
+    except Exception as exc:
+        logger.warning("%s menuitem text capture failed: %s", prefix, exc)
+        return []
+    logger.info("%s menu items: %s", prefix, texts)
+    return texts
+
+
+async def _click_menu_video_1080p(page) -> bool:
+    """Click the video menu's `1080pUpscaled` item.
+
+    Video automation intentionally anchors on `1080pUpscaled` first because the
+    same menu also contains `4KUpscaled · 50 credits`; the loose `1080p`
+    fallback remains safe because 4K/720p/270p do not contain that token.
     """
     try:
         await page.wait_for_selector('[role="menuitem"]', timeout=3000)
     except Exception:
         pass
 
-    # Anchored: textContent must be EXACTLY '2KUpscaled' (probe 2026-04-20)
+    # Anchored: textContent must be EXACTLY '1080pUpscaled' per 2026-04-19 probe.
     q = page.locator('[role="menuitem"]').filter(
-        has_text=re.compile(r"^2KUpscaled$", re.IGNORECASE)
+        has_text=re.compile(r"^1080pUpscaled$", re.IGNORECASE)
     )
     try:
         if await q.count() > 0:
             await q.first.click(timeout=3000)
-            logger.info("[UPSCALE] Clicked 2KUpscaled menu item")
+            logger.info("[UPSCALE] Clicked 1080pUpscaled menu item")
             return True
     except Exception as e:
-        logger.warning("[UPSCALE] anchored 2K click failed: %s", e)
+        logger.warning("[UPSCALE] anchored 1080p click failed: %s", e)
 
-    # Fallback: any menuitem containing '2K' (still excludes 4K)
+    # Fallback: any menuitem containing '1080p' (still excludes 4K)
     q2 = page.locator('[role="menuitem"]').filter(
-        has_text=re.compile(r"2K", re.IGNORECASE)
+        has_text=re.compile(r"1080p", re.IGNORECASE)
     )
     try:
         if await q2.count() > 0:
             await q2.first.click(timeout=3000)
-            logger.info("[UPSCALE] Clicked 2K menu item (substring match)")
+            logger.info("[UPSCALE] Clicked 1080p menu item (substring match)")
             return True
     except Exception as e:
-        logger.warning("[UPSCALE] substring 2K click failed: %s", e)
+        logger.warning("[UPSCALE] substring 1080p click failed: %s", e)
 
-    logger.warning("[UPSCALE] 2K menu item not found")
+    logger.warning("[UPSCALE] 1080p menu item not found")
     return False
 
 
@@ -231,6 +247,52 @@ async def _save_download(download, prefix: str, quality: str, out_dir: Path) -> 
     except Exception as e:
         logger.warning("[UPSCALE] Save failed: %s", e)
         return None
+
+
+async def _save_image_download(download, prefix: str, quality: IMAGE_TARGET_QUALITY, out_dir: Path) -> str | None:
+    """Save an image download using Flow's shared content-type→extension mapping."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        suggested_suffix = Path(download.suggested_filename or "").suffix.lower()
+        from flow.download import _extension_for
+
+        ts = int(time.time())
+        temp_path = out_dir / f"{prefix}_{quality}_{ts}.download"
+        await download.save_as(str(temp_path))
+        if not temp_path.exists():
+            logger.warning("[UPSCALE] Image download missing after save")
+            return None
+
+        body = temp_path.read_bytes()
+        if len(body) <= 1_000:
+            logger.warning("[UPSCALE] Image file too small: %d bytes", len(body))
+            temp_path.unlink(missing_ok=True)
+            return None
+
+        extension = _extension_for(_content_type_from_bytes(body), "image")
+        if extension == ".png" and suggested_suffix in {".png", ".webp", ".jpg", ".jpeg"}:
+            extension = ".jpg" if suggested_suffix == ".jpeg" else suggested_suffix
+        final_path = out_dir / f"{prefix}_{quality}_{ts}{extension}"
+        temp_path.replace(final_path)
+        logger.info("[UPSCALE] Saved image: %s (%d bytes)", final_path, len(body))
+        return str(final_path)
+    except Exception as exc:
+        logger.warning("[UPSCALE] Image save failed: %s", exc)
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        return None
+
+
+def _content_type_from_bytes(body: bytes) -> str:
+    """Infer a minimal image content type for extension mapping."""
+    if body.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if body.startswith(b"RIFF") and body[8:12] == b"WEBP":
+        return "image/webp"
+    if body.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    return ""
 
 
 async def _ensure_edit_view(page, media_id: str | None = None) -> None:
@@ -299,18 +361,19 @@ async def upscale_and_download_1080p(
     max_retries: int = 2,
     media_id: str | None = None,
 ) -> str | None:
-    """UI-driven 2K upscale + download on /edit/ view.
+    """UI-driven 1080p video upscale + download on `/edit/` view.
 
     Flow:
       0. Ensure page is on /edit/{media_id} (deep-link if on project root).
-      1. Click Download button → click 2KUpscaled.
+      1. Click Download button → click 1080pUpscaled.
       2. Poll ~15 s: if a download fires immediately (cached), save and return.
          If a 'busy' toast appears → wait up to upscale_timeout_sec for 'done'.
          If 'done' or 'failed' → act accordingly.
-      3. After upscale 'done': re-click Download + 2KUpscaled inside
+      3. After upscale 'done': re-click Download + 1080pUpscaled inside
          `expect_download` to capture the real mp4.
 
-    Returns: path to 2K mp4, or None (caller should fall back to 720p API).
+    Returns: path to a `*_1080p_*.mp4` file, or None so the caller can fall
+    back to the stable original-size API path.
     """
     page = client.page
     out_dir = Path(output_dir)
@@ -329,11 +392,11 @@ async def upscale_and_download_1080p(
         for attempt in range(1, max_retries + 1):
             logger.info("[UPSCALE] Attempt %d/%d", attempt, max_retries)
 
-            if not await _click_edit_download_button(page):
+            if not await _open_edit_download_menu(page):
                 await asyncio.sleep(1.5)
                 continue
 
-            if not await _click_menu_2k_upscaled(page):
+            if not await _click_menu_video_1080p(page):
                 await asyncio.sleep(1)
                 continue
 
@@ -348,7 +411,7 @@ async def upscale_and_download_1080p(
                     break
 
             if downloads:
-                path = await _save_download(downloads[0], prefix, "2k", out_dir)
+                path = await _save_download(downloads[0], prefix, "1080p", out_dir)
                 if path:
                     return path
                 downloads.clear()
@@ -365,7 +428,7 @@ async def upscale_and_download_1080p(
                 wait_result = await _wait_upscale(page, upscale_timeout_sec)
                 await _close_toast(page)
                 if downloads:
-                    path = await _save_download(downloads[0], prefix, "2k", out_dir)
+                    path = await _save_download(downloads[0], prefix, "1080p", out_dir)
                     if path:
                         return path
                     downloads.clear()
@@ -397,17 +460,89 @@ async def upscale_and_download_1080p(
 
 
 async def _redownload_1080p(page, prefix: str, out_dir: Path) -> str | None:
-    """After 'done' toast: re-click Download + 2KUpscaled inside expect_download."""
-    logger.info("[UPSCALE] Re-triggering 2K download...")
+    """After the ready toast, re-open the menu and click `1080pUpscaled` again."""
+    logger.info("[UPSCALE] Re-triggering 1080p download...")
     await asyncio.sleep(0.5)
     try:
         async with page.expect_download(timeout=60_000) as dl_info:
-            if not await _click_edit_download_button(page):
+            if not await _open_edit_download_menu(page):
                 return None
-            if not await _click_menu_2k_upscaled(page):
+            if not await _click_menu_video_1080p(page):
                 return None
         download = await dl_info.value
-        return await _save_download(download, prefix, "2k", out_dir)
+        return await _save_download(download, prefix, "1080p", out_dir)
     except Exception as e:
         logger.warning("[UPSCALE] Re-download failed: %s", e)
+        return None
+
+
+async def _click_menu_image_target(page, target_quality: IMAGE_TARGET_QUALITY) -> bool:
+    """Click an image upscale target using anchored→legacy→loose regexes.
+
+    The image menu labels are not yet probe-confirmed, so each quality keeps an
+    ordered regex list:
+    1. modern spaced label, e.g. `2K Upscaled`
+    2. legacy collapsed label, e.g. `2KUpscaled`
+    3. loose `2K`/`4K` token fallback for diagnosis-oriented resilience
+    """
+    await _log_menuitem_texts(page, prefix=f"[UPSCALE][IMAGE][{target_quality}]")
+    try:
+        await page.wait_for_selector('[role="menuitem"]', timeout=3000)
+    except Exception:
+        pass
+
+    for pattern in _IMAGE_MENU_PATTERNS[target_quality]:
+        locator = page.locator('[role="menuitem"]').filter(
+            has_text=re.compile(pattern, re.IGNORECASE)
+        )
+        try:
+            if await locator.count() > 0:
+                await locator.first.click(timeout=3000)
+                logger.info(
+                    "[UPSCALE][IMAGE] Clicked %s item with regex %s",
+                    target_quality,
+                    pattern,
+                )
+                return True
+        except Exception as exc:
+            logger.warning(
+                "[UPSCALE][IMAGE] %s click failed for regex %s: %s",
+                target_quality,
+                pattern,
+                exc,
+            )
+
+    logger.warning("[UPSCALE][IMAGE] %s menu item not found", target_quality)
+    return False
+
+
+async def upscale_and_download_image(
+    client,
+    *,
+    prefix: str,
+    output_dir: str,
+    media_id: str | None,
+    target_quality: IMAGE_TARGET_QUALITY = "2k",
+) -> str | None:
+    """Attempt a UI-driven image upscale download for `2k` or `4k`.
+
+    Returns None on any failure so `flow/download.py` can fall back to the
+    existing original-quality API path with no behavior change when the menu
+    differs from assumptions.
+    """
+    page = client.page
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        await _ensure_edit_view(page, media_id)
+        async with page.expect_download(timeout=60_000) as dl_info:
+            if not await _open_edit_download_menu(page):
+                return None
+            if not await _click_menu_image_target(page, target_quality):
+                return None
+        download = await dl_info.value
+        return await _save_image_download(download, prefix, target_quality, out_dir)
+    except Exception as exc:
+        logger.warning("[UPSCALE][IMAGE] %s download failed: %s", target_quality, exc)
         return None
