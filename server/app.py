@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.config import SERVER_HOST, SERVER_PORT
-from server.routes import jobs_router, worker_router, profiles_router, ws_router
+from server.routes import jobs_router, uploads_router, worker_router, profiles_router, ws_router
 
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
@@ -18,6 +18,7 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 # Keep this resolution in lockstep so the dashboard "download" links
 # produced from Job.output_files resolve against the same directory.
 DOWNLOAD_DIR = Path(os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")).resolve()
+UPLOAD_DIR = Path(os.environ.get("FLOW_UPLOAD_DIR", "./uploads")).resolve()
 
 
 @asynccontextmanager
@@ -49,6 +50,7 @@ app.add_middleware(
 
 # -- API routes ----------------------------------------------------------------
 app.include_router(jobs_router)
+app.include_router(uploads_router)
 app.include_router(worker_router)
 app.include_router(profiles_router)
 app.include_router(ws_router)
@@ -64,7 +66,9 @@ if FRONTEND_DIR.is_dir():
 # Expose generated video outputs so the dashboard can link to them.
 # Created on first run if missing; worker needs the same dir to exist.
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/downloads", StaticFiles(directory=str(DOWNLOAD_DIR)), name="downloads")
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 
 @app.get("/")

@@ -15,12 +15,15 @@
   const {
     JOB_TYPES, MODELS, DEFAULT_MODEL, ASPECT_RATIOS, DEFAULT_ASPECT,
     CAMERA_PRESETS,
-    TYPES_WITH_PROMPT, TYPES_WITH_BBOX, TYPES_WITH_MODEL, TYPES_WITH_ASPECT,
+    TYPES_WITH_PROMPT, TYPES_WITH_BBOX, TYPES_WITH_MODEL, TYPES_WITH_ASPECT, TYPES_WITH_IMAGES,
   } = CONST;
 
   let mode = 'single';               // 'single' | 'batch'
   let selectedType = 'text-to-video';
   let profiles = [];                 // populated on mount
+  let startImagePath = '';
+  let endImagePath = '';
+  const LEVEL_1_TYPES = new Set(['text-to-video', 'frames-to-video']);
 
   // ---- helpers --------------------------------------------------------------
 
@@ -89,7 +92,7 @@
       `);
     }
 
-    if (selectedType !== 'text-to-video') {
+    if (!LEVEL_1_TYPES.has(selectedType)) {
       fields.push(`
         <div class="form-row">
           <div class="form-group">
@@ -126,9 +129,13 @@
       `);
     }
 
+    if (TYPES_WITH_IMAGES.has(selectedType)) {
+      fields.push(renderImageUploads());
+    }
+
     // Profile pin — only meaningful for L1 (no parent). Still render for
     // L2+ but disable with a hint; worker inherits from parent anyway.
-    const l2 = selectedType !== 'text-to-video';
+    const l2 = !LEVEL_1_TYPES.has(selectedType);
     fields.push(`
       <div class="form-group">
         <label class="form-label">Profile ${l2 ? '(inherited from parent — ignored)' : '(optional: pin to account)'}</label>
@@ -178,6 +185,42 @@
     return fields.join('');
   }
 
+  function renderImageUploads() {
+    return `
+      <div class="form-row">
+        ${renderImageUploadField({
+          id: 'field-start-image',
+          label: 'Start',
+          required: true,
+          path: startImagePath,
+        })}
+        ${renderImageUploadField({
+          id: 'field-end-image',
+          label: 'End',
+          required: false,
+          path: endImagePath,
+        })}
+      </div>
+    `;
+  }
+
+  function renderImageUploadField({ id, label, required, path }) {
+    const preview = path ? `
+      <div style="margin-top:8px;">
+        <img src="/${App.escapeHtml(path)}" alt="${App.escapeHtml(label)} preview"
+             style="width:100%; max-height:180px; object-fit:cover; border-radius:10px; border:1px solid var(--border-color);">
+      </div>
+      <div class="form-hint" style="margin-top:6px;">${App.escapeHtml(path)}</div>
+    ` : '<div class="form-hint" style="margin-top:6px;">No image uploaded.</div>';
+    return `
+      <div class="form-group">
+        <label class="form-label">${label} Image ${required ? '<span class="required">*</span>' : '(optional)'}</label>
+        <input type="file" class="form-input" id="${id}" accept="image/png,image/jpeg,image/webp">
+        ${preview}
+      </div>
+    `;
+  }
+
   function collectSingle() {
     const data = { type: selectedType };
     const val = (id) => document.getElementById(id)?.value?.trim() ?? '';
@@ -198,7 +241,12 @@
     if (aspect) data.aspect_ratio = aspect;
 
     const profile = val('field-profile');
-    if (profile && selectedType === 'text-to-video') data.profile = profile;
+    if (profile && LEVEL_1_TYPES.has(selectedType)) data.profile = profile;
+
+    if (selectedType === 'frames-to-video') {
+      if (startImagePath) data.start_image_path = startImagePath;
+      if (endImagePath) data.end_image_path = endImagePath;
+    }
 
     if (TYPES_WITH_BBOX.has(selectedType)) {
       const x = val('field-bbox-x');
@@ -220,9 +268,11 @@
 
   function validateSingle(data) {
     if (data.type === 'text-to-video' && !data.prompt) return 'Prompt is required for Text-to-Video.';
+    if (data.type === 'frames-to-video' && !data.prompt) return 'Prompt is required for Frames to Video.';
+    if (data.type === 'frames-to-video' && !data.start_image_path) return 'Start image is required for Frames to Video.';
     if (data.type === 'insert-object' && !data.prompt) return 'Prompt is required for Insert.';
     if (data.type === 'camera-move' && !data.direction) return 'Camera direction is required.';
-    if (data.type !== 'text-to-video' && !data.parent_job_id && !data.project_url) {
+    if (!LEVEL_1_TYPES.has(data.type) && !data.parent_job_id && !data.project_url) {
       return 'Parent Job ID or Project URL is required for this job type.';
     }
     if (data.bbox) {
@@ -370,7 +420,10 @@
         el.classList.toggle('selected', el.dataset.type === selectedType);
       });
       document.getElementById('job-fields').innerHTML = renderFields();
+      bindImageInputs();
     });
+
+    bindImageInputs();
 
     document.getElementById('submit-job')?.addEventListener('click', async () => {
       const data = collectSingle();
@@ -452,8 +505,51 @@
   function bindReset() {
     document.getElementById('reset-form')?.addEventListener('click', () => {
       selectedType = 'text-to-video';
+      startImagePath = '';
+      endImagePath = '';
       App._loadPage('create');
     });
+  }
+
+  function bindImageInputs() {
+    if (!TYPES_WITH_IMAGES.has(selectedType)) return;
+
+    document.getElementById('field-start-image')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        startImagePath = await uploadImage(file, e.target, 'Start image');
+        App._loadPage('create');
+      } catch {}
+    });
+
+    document.getElementById('field-end-image')?.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        endImagePath = await uploadImage(file, e.target, 'End image');
+        App._loadPage('create');
+      } catch {}
+    });
+  }
+
+  async function uploadImage(file, input, label) {
+    const previousText = input.title;
+    input.disabled = true;
+    input.title = 'Uploading...';
+    try {
+      const result = await API.uploads.create(file);
+      const path = result?.path || '';
+      if (!path) throw new Error('Upload completed without a path');
+      App.toast(`${label} uploaded`, 'success');
+      return path;
+    } catch (err) {
+      App.toast(`${label} failed: ${err.message}`, 'error');
+      throw err;
+    } finally {
+      input.disabled = false;
+      input.title = previousText;
+    }
   }
 
   function showResult(kind, title, bodyHtml) {

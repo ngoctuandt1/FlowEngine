@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     aspect_ratio    TEXT NOT NULL DEFAULT '16:9',
     bbox_json       TEXT,          -- JSON serialised BBox
     direction       TEXT,
+    start_image_path TEXT,
+    end_image_path  TEXT,
 
     -- Output
     output_files_json TEXT,        -- JSON serialised list[str]
@@ -83,10 +85,21 @@ CREATE INDEX IF NOT EXISTS idx_profiles_status  ON profiles(status);
 """
 
 
+async def _ensure_job_column(db: aiosqlite.Connection, name: str, ddl: str) -> None:
+    """Add a jobs column if it is missing from an existing database."""
+    cursor = await db.execute("PRAGMA table_info(jobs)")
+    rows = await cursor.fetchall()
+    columns = {row[1] for row in rows}
+    if name not in columns:
+        await db.execute(f"ALTER TABLE jobs ADD COLUMN {ddl}")
+
+
 async def init_db() -> None:
     """Create tables and indices if they don't exist yet."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.executescript(_SCHEMA_SQL)
+        await _ensure_job_column(db, "start_image_path", "start_image_path TEXT")
+        await _ensure_job_column(db, "end_image_path", "end_image_path TEXT")
         await db.commit()
 
 

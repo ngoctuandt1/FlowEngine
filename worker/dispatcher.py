@@ -1,11 +1,9 @@
-"""Job dispatcher -- routes job type to the correct handler.
-
-All 5 operations use real Flow automation via Playwright.
-"""
+"""Job dispatcher -- routes job type to the correct handler."""
 
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import Callable, Coroutine
 
 from flow.retry import with_retry, is_transient
@@ -16,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 PROFILE_BASE_DIR = os.environ.get("CHROME_USER_DATA_DIR", "./chrome-profiles")
 DOWNLOAD_DIR = os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")
+UPLOAD_DIR = Path(os.environ.get("FLOW_UPLOAD_DIR", "./uploads")).resolve()
 
 
 # ======================================================================
@@ -64,6 +63,20 @@ def _kill_chrome_for_profile(profile: str):
     logger.info("Chrome cleanup done for profile %s", profile)
 
 
+def _resolve_upload_path(path_value: str | None) -> str | None:
+    """Resolve a server-relative uploads path to a local file path."""
+    if not path_value:
+        return None
+
+    raw_path = Path(path_value)
+    if raw_path.is_absolute():
+        return str(raw_path)
+
+    parts = raw_path.parts
+    rel_parts = parts[1:] if parts and parts[0] == "uploads" else parts
+    return str(UPLOAD_DIR.joinpath(*rel_parts))
+
+
 # ======================================================================
 # Handlers — all use real Flow automation
 # ======================================================================
@@ -92,6 +105,41 @@ async def handle_text_to_video(job: dict) -> dict:
 
     logger.info("text-to-video DONE | files=%d media_id=%s",
                 len(result.get("output_files", [])), result.get("media_id"))
+    return result
+
+
+async def handle_frames_to_video(job: dict) -> dict:
+    """Frames-to-video: create new project from a start frame and optional end frame."""
+    from flow.operations.frames_to_video import frames_to_video
+
+    profile = job.get("profile", "")
+    if not profile:
+        raise RuntimeError("No profile assigned for frames-to-video job")
+
+    logger.info(
+        "frames-to-video START | start=%s end=%s model=%s profile=%s",
+        job.get("start_image_path"),
+        job.get("end_image_path"),
+        job.get("model"),
+        profile,
+    )
+
+    async with _make_client(profile) as client:
+        result = await frames_to_video(
+            client,
+            prompt=job.get("prompt", ""),
+            start_image_path=_resolve_upload_path(job.get("start_image_path")),
+            end_image_path=_resolve_upload_path(job.get("end_image_path")),
+            model=job.get("model", "veo-3.1-fast-lp"),
+            aspect_ratio=job.get("aspect_ratio", "16:9"),
+            free_mode=True,
+        )
+
+    logger.info(
+        "frames-to-video DONE | files=%d media_id=%s",
+        len(result.get("output_files", [])),
+        result.get("media_id"),
+    )
     return result
 
 
@@ -204,6 +252,7 @@ async def handle_camera(job: dict) -> dict:
 
 HANDLER_MAP: dict[str, Callable[[dict], Coroutine]] = {
     "text-to-video": handle_text_to_video,
+    "frames-to-video": handle_frames_to_video,
     "extend-video": handle_extend,
     "insert-object": handle_insert,
     "remove-object": handle_remove,
