@@ -5,6 +5,32 @@
 
 ---
 
+## Tier 2 — 2026-04-20 — Run 20 — ✅ **PASS** — L2 extend end-to-end; H1 confirmed; 1080p 19.5 MB
+
+| Field | Value |
+|---|---|
+| Date | 2026-04-20T04:09:48Z — L2 extend completed |
+| Tier | 2 — full engine-driven via REST API, base profile (`FLOW_USE_BASE_PROFILE=1`) |
+| Profile | `ngoctuandt20` |
+| Chain | `1871a218-d9f0-41cb-bc20-ccb4135d9671` (L1 `4a032d83` → L2 `44d928bd`) |
+| L2 job id | `44d928bd-ba79-4e9c-8d8c-aca8b3992c7c` (extend-video) |
+| Output | `downloads/ext_1080p_1776658187.mp4` (20,490,052 B; 1920×1080; 8.0s; H.264) |
+| New media_id | `293d3ab0-93fc-4d7d-8062-b5b99f60a2d8` |
+| Session report | `docs/session-reports/2026-04-20_Tier2_Run20_L2_extend_H1_confirmed.md` |
+
+**Verdict: ✅ PASS.** Unblocks Run 19 L2 blocker. H1 (temp-clone-drops-cookies)
+confirmed as primary cause; H2 (CDP fingerprinting) NOT the dominant failure.
+Working configuration = `FLOW_USE_BASE_PROFILE=1` + landing recovery hook
+(`flow/landing.py`, commit `d856bf6`) together. Neither alone is sufficient —
+worker log shows landing detection firing mid-run even on base profile.
+
+Commits landed as direct result of Run 20: `a5009af` (B38 UI 1080p),
+`d856bf6` (landing recovery), `1154ffc` (wait+login), `a4c4888` (warm_profile
+Workspace bridge), `849834e` (claim direct-parent inheritance — supersedes
+B30/B32).
+
+---
+
 ## Tier 2 — 2026-04-19 — Run 15 — ✅ **PASS (3/3)** — B37 harvest + B35 x1 verified across 3 diverse t2v jobs
 
 | Field | Value |

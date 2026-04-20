@@ -93,18 +93,46 @@ Commit ONLY after L2 extend completes end-to-end. Recommended split — 3 logica
 
 ## 6. Open blockers (prioritized)
 
-### P0 — L2 chain blocked (two competing hypotheses as of 2026-04-20)
+### P0 — L2 chain RESOLVED (Run 20 passed, 2026-04-20)
+
+L2 extend completed end-to-end (20 MB, 1920×1080) in Run 20 — see
+`docs/session-reports/2026-04-20_Tier2_Run20_L2_extend_H1_confirmed.md`.
+
+- **H1 confirmed** as the primary cause: temp-clone user-data-dir was
+  dropping cookies; worker on base profile reads the same dir the warm
+  session writes.
+- **Landing recovery** (`flow/landing.py`, commit `d856bf6`) is the
+  second required component — Flow marketing variant still renders
+  mid-run even on base profile; the recovery hook clicks the CTA back
+  into the editor.
+- **H2 not dominant.** Option 2 (pipe) / Option 3 (stealth) from
+  `docs/CHROME_LAUNCH_SECURITY.md` §4 remain unused.
+
+**Established worker configuration (default going forward):**
+
+```
+FLOW_USE_BASE_PROFILE=1 WORKER_PROFILES=<profile> python run_worker.py
+```
+
+`project_lock.py` serializes same-project chains; cross-project
+parallelism on the same profile would still need a policy decision.
+
+5 commits landed from Run 20: `a5009af` (B38 UI 1080p), `d856bf6`
+(landing recovery), `1154ffc` (wait+login), `a4c4888` (warm_profile
+Workspace bridge), `849834e` (claim direct-parent inheritance —
+supersedes B30/B32). Tests 123 → 144.
+
+---
+
+### Historical — Run 20 plan (kept for context; superseded by outcome above)
 
 Run 19 landed worker on Flow's marketing page instead of the editor SPA.
-Two hypotheses — Run 20 discriminates.
+Two hypotheses — Run 20 discriminated H1.
 
-- **H1 (original, from Run 19 session report):** cookies did not survive
-  warm → worker transition. Fix: full-reset + `warm_profile` (commit
-  `58f47e7` auto-login) already applied.
-- **H2 (new, 2026-04-20 analysis):** cookies are fine, but Google
-  fingerprints the CDP-attached Chrome + temp-cloned user-data-dir as a
-  device-trust mismatch and serves the marketing variant. Full analysis
-  + detection signals: `docs/CHROME_LAUNCH_SECURITY.md` §2 + §5.
+- **H1 (confirmed):** cookies did not survive warm → worker transition.
+- **H2 (analysis, not confirmed):** Google fingerprints the CDP-attached
+  Chrome + temp-cloned user-data-dir. Full analysis + detection signals:
+  `docs/CHROME_LAUNCH_SECURITY.md` §2 + §5.
 
 Run 20 plan (H1 vs H2 discriminator):
 
