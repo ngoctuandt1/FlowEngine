@@ -72,7 +72,7 @@ job_level     1 or 2+
 parent_job_id link to L1 (or previous L2) job
 chain_id      shared across all jobs in one chain
 project_url   created at L1, inherited by all L2+
-media_id      Re-extracted per op. Extend mints NEW uuid always. Camera-move mints NEW on early-chain (L2 off L1) but preserves on deep-chain. Insert/remove preserve. Child job inherits DIRECT parent's media_id + edit_url together (B22; B30/B32 walk-up superseded 2026-04-20 after Run 20 follow-up). See SPEC INV-5.
+media_id      Re-extracted per op. Extend mints NEW uuid always. Camera-move mints NEW on early-chain (L2 off L1) but preserves on deep-chain. Live L2 insert/remove runs on 2026-04-20 showed both ops mint new outputs, but post-op extraction is currently unreliable until the parked media_id bug is fixed (see handoff §5 + reviews/4_media_id_bug.md). Child job inherits DIRECT parent's media_id + edit_url together (B22; B30/B32 walk-up superseded 2026-04-20 after Run 20 follow-up). See SPEC INV-5.
 profile       Chrome profile dir name (= Google account identity)
 bbox          {x,y,w,h} normalized — required for insert/remove
 direction     preset string — required for camera-move
@@ -83,7 +83,7 @@ direction     preset string — required for camera-move
 2. **Navigate by `edit_url`** (`/edit/{media_id}`) — never use `video_index` / DOM card counting
 3. **Store everything** after completion: `project_url`, `media_id`, `profile`, `generation_id`
 4. **Serial per project** — `project_lock.py` ensures no two jobs run on same `project_url`
-5. `media_id` is **re-extracted per op** — extend-video always mints NEW; camera-move mints NEW on early-chain (L2 direct off L1) but preserves on deep-chain; insert/remove preserve in-place. Child inherits DIRECT parent's `media_id` + `edit_url` together (B22; B30/B32 walk-up superseded 2026-04-20 — see `849834e` and SPEC §A.1 INV-5).
+5. `media_id` is **re-extracted per op** — extend-video always mints NEW; camera-move mints NEW on early-chain (L2 direct off L1) but preserves on deep-chain; live L2 insert/remove runs on 2026-04-20 showed both ops mint NEW outputs, but post-op extraction is currently unreliable until the parked media_id bug is fixed. Child inherits DIRECT parent's `media_id` + `edit_url` together (B22; B30/B32 walk-up superseded 2026-04-20 — see `849834e`, handoff §5, and `docs/session-reports/reviews/4_media_id_bug.md`).
 
 ### Claim flow
 Worker `main.py` → `POST /api/worker/claim` with `profiles` list → server returns job where
@@ -151,6 +151,21 @@ Body: "Closes #N"
 
 **Tag:** `v0.2.0-phase-a` at `db4c746`.
 
+**Post-Phase-A (2026-04-20) — merged to `master`**
+
+| PR | Commit | Fix |
+|---|---|---|
+| #24 | `18a1e74` | Image 2K/4K UI path + async busy/done state machine |
+| #25 | `f930739` | Composer-chip fallback for `_switch_to_image_output` after persisted Video mode |
+| #26 | `429dad6` | Unified composer-menu selectors across 5 mode-icon variants |
+| #27 | `849c39d` | +36 unit tests for the image upscale path |
+| #28 | `ef09a13` | Iterate all image `media_ids` in the UI upscale branch |
+
+- Test suite count moved from `153` to `192`.
+- Live-verified on 2026-04-20: image 4K `text-to-image` x3 on `ngoctuandt20`; L2 insert + remove on the same project.
+- Parked HIGH: L2 `media_id` extraction bug for insert/remove. See handoff §5 and `docs/session-reports/reviews/4_media_id_bug.md`.
+- Current `master` context for this branch: handoff feature head `ef09a13` plus docs-sync head `4c2e529`.
+
 For future epics: create `docs/PRD_<EPIC>.md`, open issues on GitHub, branch `claude/bug-N-slug`
 per issue, one PR per issue with `Closes #N`.
 
@@ -177,7 +192,9 @@ NOT with Escape. Escape closes the whole editor dialog. See `flow/model_selector
 **submit.py timeout** — `run_submit()` returns `False` on timeout (not exception). Caller
 must check return value; only NEW API calls (after submit click) count as confirmation.
 
-**Flow download menu labels (2026-04-20)** — `1K Original size / 2K Upscaled / 4K Upscaled` — all free. Engine selects 2K. See `flow/upscale.py`.
+**Flow download menu labels (2026-04-20):**
+- Video menu — `270pOriginal size / 720p / 1080pUpscaled / 4KUpscaled`. The 50-credit engine targets `1080pUpscaled`, NEVER `4K` (costs credits).
+- Image menu — `1K / 2K / 4K` on newline-separated labels. Image `2K`/`4K` UI path is env-gated by `FLOW_IMAGE_QUALITY=2k|4k` (default `original`). See memory `feedback_image_upscale_2k_4k.md`.
 
 **Key docs** (in `docs/`):
 - `FLOW_MULTILEVEL_JOBS.md` — complete multi-level design, bugs, test results

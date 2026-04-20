@@ -531,14 +531,11 @@ async def finalize_operation(
 
     logger.info("%s complete!", job_type)
 
-    # Extract metadata from current URL
+    # Canonical chain media_id is the settled /edit/{slug} route.
+    # Captured result["media_ids"] are redirect IDs used for download.
+    media_id = await _extract_settled_route_media_id(page, fallback=job.get("media_id"))
     current_url = page.url
-    media_id = extract_media_id(current_url)
-    if not media_id and result.get("media_ids"):
-        media_id = result["media_ids"][0]
-    # Fallback to job's original media_id (operations update in-place)
-    if not media_id:
-        media_id = job.get("media_id")
+    download_media_ids = result.get("media_ids") or []
 
     # Build edit_url
     edit_url_val = None
@@ -550,7 +547,7 @@ async def finalize_operation(
     logger.info("Downloading %s result...", job_type)
     output_files = await download_video(
         client,
-        media_ids=result.get("media_ids", [media_id] if media_id else []),
+        media_ids=download_media_ids or ([media_id] if media_id else []),
         prefix=download_prefix,
     )
     if not output_files:
@@ -569,3 +566,13 @@ async def finalize_operation(
         "generation_id": client._gen_id,
         "profile": client.profile_name,
     }
+
+
+async def _extract_settled_route_media_id(page, fallback: str | None = None) -> str | None:
+    """Poll briefly for a settled /edit/{slug} route before falling back."""
+    for _ in range(12):
+        media_id = extract_media_id(page.url)
+        if media_id:
+            return media_id
+        await asyncio.sleep(0.25)
+    return fallback
