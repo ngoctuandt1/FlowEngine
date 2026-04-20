@@ -553,6 +553,8 @@ async def finalize_operation(
         media_ids=result.get("media_ids", [media_id] if media_id else []),
         prefix=download_prefix,
     )
+    if not output_files:
+        raise RuntimeError(f"{job_type}: no output file captured")
 
     # Build project_url
     proj_url = job.get("project_url")

@@ -162,6 +162,8 @@ async def text_to_image(
         quality="original",
         media_kind="image",
     )
+    if not output_files:
+        raise RuntimeError("text-to-image: no output file captured")
 
     project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     return {

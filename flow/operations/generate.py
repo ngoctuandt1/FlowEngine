@@ -281,6 +281,8 @@ async def text_to_video(
         media_ids=result.get("media_ids", [media_id] if media_id else []),
         prefix="t2v",
     )
+    if not output_files:
+        raise RuntimeError("text-to-video: no output file captured - download pipeline returned empty list")
 
     # Build project_url (without /edit/ part)
     proj_url = None

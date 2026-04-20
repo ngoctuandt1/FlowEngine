@@ -1,4 +1,4 @@
-"""1080p upscale + download via UI (cherry-picked from AI-Engine3-Project
+"""2K upscale + download via UI (cherry-picked from AI-Engine3-Project
 modules/upscale_unified.py; async port + /edit/ view adaptation).
 
 B38 (2026-04-19): The `_upsampled` endpoint that `flow/download.py` polls
@@ -9,13 +9,13 @@ This module replaces the broken API poll with a UI-driven flow:
 
 On `/edit/{media_id}` view (primary entry after generate / extend / camera):
 1. Click icon-only Download button (top-right). DOM: `<button><i>download</i></button>`.
-2. Menu opens with 4 items: 270p · 720p · 1080pUpscaled · 4KUpscaled · 50 credits.
-3. Click `1080pUpscaled` → triggers upscale (if not cached) OR downloads immediately.
+2. Menu opens with 3 items: 1K Original size · 2K Upscaled · 4K Upscaled (all free as of 2026-04-20 probe).
+3. Click `2KUpscaled` → triggers upscale (if not cached) OR downloads immediately.
 4. On upscale: wait for "Upscaling complete!" toast (EN) / "Đã tăng độ phân giải xong!" (VI).
-5. Re-click Download button → menu → `1080pUpscaled` → real mp4 download.
+5. Re-click Download button → menu → `2KUpscaled` → real mp4 download.
 
-Safety: `4KUpscaled · 50 credits` is 50 LP credits per click — NEVER matched
-by our selector (anchored regex `^1080pUpscaled$` on the menuitem textContent).
+Safety: `4KUpscaled` remains intentionally skipped. 2K/4K are currently both
+free, but we anchor on `^2KUpscaled$` to preserve the previous mid-tier behavior.
 
 NEVER press Escape on /edit/ view — it closes the entire editor dialog
 (see CLAUDE.md §7 Common Gotchas). Menus dismiss by clicking the trigger again
@@ -175,41 +175,41 @@ async def _click_edit_download_button(page, wait_sec: int = 10) -> bool:
     return False
 
 
-async def _click_menu_1080p(page) -> bool:
-    """In an open Radix menu, click the '1080pUpscaled' item.
+async def _click_menu_2k_upscaled(page) -> bool:
+    """In an open Radix menu, click the '2KUpscaled' item.
 
-    Uses anchored regex to exclude the '4KUpscaled · 50 credits' sibling (50 LP cost).
+    Uses anchored regex to exclude the '4KUpscaled' sibling.
     """
     try:
         await page.wait_for_selector('[role="menuitem"]', timeout=3000)
     except Exception:
         pass
 
-    # Anchored: textContent must be EXACTLY '1080pUpscaled' (probe §5.2)
+    # Anchored: textContent must be EXACTLY '2KUpscaled' (probe 2026-04-20)
     q = page.locator('[role="menuitem"]').filter(
-        has_text=re.compile(r"^1080pUpscaled$", re.IGNORECASE)
+        has_text=re.compile(r"^2KUpscaled$", re.IGNORECASE)
     )
     try:
         if await q.count() > 0:
             await q.first.click(timeout=3000)
-            logger.info("[UPSCALE] Clicked 1080pUpscaled menu item")
+            logger.info("[UPSCALE] Clicked 2KUpscaled menu item")
             return True
     except Exception as e:
-        logger.warning("[UPSCALE] anchored 1080p click failed: %s", e)
+        logger.warning("[UPSCALE] anchored 2K click failed: %s", e)
 
-    # Fallback: any menuitem containing '1080p' (still excludes 4K — '4KUpscaled' has no '1080p')
+    # Fallback: any menuitem containing '2K' (still excludes 4K)
     q2 = page.locator('[role="menuitem"]').filter(
-        has_text=re.compile(r"1080p", re.IGNORECASE)
+        has_text=re.compile(r"2K", re.IGNORECASE)
     )
     try:
         if await q2.count() > 0:
             await q2.first.click(timeout=3000)
-            logger.info("[UPSCALE] Clicked 1080p menu item (substring match)")
+            logger.info("[UPSCALE] Clicked 2K menu item (substring match)")
             return True
     except Exception as e:
-        logger.warning("[UPSCALE] substring 1080p click failed: %s", e)
+        logger.warning("[UPSCALE] substring 2K click failed: %s", e)
 
-    logger.warning("[UPSCALE] 1080p menu item not found")
+    logger.warning("[UPSCALE] 2K menu item not found")
     return False
 
 
@@ -299,18 +299,18 @@ async def upscale_and_download_1080p(
     max_retries: int = 2,
     media_id: str | None = None,
 ) -> str | None:
-    """UI-driven 1080p upscale + download on /edit/ view.
+    """UI-driven 2K upscale + download on /edit/ view.
 
     Flow:
       0. Ensure page is on /edit/{media_id} (deep-link if on project root).
-      1. Click Download button → click 1080pUpscaled.
+      1. Click Download button → click 2KUpscaled.
       2. Poll ~15 s: if a download fires immediately (cached), save and return.
          If a 'busy' toast appears → wait up to upscale_timeout_sec for 'done'.
          If 'done' or 'failed' → act accordingly.
-      3. After upscale 'done': re-click Download + 1080pUpscaled inside
+      3. After upscale 'done': re-click Download + 2KUpscaled inside
          `expect_download` to capture the real mp4.
 
-    Returns: path to 1080p mp4, or None (caller should fall back to 720p API).
+    Returns: path to 2K mp4, or None (caller should fall back to 720p API).
     """
     page = client.page
     out_dir = Path(output_dir)
@@ -333,7 +333,7 @@ async def upscale_and_download_1080p(
                 await asyncio.sleep(1.5)
                 continue
 
-            if not await _click_menu_1080p(page):
+            if not await _click_menu_2k_upscaled(page):
                 await asyncio.sleep(1)
                 continue
 
@@ -348,7 +348,7 @@ async def upscale_and_download_1080p(
                     break
 
             if downloads:
-                path = await _save_download(downloads[0], prefix, "1080p", out_dir)
+                path = await _save_download(downloads[0], prefix, "2k", out_dir)
                 if path:
                     return path
                 downloads.clear()
@@ -365,7 +365,7 @@ async def upscale_and_download_1080p(
                 wait_result = await _wait_upscale(page, upscale_timeout_sec)
                 await _close_toast(page)
                 if downloads:
-                    path = await _save_download(downloads[0], prefix, "1080p", out_dir)
+                    path = await _save_download(downloads[0], prefix, "2k", out_dir)
                     if path:
                         return path
                     downloads.clear()
@@ -397,17 +397,17 @@ async def upscale_and_download_1080p(
 
 
 async def _redownload_1080p(page, prefix: str, out_dir: Path) -> str | None:
-    """After 'done' toast: re-click Download + 1080pUpscaled inside expect_download."""
-    logger.info("[UPSCALE] Re-triggering 1080p download...")
+    """After 'done' toast: re-click Download + 2KUpscaled inside expect_download."""
+    logger.info("[UPSCALE] Re-triggering 2K download...")
     await asyncio.sleep(0.5)
     try:
         async with page.expect_download(timeout=60_000) as dl_info:
             if not await _click_edit_download_button(page):
                 return None
-            if not await _click_menu_1080p(page):
+            if not await _click_menu_2k_upscaled(page):
                 return None
         download = await dl_info.value
-        return await _save_download(download, prefix, "1080p", out_dir)
+        return await _save_download(download, prefix, "2k", out_dir)
     except Exception as e:
         logger.warning("[UPSCALE] Re-download failed: %s", e)
         return None

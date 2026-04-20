@@ -177,6 +177,8 @@ NOT with Escape. Escape closes the whole editor dialog. See `flow/model_selector
 **submit.py timeout** — `run_submit()` returns `False` on timeout (not exception). Caller
 must check return value; only NEW API calls (after submit click) count as confirmation.
 
+**Flow download menu labels (2026-04-20)** — `1K Original size / 2K Upscaled / 4K Upscaled` — all free. Engine selects 2K. See `flow/upscale.py`.
+
 **Key docs** (in `docs/`):
 - `FLOW_MULTILEVEL_JOBS.md` — complete multi-level design, bugs, test results
 - `FLOW_PIPELINE_KNOWLEDGE.md` — Flow UI technical reference
