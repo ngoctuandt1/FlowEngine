@@ -7,7 +7,13 @@ wait, download, and return metadata.
 import asyncio
 import logging
 
-from flow.navigation import flow_url, extract_project_id, extract_media_id, detect_locale
+from flow.navigation import (
+    detect_locale,
+    extract_media_id,
+    extract_project_id,
+    find_latest_tile_slug,
+    flow_url,
+)
 from flow.landing import recover_from_flow_landing
 from flow.login import is_login_page, handle_login_redirect
 from flow.submit import submit_with_confirmation
@@ -535,6 +541,23 @@ async def finalize_operation(
     # Captured result["media_ids"] are redirect IDs used for download.
     media_id = await _extract_settled_route_media_id(page, fallback=job.get("media_id"))
     current_url = page.url
+    parent_media_id = job.get("media_id")
+    tile_media_id = await find_latest_tile_slug(page) if media_id else None
+    url_media_id = extract_media_id(current_url)
+    if (
+        tile_media_id
+        and parent_media_id
+        and url_media_id == parent_media_id
+        and tile_media_id != parent_media_id
+    ):
+        logger.warning(
+            "Stale completion URL still points at parent slug; overriding media_id "
+            "from latest tile: parent=%s url=%s tile=%s",
+            parent_media_id[:20],
+            url_media_id[:20] if url_media_id else "",
+            tile_media_id[:20],
+        )
+        media_id = tile_media_id
     download_media_ids = result.get("media_ids") or []
 
     # Build edit_url

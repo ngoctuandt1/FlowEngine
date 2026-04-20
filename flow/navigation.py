@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 FLOW_BASE = "https://labs.google/fx"
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # URL builders
@@ -108,3 +110,55 @@ def is_flow_url(url: str) -> bool:
             str(url or "").lower(),
         )
     )
+
+
+async def find_latest_tile_slug(page, timeout_ms: int = 3000) -> str | None:
+    """Return the newest gallery tile slug, or ``None`` if unavailable.
+
+    The project/history gallery exposes stable ``data-tile-id`` attributes on
+    rendered tiles. When Flow keeps the stale parent route mounted after an
+    operation completes, the newest output clip still appears as the last tile
+    in DOM order. This helper cross-checks that tile and extracts its slug from
+    either ``data-tile-id`` or a descendant ``/edit/{slug}`` link.
+    """
+    selector = "[data-tile-id]"
+    try:
+        await page.wait_for_selector(selector, state="attached", timeout=timeout_ms)
+    except Exception:
+        return None
+
+    try:
+        result = await page.evaluate(
+            """() => {
+                const tiles = Array.from(document.querySelectorAll('[data-tile-id]'));
+                if (!tiles.length) return {slug: null, ambiguous: false};
+
+                const tile = tiles[tiles.length - 1];
+                const rawTileId = tile.getAttribute('data-tile-id') || '';
+                const attrSlug = rawTileId.startsWith('fe_id_')
+                    ? rawTileId.slice(6)
+                    : rawTileId;
+                const hrefNode = tile.querySelector('a[href*="/edit/"]') || tile.closest('a[href*="/edit/"]');
+                const href = hrefNode?.getAttribute('href') || hrefNode?.href || '';
+                const hrefMatch = href.match(/\\/edit\\/([0-9a-f-]{20,64})/i);
+                const hrefSlug = hrefMatch ? hrefMatch[1] : null;
+
+                const valid = (value) => /^[0-9a-f-]{20,64}$/i.test(value || '');
+                const candidates = [attrSlug, hrefSlug]
+                    .filter(valid)
+                    .map((value) => value.toLowerCase());
+                const unique = Array.from(new Set(candidates));
+
+                if (!unique.length) return {slug: null, ambiguous: false};
+                if (unique.length > 1) return {slug: null, ambiguous: true};
+                return {slug: unique[0], ambiguous: false};
+            }"""
+        )
+    except Exception as exc:
+        logger.debug("Latest tile slug lookup failed: %s", exc)
+        return None
+
+    if not isinstance(result, dict) or result.get("ambiguous"):
+        return None
+    slug = result.get("slug")
+    return slug if isinstance(slug, str) and slug else None
