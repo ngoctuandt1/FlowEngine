@@ -7,6 +7,7 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,9 @@ UPSCALE_POLL_INTERVAL = int(os.environ.get("FLOW_UPSCALE_POLL_INTERVAL_SEC", "15
 UPSCALE_MAX_RETRIES = int(os.environ.get("FLOW_UPSCALE_MAX_RETRIES", "24"))
 MIN_FILE_SIZE = 100_000  # 100KB minimum for valid video
 IMAGE_MIN_FILE_SIZE = 1_000
+IMAGE_QUALITY_ENV = "FLOW_IMAGE_QUALITY"
+IMAGE_UPSCALE_QUALITIES = {"2k", "4k"}
+ImageQuality = Literal["original", "2k", "4k"]
 
 
 async def download_video(
@@ -52,6 +56,9 @@ async def download_video(
     page = client.page
     output_dir = Path(DOWNLOAD_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
+    requested_image_quality = (
+        _requested_image_quality(quality) if media_kind == "image" else "original"
+    )
 
     # B38: UI-driven 1080p upscale is the primary path for 1080p. The API
     # `_upsampled` endpoint has been 404 for all probes (see probe report
@@ -85,6 +92,37 @@ async def download_video(
         except Exception as e:
             logger.warning("UI 1080p upscale raised: %s; falling back to API", e)
 
+    if media_kind == "image" and requested_image_quality in IMAGE_UPSCALE_QUALITIES:
+        first_mid = media_ids[0] if media_ids else None
+        if not first_mid:
+            evts = getattr(client, "_media_id_events", [])
+            for evt in evts:
+                if evt.get("mid"):
+                    first_mid = evt["mid"]
+                    break
+        try:
+            from flow.upscale import upscale_and_download_image
+
+            ui_path = await upscale_and_download_image(
+                client,
+                prefix=prefix,
+                output_dir=DOWNLOAD_DIR,
+                media_id=first_mid,
+                target_quality=requested_image_quality,
+            )
+            if ui_path:
+                return [ui_path]
+            logger.info(
+                "Image UI %s path returned None; falling back to original API",
+                requested_image_quality,
+            )
+        except Exception as e:
+            logger.warning(
+                "Image UI %s upscale raised: %s; falling back to original API",
+                requested_image_quality,
+                e,
+            )
+
     # Collect media IDs if not provided
     if not media_ids:
         media_ids = [
@@ -115,7 +153,12 @@ async def download_video(
 
     # B38: When the caller asked for 1080p and we're past the UI path above,
     # skip the stale `_upsampled` API poll — go straight to 720p. Saves ~6min.
-    api_quality = "720p" if media_kind == "video" and quality == "1080p" else quality
+    if media_kind == "video" and quality == "1080p":
+        api_quality = "720p"
+    elif media_kind == "image":
+        api_quality = "original"
+    else:
+        api_quality = quality
 
     downloaded = []
     for mid in media_ids:
@@ -150,12 +193,19 @@ async def _download_via_api(
         if path:
             return path
 
-    # Fallback to 720p
-    url_720 = (
+    fallback_quality = quality if media_kind == "image" else "720p"
+    url_fallback = (
         "https://labs.google/fx/api/trpc/"
         f"media.getMediaUrlRedirect?name={media_id}"
     )
-    return await _api_download_with_retry(page, url_720, prefix, "720p", output_dir, media_kind)
+    return await _api_download_with_retry(
+        page,
+        url_fallback,
+        prefix,
+        fallback_quality,
+        output_dir,
+        media_kind,
+    )
 
 
 async def _api_download_with_retry(
@@ -353,3 +403,21 @@ def _extension_for(content_type: str, media_kind: str) -> str:
 
 def _minimum_size_for(media_kind: str) -> int:
     return IMAGE_MIN_FILE_SIZE if media_kind == "image" else MIN_FILE_SIZE
+
+
+def _requested_image_quality(explicit_quality: str) -> ImageQuality:
+    """Resolve image quality with env override while defaulting to original.
+
+    `download_video(..., quality="original", media_kind="image")` remains the
+    normal call site. Setting `FLOW_IMAGE_QUALITY=2k|4k` opts into the new UI
+    path without forcing signature churn through the operation layer.
+    """
+    quality = (explicit_quality or "").strip().lower()
+    env_quality = os.environ.get(IMAGE_QUALITY_ENV, "original").strip().lower()
+    if quality in IMAGE_UPSCALE_QUALITIES:
+        return quality
+    if quality not in {"", "original"}:
+        return "original"
+    if env_quality in IMAGE_UPSCALE_QUALITIES:
+        return env_quality
+    return "original"
