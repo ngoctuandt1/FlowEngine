@@ -74,6 +74,8 @@ async def wait_for_completion(
     await _inject_observer(page)
 
     initial_video_count = len(getattr(client, "_video_urls", []))
+    initial_media_count = len(getattr(client, "_media_id_events", []))
+    initial_url = page.url
     start = time.monotonic()
     last_progress = 0
     last_signal_time = start
@@ -91,7 +93,16 @@ async def wait_for_completion(
         api = _check_api_signals(client)
         if api["done"]:
             logger.info("Completion via API signal after %.0fs", elapsed)
-            return _result(True, media_ids=api["media_ids"])
+            await _settle_after_done(
+                page,
+                client,
+                initial_url=initial_url,
+                initial_media_count=initial_media_count,
+            )
+            return _result(
+                True,
+                media_ids=_collect_media_ids(client, start_index=initial_media_count),
+            )
         if api["error"]:
             logger.error("API error: %s", api["error"])
             return _result(False, error=api["error"])
@@ -264,14 +275,25 @@ def _check_api_signals(client) -> dict:
     return result
 
 
-def _collect_media_ids(client) -> list[str]:
+def _collect_media_ids(client, start_index: int = 0) -> list[str]:
     """Collect all known media IDs from client state."""
     ids: set[str] = set()
-    for evt in getattr(client, "_media_id_events", []):
+    for evt in getattr(client, "_media_id_events", [])[start_index:]:
         mid = evt.get("mid") or evt.get("media_id")
         if mid:
             ids.add(mid)
     return list(ids)
+
+
+async def _settle_after_done(page, client, initial_url: str, initial_media_count: int) -> None:
+    """Allow the editor route or media captures to settle after API-done."""
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if page.url != initial_url:
+            return
+        if len(getattr(client, "_media_id_events", [])) > initial_media_count:
+            return
+        await asyncio.sleep(0.25)
 
 
 # ------------------------------------------------------------------
