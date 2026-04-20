@@ -14,6 +14,8 @@ import logging
 import re
 from pathlib import Path
 
+from playwright.async_api import Locator
+
 from flow.download import download_video
 from flow.login import handle_login_redirect, is_login_page
 from flow.model_selector import _close_model_panel
@@ -177,28 +179,87 @@ async def text_to_image(
 
 
 async def _switch_to_image_output(page) -> None:
-    selectors = [
+    """Ensure the composer is in Image mode.
+
+    Flow persists the last-used composer mode per account. On a fresh browser
+    session the Image tab may already be rendered inline, but after a prior
+    video job the new-project composer can start in Video mode and only render
+    the Image tab inside the settings-chip dropdown. We therefore take the fast
+    inline-tab path first, then mirror the video-mode dropdown pattern.
+    """
+    inline_tab = await _find_inline_image_tab(page)
+    if inline_tab is not None:
+        state = await inline_tab.get_attribute("data-state")
+        if state != "active":
+            await inline_tab.click(timeout=3000)
+            await asyncio.sleep(0.3)
+        logger.info("_switch_to_image_output: inline Image tab path (state=%s)", state)
+        return
+
+    logger.info("_switch_to_image_output: opening composer chip to reveal Image tab")
+    await _open_composer_menu(page)
+    await _ensure_image_mode(page)
+
+
+async def _find_inline_image_tab(page) -> Locator | None:
+    """Return the inline Image tab when it is directly rendered in the composer."""
+    selectors = (
         "[role='tab']:text-is('Image')",
         "[role='tab']:has(i:text-is('image'))",
-    ]
-    for attempt in range(6):
-        for sel in selectors:
-            tab = page.locator(sel).first
-            try:
-                if await tab.is_visible(timeout=500):
-                    if await tab.get_attribute("data-state") != "active":
-                        await tab.click(timeout=3000)
-                        await asyncio.sleep(0.3)
-                    return
-            except Exception:
-                continue
-        if attempt in (2, 4):
-            try:
-                await _open_composer_menu(page)
-            except Exception:
-                pass
-        await asyncio.sleep(0.5)
-    raise RuntimeError("Composer tab not found: Image")
+    )
+    for sel in selectors:
+        tab = page.locator(sel).first
+        try:
+            if await tab.is_visible(timeout=500):
+                return tab
+        except Exception as exc:
+            logger.debug("_find_inline_image_tab: selector %s not ready: %s", sel, exc)
+    return None
+
+
+async def _ensure_image_mode(page) -> None:
+    """Switch the open composer menu to the Image tab when persisted mode differs.
+
+    The chip dropdown contains a Radix ``role=menu`` with four
+    ``button[role='tab']`` entries: Image, Video, Frames, Ingredients. We
+    match the Image tab by visible label or exact icon ligature because other
+    groups in the same menu also use ``data-state='active'``.
+    """
+    menu_tabs = page.locator("[role='menu'][data-state='open'] button[role='tab']")
+    await page.locator("[role='menu'][data-state='open']").wait_for(
+        state="visible", timeout=3000,
+    )
+
+    count = await menu_tabs.count()
+    if count == 0:
+        raise RuntimeError("Composer menu opened but no mode tabs were rendered")
+
+    image_tab = None
+    observed_tabs: list[str] = []
+    for index in range(count):
+        tab = menu_tabs.nth(index)
+        text = (await tab.inner_text()).strip()
+        state = await tab.get_attribute("data-state")
+        observed_tabs.append(f"{text!r}={state}")
+        if re.search(r"(^|\s)image(\s|$)", text, re.IGNORECASE):
+            image_tab = tab
+            break
+        icon = tab.locator("i:text-is('image')").first
+        if await icon.count() > 0:
+            image_tab = tab
+            break
+
+    if image_tab is None:
+        raise RuntimeError(f"Composer Image tab not found inside menu: {observed_tabs}")
+
+    state = await image_tab.get_attribute("data-state")
+    if state != "active":
+        await image_tab.click(timeout=3000)
+        await asyncio.sleep(0.6)
+        logger.info("_ensure_image_mode: switched Image tab via composer chip (tabs=%s)", observed_tabs)
+        return
+
+    logger.info("_ensure_image_mode: Image already active in composer chip (tabs=%s)", observed_tabs)
 
 
 async def _select_image_model(page, model: str) -> None:
