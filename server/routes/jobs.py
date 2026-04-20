@@ -14,6 +14,13 @@ from server.routes.ws import broadcast_job_update
 router = APIRouter(prefix="/api", tags=["jobs"])
 
 
+def _resolve_model(req: JobCreate) -> str:
+    """Apply per-type default models while preserving explicit requests."""
+    if req.type.value == "text-to-image" and req.model == "veo-3.1-fast-lp":
+        return "nano-banana-pro"
+    return req.model
+
+
 # -- Helpers -------------------------------------------------------------------
 
 def _build_job(req: JobCreate, *, profile: Optional[str] = None,
@@ -22,7 +29,7 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
     return Job(
         type=req.type,
         prompt=req.prompt,
-        model=req.model,
+        model=_resolve_model(req),
         aspect_ratio=req.aspect_ratio,
         parent_job_id=req.parent_job_id,
         chain_id=chain_id or req.chain_id,
@@ -32,6 +39,7 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
         direction=req.direction,
         start_image_path=req.start_image_path,
         end_image_path=req.end_image_path,
+        ref_image_path=req.ref_image_path,
         profile=profile,
         job_level=job_level,
     )
