@@ -65,6 +65,19 @@ async def select_model(
         "button[aria-haspopup='menu']:has(i:text-is('crop_16_9'))",
         "button[aria-haspopup='menu']:has(i:text-is('crop_9_16'))",
         "button[aria-haspopup='menu']:has(i:text-is('crop_1_1'))",
+        # Image / Frames / Ingredients modes persist per-account; their chip
+        # icons differ (crop_square for Image, crop_free for Frames,
+        # chrome_extension for Ingredients). Live MCP probe 2026-04-20:
+        # ngoctuandt20 composer opened in Image mode after a t2i run, chip
+        # text "🍌 Nano Banana Pro\ncrop_square\nx1" — none of the crop_16_9
+        # / crop_9_16 / crop_1_1 / arrow_drop_down selectors matched, so the
+        # chip never opened and Flow silently generated an image instead
+        # of a video. Covering all four chip icons lets select_model find
+        # + open the chip regardless of persisted mode; `_ensure_video_mode`
+        # then flips to Video via the role=tab inside the open dropdown.
+        "button[aria-haspopup='menu']:has(i:text-is('crop_square'))",
+        "button[aria-haspopup='menu']:has(i:text-is('crop_free'))",
+        "button[aria-haspopup='menu']:has(i:text-is('chrome_extension'))",
         # /edit/ composer: the model chip shows "Veo 3.1 - <variant>" + <i>arrow_drop_down</i>.
         # Verified unique live 2026-04-19 (sole aria-haspopup=menu button with that icon).
         "button[aria-haspopup='menu']:has(i:text-is('arrow_drop_down'))",
@@ -111,6 +124,14 @@ async def select_model(
 
     # Step 2: Wait for panel to appear
     await asyncio.sleep(0.5)
+
+    # Step 2.2: Flow's settings chip dropdown is a combined panel — mode
+    # tabs (Image / Video / Frames / Ingredients) on top, then aspect +
+    # count + model. If a previous run on this account left the mode on
+    # Image (or Frames / Ingredients), the chip opens there and the Veo
+    # model options aren't reachable. Click the Video tab before picking
+    # a model so we always operate in the right context.
+    await _ensure_video_mode(page)
 
     # Step 2.5: Switch to Video tab
     # The model panel has TWO tabs: "Hình ảnh"/"Image" and "Video".
@@ -218,6 +239,66 @@ async def select_model(
 
     logger.error("Failed to select model after all attempts")
     return False
+
+
+async def _ensure_video_mode(page) -> None:
+    """Flip the composer to Video mode via the settings-chip dropdown tabs.
+
+    Flow's settings chip opens a combined DropdownMenuContent with four
+    ``button[role="tab"]`` elements — image / Video / Frames / Ingredients
+    — plus aspect + count + model below. The persisted mode is remembered
+    per account; a previous t2i run leaves the chip on Image, which hides
+    the Veo model options entirely.
+
+    Precondition: caller has just clicked the chip and ``aria-expanded``
+    is true. This helper:
+
+      1. Waits briefly for the dropdown to paint.
+      2. Looks up the Video tab by innerText (``videocam\\nVideo`` — the
+         icon ligature is on the same button so we just substring-match
+         on 'Video' after stripping whitespace).
+      3. If ``data-state`` is already 'active', no-ops.
+      4. Otherwise clicks the tab, then sleeps to let the menu re-render.
+
+    Silently no-ops when no ``role=tab`` elements are present — older
+    composer variants (L2 edit panels with ``_switch_to_video_tab``
+    semantics) use a different structure and are handled downstream.
+    """
+    await asyncio.sleep(0.4)
+    try:
+        tabs = page.locator('[role="menu"][data-state="open"] button[role="tab"]')
+        count = await tabs.count()
+        if count == 0:
+            return
+
+        video_tab = None
+        prev_modes = []
+        for i in range(count):
+            tab = tabs.nth(i)
+            try:
+                txt = (await tab.inner_text()).strip()
+                state = await tab.get_attribute("data-state")
+                prev_modes.append(f"{txt!r}={state}")
+                # Normalize 'videocam\nVideo' → 'video' match
+                if re.search(r"(^|\s)video(\s|$)", txt, re.IGNORECASE):
+                    video_tab = (tab, state)
+            except Exception:
+                continue
+
+        if video_tab is None:
+            logger.debug("_ensure_video_mode: no Video tab found in %s", prev_modes)
+            return
+
+        tab, state = video_tab
+        if state == "active":
+            logger.debug("_ensure_video_mode: already active (tabs=%s)", prev_modes)
+            return
+
+        await tab.click(timeout=2000)
+        await asyncio.sleep(0.6)
+        logger.info("_ensure_video_mode: switched to Video tab (was %s)", prev_modes)
+    except Exception as e:
+        logger.debug("_ensure_video_mode failed silently: %s", e)
 
 
 async def _verify_credits(page, expected: int = 0) -> bool:

@@ -110,7 +110,7 @@ async def download_video(
     if not media_ids:
         logger.warning("No media IDs found for download")
         # Fallback: try UI download
-        result = await _download_via_ui(client, prefix, output_dir)
+        result = await _download_via_ui(client, prefix, output_dir, media_kind)
         return [result] if result else []
 
     # B38: When the caller asked for 1080p and we're past the UI path above,
