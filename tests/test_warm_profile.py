@@ -48,6 +48,20 @@ def test_warm_profile_auto_logs_in_via_flow_login() -> None:
     )
 
 
+def test_warm_profile_uses_real_chrome_over_cdp() -> None:
+    """Google sign-in warming must attach to a real Chrome instance over CDP."""
+    src = _read_source()
+    assert "connect_over_cdp" in src, (
+        "warm_profile.py must connect to a real Chrome instance over CDP. "
+        "Google blocks sign-in in the Playwright-managed browser path used "
+        "before this fix."
+    )
+    assert "--remote-debugging-port=" in src, (
+        "warm_profile.py must launch Chrome with a CDP port so Playwright "
+        "can attach without becoming the browser launcher."
+    )
+
+
 def test_warm_profile_rejects_service_login_url() -> None:
     """Hard-coded `accounts.google.com/ServiceLogin` is unauthorized."""
     src = _read_source()
@@ -69,6 +83,26 @@ def test_warm_profile_does_not_wait_for_manual_close() -> None:
         f"warm_profile.py must not block on manual window close — the user "
         f"rejected a manual-only flow. Use handle_login_redirect instead. "
         f"Banned tokens outside comments: {hits}."
+    )
+
+
+def test_warm_profile_positively_confirms_inbox() -> None:
+    """Signed-in state must be confirmed by a Gmail-inbox URL match.
+
+    The earlier revision treated "URL does not match sign-in patterns"
+    as "signed in" and silently succeeded on anonymous profiles whose
+    initial `mail.google.com/` URL hadn't redirected yet (user-reported
+    2026-04-20: warm logged "Already signed in" but the profile held
+    zero auth cookies). Enforce that the script uses `is_gmail_inbox`
+    — the positive signal — so the false-positive cannot recur.
+    """
+    src = _read_source()
+    assert "is_gmail_inbox" in src, (
+        "warm_profile.py must use `is_gmail_inbox` from flow.login to "
+        "positively confirm the inbox landing URL before declaring the "
+        "profile signed in. Checking only for the absence of a sign-in "
+        "URL mis-labels anonymous sessions whose redirect has not yet "
+        "completed."
     )
 
 
