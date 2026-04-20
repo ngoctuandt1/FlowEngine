@@ -77,6 +77,17 @@ def _resolve_upload_path(path_value: str | None) -> str | None:
     return str(UPLOAD_DIR.joinpath(*rel_parts))
 
 
+def _resolve_upload_paths(path_values: list[str] | None) -> list[str]:
+    """Resolve a list of server-relative uploads paths to local file paths."""
+    if not path_values:
+        return []
+    return [
+        resolved
+        for path_value in path_values
+        if (resolved := _resolve_upload_path(path_value)) is not None
+    ]
+
+
 # ======================================================================
 # Handlers — all use real Flow automation
 # ======================================================================
@@ -169,6 +180,43 @@ async def handle_text_to_image(job: dict) -> dict:
 
     logger.info(
         "text-to-image DONE | files=%d media_id=%s",
+        len(result.get("output_files", [])),
+        result.get("media_id"),
+    )
+    return result
+
+
+async def handle_ingredients_to_video(job: dict) -> dict:
+    """Ingredients-to-video: create a new video with one or more reference images."""
+    from flow.operations.ingredients import ingredients_to_video
+
+    profile = job.get("profile", "")
+    if not profile:
+        raise RuntimeError("No profile assigned for ingredients-to-video job")
+
+    ingredient_image_paths = _resolve_upload_paths(job.get("ingredient_image_paths"))
+    if not ingredient_image_paths:
+        raise RuntimeError("ingredients-to-video requires at least one ingredient image")
+
+    logger.info(
+        "ingredients-to-video START | refs=%d model=%s profile=%s",
+        len(ingredient_image_paths),
+        job.get("model"),
+        profile,
+    )
+
+    async with _make_client(profile) as client:
+        result = await ingredients_to_video(
+            client,
+            prompt=job.get("prompt", ""),
+            ingredient_image_paths=ingredient_image_paths,
+            model=job.get("model", "veo-3.1-fast-lp"),
+            aspect_ratio=job.get("aspect_ratio", "16:9"),
+            free_mode=True,
+        )
+
+    logger.info(
+        "ingredients-to-video DONE | files=%d media_id=%s",
         len(result.get("output_files", [])),
         result.get("media_id"),
     )
@@ -285,6 +333,7 @@ async def handle_camera(job: dict) -> dict:
 HANDLER_MAP: dict[str, Callable[[dict], Coroutine]] = {
     "text-to-video": handle_text_to_video,
     "frames-to-video": handle_frames_to_video,
+    "ingredients-to-video": handle_ingredients_to_video,
     "text-to-image": handle_text_to_image,
     "extend-video": handle_extend,
     "insert-object": handle_insert,

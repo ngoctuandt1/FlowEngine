@@ -74,3 +74,28 @@ async def test_dispatch_text_to_image_routes_to_handler(monkeypatch):
     assert result["profile"] == "profile-b"
     assert profile_mgr.busy == [("profile-b", "job-2")]
     assert profile_mgr.available == ["profile-b"]
+
+
+async def test_dispatch_ingredients_to_video_routes_to_handler(monkeypatch):
+    from worker import dispatcher
+
+    handler = AsyncMock(return_value={"output_files": ["out.mp4"], "media_id": "mid"})
+    monkeypatch.setitem(dispatcher.HANDLER_MAP, "ingredients-to-video", handler)
+
+    profile_mgr = _ProfileManagerStub()
+    project_lock = _ProjectLockStub()
+    job = {
+        "id": "job-3",
+        "type": "ingredients-to-video",
+        "profile": "profile-c",
+        "job_level": 1,
+        "ingredient_image_paths": ["uploads/a.png", "uploads/b.png"],
+    }
+
+    result = await dispatcher.dispatch_job(job, profile_mgr, project_lock)
+
+    handler.assert_awaited_once_with(job)
+    assert result["status"] == "completed"
+    assert result["profile"] == "profile-c"
+    assert profile_mgr.busy == [("profile-c", "job-3")]
+    assert profile_mgr.available == ["profile-c"]

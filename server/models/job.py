@@ -10,6 +10,7 @@ import uuid
 class JobType(str, Enum):
     TEXT_TO_VIDEO = "text-to-video"
     FRAMES_TO_VIDEO = "frames-to-video"
+    INGREDIENTS_TO_VIDEO = "ingredients-to-video"
     TEXT_TO_IMAGE = "text-to-image"
     EXTEND_VIDEO = "extend-video"
     INSERT_OBJECT = "insert-object"
@@ -59,6 +60,7 @@ class JobCreate(BaseModel):
     direction: Optional[str] = None  # Camera preset name
     start_image_path: Optional[str] = None
     end_image_path: Optional[str] = None
+    ingredient_image_paths: list[str] = Field(default_factory=list)
     ref_image_path: Optional[str] = None
 
 
@@ -93,6 +95,7 @@ class Job(BaseModel):
     direction: Optional[str] = None
     start_image_path: Optional[str] = None
     end_image_path: Optional[str] = None
+    ingredient_image_paths: list[str] = Field(default_factory=list)
     ref_image_path: Optional[str] = None
 
     # Output

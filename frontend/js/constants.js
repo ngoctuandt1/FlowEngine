@@ -13,6 +13,7 @@ const CONST = (() => {
   const JOB_TYPES = [
     { id: 'text-to-video', label: 'Text to Video', icon: 'videocam', shortLabel: 'T2V' },
     { id: 'frames-to-video', label: 'Frames to Video', icon: 'image', shortLabel: 'Frames' },
+    { id: 'ingredients-to-video', label: 'Ingredients to Video', icon: 'photo_library', shortLabel: 'Refs' },
     { id: 'text-to-image', label: 'Text to Image', icon: 'photo', shortLabel: 'T2I' },
     { id: 'extend-video', label: 'Extend', icon: 'add_to_queue', shortLabel: 'Extend' },
     { id: 'insert-object', label: 'Insert', icon: 'add_box', shortLabel: 'Insert' },
@@ -65,16 +66,17 @@ const CONST = (() => {
 
   // Which types accept a prompt. `remove-object` is bbox-only,
   // `camera-move` is direction-only.
-  const TYPES_WITH_PROMPT = new Set(['text-to-video', 'frames-to-video', 'text-to-image', 'extend-video', 'insert-object']);
+  const TYPES_WITH_PROMPT = new Set(['text-to-video', 'frames-to-video', 'ingredients-to-video', 'text-to-image', 'extend-video', 'insert-object']);
 
   // Types that need a bbox (normalized 0-1 per server/models/job.py BBox).
   const TYPES_WITH_BBOX = new Set(['insert-object', 'remove-object']);
 
   // Types where model / aspect matter at creation time. Aspect is
   // inherited from the L1 project for L2+ ops, so only t2v asks for it.
-  const TYPES_WITH_MODEL = new Set(['text-to-video', 'frames-to-video', 'text-to-image', 'extend-video', 'insert-object']);
-  const TYPES_WITH_ASPECT = new Set(['text-to-video', 'frames-to-video', 'text-to-image']);
+  const TYPES_WITH_MODEL = new Set(['text-to-video', 'frames-to-video', 'ingredients-to-video', 'text-to-image', 'extend-video', 'insert-object']);
+  const TYPES_WITH_ASPECT = new Set(['text-to-video', 'frames-to-video', 'ingredients-to-video', 'text-to-image']);
   const TYPES_WITH_IMAGES = new Set(['frames-to-video', 'text-to-image']);
+  const TYPES_WITH_INGREDIENTS = new Set(['ingredients-to-video']);
 
   return {
     JOB_TYPES, MODELS, DEFAULT_MODEL,
@@ -82,7 +84,7 @@ const CONST = (() => {
     ASPECT_RATIOS, ASPECT_RATIOS_IMAGE, DEFAULT_ASPECT,
     CAMERA_PRESETS,
     TYPES_WITH_PROMPT, TYPES_WITH_BBOX,
-    TYPES_WITH_MODEL, TYPES_WITH_ASPECT, TYPES_WITH_IMAGES,
+    TYPES_WITH_MODEL, TYPES_WITH_ASPECT, TYPES_WITH_IMAGES, TYPES_WITH_INGREDIENTS,
     typeMeta(id) { return JOB_TYPES.find((t) => t.id === id); },
   };
 })();

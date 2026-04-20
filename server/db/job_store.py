@@ -33,6 +33,12 @@ def _row_to_job(row) -> Job:
         d["output_files"] = []
     del d["output_files_json"]
 
+    if d.get("ingredient_image_paths_json"):
+        d["ingredient_image_paths"] = json.loads(d["ingredient_image_paths_json"])
+    else:
+        d["ingredient_image_paths"] = []
+    del d["ingredient_image_paths_json"]
+
     return Job(**d)
 
 
@@ -53,7 +59,7 @@ async def create_job(job: Job) -> Job:
                 id, type, status, job_level, parent_job_id, chain_id,
                 profile, project_url, media_id, edit_url,
                 prompt, model, aspect_ratio, bbox_json, direction,
-                start_image_path, end_image_path, ref_image_path,
+                start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
                 output_files_json, generation_id,
                 worker_id, claimed_at, completed_at, error,
                 created_at, updated_at
@@ -61,7 +67,7 @@ async def create_job(job: Job) -> Job:
                 ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
-                ?, ?, ?,
+                ?, ?, ?, ?,
                 ?, ?,
                 ?, ?, ?, ?,
                 ?, ?
@@ -85,6 +91,7 @@ async def create_job(job: Job) -> Job:
                 job.direction,
                 job.start_image_path,
                 job.end_image_path,
+                json.dumps(job.ingredient_image_paths) if job.ingredient_image_paths else None,
                 job.ref_image_path,
                 json.dumps(job.output_files) if job.output_files else None,
                 job.generation_id,
