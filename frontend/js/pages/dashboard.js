@@ -90,8 +90,7 @@
         ([label, val]) => `
         <div class="detail-row">
           <span class="detail-label">${label}</span>
-          <span class="detail-value">${
-            label === 'Status' ? val : App.escapeHtml(String(val))
+          <span class="detail-value">${label === 'Status' ? val : App.escapeHtml(String(val))
           }</span>
         </div>
       `
@@ -105,11 +104,31 @@
         .map((p) => {
           const base = String(p).split(/[\\/]/).pop();
           const url = '/downloads/' + encodeURIComponent(base);
+          const ext = base.split('.').pop().toLowerCase();
+          const isVideo = ['mp4', 'webm', 'mov'].includes(ext);
+          const isImage = ['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext);
+
+          let previewHtml = '';
+          if (isVideo) {
+            previewHtml = `<video src="${url}" controls autoplay loop muted style="width: 100%; border-radius: 12px; margin-bottom: 16px; background: #0f172a; aspect-ratio: 16/9; object-fit: contain; box-shadow: 0 8px 24px rgba(0,0,0,0.12);"></video>`;
+          } else if (isImage) {
+            previewHtml = `<img src="${url}" style="width: 100%; border-radius: 12px; margin-bottom: 16px; background: #0f172a; aspect-ratio: 16/9; object-fit: contain; box-shadow: 0 8px 24px rgba(0,0,0,0.12);">`;
+          }
+
           return `
-            <a class="btn btn-sm btn-outline" href="${url}" download="${App.escapeHtml(base)}" target="_blank" rel="noopener">
-              <span class="material-icons" style="font-size:16px">download</span>
-              ${App.escapeHtml(base)}
-            </a>
+            <div style="width: 100%; margin-bottom: 24px; padding: 16px; background: #f8fafc; border-radius: 16px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px rgba(0,0,0,0.02);">
+              ${previewHtml}
+              <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <a class="btn btn-sm btn-primary" href="${url}" target="_blank" rel="noopener">
+                  <span class="material-icons" style="font-size:16px">open_in_new</span>
+                  Open
+                </a>
+                <a class="btn btn-sm btn-secondary" href="${url}" download="${App.escapeHtml(base)}" target="_blank" rel="noopener">
+                  <span class="material-icons" style="font-size:16px">download</span>
+                  Download
+                </a>
+              </div>
+            </div>
           `;
         })
         .join('');
@@ -125,8 +144,8 @@
       <div class="detail-list">${rows}${downloadsHtml}</div>
       <div style="margin-top: 20px; display: flex; gap: 8px;">
         <button class="btn btn-danger btn-sm" onclick="DashboardPage._deleteJob('${App.escapeHtml(
-          job.id || job.job_id || ''
-        )}')">
+      job.id || job.job_id || ''
+    )}')">
           <span class="material-icons" style="font-size:16px">delete</span> Delete
         </button>
       </div>
