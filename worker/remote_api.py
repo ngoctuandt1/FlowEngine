@@ -67,6 +67,21 @@ class RemoteAPI:
         resp.raise_for_status()
         return resp.json()
 
+    async def claim_batch(
+        self, profiles: list[str], max_size: int = 5
+    ) -> list[dict]:
+        """POST /api/worker/claim-batch -- claim a batch of jobs."""
+        payload = {
+            "worker_id": self.worker_id,
+            "profiles": profiles,
+            "max_size": max_size,
+        }
+        resp = await self._request("POST", "/api/worker/claim-batch", json=payload)
+        if resp is None or resp.status_code == 204:
+            return []
+        resp.raise_for_status()
+        return resp.json()["jobs"]
+
     async def update_job(self, job_id: str, update: dict) -> dict:
         """PUT /api/worker/jobs/{job_id} -- push result back to server."""
         resp = await self._request(

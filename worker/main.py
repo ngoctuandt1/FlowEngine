@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 from dotenv import load_dotenv
 
-from worker.dispatcher import dispatch_job
+from worker.dispatcher import dispatch_batch, dispatch_job
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
 from worker.remote_api import RemoteAPI
@@ -100,15 +100,38 @@ async def claim_loop(
         available = profile_mgr.get_available()
         if not available:
             logger.debug("No profiles available, sleeping %ds", POLL_INTERVAL_SEC)
-            try:
-                await asyncio.wait_for(
-                    _shutdown.wait(), timeout=POLL_INTERVAL_SEC
-                )
-            except asyncio.TimeoutError:
-                pass
+            await _sleep_or_shutdown()
             continue
 
         # --- Claim a job ---
+        if _batch_mode_enabled():
+            try:
+                jobs = await api.claim_batch(available, max_size=_batch_size())
+            except Exception:
+                logger.warning("Claim batch request failed", exc_info=True)
+                jobs = []
+
+            if not jobs:
+                await _sleep_or_shutdown()
+                continue
+
+            if len(jobs) == 1 and jobs[0].get("job_level", 1) == 1:
+                await _dispatch_and_report_single(
+                    api, jobs[0], profile_mgr, project_lock
+                )
+                continue
+
+            logger.info(
+                "Claimed batch of %d jobs on profile=%s project=%s",
+                len(jobs),
+                jobs[0].get("profile", "?"),
+                jobs[0].get("project_url", "")[:80],
+            )
+            results = await dispatch_batch(jobs, profile_mgr, project_lock)
+            for job, result in zip(jobs, results, strict=True):
+                await _update_job_result(api, job.get("id", "?"), result)
+            continue
+
         try:
             job = await api.claim_job(available)
         except Exception:
@@ -116,34 +139,10 @@ async def claim_loop(
             job = None
 
         if job is None:
-            try:
-                await asyncio.wait_for(
-                    _shutdown.wait(), timeout=POLL_INTERVAL_SEC
-                )
-            except asyncio.TimeoutError:
-                pass
+            await _sleep_or_shutdown()
             continue
 
-        job_id = job.get("id", "?")
-        job_type = job.get("type", "?")
-        job_profile = job.get("profile", "?")
-        logger.info(
-            "Claimed job %s [%s] profile=%s", job_id, job_type, job_profile,
-        )
-
-        # --- Dispatch ---
-        result = await dispatch_job(job, profile_mgr, project_lock)
-
-        # --- Report result ---
-        try:
-            await api.update_job(job_id, result)
-            logger.info(
-                "Job %s result sent -> %s", job_id, result.get("status"),
-            )
-        except Exception:
-            logger.error(
-                "Failed to report result for job %s", job_id, exc_info=True,
-            )
+        await _dispatch_and_report_single(api, job, profile_mgr, project_lock)
 
 
 async def run() -> None:
@@ -184,6 +183,50 @@ def main() -> None:
         asyncio.run(run())
     except KeyboardInterrupt:
         pass
+
+
+async def _sleep_or_shutdown() -> None:
+    try:
+        await asyncio.wait_for(_shutdown.wait(), timeout=POLL_INTERVAL_SEC)
+    except asyncio.TimeoutError:
+        pass
+
+
+def _batch_mode_enabled() -> bool:
+    return os.getenv("FLOW_BATCH_MODE", "false").strip().lower() == "true"
+
+
+def _batch_size() -> int:
+    return int(os.getenv("FLOW_BATCH_SIZE", "3"))
+
+
+async def _dispatch_and_report_single(
+    api: RemoteAPI,
+    job: dict,
+    profile_mgr: ProfileManager,
+    project_lock: ProjectLock,
+) -> None:
+    job_id = job.get("id", "?")
+    job_type = job.get("type", "?")
+    job_profile = job.get("profile", "?")
+    logger.info(
+        "Claimed job %s [%s] profile=%s", job_id, job_type, job_profile,
+    )
+
+    result = await dispatch_job(job, profile_mgr, project_lock)
+    await _update_job_result(api, job_id, result)
+
+
+async def _update_job_result(api: RemoteAPI, job_id: str, result: dict) -> None:
+    try:
+        await api.update_job(job_id, result)
+        logger.info(
+            "Job %s result sent -> %s", job_id, result.get("status"),
+        )
+    except Exception:
+        logger.error(
+            "Failed to report result for job %s", job_id, exc_info=True,
+        )
 
 
 if __name__ == "__main__":

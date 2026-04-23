@@ -6,9 +6,10 @@ import os
 from pathlib import Path
 from typing import Callable, Coroutine
 
-from flow.retry import with_retry, is_transient
+from flow.retry import with_retry
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
+from worker.project_session import ProjectSession
 
 logger = logging.getLogger(__name__)
 
@@ -444,3 +445,78 @@ async def dispatch_job(
             project_lock.release(project_url)
         if profile:
             profile_manager.mark_available(profile)
+
+
+async def dispatch_batch(
+    jobs: list[dict],
+    profile_manager: ProfileManager,
+    project_lock: ProjectLock,
+) -> list[dict]:
+    """Dispatch a claimed L2 batch on one project/profile."""
+    if not jobs:
+        return []
+
+    profile = jobs[0].get("profile", "")
+    project_url = jobs[0].get("project_url") or ""
+    batch_job_id = jobs[0]["id"]
+
+    if profile:
+        profile_manager.mark_busy(profile, batch_job_id)
+
+    if project_url and not project_lock.acquire(project_url, batch_job_id):
+        result = {
+            "status": "failed",
+            "error": f"Could not acquire project lock for {project_url}",
+            "project_url": project_url,
+        }
+        if profile:
+            result["profile"] = profile
+            profile_manager.mark_available(profile)
+        return [result.copy() for _ in jobs]
+
+    try:
+        results_by_job_id: dict[str, dict] = {}
+        try:
+            async with ProjectSession(profile, project_url) as session:
+                submitted = await session.submit_many(jobs)
+
+                for job in jobs:
+                    submit_exc = session.submit_errors.get(job["id"])
+                    if submit_exc is not None:
+                        results_by_job_id[job["id"]] = _failed_batch_result(
+                            job, submit_exc
+                        )
+
+                downloaded = await session.download_all(submitted)
+                for job, result in downloaded:
+                    result["status"] = "completed"
+                    result.setdefault("profile", profile)
+                    results_by_job_id[job["id"]] = result
+
+                for job, _ in submitted:
+                    download_exc = session.download_errors.get(job["id"])
+                    if download_exc is not None:
+                        results_by_job_id[job["id"]] = _failed_batch_result(
+                            job, download_exc
+                        )
+        except Exception as exc:
+            return [_failed_batch_result(job, exc) for job in jobs]
+
+        return [results_by_job_id[job["id"]] for job in jobs]
+    finally:
+        if project_url:
+            project_lock.release(project_url)
+        if profile:
+            profile_manager.mark_available(profile)
+
+
+def _failed_batch_result(job: dict, exc: Exception) -> dict:
+    result = {
+        "status": "failed",
+        "error": str(exc),
+        "project_url": job.get("project_url") or "",
+    }
+    profile = job.get("profile", "")
+    if profile:
+        result["profile"] = profile
+    return result
