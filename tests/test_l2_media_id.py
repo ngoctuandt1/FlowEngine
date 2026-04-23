@@ -119,18 +119,22 @@ async def test_extract_settled_route_media_id_falls_back_after_polling(_no_sleep
     assert _no_sleep.await_count == 12
 
 
-async def test_finalize_operation_keeps_route_slug_for_chain_and_redirect_for_download(monkeypatch):
+async def test_finalize_operation_prefers_network_media_id_for_chain_and_download(monkeypatch):
     page = StickyURLPage(_edit(NEW_SLUG))
     client = _client(page)
     download = AsyncMock(return_value=["out.mp4"])
-    monkeypatch.setattr(_base, "wait_for_completion", AsyncMock(return_value={"done": True, "media_ids": ["redirect-name"]}))
+    monkeypatch.setattr(
+        _base,
+        "wait_for_completion",
+        AsyncMock(return_value={"done": True, "media_ids": [NEW_SLUG]}),
+    )
     monkeypatch.setattr(_base, "download_video", download)
 
     result = await _base.finalize_operation(client, {"media_id": OLD_SLUG}, "insert-object", PROJECT_ID, "", "insert")
 
     assert result["media_id"] == NEW_SLUG
     assert result["edit_url"] == _edit(NEW_SLUG)
-    assert download.await_args.kwargs["media_ids"] == ["redirect-name"]
+    assert download.await_args.kwargs["media_ids"] == [NEW_SLUG]
 
 
 async def test_finalize_operation_edit_url_fallback_uses_settled_current_url(monkeypatch):
@@ -144,14 +148,23 @@ async def test_finalize_operation_edit_url_fallback_uses_settled_current_url(mon
     result = await _base.finalize_operation(client, {"media_id": OLD_SLUG}, "insert-object", "", "", "insert")
 
     assert result["media_id"] == OLD_SLUG
-    assert result["edit_url"] == second_url
+    assert result["edit_url"] == first_url
 
 
-async def test_finalize_operation_serial_ops_keep_distinct_route_media_ids(monkeypatch):
+async def test_finalize_operation_serial_ops_keep_distinct_network_media_ids(monkeypatch):
     page = MagicMock()
     page.url = _edit(NEW_SLUG)
     client = _client(page)
-    monkeypatch.setattr(_base, "wait_for_completion", AsyncMock(return_value={"done": True, "media_ids": ["shared-name"]}))
+    monkeypatch.setattr(
+        _base,
+        "wait_for_completion",
+        AsyncMock(
+            side_effect=[
+                {"done": True, "media_ids": [NEW_SLUG]},
+                {"done": True, "media_ids": [ALT_SLUG]},
+            ]
+        ),
+    )
     monkeypatch.setattr(_base, "download_video", AsyncMock(side_effect=[["insert.mp4"], ["remove.mp4"]]))
 
     insert = await _base.finalize_operation(client, {"media_id": OLD_SLUG}, "insert-object", PROJECT_ID, "", "insert")
