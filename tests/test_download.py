@@ -22,6 +22,10 @@ passing each URL to `media_id_from_url`.
 import importlib
 import inspect
 import os
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 def test_upscale_poll_defaults_meet_minimum():
@@ -113,3 +117,118 @@ def test_upscale_env_overrides_read_at_import():
         del os.environ["FLOW_UPSCALE_MAX_RETRIES"]
         import flow.download as dl
         importlib.reload(dl)  # restore defaults for subsequent tests
+
+
+@pytest.fixture
+def video_client():
+    page = MagicMock()
+    client = SimpleNamespace(page=page, _media_id_events=[], _video_urls=[])
+    return client, page
+
+
+@pytest.mark.asyncio
+async def test_download_video_1080p_iterates_all_media_ids_ui_success(
+    monkeypatch, tmp_path, video_client
+):
+    from flow import download, upscale
+
+    client, _ = video_client
+    media_ids = ["mid-1", "mid-2"]
+    expected = [str(tmp_path / f"{mid}_1080p.mp4") for mid in media_ids]
+
+    monkeypatch.setattr(download, "DOWNLOAD_DIR", str(tmp_path))
+    upscale_mock = AsyncMock(side_effect=expected)
+    api_mock = AsyncMock()
+    ui_mock = AsyncMock()
+    monkeypatch.setattr(upscale, "upscale_and_download_1080p", upscale_mock)
+    monkeypatch.setattr(download, "_download_via_api", api_mock)
+    monkeypatch.setattr(download, "_download_via_ui", ui_mock)
+
+    result = await download.download_video(
+        client,
+        media_ids=media_ids,
+        prefix="vid",
+        quality="1080p",
+        media_kind="video",
+    )
+
+    assert result == expected
+    assert [call.kwargs["media_id"] for call in upscale_mock.await_args_list] == media_ids
+    api_mock.assert_not_awaited()
+    ui_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_download_video_1080p_falls_back_to_api_per_failed_mid(
+    monkeypatch, tmp_path, video_client, caplog
+):
+    from flow import download, upscale
+
+    client, _ = video_client
+    media_ids = ["mid-1", "mid-2"]
+    monkeypatch.setattr(download, "DOWNLOAD_DIR", str(tmp_path))
+    caplog.set_level("WARNING", logger="flow.download")
+
+    async def upscale_side_effect(*args, **kwargs):
+        if kwargs["media_id"] == "mid-2":
+            return None
+        return str(tmp_path / "mid-1_1080p.mp4")
+
+    upscale_mock = AsyncMock(side_effect=upscale_side_effect)
+    api_mock = AsyncMock(return_value=str(tmp_path / "mid-2_720p.mp4"))
+    ui_mock = AsyncMock()
+    monkeypatch.setattr(upscale, "upscale_and_download_1080p", upscale_mock)
+    monkeypatch.setattr(download, "_download_via_api", api_mock)
+    monkeypatch.setattr(download, "_download_via_ui", ui_mock)
+
+    result = await download.download_video(
+        client,
+        media_ids=media_ids,
+        prefix="vid",
+        quality="1080p",
+        media_kind="video",
+    )
+
+    assert result == [
+        str(tmp_path / "mid-1_1080p.mp4"),
+        str(tmp_path / "mid-2_720p.mp4"),
+    ]
+    assert [call.kwargs["media_id"] for call in upscale_mock.await_args_list] == media_ids
+    api_mock.assert_awaited_once()
+    assert api_mock.await_args.args[1] == "mid-2"
+    assert api_mock.await_args.args[3] == "720p"
+    ui_mock.assert_not_awaited()
+    assert caplog.text.count(
+        "Video quality downgraded from 1080p to 720p for mid=mid-2"
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_download_video_1080p_single_gen_still_returns_one_path(
+    monkeypatch, tmp_path, video_client
+):
+    from flow import download, upscale
+
+    client, _ = video_client
+    monkeypatch.setattr(download, "DOWNLOAD_DIR", str(tmp_path))
+
+    upscale_mock = AsyncMock(return_value=str(tmp_path / "mid-1_1080p.mp4"))
+    api_mock = AsyncMock()
+    ui_mock = AsyncMock()
+    monkeypatch.setattr(upscale, "upscale_and_download_1080p", upscale_mock)
+    monkeypatch.setattr(download, "_download_via_api", api_mock)
+    monkeypatch.setattr(download, "_download_via_ui", ui_mock)
+
+    result = await download.download_video(
+        client,
+        media_ids=["mid-1"],
+        prefix="vid",
+        quality="1080p",
+        media_kind="video",
+    )
+
+    assert result == [str(tmp_path / "mid-1_1080p.mp4")]
+    upscale_mock.assert_awaited_once()
+    assert upscale_mock.await_args.kwargs["media_id"] == "mid-1"
+    api_mock.assert_not_awaited()
+    ui_mock.assert_not_awaited()
