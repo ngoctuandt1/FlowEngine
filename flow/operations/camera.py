@@ -45,7 +45,20 @@ async def camera_move(
     job: dict,
     direction: str = "Dolly in",
 ) -> dict:
-    """Execute camera-move operation.
+    """Execute full camera-move operation (submit + download).
+
+    Back-compat wrapper around ``submit_camera_move`` + ``download_camera_move``.
+    """
+    ctx = await submit_camera_move(client, job, direction=direction)
+    return await download_camera_move(client, job, ctx)
+
+
+async def submit_camera_move(
+    client,
+    job: dict,
+    direction: str = "Dolly in",
+) -> dict:
+    """Navigate → select camera preset → submit. Does NOT wait for completion.
 
     Steps:
     1. Navigate to edit URL
@@ -54,14 +67,8 @@ async def camera_move(
     4. Select the correct tab (Camera motion vs Camera position)
     5. Click the preset thumbnail
     6. Submit
-    7. Wait + Download + Return metadata
 
-    Args:
-        client: FlowClient instance
-        job: Job dict with edit_url/project_url/media_id
-        direction: Camera preset name (e.g. "Dolly in", "Center", "Orbit left")
-
-    Returns: Result dict
+    Returns ``{project_id, locale}`` for ``download_camera_move``.
     """
     page = client.page
 
@@ -119,12 +126,16 @@ async def camera_move(
     if not confirmed:
         raise RuntimeError("Camera submit not confirmed")
 
-    # Step 7: Wait + Download + Return
+    return {"project_id": project_id, "locale": locale}
+
+
+async def download_camera_move(client, job: dict, submit_ctx: dict) -> dict:
+    """Wait for the just-submitted camera-move generation and download the output."""
     return await finalize_operation(
         client, job,
         job_type="camera-move",
-        project_id=project_id,
-        locale=locale,
+        project_id=submit_ctx["project_id"],
+        locale=submit_ctx["locale"],
         download_prefix="cam",
     )
 

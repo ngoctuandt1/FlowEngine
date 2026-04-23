@@ -31,7 +31,20 @@ async def remove_object(
     job: dict,
     bbox: dict | None = None,
 ) -> dict:
-    """Execute remove-object operation.
+    """Execute full remove-object operation (submit + download).
+
+    Back-compat wrapper around ``submit_remove_object`` + ``download_remove_object``.
+    """
+    ctx = await submit_remove_object(client, job, bbox=bbox)
+    return await download_remove_object(client, job, ctx)
+
+
+async def submit_remove_object(
+    client,
+    job: dict,
+    bbox: dict | None = None,
+) -> dict:
+    """Navigate → open Remove → draw bbox → submit. Does NOT wait for completion.
 
     Steps:
     1. Navigate to edit URL
@@ -39,14 +52,8 @@ async def remove_object(
     3. Click "Remove" button
     4. Draw bbox on video canvas (REQUIRED — selects what to remove)
     5. Submit and confirm (no prompt needed)
-    6. Wait + Download + Return metadata
 
-    Args:
-        client: FlowClient instance
-        job: Job dict with edit_url/project_url/media_id
-        bbox: {x, y, w, h} normalized 0-1 — REQUIRED for remove
-
-    Returns: Result dict
+    Returns ``{project_id, locale}`` for ``download_remove_object``.
     """
     page = client.page
 
@@ -95,11 +102,15 @@ async def remove_object(
     if not confirmed:
         raise RuntimeError("Remove submit not confirmed")
 
-    # Step 6: Wait + Download + Return
+    return {"project_id": project_id, "locale": locale}
+
+
+async def download_remove_object(client, job: dict, submit_ctx: dict) -> dict:
+    """Wait for the just-submitted remove-object generation and download the output."""
     return await finalize_operation(
         client, job,
         job_type="remove-object",
-        project_id=project_id,
-        locale=locale,
+        project_id=submit_ctx["project_id"],
+        locale=submit_ctx["locale"],
         download_prefix="rm",
     )

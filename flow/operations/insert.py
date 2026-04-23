@@ -32,7 +32,21 @@ async def insert_object(
     prompt: str = "",
     bbox: dict | None = None,
 ) -> dict:
-    """Execute insert-object operation.
+    """Execute full insert-object operation (submit + download).
+
+    Back-compat wrapper around ``submit_insert_object`` + ``download_insert_object``.
+    """
+    ctx = await submit_insert_object(client, job, prompt=prompt, bbox=bbox)
+    return await download_insert_object(client, job, ctx)
+
+
+async def submit_insert_object(
+    client,
+    job: dict,
+    prompt: str = "",
+    bbox: dict | None = None,
+) -> dict:
+    """Navigate → open Insert → draw bbox → submit. Does NOT wait for completion.
 
     Steps:
     1. Navigate to edit URL
@@ -41,15 +55,8 @@ async def insert_object(
     4. Draw bbox on video canvas (if provided)
     5. Type description prompt (optional)
     6. Submit and confirm
-    7. Wait + Download + Return metadata
 
-    Args:
-        client: FlowClient instance
-        job: Job dict with edit_url/project_url/media_id
-        prompt: Object description
-        bbox: {x, y, w, h} normalized 0-1 (optional)
-
-    Returns: Result dict
+    Returns ``{project_id, locale}`` for ``download_insert_object``.
     """
     page = client.page
 
@@ -99,12 +106,16 @@ async def insert_object(
     if not confirmed:
         raise RuntimeError("Insert submit not confirmed")
 
-    # Step 7: Wait + Download + Return
+    return {"project_id": project_id, "locale": locale}
+
+
+async def download_insert_object(client, job: dict, submit_ctx: dict) -> dict:
+    """Wait for the just-submitted insert-object generation and download the output."""
     return await finalize_operation(
         client, job,
         job_type="insert-object",
-        project_id=project_id,
-        locale=locale,
+        project_id=submit_ctx["project_id"],
+        locale=submit_ctx["locale"],
         download_prefix="ins",
     )
 

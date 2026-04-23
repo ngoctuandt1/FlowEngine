@@ -39,25 +39,38 @@ async def extend_video(
     model: str = DEFAULT_MODEL,
     free_mode: bool = True,
 ) -> dict:
-    """Execute extend-video operation.
+    """Execute full extend-video operation (submit + download).
+
+    Back-compat wrapper around ``submit_extend_video`` + ``download_extend_video``.
+    Preferred for single-session runs (current worker path). Batch-mode
+    dispatchers should call the two halves separately so multiple submits can
+    be issued on one FlowClient before any download polls.
+    """
+    ctx = await submit_extend_video(
+        client, job, prompt=prompt, model=model, free_mode=free_mode,
+    )
+    return await download_extend_video(client, job, ctx)
+
+
+async def submit_extend_video(
+    client,
+    job: dict,
+    prompt: str = "",
+    model: str = DEFAULT_MODEL,
+    free_mode: bool = True,
+) -> dict:
+    """Navigate → open Extend panel → submit. Does NOT wait for completion.
 
     Steps:
     1. Navigate to edit URL
     2. Wait for video to load
-    3. Click "Extend" button
+    3. Click "Extend" button (or skip if panel already open)
     4. Type extend prompt (optional -- "What happens next?")
     5. Select LP model
-    6. Submit and confirm
-    7. Wait + Download + Return metadata
+    6. Submit and confirm generation started
 
-    Args:
-        client: FlowClient instance
-        job: Job dict with edit_url/project_url/media_id
-        prompt: Extension prompt (optional)
-        model: Model to use
-        free_mode: Use LP (0 credits) model
-
-    Returns: Result dict with project_url, media_id, edit_url, output_files, etc.
+    Returns ``{project_id, locale}`` — the context needed by
+    ``download_extend_video`` to poll + download the result.
     """
     page = client.page
 
@@ -170,12 +183,25 @@ async def extend_video(
             pass
         raise RuntimeError("Extend submit not confirmed — generation did not start")
 
-    # Step 7: Wait + Download + Return
+    return {"project_id": project_id, "locale": locale}
+
+
+async def download_extend_video(client, job: dict, submit_ctx: dict) -> dict:
+    """Wait for the just-submitted extend generation and download the output.
+
+    Pairs with ``submit_extend_video``. Separated so a batch dispatcher can
+    issue N submits on one FlowClient, then poll + download each once they
+    complete server-side (Flow parallelizes generation per project).
+
+    Args:
+      submit_ctx: return value of ``submit_extend_video`` — carries
+        ``project_id`` and ``locale`` captured during navigation.
+    """
     return await finalize_operation(
         client, job,
         job_type="extend-video",
-        project_id=project_id,
-        locale=locale,
+        project_id=submit_ctx["project_id"],
+        locale=submit_ctx["locale"],
         download_prefix="ext",
     )
 
