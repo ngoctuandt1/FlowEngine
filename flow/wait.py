@@ -40,6 +40,7 @@ async def wait_for_completion(
     client,
     job_type: str = "text-to-video",
     timeout: int | None = None,
+    initial_media_count: int | None = None,
 ) -> dict:
     """Wait for generation to complete.
 
@@ -74,7 +75,12 @@ async def wait_for_completion(
     await _inject_observer(page)
 
     initial_video_count = len(getattr(client, "_video_urls", []))
-    initial_media_count = len(getattr(client, "_media_id_events", []))
+    # Batch mode passes an explicit cursor from submit-time so each sibling
+    # only sees mids that landed after its own submit — otherwise siblings
+    # on one FlowClient would all resolve to whichever mid came first (see
+    # issue #38). Single-op callers leave it None → snapshot at entry.
+    if initial_media_count is None:
+        initial_media_count = len(getattr(client, "_media_id_events", []))
     initial_url = page.url
     start = time.monotonic()
     last_progress = 0
@@ -128,7 +134,7 @@ async def wait_for_completion(
             return _result(
                 True,
                 video_urls=list(new_videos),
-                media_ids=_collect_media_ids(client),
+                media_ids=_collect_media_ids(client, start_index=initial_media_count),
             )
 
         # --- Method 3: DOM observer ---
@@ -161,7 +167,7 @@ async def wait_for_completion(
             await asyncio.sleep(2)  # let media settle
             return _result(
                 True,
-                media_ids=_collect_media_ids(client),
+                media_ids=_collect_media_ids(client, start_index=initial_media_count),
                 video_urls=video_urls[initial_video_count:],
             )
 
@@ -179,7 +185,7 @@ async def wait_for_completion(
                 await asyncio.sleep(3)
                 return _result(
                     True,
-                    media_ids=_collect_media_ids(client),
+                    media_ids=_collect_media_ids(client, start_index=initial_media_count),
                 )
 
         # --- No-signal watchdog ---

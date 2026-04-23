@@ -117,7 +117,10 @@ async def submit_camera_move(
 
     # Step 6: Submit
     before_cards = await count_visible_cards(page)
-    client.clear_captures()
+    # Snapshot media-event cursor instead of clearing the buffer: in batch
+    # mode (one FlowClient, many siblings) clear_captures would wipe the
+    # previous sibling's mid before its download reads it (see issue #38).
+    capture_start = client.capture_cursor()
 
     confirmed = await submit_with_confirmation(
         client,
@@ -126,7 +129,11 @@ async def submit_camera_move(
     if not confirmed:
         raise RuntimeError("Camera submit not confirmed")
 
-    return {"project_id": project_id, "locale": locale}
+    return {
+        "project_id": project_id,
+        "locale": locale,
+        "capture_start": capture_start,
+    }
 
 
 async def download_camera_move(client, job: dict, submit_ctx: dict) -> dict:
@@ -137,6 +144,7 @@ async def download_camera_move(client, job: dict, submit_ctx: dict) -> dict:
         project_id=submit_ctx["project_id"],
         locale=submit_ctx["locale"],
         download_prefix="cam",
+        capture_start=submit_ctx.get("capture_start"),
     )
 
 

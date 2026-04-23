@@ -562,16 +562,24 @@ async def finalize_operation(
     project_id: str,
     locale: str,
     download_prefix: str = "op",
+    capture_start: int | None = None,
 ) -> dict:
     """Common post-submit flow: wait -> download -> extract metadata -> return result.
 
     This is called after submit_with_confirmation() succeeds.
+
+    ``capture_start`` is the FlowClient media-event cursor snapshotted at
+    submit time. In batch mode (multiple L2 siblings on one FlowClient),
+    each sibling passes its own cursor so ``wait_for_completion`` filters
+    out mids from earlier siblings. Single-op callers pass None.
     """
     page = client.page
 
     # Wait for completion
     logger.info("Waiting for %s completion...", job_type)
-    result = await wait_for_completion(client, job_type=job_type)
+    result = await wait_for_completion(
+        client, job_type=job_type, initial_media_count=capture_start
+    )
 
     if not result.get("done"):
         error = result.get("error", "unknown")

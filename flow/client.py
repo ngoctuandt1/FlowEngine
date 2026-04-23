@@ -530,6 +530,18 @@ class FlowClient:
         self._media_id_events.clear()
         self._gen_id = None
 
+    def capture_cursor(self) -> int:
+        """Snapshot current position of ``_media_id_events``.
+
+        Batch-mode ops (multiple L2 siblings on one FlowClient) must not
+        call ``clear_captures()`` between submits — it would wipe the
+        previous sibling's mid before its download reads it. Instead
+        they snapshot the cursor before their submit click, then
+        ``wait_for_completion`` filters events to those that landed
+        after the cursor. See issue #38.
+        """
+        return len(self._media_id_events)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

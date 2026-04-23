@@ -96,7 +96,8 @@ async def submit_insert_object(
 
     # Step 6: Submit
     before_cards = await count_visible_cards(page)
-    client.clear_captures()
+    # Snapshot media-event cursor instead of clearing — see issue #38.
+    capture_start = client.capture_cursor()
 
     confirmed = await submit_with_confirmation(
         client,
@@ -106,7 +107,11 @@ async def submit_insert_object(
     if not confirmed:
         raise RuntimeError("Insert submit not confirmed")
 
-    return {"project_id": project_id, "locale": locale}
+    return {
+        "project_id": project_id,
+        "locale": locale,
+        "capture_start": capture_start,
+    }
 
 
 async def download_insert_object(client, job: dict, submit_ctx: dict) -> dict:
@@ -117,6 +122,7 @@ async def download_insert_object(client, job: dict, submit_ctx: dict) -> dict:
         project_id=submit_ctx["project_id"],
         locale=submit_ctx["locale"],
         download_prefix="ins",
+        capture_start=submit_ctx.get("capture_start"),
     )
 
 

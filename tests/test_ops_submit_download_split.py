@@ -69,6 +69,7 @@ def _mock_client(page):
     client = MagicMock()
     client.page = page
     client.clear_captures = MagicMock()
+    client.capture_cursor = MagicMock(return_value=0)
     return client
 
 
@@ -110,7 +111,9 @@ async def test_submit_extend_returns_ctx_without_calling_finalize(monkeypatch):
         client, {"media_id": "mid", "edit_url": "u"}, prompt="hi",
     )
 
-    assert ctx == {"project_id": "pid-xyz", "locale": "en"}
+    assert ctx["project_id"] == "pid-xyz"
+    assert ctx["locale"] == "en"
+    assert ctx["capture_start"] == 0
     mocks["submit_with_confirmation"].assert_awaited_once()
     mocks["finalize_operation"].assert_not_awaited()
 
@@ -169,7 +172,9 @@ async def test_submit_camera_returns_ctx_without_calling_finalize(monkeypatch):
         client, {"media_id": "mid"}, direction="Dolly in",
     )
 
-    assert ctx == {"project_id": "pid-xyz", "locale": "en"}
+    assert ctx["project_id"] == "pid-xyz"
+    assert ctx["locale"] == "en"
+    assert ctx["capture_start"] == 0
     mocks["submit_with_confirmation"].assert_awaited_once()
     mocks["finalize_operation"].assert_not_awaited()
 
@@ -227,7 +232,9 @@ async def test_submit_insert_returns_ctx_without_calling_finalize(monkeypatch):
         prompt="a bird", bbox={"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5},
     )
 
-    assert ctx == {"project_id": "pid-xyz", "locale": "en"}
+    assert ctx["project_id"] == "pid-xyz"
+    assert ctx["locale"] == "en"
+    assert ctx["capture_start"] == 0
     mocks["submit_with_confirmation"].assert_awaited_once()
     mocks["finalize_operation"].assert_not_awaited()
 
@@ -284,7 +291,9 @@ async def test_submit_remove_returns_ctx_without_calling_finalize(monkeypatch):
         bbox={"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5},
     )
 
-    assert ctx == {"project_id": "pid-xyz", "locale": "en"}
+    assert ctx["project_id"] == "pid-xyz"
+    assert ctx["locale"] == "en"
+    assert ctx["capture_start"] == 0
     mocks["submit_with_confirmation"].assert_awaited_once()
     mocks["finalize_operation"].assert_not_awaited()
 
@@ -364,7 +373,7 @@ async def test_submit_ctx_has_exactly_the_public_keys(
         client, {"media_id": "mid"}, **submit_kwargs,
     )
 
-    assert set(ctx.keys()) == {"project_id", "locale"}, (
+    assert set(ctx.keys()) == {"project_id", "locale", "capture_start"}, (
         f"{submit_fn} ctx keys drifted: {sorted(ctx.keys())} — if adding a "
         f"new key is intentional, update this contract test too."
     )
