@@ -152,6 +152,12 @@ def _patch_image_flow(monkeypatch, page):
     page.remove_listener = MagicMock()
 
 
+def _patch_busy_branch(monkeypatch, page, *, wait_result):
+    _patch_image_flow(monkeypatch, page)
+    monkeypatch.setattr(upscale, "_wait_for_download_or_popup", AsyncMock(return_value="busy"))
+    upscale._wait_upscale.return_value = wait_result
+
+
 @pytest.mark.asyncio
 async def test_upscale_and_download_image_immediate_download(monkeypatch, tmp_path, image_client):
     client, page = image_client
@@ -181,6 +187,139 @@ async def test_upscale_and_download_image_busy_then_done_redownload(monkeypatch,
     assert result == str(tmp_path / "img_2k.png")
     upscale._wait_upscale.assert_awaited_once_with(page, upscale.UPSCALE_TIMEOUT_SEC)
     upscale._capture_download_from_menu.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upscale_and_download_image_busy_wait_failed_retries_then_succeeds(
+    monkeypatch, tmp_path, image_client, caplog
+):
+    client, page = image_client
+    caplog.set_level(logging.INFO, logger="flow.upscale")
+    _patch_busy_branch(monkeypatch, page, wait_result="failed")
+    download_obj = object()
+
+    async def wait_or_download(_page, downloads):
+        if wait_or_download.calls == 0:
+            wait_or_download.calls += 1
+            return "busy"
+        downloads.append(download_obj)
+        return None
+
+    wait_or_download.calls = 0
+    monkeypatch.setattr(
+        upscale,
+        "_wait_for_download_or_popup",
+        AsyncMock(side_effect=wait_or_download),
+    )
+    upscale._save_image_download.return_value = str(tmp_path / "img_2k_retry_after_failed.png")
+
+    result = await upscale.upscale_and_download_image(
+        client,
+        prefix="img",
+        output_dir=str(tmp_path),
+        media_id="mid",
+    )
+
+    assert result == str(tmp_path / "img_2k_retry_after_failed.png")
+    upscale._wait_upscale.assert_awaited_once_with(page, upscale.UPSCALE_TIMEOUT_SEC)
+    upscale._capture_download_from_menu.assert_not_awaited()
+    upscale._save_image_download.assert_awaited_once_with(download_obj, "img", "2k", tmp_path)
+    assert upscale._open_edit_download_menu.await_count == 2
+    assert "[UPSCALE][IMAGE] Attempt 1/2 for 2k" in caplog.text
+    assert "[UPSCALE][IMAGE] Attempt 2/2 for 2k" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_upscale_and_download_image_busy_wait_timeout_exhausts_attempts(
+    monkeypatch, tmp_path, image_client, caplog
+):
+    client, page = image_client
+    caplog.set_level(logging.INFO, logger="flow.upscale")
+    _patch_busy_branch(monkeypatch, page, wait_result="timeout")
+
+    result = await upscale.upscale_and_download_image(
+        client,
+        prefix="img",
+        output_dir=str(tmp_path),
+        media_id="mid",
+    )
+
+    assert result is None
+    assert upscale._wait_upscale.await_count == 2
+    upscale._capture_download_from_menu.assert_not_awaited()
+    upscale._save_image_download.assert_not_awaited()
+    assert upscale._close_toast.await_count == 2
+    assert upscale._open_edit_download_menu.await_count == 2
+    assert "[UPSCALE][IMAGE] Attempt 1/2 for 2k" in caplog.text
+    assert "[UPSCALE][IMAGE] Attempt 2/2 for 2k" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_upscale_and_download_image_busy_done_redownload_none_retries_then_succeeds(
+    monkeypatch, tmp_path, image_client, caplog
+):
+    client, page = image_client
+    caplog.set_level(logging.INFO, logger="flow.upscale")
+    download_obj = object()
+    _patch_busy_branch(monkeypatch, page, wait_result="done")
+    upscale._capture_download_from_menu.side_effect = [None, download_obj]
+    upscale._save_image_download.return_value = str(tmp_path / "img_2k_redownload_retry.png")
+
+    result = await upscale.upscale_and_download_image(
+        client,
+        prefix="img",
+        output_dir=str(tmp_path),
+        media_id="mid",
+    )
+
+    assert result == str(tmp_path / "img_2k_redownload_retry.png")
+    assert upscale._wait_upscale.await_count == 2
+    assert upscale._capture_download_from_menu.await_count == 2
+    upscale._save_image_download.assert_awaited_once_with(download_obj, "img", "2k", tmp_path)
+    assert upscale._open_edit_download_menu.await_count == 2
+    assert "[UPSCALE][IMAGE] Attempt 2/2 for 2k" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_upscale_and_download_image_busy_done_redownload_save_none_retries_then_succeeds(
+    monkeypatch, tmp_path, image_client, caplog
+):
+    client, page = image_client
+    caplog.set_level(logging.INFO, logger="flow.upscale")
+    first_download = object()
+    second_download = object()
+    _patch_busy_branch(monkeypatch, page, wait_result="done")
+    upscale._capture_download_from_menu.side_effect = [first_download, second_download]
+    upscale._save_image_download.side_effect = [
+        None,
+        str(tmp_path / "img_2k_redownload_saved.png"),
+    ]
+
+    result = await upscale.upscale_and_download_image(
+        client,
+        prefix="img",
+        output_dir=str(tmp_path),
+        media_id="mid",
+    )
+
+    assert result == str(tmp_path / "img_2k_redownload_saved.png")
+    assert upscale._wait_upscale.await_count == 2
+    assert upscale._capture_download_from_menu.await_count == 2
+    assert upscale._save_image_download.await_count == 2
+    assert upscale._save_image_download.await_args_list[0].args == (
+        first_download,
+        "img",
+        "2k",
+        tmp_path,
+    )
+    assert upscale._save_image_download.await_args_list[1].args == (
+        second_download,
+        "img",
+        "2k",
+        tmp_path,
+    )
+    assert upscale._open_edit_download_menu.await_count == 2
+    assert "[UPSCALE][IMAGE] Attempt 2/2 for 2k" in caplog.text
 
 
 @pytest.mark.asyncio
