@@ -309,8 +309,10 @@ async def _save_image_download(
             return None
 
         extension = _extension_for(_content_type_from_bytes(body), "image")
+        if extension == ".jpg" and suggested_suffix == ".jpeg":
+            extension = suggested_suffix
         if extension == ".png" and suggested_suffix in {".png", ".webp", ".jpg", ".jpeg"}:
-            extension = ".jpg" if suggested_suffix == ".jpeg" else suggested_suffix
+            extension = suggested_suffix
         final_path = out_dir / f"{prefix}_{quality}_{ts}{extension}"
         temp_path.replace(final_path)
         logger.info("[UPSCALE] Saved image: %s (%d bytes)", final_path, len(body))
