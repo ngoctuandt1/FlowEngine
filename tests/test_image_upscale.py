@@ -54,7 +54,7 @@ def test_requested_image_quality(monkeypatch, explicit, env_value, expected):
     ("suggested", "body", "quality", "expected_suffix"),
     [
         ("flow.jpg", b"\xff\xd8\xff\xe0" + b"x" * 1200, "2k", ".jpg"),
-        ("flow.jpeg", b"\xff\xd8\xff\xe0" + b"x" * 1200, "4k", ".jpg"),
+        ("foo.jpeg", b"\xff\xd8\xff\xe0" + b"x" * 1200, "4k", ".jpeg"),
         ("flow.png", b"\x89PNG\r\n\x1a\n" + b"x" * 1200, "2k", ".png"),
         ("flow.webp", b"RIFF0000WEBP" + b"x" * 1200, "4k", ".webp"),
         ("flow", b"\x89PNG\r\n\x1a\n" + b"x" * 1200, "2k", ".png"),
