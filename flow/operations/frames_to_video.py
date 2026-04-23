@@ -14,9 +14,10 @@ from pathlib import Path
 from flow.download import download_video
 from flow.login import handle_login_redirect, is_login_page
 from flow.model_selector import DEFAULT_MODEL, select_model
-from flow.navigation import extract_media_id, extract_project_id, flow_url
+from flow.navigation import extract_project_id, flow_url
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
+from flow.operations._base import resolve_final_media_id
 from flow.operations.generate import (
     NEW_PROJECT_SELECTORS,
     _count_visible_cards,
@@ -52,10 +53,9 @@ async def frames_to_video(
     """Create a new video project from a start frame and optional end frame."""
     if not start_image_path:
         raise RuntimeError("frames-to-video requires start_image_path")
-    if not Path(start_image_path).is_file():
-        raise RuntimeError(f"Start image not found: {start_image_path}")
-    if end_image_path and not Path(end_image_path).is_file():
-        raise RuntimeError(f"End image not found: {end_image_path}")
+    start_image_path = _resolve_image_input_path(start_image_path, label="Start")
+    if end_image_path:
+        end_image_path = _resolve_image_input_path(end_image_path, label="End")
 
     page = client.page
     locale = ""
@@ -135,9 +135,9 @@ async def frames_to_video(
         raise RuntimeError(f"Generation failed: {result.get('error', 'unknown')}")
 
     current_url = page.url
-    media_id = extract_media_id(current_url)
-    if not media_id and result.get("media_ids"):
-        media_id = result["media_ids"][0]
+    captured_media_ids = result.get("media_ids") or []
+    fallback_media_id = captured_media_ids[0] if captured_media_ids else None
+    media_id = await resolve_final_media_id(page, fallback=fallback_media_id)
 
     edit_url_val = None
     if media_id and project_id:
@@ -145,7 +145,7 @@ async def frames_to_video(
 
     output_files = await download_video(
         client,
-        media_ids=result.get("media_ids", [media_id] if media_id else []),
+        media_ids=captured_media_ids or ([media_id] if media_id else []),
         prefix="f2v",
     )
     if not output_files:
@@ -308,3 +308,21 @@ async def _upload_frame(page, label: str, image_path: str) -> None:
     input = page.locator(f"input[type='file'][data-upload-target='{target_attr}']").first
     await input.set_input_files(image_path, timeout=10000)
     await asyncio.sleep(1)
+
+
+def _resolve_image_input_path(path_value: str, *, label: str) -> str:
+    """Resolve and validate a local image path for Flow uploads."""
+    if not path_value:
+        raise RuntimeError(f"{label} image path is required")
+
+    candidate = Path(path_value).expanduser()
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError:
+        raise RuntimeError(f"{label} image not found: {path_value}") from None
+    except OSError as exc:
+        raise RuntimeError(f"Invalid {label.lower()} image path: {path_value} ({exc})") from exc
+
+    if not resolved.is_file():
+        raise RuntimeError(f"{label} image path is not a file: {path_value}")
+    return str(resolved)

@@ -4,21 +4,31 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.config import SERVER_HOST, SERVER_PORT
 from server.routes import jobs_router, uploads_router, worker_router, profiles_router, ws_router
 
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
-# Worker writes output mp4s to FLOW_DOWNLOAD_DIR (see flow/download.py).
-# Keep this resolution in lockstep so the dashboard "download" links
-# produced from Job.output_files resolve against the same directory.
-DOWNLOAD_DIR = Path(os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")).resolve()
-UPLOAD_DIR = Path(os.environ.get("FLOW_UPLOAD_DIR", "./uploads")).resolve()
+
+
+def _resolve_data_dir(env_var: str, default: str) -> Path:
+    """Resolve a data directory from env and fail fast on invalid file paths."""
+    raw_value = (os.environ.get(env_var) or "").strip() or default
+    resolved = Path(raw_value).expanduser().resolve()
+    if resolved.exists() and not resolved.is_dir():
+        raise RuntimeError(f"{env_var} must point to a directory, got file: {resolved}")
+    return resolved
+
+
+# Worker writes output media to FLOW_DOWNLOAD_DIR (see flow/download.py).
+# Keep this resolution in lockstep so dashboard links from Job.output_files
+# resolve against the same directory.
+DOWNLOAD_DIR = _resolve_data_dir("FLOW_DOWNLOAD_DIR", "./downloads")
+UPLOAD_DIR = _resolve_data_dir("FLOW_UPLOAD_DIR", "./uploads")
 
 
 @asynccontextmanager

@@ -4,12 +4,13 @@ import asyncio
 import logging
 import re
 
-from flow.navigation import flow_url, extract_project_id, extract_media_id
+from flow.navigation import flow_url, extract_project_id
 from flow.login import is_login_page, handle_login_redirect
 from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.download import download_video
+from flow.operations._base import resolve_final_media_id
 
 logger = logging.getLogger(__name__)
 
@@ -318,9 +319,9 @@ async def text_to_video(
 
     # === Step 8: Extract metadata ===
     current_url = page.url
-    media_id = extract_media_id(current_url)
-    if not media_id and result.get("media_ids"):
-        media_id = result["media_ids"][0]
+    captured_media_ids = result.get("media_ids") or []
+    fallback_media_id = captured_media_ids[0] if captured_media_ids else None
+    media_id = await resolve_final_media_id(page, fallback=fallback_media_id)
 
     # Build edit_url
     edit_url_val = None
@@ -330,9 +331,10 @@ async def text_to_video(
 
     # === Step 9: Download ===
     logger.info("Step 8: Download video")
+    download_media_ids = captured_media_ids or ([media_id] if media_id else [])
     output_files = await download_video(
         client,
-        media_ids=result.get("media_ids", [media_id] if media_id else []),
+        media_ids=download_media_ids,
         prefix="t2v",
     )
     if not output_files:

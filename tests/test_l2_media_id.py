@@ -174,3 +174,16 @@ async def test_finalize_operation_serial_ops_keep_distinct_network_media_ids(mon
     assert insert["media_id"] == NEW_SLUG
     assert remove["media_id"] == ALT_SLUG
     assert insert["media_id"] != remove["media_id"]
+
+
+async def test_finalize_operation_uses_latest_tile_when_route_missing(monkeypatch):
+    page = StickyURLPage(f"https://labs.google/fx/tools/flow/project/{PROJECT_ID}/preview")
+    client = _client(page)
+    monkeypatch.setattr(_base, "wait_for_completion", AsyncMock(return_value={"done": True, "media_ids": []}))
+    monkeypatch.setattr(_base, "download_video", AsyncMock(return_value=["x.mp4"]))
+    monkeypatch.setattr(_base, "find_latest_tile_slug", AsyncMock(return_value=NEW_SLUG))
+
+    result = await _base.finalize_operation(client, {"media_id": OLD_SLUG}, "insert-object", PROJECT_ID, "", "insert")
+
+    assert result["media_id"] == NEW_SLUG
+    assert result["edit_url"] == _edit(NEW_SLUG)

@@ -8,8 +8,16 @@ Invariant guarded here: the two defaults MUST match. Docker compose always
 sets SERVER_PORT/SERVER_URL explicitly, so this only bites local dev.
 """
 import os
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
+
+
+def _make_local_tmp() -> Path:
+    root = Path("tests") / "_tmp" / f"path_{uuid4().hex}"
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
 
 
 def test_server_port_default_is_8080(monkeypatch):
@@ -38,3 +46,25 @@ def test_server_port_respects_env_override(monkeypatch):
     importlib.reload(config_mod)
 
     assert config_mod.SERVER_PORT == 9999
+
+
+def test_resolve_data_dir_uses_default_when_env_blank(monkeypatch):
+    import server.app as app_mod
+
+    tmp_dir = _make_local_tmp()
+    monkeypatch.setenv("FLOW_UPLOAD_DIR", "")
+    resolved = app_mod._resolve_data_dir("FLOW_UPLOAD_DIR", str(tmp_dir))
+
+    assert resolved == tmp_dir.resolve()
+
+
+def test_resolve_data_dir_rejects_file_path(monkeypatch):
+    import server.app as app_mod
+
+    tmp_dir = _make_local_tmp()
+    marker = tmp_dir / "not-a-directory.txt"
+    marker.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("FLOW_UPLOAD_DIR", str(marker))
+
+    with pytest.raises(RuntimeError, match="must point to a directory"):
+        app_mod._resolve_data_dir("FLOW_UPLOAD_DIR", "./uploads")

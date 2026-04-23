@@ -12,18 +12,19 @@ Live-probed 2026-04-20 on the current Flow UI:
 
 import asyncio
 import logging
-from pathlib import Path
 
 from flow.download import download_video
 from flow.login import handle_login_redirect, is_login_page
 from flow.model_selector import DEFAULT_MODEL, select_model
-from flow.navigation import extract_media_id, extract_project_id, flow_url
+from flow.navigation import extract_project_id, flow_url
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
+from flow.operations._base import resolve_final_media_id
 from flow.operations.frames_to_video import (
     COMPOSER_MENU_SELECTORS,
     _click_new_project,
     _close_composer_menu,
+    _resolve_image_input_path,
 )
 from flow.operations.generate import (
     _count_visible_cards,
@@ -50,9 +51,10 @@ async def ingredients_to_video(
     """Create a new video project from text plus ingredient image references."""
     if not ingredient_image_paths:
         raise RuntimeError("ingredients-to-video requires at least one ingredient image")
-    missing = [path for path in ingredient_image_paths if not Path(path).is_file()]
-    if missing:
-        raise RuntimeError(f"Ingredient image not found: {missing[0]}")
+    ingredient_image_paths = [
+        _resolve_image_input_path(path, label=f"Ingredient #{idx}")
+        for idx, path in enumerate(ingredient_image_paths, start=1)
+    ]
 
     page = client.page
     locale = ""
@@ -133,9 +135,9 @@ async def ingredients_to_video(
         raise RuntimeError(f"Generation failed: {result.get('error', 'unknown')}")
 
     current_url = page.url
-    media_id = extract_media_id(current_url)
-    if not media_id and result.get("media_ids"):
-        media_id = result["media_ids"][0]
+    captured_media_ids = result.get("media_ids") or []
+    fallback_media_id = captured_media_ids[0] if captured_media_ids else None
+    media_id = await resolve_final_media_id(page, fallback=fallback_media_id)
 
     edit_url_val = None
     if media_id and project_id:
@@ -143,7 +145,7 @@ async def ingredients_to_video(
 
     output_files = await download_video(
         client,
-        media_ids=result.get("media_ids", [media_id] if media_id else []),
+        media_ids=captured_media_ids or ([media_id] if media_id else []),
         prefix="ingredients",
     )
     if not output_files:
