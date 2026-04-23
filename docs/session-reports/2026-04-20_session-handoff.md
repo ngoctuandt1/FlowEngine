@@ -141,14 +141,23 @@ All mocked (no real filesystem, no network, no Playwright).
 ## 8. Parked items (next sessions)
 
 ### HIGH priority
-- **L2 media_id extraction bug** (§5 above) — blocks any L3 chain on top of insert/remove.
+- **L2 media_id extraction bug** — resolved on master via sibling-1→6 (`5162fe6`, `ebf8572`, `5ac652a`, `6d8a0b0`). Needs live-verify on real account after integration lands.
 
-### LOW priority
-- **`.jpeg` preservation** — currently rewritten to `.jpg`; harmless but surprising.
-- **`_BUSY_RE` broadening** — if Flow changes busy-toast copy beyond `upscaling`/`processing`.
-- **Async busy/done toast fallback live-exercise** — implemented and unit-tested, but Flow always served 4K immediately in live runs; no live proof the `busy → _wait_upscale → re-click` path works end-to-end.
-- **Camera-move L2 chain** — not tested this session; SPEC says "mints NEW on early-chain, preserves on deep-chain" — may have same extraction issue as insert/remove.
-- **Extend-video multi-generation** — not tested this session.
+### LOW priority (2026-04-23 — resolved at unit-test level via 10-agent Codex epic)
+- **`.jpeg` preservation** — FIXED (`7fbfebe`): `_save_image_download` now preserves `.jpeg` suffix.
+- **`_BUSY_RE` broadening** — FIXED (`22d3ca7`): regex covers `preparing`, `rendering`, `generating`, `in progress`, `please wait`; `upscaling` tightened with `(?!\s+done)` negative lookahead.
+- **Async busy/done toast fallback** — unit coverage complete (`09b3085` busy-branch failed/timeout/capture-None/save-None, `3db1975` done-branch + open-menu retry, `a549bcf` outer exception + cleanup, `58e7971` real `page.on('download')` wiring). Live proof still pending.
+- **Camera-move L2 chain** — unit coverage (`131c420`): direct-off-L1 mints NEW media_id, rebuilds edit_url, downloads from captured mids. Deep-chain preservation is a future probe.
+- **Extend-video multi-generation** — unit coverage (`d3aef9c`): multi-gen downloads all outputs + canonical settled-route media_id. Paired with T7 fix below.
+
+### Bonus real-bug fix (found during coverage pass)
+- **Video 1080p multi-gen drop** — FIXED (`e47feac`): `flow/download.py:download_video` now iterates ALL `media_ids` for the video+1080p UI path (was silently dropping secondary variants from `extend-video`); per-mid 720p fallback mirrors the image branch pattern. Preserves locked design (1080pUpscaled menu item, never 4K).
+- **Composer menu-miss diagnostic** — unit coverage (`1567824`): `_open_composer_menu` actually raises `RuntimeError` after logging diagnostic (not False/None). Tests now match contract.
+
+### Still pending (needs live probe, outside unit-agent scope)
+- Live L3 chain on insert/remove after master L2 fix.
+- Live extend-video multi-gen on real account (with `x1` count pin evidence).
+- Live async busy-toast path (previously Flow served 4K immediately in 3/3 runs).
 
 ---
 

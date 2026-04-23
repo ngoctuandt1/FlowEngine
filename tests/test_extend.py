@@ -487,9 +487,8 @@ def _finalize_client(page, media_events=None):
     )
 
 
-@pytest.mark.skip(reason="depends on T7 video multi-gen download fix on this branch")
 async def test_extend_finalize_multi_gen_downloads_all_outputs_after_t7(monkeypatch):
-    """T9 #1: once T7 lands, extend-video multi-gen should download every new output."""
+    """T9 #1: extend-video multi-gen downloads every new output (integrated with T7)."""
     page = MagicMock()
     page.url = _edit_url(SETTLED_SLUG)
     client = _finalize_client(
