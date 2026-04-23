@@ -129,13 +129,20 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     # in the right sidebar flips all 4 mode buttons from disabled →
     # enabled without changing page.url.
     current_media = extract_media_id(current)
-    if media_id and current_media and current_media != media_id:
-        logger.info(
-            "URL media differs from target: url=%s target=%s — activating target tile",
-            current_media[:20], media_id[:20],
-        )
+    # Flow's SPA sometimes accepts `page.goto(/edit/{X})` by updating the URL
+    # without remounting the editor (observed 2026-04-23 on L2 remove directly
+    # after L2 insert: URL = target, but <video> never rendered → 15s timeout).
+    # Activating the target tile forces the SPA to re-hydrate the editor state,
+    # so do it unconditionally when media_id is known — not only when the URL
+    # disagrees. Idempotent when the tile is already active.
+    if media_id:
+        if current_media and current_media != media_id:
+            logger.info(
+                "URL media differs from target: url=%s target=%s — activating target tile",
+                current_media[:20], media_id[:20],
+            )
         activated = await _activate_clip_tile(page, media_id)
-        if not activated:
+        if not activated and current_media != media_id:
             logger.warning(
                 "Could not activate target clip tile for media=%s — sidebar may be disabled (B28 lockout)",
                 media_id[:20],
