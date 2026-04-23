@@ -338,6 +338,103 @@ async def test_upscale_and_download_image_done_toast_redownloads(monkeypatch, tm
     upscale._save_image_download.assert_awaited_once_with(download_obj, "img", "4k", tmp_path)
 
 
+def _done_toast_retry_success_side_effect(expected_download):
+    async def _side_effect(download, prefix, quality, out_dir):
+        if download is expected_download:
+            return None
+        return str(out_dir / f"{prefix}_{quality}_retry.png")
+
+    return _side_effect
+
+
+def _done_then_download_side_effect(retry_download):
+    async def _side_effect(_page, downloads):
+        if _side_effect.calls == 0:
+            _side_effect.calls += 1
+            return "done"
+        downloads.append(retry_download)
+        return None
+
+    _side_effect.calls = 0
+    return _side_effect
+
+
+@pytest.mark.asyncio
+async def test_upscale_and_download_image_retries_when_open_menu_first_attempt_fails(
+    monkeypatch, tmp_path, image_client
+):
+    client, page = image_client
+    _patch_image_flow(monkeypatch, page)
+    first_download = object()
+    upscale._open_edit_download_menu.side_effect = [False, True]
+
+    async def wait_or_download(_page, downloads):
+        downloads.append(first_download)
+        return None
+
+    monkeypatch.setattr(upscale, "_wait_for_download_or_popup", AsyncMock(side_effect=wait_or_download))
+    upscale._save_image_download.return_value = str(tmp_path / "img_2k_retry.png")
+
+    result = await upscale.upscale_and_download_image(client, prefix="img", output_dir=str(tmp_path), media_id="mid")
+
+    assert result == str(tmp_path / "img_2k_retry.png")
+    assert upscale._open_edit_download_menu.await_count == 2
+    upscale._click_menu_image_target.assert_awaited_once_with(page, "2k")
+    upscale._save_image_download.assert_awaited_once_with(first_download, "img", "2k", tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_upscale_and_download_image_done_toast_retries_when_menu_capture_returns_none(
+    monkeypatch, tmp_path, image_client
+):
+    client, page = image_client
+    _patch_image_flow(monkeypatch, page)
+    retry_download = object()
+    upscale._capture_download_from_menu.side_effect = [None]
+    monkeypatch.setattr(
+        upscale,
+        "_wait_for_download_or_popup",
+        AsyncMock(side_effect=_done_then_download_side_effect(retry_download)),
+    )
+    upscale._save_image_download.return_value = str(tmp_path / "img_2k_retry.png")
+
+    result = await upscale.upscale_and_download_image(client, prefix="img", output_dir=str(tmp_path), media_id="mid")
+
+    assert result == str(tmp_path / "img_2k_retry.png")
+    assert upscale._close_toast.await_count == 1
+    assert upscale._capture_download_from_menu.await_count == 1
+    assert upscale._open_edit_download_menu.await_count == 2
+    assert upscale._click_menu_image_target.await_count == 2
+    upscale._save_image_download.assert_awaited_once_with(retry_download, "img", "2k", tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_upscale_and_download_image_done_toast_retries_when_save_returns_none(
+    monkeypatch, tmp_path, image_client
+):
+    client, page = image_client
+    _patch_image_flow(monkeypatch, page)
+    first_download = object()
+    retry_download = object()
+    upscale._capture_download_from_menu.side_effect = [first_download]
+    monkeypatch.setattr(
+        upscale,
+        "_wait_for_download_or_popup",
+        AsyncMock(side_effect=_done_then_download_side_effect(retry_download)),
+    )
+    upscale._save_image_download.side_effect = _done_toast_retry_success_side_effect(first_download)
+
+    result = await upscale.upscale_and_download_image(client, prefix="img", output_dir=str(tmp_path), media_id="mid")
+
+    assert result == str(tmp_path / "img_2k_retry.png")
+    assert upscale._close_toast.await_count == 1
+    assert upscale._capture_download_from_menu.await_count == 1
+    assert upscale._open_edit_download_menu.await_count == 2
+    assert upscale._click_menu_image_target.await_count == 2
+    assert upscale._save_image_download.await_args_list[0].args == (first_download, "img", "2k", tmp_path)
+    assert upscale._save_image_download.await_args_list[1].args == (retry_download, "img", "2k", tmp_path)
+
+
 @pytest.mark.asyncio
 async def test_upscale_and_download_image_failed_then_retry_succeeds(monkeypatch, tmp_path, image_client):
     client, page = image_client
