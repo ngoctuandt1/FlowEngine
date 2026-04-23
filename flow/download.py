@@ -65,32 +65,67 @@ async def download_video(
     # §5.4). Only the UI-triggered POST uploadImage + toast-poll flow works.
     # Fall through to 720p API only if the UI path fails.
     if media_kind == "video" and quality == "1080p":
-        # Determine target media_id for /edit/ deep-link (upscale module
-        # navigates if page is still on project root after L1 generate).
-        first_mid = None
-        if media_ids:
-            first_mid = media_ids[0]
-        else:
+        target_mids = list(media_ids) if media_ids else []
+        if not target_mids:
             evts = getattr(client, "_media_id_events", [])
+            seen_mids = set()
             for evt in evts:
-                if evt.get("mid"):
-                    first_mid = evt["mid"]
-                    break
+                mid = evt.get("mid")
+                if mid and mid not in seen_mids:
+                    target_mids.append(mid)
+                    seen_mids.add(mid)
 
-        try:
+        if target_mids:
             from flow.upscale import upscale_and_download_1080p
 
-            ui_path = await upscale_and_download_1080p(
-                client,
-                prefix=prefix,
-                output_dir=DOWNLOAD_DIR,
-                media_id=first_mid,
-            )
-            if ui_path:
-                return [ui_path]
-            logger.info("UI 1080p path returned None; falling back to 720p API")
-        except Exception as e:
-            logger.warning("UI 1080p upscale raised: %s; falling back to API", e)
+            downloaded_paths = []
+            for mid in target_mids:
+                ui_path = None
+                try:
+                    ui_path = await upscale_and_download_1080p(
+                        client,
+                        prefix=prefix,
+                        output_dir=DOWNLOAD_DIR,
+                        media_id=mid,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "UI 1080p upscale raised for mid=%s: %s; falling back to API",
+                        mid,
+                        e,
+                    )
+
+                if ui_path:
+                    downloaded_paths.append(ui_path)
+                    continue
+
+                logger.info(
+                    "UI 1080p path returned None for mid=%s; will try 720p API fallback",
+                    mid,
+                )
+                api_path = await _download_via_api(
+                    client,
+                    mid,
+                    prefix,
+                    "720p",
+                    output_dir,
+                    media_kind,
+                )
+                if api_path:
+                    logger.warning(
+                        "Video quality downgraded from 1080p to 720p for mid=%s "
+                        "(UI upscale failed, API fallback succeeded)",
+                        mid,
+                    )
+                    downloaded_paths.append(api_path)
+                else:
+                    logger.warning(
+                        "Video API fallback failed for mid=%s after 1080p UI attempt",
+                        mid,
+                    )
+
+            if downloaded_paths:
+                return downloaded_paths
 
     if media_kind == "image" and requested_image_quality in IMAGE_UPSCALE_QUALITIES:
         target_mids = list(media_ids) if media_ids else []
