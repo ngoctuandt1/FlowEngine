@@ -4,12 +4,26 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from server.models.chain import Chain
 from server.models.job import Job, JobCreate, JobStatus, ChainCreate
 from server.db.chain_store import create_chain, get_chain_aggregate
 from server.db.job_store import create_job, get_job, list_jobs, get_children, delete_job, get_job_counts, recover_stale_jobs
 from server.routes.ws import broadcast_job_update
+
+
+class BatchCreate(BaseModel):
+    """Fan-out N sibling L2 jobs off one completed parent.
+
+    The parent's ``profile`` / ``project_url`` / ``media_id`` are inherited
+    at claim time (see ``claim_next_batch`` + existing L2 claim inheritance),
+    so the per-step ``JobCreate`` need only carry the op-specific fields
+    (type, prompt, bbox, direction…). ``chain_id`` defaults to the parent's.
+    """
+    parent_job_id: str
+    chain_id: str | None = None
+    jobs: list[JobCreate]
 
 router = APIRouter(prefix="/api", tags=["jobs"])
 
@@ -77,6 +91,54 @@ async def create_single_job(req: JobCreate):
     await create_job(job)
     await broadcast_job_update(job)
     return job
+
+
+@router.post("/batches", status_code=201)
+async def create_batch(req: BatchCreate):
+    """Create N sibling L2+ jobs off one completed parent.
+
+    Unlike ``/chains`` (strictly linear chain, each step child of the
+    previous), a batch is a fan-out: all N siblings share ``parent_job_id``
+    so ``claim_next_batch`` can hand the whole group to one worker for
+    serial submit + parallel server-side generation.
+
+    400 if the parent is not ``completed`` — batch-claim relies on the
+    parent having final ``project_url`` / ``media_id`` that children will
+    inherit at claim time.
+    """
+    parent = await get_job(req.parent_job_id)
+    if parent is None:
+        raise HTTPException(404, f"Parent job {req.parent_job_id} not found")
+    if parent.status != JobStatus.COMPLETED:
+        raise HTTPException(
+            400,
+            f"Parent job {req.parent_job_id} is {parent.status.value}; "
+            "batch requires a completed parent",
+        )
+    if not req.jobs:
+        raise HTTPException(400, "batch must contain at least one job")
+
+    chain_id = req.chain_id or parent.chain_id
+    child_level = parent.job_level + 1
+
+    created: list[Job] = []
+    for step in req.jobs:
+        step.parent_job_id = parent.id
+        step.chain_id = chain_id
+        if step.project_url is None:
+            step.project_url = parent.project_url
+        if step.media_id is None:
+            step.media_id = parent.media_id
+        job = _build_job(
+            step, profile=parent.profile,
+            chain_id=chain_id, job_level=child_level,
+        )
+        await create_job(job)
+        created.append(job)
+
+    for job in created:
+        await broadcast_job_update(job)
+    return {"parent_job_id": parent.id, "chain_id": chain_id, "jobs": created}
 
 
 @router.post("/chains", status_code=201)

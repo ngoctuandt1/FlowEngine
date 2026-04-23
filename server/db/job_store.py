@@ -386,6 +386,205 @@ async def claim_next_job(
             raise
 
 
+async def claim_next_batch(
+    worker_id: str,
+    available_profiles: list[str],
+    max_size: int = 5,
+) -> list[Job]:
+    """Atomically claim a batch of pending jobs that can be serviced together.
+
+    Batch = up to ``max_size`` pending Level-2+ jobs sharing one ``project_url``
+    whose direct parents are completed and reachable from ``available_profiles``.
+    The worker can then open one FlowClient per profile, submit all N serially
+    on the same page, and let Flow generate them in parallel server-side
+    (live-verified 2026-04-23 — see B39 session report).
+
+    Semantics mirror ``claim_next_job`` with two extensions:
+
+    1. After picking the head L2 job (same Priority-1 criteria as the single-
+       job path — parent completed, profile available, no active job on the
+       project_url), we also claim other pending L2 siblings on the same
+       project_url. "Sibling" here means sharing the project_url, not
+       strictly the parent_job_id — a project may have fan-out across
+       multiple chain branches and all are batch-compatible.
+    2. Each claimed job inherits from its own direct parent (B22), not the
+       head's parent — so a batch spanning different parents still binds the
+       correct ``media_id`` / ``edit_url`` per-row.
+
+    Falls back to a single L1 pick wrapped in a 1-item list when no L2 is
+    available — keeps the caller's batch-shaped loop uniform.
+
+    Args:
+      max_size: cap on batch cardinality. 1 degenerates to the single-job
+        behaviour. Default 5 is a soft ceiling suitable for Flow's
+        per-project parallel-gen throughput.
+
+    Returns:
+      List of claimed Jobs (1..max_size) or ``[]`` if nothing qualifies.
+    """
+    if not available_profiles or max_size < 1:
+        return []
+
+    placeholders = ", ".join("?" for _ in available_profiles)
+    now = _now_iso()
+
+    async with get_db() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            # ----- Priority 1: Level-2+ batch head -----
+            head_cur = await db.execute(
+                f"""
+                SELECT j.*, parent.project_url AS parent_project_url
+                FROM jobs j
+                JOIN jobs parent ON j.parent_job_id = parent.id
+                WHERE j.status = 'pending'
+                  AND j.job_level >= 2
+                  AND parent.status = 'completed'
+                  AND parent.profile IN ({placeholders})
+                  AND NOT EXISTS (
+                      SELECT 1 FROM jobs active
+                      WHERE active.project_url = parent.project_url
+                        AND active.project_url IS NOT NULL
+                        AND active.status IN ('claimed', 'running')
+                  )
+                ORDER BY j.created_at ASC
+                LIMIT 1
+                """,
+                available_profiles,
+            )
+            head_row = await head_cur.fetchone()
+
+            if head_row is not None:
+                batch_project_url = head_row["parent_project_url"]
+                claimed_ids: list[str] = []
+
+                # Head is guaranteed to be pickable. Additional siblings:
+                # same batch_project_url, Priority-1 criteria minus the
+                # NOT EXISTS (the head's in-flight claim inside this txn
+                # would otherwise exclude everything).
+                picks_cur = await db.execute(
+                    f"""
+                    SELECT j.id
+                    FROM jobs j
+                    JOIN jobs parent ON j.parent_job_id = parent.id
+                    WHERE j.status = 'pending'
+                      AND j.job_level >= 2
+                      AND parent.status = 'completed'
+                      AND parent.profile IN ({placeholders})
+                      AND parent.project_url = ?
+                    ORDER BY j.created_at ASC
+                    LIMIT ?
+                    """,
+                    (*available_profiles, batch_project_url, max_size),
+                )
+                picks = await picks_cur.fetchall()
+
+                for pick in picks:
+                    job_id = pick["id"]
+                    parent_cur = await db.execute(
+                        "SELECT profile, project_url, media_id, edit_url "
+                        "FROM jobs WHERE id = ("
+                        "  SELECT parent_job_id FROM jobs WHERE id = ?"
+                        ")",
+                        (job_id,),
+                    )
+                    parent_row = await parent_cur.fetchone()
+                    bound_profile = parent_row["profile"] if parent_row else None
+                    bound_project_url = parent_row["project_url"] if parent_row else None
+                    bound_media_id = parent_row["media_id"] if parent_row else None
+                    bound_edit_url = parent_row["edit_url"] if parent_row else None
+
+                    await db.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'claimed',
+                            worker_id = ?,
+                            claimed_at = ?,
+                            profile = ?,
+                            project_url = ?,
+                            media_id = ?,
+                            edit_url = ?,
+                            updated_at = ?
+                        WHERE id = ? AND status = 'pending'
+                        """,
+                        (
+                            worker_id, now,
+                            bound_profile, bound_project_url,
+                            bound_media_id, bound_edit_url,
+                            now, job_id,
+                        ),
+                    )
+                    # Mirror onto profile row for dashboard consistency —
+                    # last claim wins, same as single-claim path.
+                    if bound_profile:
+                        await db.execute(
+                            """
+                            UPDATE profiles
+                            SET current_job_id = ?, worker_id = ?, last_used_at = ?
+                            WHERE name = ?
+                            """,
+                            (job_id, worker_id, now, bound_profile),
+                        )
+                    claimed_ids.append(job_id)
+
+                await db.commit()
+                out: list[Job] = []
+                for cid in claimed_ids:
+                    job = await get_job(cid)
+                    if job is not None:
+                        out.append(job)
+                return out
+
+            # ----- Priority 2: Level-1 fallback (single-job batch) -----
+            cursor = await db.execute(
+                f"""
+                SELECT *
+                FROM jobs
+                WHERE status = 'pending'
+                  AND job_level = 1
+                  AND (profile IS NULL OR profile IN ({placeholders}))
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                available_profiles,
+            )
+            row = await cursor.fetchone()
+
+            if row is not None:
+                job_dict = dict(row)
+                assigned_profile = job_dict["profile"] or available_profiles[0]
+                await db.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'claimed',
+                        worker_id = ?,
+                        claimed_at = ?,
+                        profile = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (worker_id, now, assigned_profile, now, job_dict["id"]),
+                )
+                await db.execute(
+                    """
+                    UPDATE profiles
+                    SET current_job_id = ?, worker_id = ?, last_used_at = ?
+                    WHERE name = ?
+                    """,
+                    (job_dict["id"], worker_id, now, assigned_profile),
+                )
+                await db.commit()
+                job = await get_job(job_dict["id"])
+                return [job] if job is not None else []
+
+            await db.execute("COMMIT")
+            return []
+
+        except Exception:
+            await db.execute("ROLLBACK")
+            raise
+
+
 async def get_job_counts() -> dict[str, int]:
     """Return job counts grouped by status."""
     async with get_db() as db:

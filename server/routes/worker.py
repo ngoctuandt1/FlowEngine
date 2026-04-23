@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 from server.models.job import JobUpdate
-from server.db.job_store import claim_next_job, get_job, update_job
+from server.db.job_store import claim_next_batch, claim_next_job, get_job, update_job
 from server.routes.ws import broadcast_job_update
 
 
@@ -18,6 +18,12 @@ router = APIRouter(prefix="/api/worker", tags=["worker"])
 class ClaimRequest(BaseModel):
     worker_id: str
     profiles: list[str]   # Chrome profiles this worker can use
+
+
+class BatchClaimRequest(BaseModel):
+    worker_id: str
+    profiles: list[str]
+    max_size: int = 5
 
 
 class HeartbeatRequest(BaseModel):
@@ -45,6 +51,27 @@ async def claim_job(req: ClaimRequest):
     _workers[req.worker_id] = datetime.now(UTC)
     await broadcast_job_update(job)
     return job
+
+
+@router.post("/claim-batch")
+async def claim_batch(req: BatchClaimRequest):
+    """Claim a batch of sibling L2+ jobs sharing one project_url.
+
+    Used by batch-mode dispatcher: opens one FlowClient per profile, submits
+    every claimed job serially on the same page, and polls the per-gen
+    outputs server-side-in-parallel (Flow supports per-project parallel
+    generation — verified 2026-04-23 in B39 session report).
+
+    Returns ``{"jobs": [Job, ...]}``. The list is empty when nothing is
+    claimable. Degenerates to a single L1 pick wrapped in a one-item list
+    when no batch-eligible L2 is pending.
+    """
+    jobs = await claim_next_batch(req.worker_id, req.profiles, req.max_size)
+    if jobs:
+        _workers[req.worker_id] = datetime.now(UTC)
+        for job in jobs:
+            await broadcast_job_update(job)
+    return {"jobs": jobs}
 
 
 @router.put("/jobs/{job_id}")
