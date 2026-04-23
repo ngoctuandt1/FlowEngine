@@ -3,8 +3,20 @@
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uuid
+
+
+# Canonical camera-move presets (duplicated from flow.operations.camera to keep
+# server import surface free of browser/Playwright baggage). A drift-guard test
+# in tests/test_camera_direction_validator.py asserts the two stay in sync.
+CAMERA_PRESETS: frozenset[str] = frozenset({
+    # Motion
+    "Dolly in", "Dolly out", "Orbit left", "Orbit right",
+    "Orbit up", "Orbit low", "Dolly in zoom out", "Dolly out zoom in",
+    # Position
+    "Center", "Left", "Right", "High", "Low", "Closer", "Further",
+})
 
 
 class JobType(str, Enum):
@@ -62,6 +74,27 @@ class JobCreate(BaseModel):
     end_image_path: Optional[str] = None
     ingredient_image_paths: list[str] = Field(default_factory=list)
     ref_image_path: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_camera_direction(self) -> "JobCreate":
+        """Reject camera-move jobs with unknown/missing direction (#39).
+
+        Flow's UI surfaces 15 named presets; any other string silently
+        no-ops at runtime and wastes a claim cycle. Fail-fast at
+        submission time so invalid directions never reach the worker.
+        """
+        if self.type == JobType.CAMERA_MOVE:
+            if not self.direction:
+                raise ValueError(
+                    "camera-move job requires 'direction' "
+                    f"(one of: {sorted(CAMERA_PRESETS)})"
+                )
+            if self.direction not in CAMERA_PRESETS:
+                raise ValueError(
+                    f"Unknown camera preset {self.direction!r}. "
+                    f"Valid presets: {sorted(CAMERA_PRESETS)}"
+                )
+        return self
 
 
 class ChainCreate(BaseModel):
