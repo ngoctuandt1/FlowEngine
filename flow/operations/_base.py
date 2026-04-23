@@ -542,19 +542,19 @@ async def finalize_operation(
     media_id = await _extract_settled_route_media_id(page, fallback=job.get("media_id"))
     current_url = page.url
     parent_media_id = job.get("media_id")
-    tile_media_id = await find_latest_tile_slug(page) if media_id else None
+    tile_media_id = await find_latest_tile_slug(page)
     url_media_id = extract_media_id(current_url)
-    if (
-        tile_media_id
-        and parent_media_id
-        and url_media_id == parent_media_id
-        and tile_media_id != parent_media_id
-    ):
+    # Flow's post-op URL often carries a clip-route slug (not a generation id)
+    # that is neither parent nor the new output. The gallery tile strip
+    # exposes the true generation media_id via `[data-tile-id="fe_id_{mid}"]`.
+    # Prefer the newest tile whenever it differs from the parent media_id.
+    if tile_media_id and tile_media_id != parent_media_id and tile_media_id != media_id:
         logger.warning(
-            "Stale completion URL still points at parent slug; overriding media_id "
-            "from latest tile: parent=%s url=%s tile=%s",
-            parent_media_id[:20],
-            url_media_id[:20] if url_media_id else "",
+            "Overriding media_id from latest tile (URL slug was clip-route or stale): "
+            "parent=%s url=%s old=%s tile=%s",
+            (parent_media_id or "")[:20],
+            (url_media_id or "")[:20],
+            (media_id or "")[:20],
             tile_media_id[:20],
         )
         media_id = tile_media_id

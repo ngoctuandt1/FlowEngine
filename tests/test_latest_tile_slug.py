@@ -79,11 +79,15 @@ async def test_finalize_operation_prefers_latest_tile_when_url_stays_on_parent(m
 
     assert result["media_id"] == NEW_SLUG
     assert result["edit_url"] == _edit(NEW_SLUG)
-    warnings = [record.getMessage() for record in caplog.records]
+    warnings = [record.getMessage().lower() for record in caplog.records]
     assert any("overriding media_id from latest tile" in msg for msg in warnings)
 
 
-async def test_finalize_operation_does_not_override_when_url_is_not_parent(monkeypatch):
+async def test_finalize_operation_overrides_when_url_is_clip_route_slug(monkeypatch):
+    """Flow's post-op URL often carries a clip-route slug that is neither the
+    parent nor the new generation id. The latest tile in DOM is the only
+    authoritative source. Live-verified on ngoctuandt20 L2 remove (2026-04-23).
+    """
     page = SimpleNamespace(url=_edit(OTHER_SLUG))
     client = _client(page)
     monkeypatch.setattr(
@@ -106,7 +110,7 @@ async def test_finalize_operation_does_not_override_when_url_is_not_parent(monke
         "remove",
     )
 
-    assert result["media_id"] == OTHER_SLUG
+    assert result["media_id"] == NEW_SLUG
 
 
 async def test_finalize_operation_does_not_override_when_tile_slug_missing(monkeypatch):
