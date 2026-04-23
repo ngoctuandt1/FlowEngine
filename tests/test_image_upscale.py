@@ -102,9 +102,40 @@ def test_busy_regex_matches_current_processing_phrases(text):
     assert upscale._BUSY_RE.search(text)
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Preparing upscale",
+        "Rendering image",
+        "Generating 4K output",
+        "Upscale in progress",
+        "Please wait while we process your image",
+    ],
+)
+def test_busy_regex_matches_common_busy_copy_variants(text):
+    assert upscale._BUSY_RE.search(text)
+
+
 @pytest.mark.parametrize("text", ["", "Error occurred"])
 def test_done_and_busy_regex_ignore_non_matching_text(text):
     assert not upscale._DONE_RE.search(text)
+    assert not upscale._BUSY_RE.search(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ready",
+        "1080p ready",
+        "2K ready",
+        "4K ready",
+        "upscale complete",
+        "upscaling done",
+        "unable to upscale",
+        "upscale failed",
+    ],
+)
+def test_busy_regex_does_not_match_done_or_fail_copy(text):
     assert not upscale._BUSY_RE.search(text)
 
 
