@@ -37,12 +37,13 @@ async def test_open_composer_menu_skips_click_when_menu_already_open(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_open_composer_menu_clicks_chip_when_menu_closed(monkeypatch):
+async def test_open_composer_menu_clicks_chip_when_menu_closed(monkeypatch, caplog):
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
 
     closed_state = _make_locator(visible=False)
     chip = _make_locator(visible=True)
     page = MagicMock()
+    page.evaluate = AsyncMock()
 
     def _locator(selector):
         if selector in (
@@ -56,9 +57,12 @@ async def test_open_composer_menu_clicks_chip_when_menu_closed(monkeypatch):
 
     page.locator = MagicMock(side_effect=_locator)
 
-    await frames_to_video._open_composer_menu(page)
+    with caplog.at_level("WARNING"):
+        await frames_to_video._open_composer_menu(page)
 
     chip.click.assert_awaited_once_with(timeout=3000)
+    page.evaluate.assert_not_awaited()
+    assert "no composer chip matched" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -69,8 +73,10 @@ async def test_open_composer_menu_logs_diagnostic_when_all_selectors_miss(monkey
     missing = _make_locator(visible=False)
     page = MagicMock()
     page.evaluate = AsyncMock(return_value=["Nano Banana", "x1"])
+    seen_selectors = []
 
     def _locator(selector):
+        seen_selectors.append(selector)
         if selector in (
             "button[aria-haspopup='menu'][data-state='open']",
             "[role='menu'][data-state='open']",
@@ -86,6 +92,34 @@ async def test_open_composer_menu_logs_diagnostic_when_all_selectors_miss(monkey
 
     assert "no composer chip matched" in caplog.text
     assert "Nano Banana" in caplog.text
+    assert "x1" in caplog.text
+    assert seen_selectors == [
+        "button[aria-haspopup='menu'][data-state='open']",
+        "[role='menu'][data-state='open']",
+        *frames_to_video.COMPOSER_MENU_SELECTORS,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_open_composer_menu_all_selector_miss_raises_current_contract(monkeypatch):
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    closed_state = _make_locator(visible=False)
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=["Nano Banana"])
+
+    def _locator(selector):
+        if selector in (
+            "button[aria-haspopup='menu'][data-state='open']",
+            "[role='menu'][data-state='open']",
+        ):
+            return closed_state
+        return _make_locator(visible=False)
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    with pytest.raises(RuntimeError, match="Could not open composer chip"):
+        await frames_to_video._open_composer_menu(page)
 
 
 def test_ingredients_uses_shared_composer_menu_selectors():

@@ -33,7 +33,8 @@ _DONE_RE = re.compile(
 )
 _BUSY_RE = re.compile(
     r"(đang tăng độ phân giải|tăng độ phân giải|"
-    r"upscaling|processing (1080|2k|4k))",
+    r"upscaling(?!\s+done\b)|\bpreparing\b|\brendering\b|\bgenerating\b|"
+    r"\bin progress\b|\bplease wait\b|processing (1080|2k|4k))",
     re.IGNORECASE,
 )
 _FAIL_RE = re.compile(
@@ -309,8 +310,10 @@ async def _save_image_download(
             return None
 
         extension = _extension_for(_content_type_from_bytes(body), "image")
+        if extension == ".jpg" and suggested_suffix == ".jpeg":
+            extension = suggested_suffix
         if extension == ".png" and suggested_suffix in {".png", ".webp", ".jpg", ".jpeg"}:
-            extension = ".jpg" if suggested_suffix == ".jpeg" else suggested_suffix
+            extension = suggested_suffix
         final_path = out_dir / f"{prefix}_{quality}_{ts}{extension}"
         temp_path.replace(final_path)
         logger.info("[UPSCALE] Saved image: %s (%d bytes)", final_path, len(body))

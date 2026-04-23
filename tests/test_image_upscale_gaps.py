@@ -256,3 +256,56 @@ async def test_upscale_and_download_image_removes_listener_on_exit(monkeypatch, 
     assert failure_page.remove_listener.call_args.args[0] == "download"
     assert failure_page.remove_listener.call_args.args[1] is failure_page.on.call_args.args[1]
     assert failure_page._listeners == []
+
+
+@pytest.mark.asyncio
+async def test_upscale_and_download_image_uses_registered_download_callback(
+    monkeypatch, tmp_path
+):
+    class FakeDownload:
+        def __init__(self):
+            self.suggested_filename = "flow.png"
+            self.save_as = AsyncMock()
+
+    class FakePage:
+        def __init__(self):
+            self.download_callback = None
+            self.removed_callback = None
+
+        def on(self, event, callback):
+            assert event == "download"
+            self.download_callback = callback
+
+        def remove_listener(self, event, callback):
+            assert event == "download"
+            self.removed_callback = callback
+
+    fake_page = FakePage()
+    client = SimpleNamespace(page=fake_page)
+    fake_download = FakeDownload()
+
+    monkeypatch.setattr(upscale, "_ensure_edit_view", AsyncMock())
+    monkeypatch.setattr(upscale, "_open_edit_download_menu", AsyncMock(return_value=True))
+    monkeypatch.setattr(upscale, "_click_menu_image_target", AsyncMock(return_value=True))
+    monkeypatch.setattr(upscale, "_close_toast", AsyncMock())
+    monkeypatch.setattr(upscale, "_wait_upscale", AsyncMock())
+    monkeypatch.setattr(upscale, "_capture_download_from_menu", AsyncMock())
+    save_mock = AsyncMock(return_value=str(tmp_path / "img_2k.png"))
+    monkeypatch.setattr(upscale, "_save_image_download", save_mock)
+
+    async def wait_or_download(page, downloads):
+        assert downloads == []
+        assert page.download_callback is not None
+        page.download_callback(fake_download)
+        assert downloads == [fake_download]
+        return None
+
+    monkeypatch.setattr(upscale, "_wait_for_download_or_popup", AsyncMock(side_effect=wait_or_download))
+
+    result = await upscale.upscale_and_download_image(
+        client, prefix="img", output_dir=str(tmp_path), media_id="mid"
+    )
+
+    assert result == str(tmp_path / "img_2k.png")
+    save_mock.assert_awaited_once_with(fake_download, "img", "2k", tmp_path)
+    assert fake_page.removed_callback is fake_page.download_callback
