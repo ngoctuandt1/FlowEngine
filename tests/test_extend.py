@@ -24,10 +24,12 @@ and Step-3.5 1s wait don't bloat runtime.
 """
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from flow.operations import _base
 from flow.operations import extend as extend_mod
 from flow.operations.extend import (
     _type_extend_prompt,
@@ -458,3 +460,125 @@ async def test_type_extend_prompt_preserves_placeholder_fallbacks():
             f"H5 rejected — placeholder fallback {sel!r} must remain as "
             f"a Method-3 defense layer. Selectors tried: {selectors_called}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T9: extend-video multi-generation handling
+# ---------------------------------------------------------------------------
+
+
+PROJECT_ID = "d" * 32
+PARENT_SLUG = "a" * 32
+SETTLED_SLUG = "b" * 32
+REDIRECT_SLUG_1 = "c" * 32
+REDIRECT_SLUG_2 = "e" * 32
+
+
+def _edit_url(slug: str) -> str:
+    return f"https://labs.google/fx/tools/flow/project/{PROJECT_ID}/edit/{slug}"
+
+
+def _finalize_client(page, media_events=None):
+    return SimpleNamespace(
+        page=page,
+        _media_id_events=list(media_events or []),
+        _gen_id="gen-1",
+        profile_name="profile-a",
+    )
+
+
+@pytest.mark.skip(reason="depends on T7 video multi-gen download fix on this branch")
+async def test_extend_finalize_multi_gen_downloads_all_outputs_after_t7(monkeypatch):
+    """T9 #1: once T7 lands, extend-video multi-gen should download every new output."""
+    page = MagicMock()
+    page.url = _edit_url(SETTLED_SLUG)
+    client = _finalize_client(
+        page,
+        media_events=[
+            {"mid": REDIRECT_SLUG_1},
+            {"mid": REDIRECT_SLUG_2},
+        ],
+    )
+    monkeypatch.setattr(
+        _base,
+        "wait_for_completion",
+        AsyncMock(return_value={"done": True, "media_ids": [REDIRECT_SLUG_1, REDIRECT_SLUG_2]}),
+    )
+    monkeypatch.setattr(
+        _base,
+        "download_video",
+        AsyncMock(return_value=["ext_1.mp4", "ext_2.mp4"]),
+    )
+
+    result = await _base.finalize_operation(
+        client,
+        {"media_id": PARENT_SLUG},
+        "extend-video",
+        PROJECT_ID,
+        "",
+        "ext",
+    )
+
+    assert len(result["output_files"]) == 2
+
+
+async def test_extend_finalize_stores_settled_route_media_id_not_redirect_ids(monkeypatch):
+    """T9 #2: chain media_id stays on the settled /edit/{slug}, not transient redirect ids."""
+    page = MagicMock()
+    page.url = _edit_url(SETTLED_SLUG)
+    client = _finalize_client(
+        page,
+        media_events=[
+            {"mid": REDIRECT_SLUG_1},
+            {"mid": REDIRECT_SLUG_2},
+        ],
+    )
+    download = AsyncMock(return_value=["ext_1.mp4", "ext_2.mp4"])
+    monkeypatch.setattr(
+        _base,
+        "wait_for_completion",
+        AsyncMock(return_value={"done": True, "media_ids": [REDIRECT_SLUG_1, REDIRECT_SLUG_2]}),
+    )
+    monkeypatch.setattr(_base, "download_video", download)
+
+    result = await _base.finalize_operation(
+        client,
+        {"media_id": PARENT_SLUG},
+        "extend-video",
+        PROJECT_ID,
+        "",
+        "ext",
+    )
+
+    assert result["media_id"] == SETTLED_SLUG
+    assert result["media_id"] not in {REDIRECT_SLUG_1, REDIRECT_SLUG_2}
+    assert result["edit_url"] == _edit_url(SETTLED_SLUG)
+    assert download.await_args.kwargs["media_ids"] == [REDIRECT_SLUG_1, REDIRECT_SLUG_2]
+
+
+async def test_extend_finalize_single_gen_still_uses_settled_route_media_id(monkeypatch):
+    """T9 #3: single-generation extend keeps existing finalize contract unchanged."""
+    page = MagicMock()
+    page.url = _edit_url(SETTLED_SLUG)
+    client = _finalize_client(page, media_events=[{"mid": REDIRECT_SLUG_1}])
+    download = AsyncMock(return_value=["ext_1.mp4"])
+    monkeypatch.setattr(
+        _base,
+        "wait_for_completion",
+        AsyncMock(return_value={"done": True, "media_ids": [REDIRECT_SLUG_1]}),
+    )
+    monkeypatch.setattr(_base, "download_video", download)
+
+    result = await _base.finalize_operation(
+        client,
+        {"media_id": PARENT_SLUG},
+        "extend-video",
+        PROJECT_ID,
+        "",
+        "ext",
+    )
+
+    assert result["media_id"] == SETTLED_SLUG
+    assert result["edit_url"] == _edit_url(SETTLED_SLUG)
+    assert result["output_files"] == ["ext_1.mp4"]
+    assert download.await_args.kwargs["media_ids"] == [REDIRECT_SLUG_1]
