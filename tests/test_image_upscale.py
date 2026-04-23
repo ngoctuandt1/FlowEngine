@@ -255,6 +255,52 @@ async def test_upscale_and_download_image_returns_none_on_timeout_without_popup(
 
 
 @pytest.mark.asyncio
+async def test_outer_exception_returns_none(monkeypatch, tmp_path, image_client):
+    client, page = image_client
+    _patch_image_flow(monkeypatch, page)
+    boom = RuntimeError("playwright blew up")
+    monkeypatch.setattr(upscale, "_wait_for_download_or_popup", AsyncMock(side_effect=boom))
+
+    result = await upscale.upscale_and_download_image(
+        client,
+        prefix="img",
+        output_dir=str(tmp_path),
+        media_id="mid",
+    )
+
+    assert result is None
+    page.remove_listener.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_remove_listener_failure_is_swallowed(monkeypatch, tmp_path, image_client):
+    client, page = image_client
+    _patch_image_flow(monkeypatch, page)
+    page.remove_listener.side_effect = RuntimeError("listener already removed")
+    download_obj = object()
+
+    async def wait_or_download(_page, downloads):
+        downloads.append(download_obj)
+        return None
+
+    monkeypatch.setattr(
+        upscale,
+        "_wait_for_download_or_popup",
+        AsyncMock(side_effect=wait_or_download),
+    )
+    upscale._save_image_download.return_value = str(tmp_path / "img_2k.jpg")
+
+    result = await upscale.upscale_and_download_image(
+        client,
+        prefix="img",
+        output_dir=str(tmp_path),
+        media_id="mid",
+    )
+
+    assert result == str(tmp_path / "img_2k.jpg")
+
+
+@pytest.mark.asyncio
 async def test_download_video_image_branch_iterates_multiple_mids(monkeypatch, tmp_path, image_client):
     client, _ = image_client
     media_ids = ["mid-1", "mid-2", "mid-3"]
