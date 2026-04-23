@@ -148,10 +148,45 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
                 media_id[:20],
             )
 
+    # B39 (2026-04-23): the URL-strip branch above catches the SPA bouncing
+    # to /project/ on stale media, but Flow's other failure mode keeps
+    # /edit/{stale_media_id} in the URL with an un-mounted editor — no
+    # <video>, no mode buttons. Observed on insert-object whose parent
+    # media had been consumed by a sibling extend. Catch it here with a
+    # bounded video wait and fall back to first-tile click (the same
+    # recovery the /project/ branch above uses) to land on /edit/{latest}.
+    if not await _editor_mounted(page, timeout_ms=8000):
+        logger.warning(
+            "Editor did not mount after nav to %s — falling back to first-tile click",
+            edit_url_val[:80],
+        )
+        recovered = await _click_video_tile(page, "")
+        if not recovered or not await _editor_mounted(page, timeout_ms=8000):
+            raise RuntimeError(
+                f"Editor did not mount for {edit_url_val} and first-tile recovery "
+                f"failed. Parent media may be stale (consumed by sibling op)."
+            )
+        if media_id:
+            await _activate_clip_tile(page, media_id)
+
     locale = detect_locale(page.url)
     project_id = extract_project_id(page.url) or ""
 
     return edit_url_val, project_id, locale
+
+
+async def _editor_mounted(page, timeout_ms: int = 8000) -> bool:
+    """Return True when the /edit/ composer has rendered its <video>.
+
+    Used as a post-navigation sanity check — distinguishes a truly
+    mounted editor from the SPA's half-loaded state where the URL
+    reads /edit/{media} but no editor DOM is present.
+    """
+    try:
+        await page.locator("video").first.wait_for(state="visible", timeout=timeout_ms)
+        return True
+    except Exception:
+        return False
 
 
 async def _recover_editor_landing(page, target_url: str) -> bool:
