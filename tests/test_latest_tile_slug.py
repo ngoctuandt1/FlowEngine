@@ -59,7 +59,7 @@ async def test_finalize_operation_prefers_latest_tile_when_url_stays_on_parent(m
     monkeypatch.setattr(
         _base,
         "wait_for_completion",
-        AsyncMock(return_value={"done": True, "media_ids": ["redirect-name"]}),
+        AsyncMock(return_value={"done": True, "media_ids": [PARENT_SLUG]}),
     )
     monkeypatch.setattr(
         _base, "_extract_settled_route_media_id", AsyncMock(return_value=PARENT_SLUG)
@@ -80,7 +80,7 @@ async def test_finalize_operation_prefers_latest_tile_when_url_stays_on_parent(m
     assert result["media_id"] == NEW_SLUG
     assert result["edit_url"] == _edit(NEW_SLUG)
     warnings = [record.getMessage().lower() for record in caplog.records]
-    assert any("overriding media_id from latest tile" in msg for msg in warnings)
+    assert any("no new network mid; using latest tile slug" in msg for msg in warnings)
 
 
 async def test_finalize_operation_overrides_when_url_is_clip_route_slug(monkeypatch):
@@ -93,7 +93,7 @@ async def test_finalize_operation_overrides_when_url_is_clip_route_slug(monkeypa
     monkeypatch.setattr(
         _base,
         "wait_for_completion",
-        AsyncMock(return_value={"done": True, "media_ids": ["redirect-name"]}),
+        AsyncMock(return_value={"done": True, "media_ids": []}),
     )
     monkeypatch.setattr(
         _base, "_extract_settled_route_media_id", AsyncMock(return_value=OTHER_SLUG)
@@ -119,7 +119,7 @@ async def test_finalize_operation_does_not_override_when_tile_slug_missing(monke
     monkeypatch.setattr(
         _base,
         "wait_for_completion",
-        AsyncMock(return_value={"done": True, "media_ids": ["redirect-name"]}),
+        AsyncMock(return_value={"done": True, "media_ids": [PARENT_SLUG]}),
     )
     monkeypatch.setattr(
         _base, "_extract_settled_route_media_id", AsyncMock(return_value=PARENT_SLUG)
