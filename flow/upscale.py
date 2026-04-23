@@ -33,7 +33,8 @@ _DONE_RE = re.compile(
 )
 _BUSY_RE = re.compile(
     r"(đang tăng độ phân giải|tăng độ phân giải|"
-    r"upscaling|processing (1080|2k|4k))",
+    r"upscaling(?!\s+done\b)|\bpreparing\b|\brendering\b|\bgenerating\b|"
+    r"\bin progress\b|\bplease wait\b|processing (1080|2k|4k))",
     re.IGNORECASE,
 )
 _FAIL_RE = re.compile(
