@@ -75,17 +75,36 @@ def _project_url(project_id: str = PROJECT_ID) -> str:
     return f"https://labs.google/fx/tools/flow/project/{project_id}"
 
 
-def _make_client(url: str, profile: str = "test-profile"):
+def _make_locator_mock(wait_for_ok: bool = True):
+    """Build a locator whose `.first.wait_for(...)` is an awaitable.
+
+    `wait_for_ok=False` makes `.first.wait_for` raise, which
+    `_editor_mounted` treats as "editor never rendered"."""
+    loc = MagicMock()
+    if wait_for_ok:
+        loc.first.wait_for = AsyncMock()
+    else:
+        loc.first.wait_for = AsyncMock(side_effect=Exception("video never visible"))
+    loc.first.click = AsyncMock()
+    loc.first.is_visible = AsyncMock(return_value=True)
+    loc.first.is_enabled = AsyncMock(return_value=True)
+    return loc
+
+
+def _make_client(url: str, profile: str = "test-profile", editor_mounts: bool = True):
     """Mock client+page where `page.url` returns the given string.
 
     `page.goto` is a no-op AsyncMock — it does NOT mutate `page.url`, so
-    the test controls what the navigation code sees at each read."""
+    the test controls what the navigation code sees at each read.
+
+    `editor_mounts=False` makes the default `page.locator("video")` wait
+    fail, simulating Flow's half-loaded SPA state (B39)."""
     client = MagicMock()
     client.profile_name = profile
     page = MagicMock()
     page.url = url
     page.goto = AsyncMock()
-    page.locator = MagicMock()
+    page.locator = MagicMock(return_value=_make_locator_mock(wait_for_ok=editor_mounts))
     client.page = page
     return client, page
 
@@ -475,6 +494,84 @@ async def test_navigate_to_edit_passes_when_url_intact():
 
     assert edit_url == _edit_url(MEDIA_ID_A)
     assert project_id == PROJECT_ID
+
+
+# ---------------------------------------------------------------------------
+# B39: navigate_to_edit — editor-not-mounted fallback. Flow's SPA sometimes
+# keeps /edit/{stale_media} in the URL without rendering the editor (no
+# <video>, no mode buttons). Observed 2026-04-23 on L2 insert whose parent
+# media had been consumed by a sibling extend. Fallback: first-tile click.
+# ---------------------------------------------------------------------------
+
+
+async def test_navigate_recovers_when_editor_never_mounts(monkeypatch, caplog):
+    """B39: URL intact at /edit/{stale} but <video> never appears. Must
+    recover via first-tile click and retry the mount check before
+    returning. Verifies B39 failure mode caught 2026-04-23 on insert-object
+    against a sibling-consumed parent media."""
+    client, page = _make_client(_edit_url(MEDIA_ID_A), editor_mounts=False)
+
+    async def _first_tile_recover(page_arg, media):
+        # Simulate first-tile click switching to the live /edit/{latest}
+        # AND the editor mounting on the retry.
+        page_arg.url = _edit_url(MEDIA_ID_B)
+        page_arg.locator = MagicMock(return_value=_make_locator_mock(wait_for_ok=True))
+        return True
+
+    monkeypatch.setattr(_base, "_click_video_tile", AsyncMock(side_effect=_first_tile_recover))
+    monkeypatch.setattr(_base, "_activate_clip_tile", AsyncMock(return_value=False))
+
+    job = {
+        "edit_url": _edit_url(MEDIA_ID_A),
+        "project_url": _project_url(),
+        "media_id": MEDIA_ID_A,
+    }
+
+    with caplog.at_level(logging.WARNING, logger="flow.operations._base"):
+        edit_url, _pid, _locale = await navigate_to_edit(client, job)
+
+    assert edit_url == _edit_url(MEDIA_ID_A)
+    msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Editor did not mount" in m and "first-tile click" in m for m in msgs)
+
+
+async def test_navigate_raises_when_editor_dead_and_recovery_fails(monkeypatch):
+    """B39 hard-fail: editor not mounted AND first-tile click can't recover
+    → raise with stale-media diagnostic. Guards against silent soft-warn
+    (the pre-B39 behaviour that let insert-object proceed and fail later
+    at "Failed to find Insert button" with no root-cause hint)."""
+    client, _page = _make_client(_edit_url(MEDIA_ID_A), editor_mounts=False)
+    monkeypatch.setattr(_base, "_click_video_tile", AsyncMock(return_value=False))
+    monkeypatch.setattr(_base, "_activate_clip_tile", AsyncMock(return_value=False))
+
+    job = {
+        "edit_url": _edit_url(MEDIA_ID_A),
+        "project_url": _project_url(),
+        "media_id": MEDIA_ID_A,
+    }
+
+    with pytest.raises(RuntimeError, match="Parent media may be stale"):
+        await navigate_to_edit(client, job)
+
+
+async def test_navigate_skips_fallback_when_editor_mounts_normally(monkeypatch):
+    """B39 regression guard: on the happy path (<video> visible within
+    timeout), `_click_video_tile` must NOT be invoked — the fallback is
+    cost-only in non-broken cases."""
+    client, _page = _make_client(_edit_url(MEDIA_ID_A))  # editor_mounts=True
+    tile_click = AsyncMock(return_value=True)
+    monkeypatch.setattr(_base, "_click_video_tile", tile_click)
+    monkeypatch.setattr(_base, "_activate_clip_tile", AsyncMock(return_value=True))
+
+    job = {
+        "edit_url": _edit_url(MEDIA_ID_A),
+        "project_url": _project_url(),
+        "media_id": MEDIA_ID_A,
+    }
+
+    await navigate_to_edit(client, job)
+
+    tile_click.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
