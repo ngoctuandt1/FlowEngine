@@ -61,6 +61,13 @@ class FakePage:
         if getattr(self, "on_reload", None) is not None:
             self.on_reload()
 
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.goto_calls = getattr(self, "goto_calls", [])
+        self.goto_calls.append(url)
+        self.url = url
+        if getattr(self, "on_goto", None) is not None:
+            self.on_goto(url)
+
 
 @pytest.mark.parametrize(
     "url,expected",
@@ -253,6 +260,41 @@ async def test_max_reloads_zero_preserves_single_pass():
     )
     assert result is False
     assert getattr(page, "reload_count", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_storage_reset_bounce_runs_after_reload_retries_exhaust():
+    """Sticky A/B: both reloads fail → storage reset + /fx bounce → success."""
+    page = FakePage()
+    stuck = FakeLocator(
+        visible=True,
+        on_click=lambda: setattr(
+            page, "url", "https://labs.google/fx/tools/flow#partners"
+        ),
+    )
+    for sel in landing._CREATE_WITH_FLOW_SELECTORS:
+        page.set(sel, stuck)
+
+    ready_flag = {"on": False}
+
+    def flip_on_second_goto(url):
+        # Simulate: bounce through /fx flips the A/B; subsequent CTA click
+        # mints the app (ready_flag flips when stuck.click fires post-bounce).
+        if "/tools/flow" in url and getattr(page, "goto_calls", []).count(url) >= 1:
+            ready_flag["on"] = True
+
+    page.on_goto = flip_on_second_goto
+
+    async def is_ready():
+        return ready_flag["on"]
+
+    logger = logging.getLogger("test")
+    result = await landing.dismiss_flow_marketing_landing(
+        page, logger, is_ready, per_click_timeout_sec=0.2, max_reloads=1,
+    )
+    assert result is True
+    assert "localStorage.clear" in "".join(page.evaluate_calls)
+    assert any("/fx" in u for u in page.goto_calls)
 
 
 @pytest.mark.asyncio

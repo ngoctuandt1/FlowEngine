@@ -202,7 +202,43 @@ async def dismiss_flow_marketing_landing(
         ):
             return True
 
-    return False
+    # Last-ditch: some Google A/B assignments persist across plain reloads
+    # via localStorage / sessionStorage (observed 2026-04-24 on ngoctuandt20).
+    # Wipe client-side state (cookies untouched → session stays authenticated)
+    # and bounce through the parent `labs.google/fx` to force a fresh A/B
+    # assignment, then re-run the CTA loop once more. Gated on max_reloads>0
+    # so the pre-#51 `max_reloads=0` single-pass contract is preserved.
+    if max_reloads <= 0:
+        return False
+    logger.info("Reload-retry exhausted — resetting client storage + bounce via /fx")
+    try:
+        await page.evaluate(
+            "() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} }"
+        )
+    except Exception:
+        pass
+    try:
+        await page.goto("https://labs.google/fx", wait_until="domcontentloaded", timeout=15000)
+        await asyncio.sleep(1.5)
+        await page.goto(
+            "https://labs.google/fx/tools/flow",
+            wait_until="domcontentloaded",
+            timeout=15000,
+        )
+        await asyncio.sleep(reload_settle_sec)
+    except Exception as exc:
+        logger.warning("Storage-reset bounce failed: %s", exc)
+        return False
+
+    try:
+        if await is_ready():
+            return True
+    except Exception:
+        pass
+
+    return await _dismiss_landing_once(
+        page, logger, is_ready, per_click_timeout_sec
+    )
 
 
 async def recover_from_flow_landing(
