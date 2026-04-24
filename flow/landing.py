@@ -63,39 +63,13 @@ async def _find_landing_cta(page):
     return None
 
 
-async def dismiss_flow_marketing_landing(
+async def _dismiss_landing_once(
     page,
     logger,
     is_ready,
-    *,
-    per_click_timeout_sec: float = 8.0,
+    per_click_timeout_sec: float,
 ) -> bool:
-    """Click a "Create with Flow" CTA candidate until the app mounts.
-
-    Unlike :func:`recover_from_flow_landing` — which keys on the URL
-    flipping to ``/project/`` — the L1 homepage path leaves the URL at
-    ``/tools/flow`` after a correct click. Callers supply an *is_ready*
-    coroutine that returns True once the app DOM is usable (e.g. the
-    "+ New project" button is attached). After each candidate click we
-    poll *is_ready* and the URL; if neither indicates success and the
-    URL degrades to an in-page anchor (`#capabilities` etc.), we abandon
-    that candidate and try the next.
-
-    Parameters
-    ----------
-    page: Playwright Page (real, not a mock — locator chain is used).
-    logger: caller's logger.
-    is_ready: ``async () -> bool`` predicate. Returns True when the
-        caller's "we are in the app" signal is satisfied. Must not
-        raise; return False on timeout.
-    per_click_timeout_sec: max seconds to wait for the app to mount
-        after each individual CTA click before moving on.
-
-    Returns
-    -------
-    bool: True if some candidate produced a ready state; False if all
-    candidates were exhausted without the app mounting.
-    """
+    """One pass over CTA candidates — see :func:`dismiss_flow_marketing_landing`."""
     for selector in _CREATE_WITH_FLOW_SELECTORS:
         try:
             cta = page.locator(selector).first
@@ -167,6 +141,78 @@ async def dismiss_flow_marketing_landing(
             "CTA '%s' did not mount app within %.0fs (url=%s) — trying next",
             selector, per_click_timeout_sec, page.url[:120],
         )
+
+    return False
+
+
+async def dismiss_flow_marketing_landing(
+    page,
+    logger,
+    is_ready,
+    *,
+    per_click_timeout_sec: float = 8.0,
+    max_reloads: int = 2,
+    reload_settle_sec: float = 2.0,
+) -> bool:
+    """Click a "Create with Flow" CTA until the app mounts, reloading on failure.
+
+    Unlike :func:`recover_from_flow_landing` — which keys on the URL
+    flipping to ``/project/`` — the L1 homepage path leaves the URL at
+    ``/tools/flow`` after a correct click. Callers supply an *is_ready*
+    coroutine that returns True once the app DOM is usable (e.g. the
+    "+ New project" button is attached). After each candidate click we
+    poll *is_ready* and the URL; if neither indicates success and the
+    URL degrades to an in-page anchor (`#capabilities` etc.), we abandon
+    that candidate and try the next.
+
+    Google A/Bs the hero CTA's onClick handler per request (issue #51):
+    the SAME button sometimes enters the app, sometimes scroll-navigates
+    to ``#capabilities``. When a full pass over all candidates fails,
+    :func:`page.reload` gives the A/B another roll of the dice.
+
+    Parameters
+    ----------
+    page: Playwright Page (real, not a mock — locator chain is used).
+    logger: caller's logger.
+    is_ready: ``async () -> bool`` predicate. Returns True when the
+        caller's "we are in the app" signal is satisfied. Must not
+        raise; return False on timeout.
+    per_click_timeout_sec: max seconds to wait for the app to mount
+        after each individual CTA click before moving on.
+    max_reloads: number of :func:`page.reload` attempts after the
+        first pass fails. ``0`` disables reload-retry (preserves the
+        pre-#51 behavior).
+    reload_settle_sec: seconds to sleep after each reload before
+        re-running the candidate loop.
+
+    Returns
+    -------
+    bool: True if some candidate produced a ready state; False if all
+    candidates were exhausted across all reload attempts.
+    """
+    for attempt in range(max_reloads + 1):
+        if attempt > 0:
+            logger.info(
+                "Marketing landing persisted — reload retry %d/%d",
+                attempt, max_reloads,
+            )
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=15000)
+            except Exception as exc:
+                logger.warning("Reload failed on retry %d: %s", attempt, exc)
+                continue
+            await asyncio.sleep(reload_settle_sec)
+            # Fast path — reload may have served the app variant directly.
+            try:
+                if await is_ready():
+                    return True
+            except Exception:
+                pass
+
+        if await _dismiss_landing_once(
+            page, logger, is_ready, per_click_timeout_sec
+        ):
+            return True
 
     return False
 

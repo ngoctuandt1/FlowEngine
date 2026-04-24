@@ -56,6 +56,11 @@ class FakePage:
         if arg is not None and hasattr(arg, "_js_click"):
             await arg._js_click()
 
+    async def reload(self, wait_until=None, timeout=None):
+        self.reload_count = getattr(self, "reload_count", 0) + 1
+        if getattr(self, "on_reload", None) is not None:
+            self.on_reload()
+
 
 @pytest.mark.parametrize(
     "url,expected",
@@ -79,7 +84,7 @@ async def test_returns_false_when_no_cta_visible():
     logger = logging.getLogger("test")
     is_ready = AsyncMock(return_value=False)
     result = await landing.dismiss_flow_marketing_landing(
-        page, logger, is_ready, per_click_timeout_sec=0.05
+        page, logger, is_ready, per_click_timeout_sec=0.05, max_reloads=0,
     )
     assert result is False
     is_ready.assert_not_called()  # never reached the click loop
@@ -189,7 +194,7 @@ async def test_all_candidates_fail_returns_false():
 
     logger = logging.getLogger("test")
     result = await landing.dismiss_flow_marketing_landing(
-        page, logger, is_ready, per_click_timeout_sec=0.2
+        page, logger, is_ready, per_click_timeout_sec=0.2, max_reloads=0,
     )
     assert result is False
     # Every visible candidate was attempted.
@@ -231,6 +236,60 @@ async def test_js_click_fallback_fires_when_playwright_click_fails():
     )
     assert result is True
     assert any("el.click" in s for s in page.evaluate_calls)
+
+
+@pytest.mark.asyncio
+async def test_reload_retry_succeeds_when_second_pass_ready():
+    """Issue #51 — A/B re-rolls on reload; second attempt enters app."""
+    page = FakePage()
+    # First pass: CTA click lands on anchor (bad A/B).
+    bad = FakeLocator(
+        visible=True,
+        on_click=lambda: setattr(
+            page, "url", "https://labs.google/fx/tools/flow#capabilities"
+        ),
+    )
+    for sel in landing._CREATE_WITH_FLOW_SELECTORS:
+        page.set(sel, bad)
+
+    # After reload: is_ready flips to True (app already served).
+    def flip_ready():
+        page._post_reload = True
+    page.on_reload = flip_ready
+
+    async def is_ready():
+        return getattr(page, "_post_reload", False)
+
+    logger = logging.getLogger("test")
+    result = await landing.dismiss_flow_marketing_landing(
+        page, logger, is_ready, per_click_timeout_sec=0.2, max_reloads=2,
+    )
+    assert result is True
+    assert getattr(page, "reload_count", 0) == 1
+
+
+@pytest.mark.asyncio
+async def test_max_reloads_zero_preserves_single_pass():
+    """Default opt-out — no reload calls when max_reloads=0."""
+    page = FakePage()
+    stuck = FakeLocator(
+        visible=True,
+        on_click=lambda: setattr(
+            page, "url", "https://labs.google/fx/tools/flow#capabilities"
+        ),
+    )
+    for sel in landing._CREATE_WITH_FLOW_SELECTORS:
+        page.set(sel, stuck)
+
+    async def is_ready():
+        return False
+
+    logger = logging.getLogger("test")
+    result = await landing.dismiss_flow_marketing_landing(
+        page, logger, is_ready, per_click_timeout_sec=0.2, max_reloads=0,
+    )
+    assert result is False
+    assert getattr(page, "reload_count", 0) == 0
 
 
 @pytest.mark.asyncio
