@@ -362,11 +362,13 @@ async def dispatch_job(
     job: dict,
     profile_manager: ProfileManager,
     project_lock: ProjectLock,
+    *,
+    manage_profile: bool = True,
 ) -> dict:
     """Route a claimed job to the correct handler.
 
-    Manages profile busy/available state and project lock
-    acquisition/release around the handler call.
+    Manages project lock acquisition/release around the handler call.
+    By default, it also manages profile busy/available state for direct callers.
 
     Returns a result dict suitable for ``remote_api.update_job()``.
     """
@@ -385,14 +387,14 @@ async def dispatch_job(
         }
 
     # --- Pre-dispatch bookkeeping ---
-    if profile:
+    if manage_profile and profile:
         profile_manager.mark_busy(profile, job_id)
 
     # Level-2+ jobs operate on an existing project -> acquire lock
     needs_lock = job_level >= 2 and project_url
     if needs_lock:
         if not project_lock.acquire(project_url, job_id):
-            if profile:
+            if manage_profile and profile:
                 profile_manager.mark_available(profile)
             return {
                 "status": "failed",
@@ -454,5 +456,5 @@ async def dispatch_job(
         # --- Post-dispatch cleanup ---
         if needs_lock:
             project_lock.release(project_url)
-        if profile:
+        if manage_profile and profile:
             profile_manager.mark_available(profile)

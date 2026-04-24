@@ -80,70 +80,100 @@ async def claim_loop(
 
     last_heartbeat = datetime.now(UTC)
     heartbeat_delta = timedelta(seconds=HEARTBEAT_INTERVAL_SEC)
-
-    logger.info(
-        "Starting claim loop  server=%s  worker=%s  profiles=%s  poll=%ds",
-        SERVER_URL, WORKER_ID, WORKER_PROFILES, POLL_INTERVAL_SEC,
+    in_flight: set[asyncio.Task[None]] = set()
+    max_concurrent = max(
+        1,
+        min(len(profile_mgr.profiles), MAX_CONCURRENT_JOBS),
     )
 
-    while not _shutdown.is_set():
-        # --- Heartbeat ---
-        now = datetime.now(UTC)
-        if now - last_heartbeat >= heartbeat_delta:
-            try:
-                await api.heartbeat()
-                last_heartbeat = now
-            except Exception:
-                logger.warning("Heartbeat failed", exc_info=True)
+    logger.info(
+        "Starting claim loop  server=%s  worker=%s  profiles=%s  poll=%ds  max=%d",
+        SERVER_URL, WORKER_ID, WORKER_PROFILES, POLL_INTERVAL_SEC, max_concurrent,
+    )
 
-        # --- Check available profiles ---
-        available = profile_mgr.get_available()
-        if not available:
-            logger.debug("No profiles available, sleeping %ds", POLL_INTERVAL_SEC)
-            try:
-                await asyncio.wait_for(
-                    _shutdown.wait(), timeout=POLL_INTERVAL_SEC
-                )
-            except asyncio.TimeoutError:
-                pass
-            continue
-
-        # --- Claim a job ---
-        try:
-            job = await api.claim_job(available)
-        except Exception:
-            logger.warning("Claim request failed", exc_info=True)
-            job = None
-
-        if job is None:
-            try:
-                await asyncio.wait_for(
-                    _shutdown.wait(), timeout=POLL_INTERVAL_SEC
-                )
-            except asyncio.TimeoutError:
-                pass
-            continue
-
+    async def run_claimed_job(job: dict) -> None:
         job_id = job.get("id", "?")
-        job_type = job.get("type", "?")
-        job_profile = job.get("profile", "?")
-        logger.info(
-            "Claimed job %s [%s] profile=%s", job_id, job_type, job_profile,
-        )
+        profile = job.get("profile", "")
+        try:
+            result = await dispatch_job(
+                job,
+                profile_mgr,
+                project_lock,
+                manage_profile=False,
+            )
+        except Exception as exc:
+            logger.exception("Dispatch crashed for job %s", job_id)
+            result = {"status": "failed", "error": str(exc)}
+        finally:
+            if profile:
+                profile_mgr.mark_available(profile)
 
-        # --- Dispatch ---
-        result = await dispatch_job(job, profile_mgr, project_lock)
-
-        # --- Report result ---
         try:
             await api.update_job(job_id, result)
-            logger.info(
-                "Job %s result sent -> %s", job_id, result.get("status"),
-            )
+            logger.info("Job %s result sent -> %s", job_id, result.get("status"))
         except Exception:
-            logger.error(
-                "Failed to report result for job %s", job_id, exc_info=True,
-            )
+            logger.error("Failed to report result for job %s", job_id, exc_info=True)
+
+    async def wait_for_capacity() -> None:
+        if not in_flight:
+            try:
+                await asyncio.wait_for(_shutdown.wait(), timeout=POLL_INTERVAL_SEC)
+            except asyncio.TimeoutError:
+                pass
+            return
+
+        shutdown_task = asyncio.create_task(_shutdown.wait())
+        done, _ = await asyncio.wait(
+            {*in_flight, shutdown_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if shutdown_task in done:
+            return
+        shutdown_task.cancel()
+        await asyncio.gather(shutdown_task, return_exceptions=True)
+
+    try:
+        while not _shutdown.is_set():
+            in_flight = {task for task in in_flight if not task.done()}
+
+            now = datetime.now(UTC)
+            if now - last_heartbeat >= heartbeat_delta:
+                try:
+                    await api.heartbeat()
+                    last_heartbeat = now
+                except Exception:
+                    logger.warning("Heartbeat failed", exc_info=True)
+
+            available = profile_mgr.get_available()
+            if not available or len(in_flight) >= max_concurrent:
+                await wait_for_capacity()
+                continue
+
+            claim_profiles = available[: max_concurrent - len(in_flight)]
+            try:
+                job = await api.claim_job(claim_profiles)
+            except Exception:
+                logger.warning("Claim request failed", exc_info=True)
+                job = None
+
+            if job is None:
+                await wait_for_capacity()
+                continue
+
+            job_id = job.get("id", "?")
+            job_type = job.get("type", "?")
+            job_profile = job.get("profile", "")
+            logger.info("Claimed job %s [%s] profile=%s", job_id, job_type, job_profile)
+
+            if job_profile:
+                profile_mgr.mark_busy(job_profile, job_id)
+            task = asyncio.create_task(run_claimed_job(job))
+            in_flight.add(task)
+
+    finally:
+        if in_flight:
+            logger.info("Waiting for %d in-flight job(s) to finish", len(in_flight))
+            await asyncio.gather(*in_flight, return_exceptions=True)
 
 
 async def run() -> None:
