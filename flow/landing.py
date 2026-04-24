@@ -5,10 +5,26 @@ from __future__ import annotations
 import asyncio
 import time
 
-_CREATE_WITH_FLOW_SELECTORS = (
+# Ordered by specificity. Earlier entries win so the hero CTA is preferred
+# over nav / footer shortcuts that share the same "Create with Flow" text
+# but resolve to in-page scroll anchors (`href='#capabilities'` etc.) —
+# issue #48 evidence, 2026-04-24.
+_CREATE_WITH_FLOW_SELECTORS: tuple[str, ...] = (
+    # Hero section: scoped under <main>, exclude in-page anchors.
+    "main button:has-text('Create with Flow')",
+    "main [role='button']:has-text('Create with Flow')",
+    "main a:has-text('Create with Flow'):not([href^='#'])",
+    # Document-wide fallbacks for variants without a <main> wrapper.
     "button:has-text('Create with Flow')",
     "[role='button']:has-text('Create with Flow')",
-    "a:has-text('Create with Flow')",
+    "a:has-text('Create with Flow'):not([href^='#'])",
+)
+
+
+# URL fragments observed on the marketing landing when the CTA click only
+# scrolled to an in-page anchor instead of mounting the app (issue #48).
+_ANCHOR_SCROLL_FRAGMENTS: tuple[str, ...] = (
+    "#capabilities", "#partners", "#faq", "#models", "#explore",
 )
 
 
@@ -22,6 +38,20 @@ def is_flow_landing_url(url: str) -> bool:
     )
 
 
+def is_marketing_anchor_url(url: str) -> bool:
+    """Return True when URL is the marketing page scrolled to an anchor.
+
+    After clicking a "Create with Flow" scroll-link the URL gains a
+    fragment like `#capabilities` without leaving the marketing page —
+    the app never mounts. Used by :func:`dismiss_flow_marketing_landing`
+    as the "wrong CTA clicked, try next candidate" signal.
+    """
+    if not url or "/project/" in url or "/edit/" in url:
+        return False
+    lowered = url.lower()
+    return any(frag in lowered for frag in _ANCHOR_SCROLL_FRAGMENTS)
+
+
 async def _find_landing_cta(page):
     for selector in _CREATE_WITH_FLOW_SELECTORS:
         try:
@@ -31,6 +61,82 @@ async def _find_landing_cta(page):
         except Exception:
             continue
     return None
+
+
+async def dismiss_flow_marketing_landing(
+    page,
+    logger,
+    is_ready,
+    *,
+    per_click_timeout_sec: float = 8.0,
+) -> bool:
+    """Click a "Create with Flow" CTA candidate until the app mounts.
+
+    Unlike :func:`recover_from_flow_landing` — which keys on the URL
+    flipping to ``/project/`` — the L1 homepage path leaves the URL at
+    ``/tools/flow`` after a correct click. Callers supply an *is_ready*
+    coroutine that returns True once the app DOM is usable (e.g. the
+    "+ New project" button is attached). After each candidate click we
+    poll *is_ready* and the URL; if neither indicates success and the
+    URL degrades to an in-page anchor (`#capabilities` etc.), we abandon
+    that candidate and try the next.
+
+    Parameters
+    ----------
+    page: Playwright Page (real, not a mock — locator chain is used).
+    logger: caller's logger.
+    is_ready: ``async () -> bool`` predicate. Returns True when the
+        caller's "we are in the app" signal is satisfied. Must not
+        raise; return False on timeout.
+    per_click_timeout_sec: max seconds to wait for the app to mount
+        after each individual CTA click before moving on.
+
+    Returns
+    -------
+    bool: True if some candidate produced a ready state; False if all
+    candidates were exhausted without the app mounting.
+    """
+    for selector in _CREATE_WITH_FLOW_SELECTORS:
+        try:
+            cta = page.locator(selector).first
+            if not await cta.is_visible(timeout=1500):
+                continue
+        except Exception:
+            continue
+
+        logger.info("Flow marketing landing detected — clicking '%s'", selector)
+        try:
+            await cta.click(timeout=5000)
+        except Exception as exc:
+            logger.warning("CTA click failed for '%s': %s", selector, exc)
+            continue
+
+        deadline = time.monotonic() + per_click_timeout_sec
+        success = False
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.4)
+            current = page.url
+            if "/project/" in current or "/edit/" in current:
+                success = True
+                break
+            try:
+                if await is_ready():
+                    success = True
+                    break
+            except Exception:
+                pass
+            if is_marketing_anchor_url(current):
+                # Wrong CTA — URL degraded to an in-page scroll anchor.
+                break
+
+        if success:
+            return True
+        logger.warning(
+            "CTA '%s' did not mount app within %.0fs (url=%s) — trying next",
+            selector, per_click_timeout_sec, page.url[:120],
+        )
+
+    return False
 
 
 async def recover_from_flow_landing(

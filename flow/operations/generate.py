@@ -6,6 +6,7 @@ import re
 
 from flow.navigation import flow_url, extract_project_id
 from flow.login import is_login_page, handle_login_redirect
+from flow.landing import dismiss_flow_marketing_landing
 from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
@@ -117,29 +118,35 @@ async def text_to_video(
 
     # Flow sometimes serves the marketing landing ("Create with Flow" CTA)
     # instead of the editor home — even for logged-in sessions. Click the
-    # CTA to bounce into the authenticated app before searching for the
-    # "+ New project" button. For L1 the URL stays on /tools/flow after
-    # the click (no /project/), so don't use recover_from_flow_landing's
-    # URL-based completion check — just click the CTA and settle.
-    for _cta_sel in (
-        "button:has-text('Create with Flow')",
-        "[role='button']:has-text('Create with Flow')",
-        "a:has-text('Create with Flow')",
-    ):
-        try:
-            cta = page.locator(_cta_sel).first
-            if await cta.is_visible(timeout=1500):
-                logger.info("Flow marketing landing detected — clicking '%s'", _cta_sel)
-                await cta.click(timeout=5000)
-                await asyncio.sleep(3)
-                break
-        except Exception:
-            continue
+    # hero CTA (not the nav scroll-anchor sharing the same text — issue
+    # #48) to bounce into the authenticated app before searching for the
+    # "+ New project" button.
+    _NEW_PROJECT_APP_READY_SELECTOR = (
+        "button:has-text('New project'), "
+        "button:has-text('Dự án mới'), "
+        "button:has(i.google-symbols):has-text('add_2')"
+    )
 
-    # Wait for homepage to fully load before looking for buttons.
+    async def _new_project_button_attached() -> bool:
+        try:
+            await page.wait_for_selector(
+                _NEW_PROJECT_APP_READY_SELECTOR,
+                state="attached",
+                timeout=500,
+            )
+            return True
+        except Exception:
+            return False
+
+    if not await _new_project_button_attached():
+        await dismiss_flow_marketing_landing(
+            page, logger, _new_project_button_attached
+        )
+
+    # Final wait for homepage to fully settle before interacting.
     try:
         await page.wait_for_selector(
-            "button:has-text('New project'), button:has-text('Dự án mới'), button:has(i.google-symbols)",
+            _NEW_PROJECT_APP_READY_SELECTOR,
             state="attached",
             timeout=15000,
         )
