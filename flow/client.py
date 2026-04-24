@@ -158,6 +158,62 @@ def _find_chrome_executable() -> str:
     return "chrome" if _IS_WINDOWS else "google-chrome"
 
 
+_DEFAULT_WINDOW_SIZE = "1920,1080"
+
+
+def _parse_int_pair(raw: str, sep_chars: str, *, allow_zero: bool) -> tuple[int, int] | None:
+    """Parse ``"A<sep>B"`` into two ints. Returns None on malformed input."""
+    for sep in sep_chars:
+        if sep in raw:
+            parts = raw.split(sep, 1)
+            break
+    else:
+        return None
+    try:
+        a, b = int(parts[0].strip()), int(parts[1].strip())
+    except ValueError:
+        return None
+    lo = 0 if allow_zero else 1
+    if a < lo or b < lo:
+        return None
+    return a, b
+
+
+def _build_window_geometry_args() -> list[str]:
+    """Resolve ``--window-size`` / ``--window-position`` from env vars.
+
+    ``FLOW_WINDOW_SIZE=WxH`` (or ``W,H``) overrides the default 1920x1080.
+    ``FLOW_WINDOW_POSITION=X,Y`` (or ``XxY``) adds a position flag; unset
+    leaves Chrome's default placement. Malformed values are ignored with
+    a warning — never crash the worker over a typo.
+    """
+    size_raw = os.environ.get("FLOW_WINDOW_SIZE", "").strip()
+    size = _DEFAULT_WINDOW_SIZE
+    if size_raw:
+        parsed = _parse_int_pair(size_raw, "x,X", allow_zero=False)
+        if parsed and parsed[0] >= 100 and parsed[1] >= 100:
+            size = f"{parsed[0]},{parsed[1]}"
+        else:
+            logger.warning(
+                "Ignoring invalid FLOW_WINDOW_SIZE=%r (expected WxH, both >= 100)",
+                size_raw,
+            )
+
+    args = [f"--window-size={size}"]
+
+    pos_raw = os.environ.get("FLOW_WINDOW_POSITION", "").strip()
+    if pos_raw:
+        parsed = _parse_int_pair(pos_raw, ",x", allow_zero=True)
+        if parsed:
+            args.append(f"--window-position={parsed[0]},{parsed[1]}")
+        else:
+            logger.warning(
+                "Ignoring invalid FLOW_WINDOW_POSITION=%r (expected X,Y)",
+                pos_raw,
+            )
+    return args
+
+
 # ---------------------------------------------------------------------------
 # FlowClient
 # ---------------------------------------------------------------------------
@@ -366,7 +422,7 @@ class FlowClient:
             "--no-first-run",
             "--no-default-browser-check",
             "--new-window",
-            f"--window-size=1920,1080",
+            *_build_window_geometry_args(),
         ]
         popen_kwargs: dict[str, Any] = {
             "stdout": subprocess.DEVNULL,
@@ -456,7 +512,7 @@ class FlowClient:
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
-            "--window-size=1920,1080",
+            *_build_window_geometry_args(),
         ]
 
         in_docker = Path("/.dockerenv").exists() or os.environ.get(
