@@ -121,10 +121,15 @@ async def text_to_video(
     # hero CTA (not the nav scroll-anchor sharing the same text — issue
     # #48) to bounce into the authenticated app before searching for the
     # "+ New project" button.
+    # Accept any of the homepage's "+ New project" triggers — different
+    # Flow variants render the tile as <button>, <a>, or <div role="button">.
     _NEW_PROJECT_APP_READY_SELECTOR = (
         "button:has-text('New project'), "
+        "a:has-text('New project'), "
+        "[role='button']:has-text('New project'), "
         "button:has-text('Dự án mới'), "
-        "button:has(i.google-symbols):has-text('add_2')"
+        "a:has-text('Dự án mới'), "
+        "[role='button']:has-text('Dự án mới')"
     )
 
     async def _new_project_button_attached() -> bool:

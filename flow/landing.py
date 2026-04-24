@@ -105,10 +105,42 @@ async def dismiss_flow_marketing_landing(
             continue
 
         logger.info("Flow marketing landing detected — clicking '%s'", selector)
+        # If Flow has already scroll-navigated to an in-page anchor, the
+        # button moves with the layout and Playwright's "scroll into view"
+        # step retriggers the scroll listener, racing the click. Reset
+        # the URL before each attempt so the hero is back at its baseline.
+        if is_marketing_anchor_url(page.url):
+            try:
+                await page.evaluate(
+                    "() => history.replaceState(null, '', location.pathname)"
+                )
+            except Exception:
+                pass
+
+        clicked = False
         try:
             await cta.click(timeout=5000)
+            clicked = True
         except Exception as exc:
-            logger.warning("CTA click failed for '%s': %s", selector, exc)
+            logger.warning(
+                "CTA click failed for '%s' (%s) — retrying via JS .click()",
+                selector, exc,
+            )
+            # Playwright aborts on `<html> intercepts pointer events`, which
+            # on this marketing variant is caused by scroll-into-view racing
+            # the SPA's scroll-linked hash. Dispatching .click() via JS
+            # fires the React handler without the coordinate round-trip.
+            try:
+                handle = await cta.element_handle()
+                if handle is not None:
+                    await page.evaluate("(el) => el.click()", handle)
+                    clicked = True
+            except Exception as exc2:
+                logger.warning(
+                    "JS fallback click also failed for '%s': %s",
+                    selector, exc2,
+                )
+        if not clicked:
             continue
 
         deadline = time.monotonic() + per_click_timeout_sec

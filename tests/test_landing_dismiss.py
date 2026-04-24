@@ -40,6 +40,7 @@ class FakePage:
     def __init__(self, url="https://labs.google/fx/tools/flow"):
         self.url = url
         self._locators: dict[str, FakeLocator] = {}
+        self.evaluate_calls: list[str] = []
 
     def set(self, selector: str, locator: FakeLocator) -> None:
         self._locators[selector] = locator
@@ -48,6 +49,12 @@ class FakePage:
         return self._locators.get(
             selector, FakeLocator(visible=False)
         )
+
+    async def evaluate(self, script, arg=None):
+        self.evaluate_calls.append(script)
+        # Simulate JS `(el) => el.click()` by invoking the passed handle's click.
+        if arg is not None and hasattr(arg, "_js_click"):
+            await arg._js_click()
 
 
 @pytest.mark.parametrize(
@@ -187,6 +194,43 @@ async def test_all_candidates_fail_returns_false():
     assert result is False
     # Every visible candidate was attempted.
     assert stuck.click_calls == len(landing._CREATE_WITH_FLOW_SELECTORS)
+
+
+@pytest.mark.asyncio
+async def test_js_click_fallback_fires_when_playwright_click_fails():
+    """Playwright `<html> intercepts pointer events` → JS `.click()` rescues."""
+    page = FakePage()
+
+    class HandleBackedLocator(FakeLocator):
+        def __init__(self, *, visible, on_js_click):
+            super().__init__(visible=visible)
+            self._on_js_click = on_js_click
+
+        async def click(self, timeout=None):
+            raise RuntimeError("html intercepts pointer events")
+
+        async def element_handle(self):
+            handle = type("H", (), {})()
+            async def _js_click():
+                self._on_js_click()
+            handle._js_click = _js_click
+            return handle
+
+    def mount_app():
+        page.url = "https://labs.google/fx/tools/flow/project/js-123"
+
+    cta = HandleBackedLocator(visible=True, on_js_click=mount_app)
+    page.set("main button:has-text('Create with Flow')", cta)
+
+    async def is_ready():
+        return False
+
+    logger = logging.getLogger("test")
+    result = await landing.dismiss_flow_marketing_landing(
+        page, logger, is_ready, per_click_timeout_sec=2.0
+    )
+    assert result is True
+    assert any("el.click" in s for s in page.evaluate_calls)
 
 
 @pytest.mark.asyncio
