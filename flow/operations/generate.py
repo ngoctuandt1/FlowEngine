@@ -121,37 +121,41 @@ async def text_to_video(
     # hero CTA (not the nav scroll-anchor sharing the same text — issue
     # #48) to bounce into the authenticated app before searching for the
     # "+ New project" button.
-    # Any element containing "New project" text — Flow renders the tile as
-    # <div> (no role) on some variants, so tag-restricted CSS misses it.
-    # Playwright `text=` is tag-agnostic.
-    _NEW_PROJECT_APP_READY_SELECTOR = (
+    # The tile is variant-specific: sometimes rendered with visible text
+    # "New project", sometimes icon-only with accessible-name only. Probe
+    # both; role-based matcher matches the exact click path we use below.
+    _NEW_PROJECT_TEXT_SELECTOR = (
         "text=New project, text=Dự án mới, text=Tạo dự án"
     )
+    _NEW_PROJECT_ROLE_NAMES = ("New project", "Dự án mới", "Tạo dự án")
 
-    async def _new_project_button_attached() -> bool:
+    async def _new_project_button_attached(timeout_ms: int = 1000) -> bool:
         try:
             await page.wait_for_selector(
-                _NEW_PROJECT_APP_READY_SELECTOR,
+                _NEW_PROJECT_TEXT_SELECTOR,
                 state="attached",
-                timeout=1000,
+                timeout=timeout_ms,
             )
             return True
         except Exception:
-            return False
+            pass
+        per_name = max(250, timeout_ms // len(_NEW_PROJECT_ROLE_NAMES))
+        for name in _NEW_PROJECT_ROLE_NAMES:
+            try:
+                btn = page.get_by_role("button", name=name).filter(visible=True).first
+                if await btn.is_visible(timeout=per_name):
+                    return True
+            except Exception:
+                continue
+        return False
 
-    if not await _new_project_button_attached():
+    if not await _new_project_button_attached(timeout_ms=1000):
         await dismiss_flow_marketing_landing(
             page, logger, _new_project_button_attached
         )
 
-    # Final wait for homepage to fully settle before interacting.
-    try:
-        await page.wait_for_selector(
-            _NEW_PROJECT_APP_READY_SELECTOR,
-            state="attached",
-            timeout=15000,
-        )
-    except Exception:
+    # Final settle — give slow renders a second chance before click.
+    if not await _new_project_button_attached(timeout_ms=15000):
         logger.warning("New-project button did not attach within 15s — continuing")
     await asyncio.sleep(2)
 
