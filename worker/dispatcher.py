@@ -68,13 +68,25 @@ def _resolve_upload_path(path_value: str | None) -> str | None:
     if not path_value:
         return None
 
-    raw_path = Path(path_value)
-    if raw_path.is_absolute():
-        return str(raw_path)
+    raw_text = str(path_value).strip()
+    if not raw_text:
+        return None
 
-    parts = raw_path.parts
-    rel_parts = parts[1:] if parts and parts[0] == "uploads" else parts
-    return str(UPLOAD_DIR.joinpath(*rel_parts))
+    raw_path = Path(raw_text).expanduser()
+    if raw_path.is_absolute():
+        resolved = raw_path.resolve()
+    else:
+        parts = list(raw_path.parts)
+        if parts and parts[0].lower() == "uploads":
+            parts = parts[1:]
+        resolved = UPLOAD_DIR.joinpath(*parts).resolve()
+
+    if not resolved.is_relative_to(UPLOAD_DIR):
+        raise RuntimeError(
+            f"Upload path escapes FLOW_UPLOAD_DIR: {path_value} (base={UPLOAD_DIR})"
+        )
+
+    return str(resolved)
 
 
 def _resolve_upload_paths(path_values: list[str] | None) -> list[str]:
