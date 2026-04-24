@@ -3,10 +3,12 @@
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Coroutine
 
 from flow.retry import with_retry, is_transient
+from worker.browser_pool import get_pool
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
 
@@ -18,17 +20,41 @@ UPLOAD_DIR = Path(os.environ.get("FLOW_UPLOAD_DIR", "./uploads")).resolve()
 
 
 # ======================================================================
-# Shared: create FlowClient context for a job
+# Shared: FlowClient lifecycle (pool-aware)
 # ======================================================================
 
 def _make_client(profile: str):
-    """Create a FlowClient for the given profile (use as async context manager)."""
+    """Create a fresh FlowClient for the given profile (ephemeral path).
+
+    Use :func:`_client_lease` instead — it transparently routes through
+    :class:`~worker.browser_pool.BrowserPool` when ``FLOW_BROWSER_POOL=1``.
+    """
     from flow.client import FlowClient
     return FlowClient(
         profile_name=profile,
         profile_base_dir=PROFILE_BASE_DIR,
         download_dir=DOWNLOAD_DIR,
     )
+
+
+@asynccontextmanager
+async def _client_lease(profile: str):
+    """Yield a ready FlowClient, pooled or ephemeral depending on env.
+
+    When ``FLOW_BROWSER_POOL=1`` the same Chrome instance is reused
+    across jobs for *profile* (buffers cleared between jobs). Otherwise
+    a fresh FlowClient is started and stopped per call — the original
+    behaviour. Handlers need no further awareness of the pool.
+    """
+    pool = get_pool()
+    if pool is None:
+        client = _make_client(profile)
+        async with client:
+            yield client
+        return
+
+    async with pool.lease(profile) as client:
+        yield client
 
 
 def _kill_chrome_for_profile(profile: str):
@@ -117,7 +143,7 @@ async def handle_text_to_video(job: dict) -> dict:
         (job.get("prompt", ""))[:60], job.get("model"), profile,
     )
 
-    async with _make_client(profile) as client:
+    async with _client_lease(profile) as client:
         result = await text_to_video(
             client,
             prompt=job.get("prompt", ""),
@@ -147,7 +173,7 @@ async def handle_frames_to_video(job: dict) -> dict:
         profile,
     )
 
-    async with _make_client(profile) as client:
+    async with _client_lease(profile) as client:
         result = await frames_to_video(
             client,
             prompt=job.get("prompt", ""),
@@ -181,7 +207,7 @@ async def handle_text_to_image(job: dict) -> dict:
         profile,
     )
 
-    async with _make_client(profile) as client:
+    async with _client_lease(profile) as client:
         result = await text_to_image(
             client,
             prompt=job.get("prompt", ""),
@@ -217,7 +243,7 @@ async def handle_ingredients_to_video(job: dict) -> dict:
         profile,
     )
 
-    async with _make_client(profile) as client:
+    async with _client_lease(profile) as client:
         result = await ingredients_to_video(
             client,
             prompt=job.get("prompt", ""),
@@ -248,7 +274,7 @@ async def handle_extend(job: dict) -> dict:
         (job.get("edit_url") or job.get("project_url", ""))[:80], profile,
     )
 
-    async with _make_client(profile) as client:
+    async with _client_lease(profile) as client:
         result = await extend_video(
             client,
             job=job,
@@ -275,7 +301,7 @@ async def handle_insert(job: dict) -> dict:
         job.get("bbox"), (job.get("prompt", ""))[:40], profile,
     )
 
-    async with _make_client(profile) as client:
+    async with _client_lease(profile) as client:
         result = await insert_object(
             client,
             job=job,
@@ -301,7 +327,7 @@ async def handle_remove(job: dict) -> dict:
         job.get("bbox"), profile,
     )
 
-    async with _make_client(profile) as client:
+    async with _client_lease(profile) as client:
         result = await remove_object(
             client,
             job=job,
@@ -326,7 +352,7 @@ async def handle_camera(job: dict) -> dict:
         job.get("direction"), profile,
     )
 
-    async with _make_client(profile) as client:
+    async with _client_lease(profile) as client:
         result = await camera_move(
             client,
             job=job,

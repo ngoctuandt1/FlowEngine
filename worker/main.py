@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 from dotenv import load_dotenv
 
+from worker.browser_pool import init_pool, shutdown_pool
 from worker.dispatcher import dispatch_job
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
@@ -200,10 +201,15 @@ async def run() -> None:
     api = RemoteAPI(SERVER_URL, WORKER_ID, API_KEY)
     profile_mgr = ProfileManager(CHROME_USER_DATA_DIR, WORKER_PROFILES)
     project_lock = ProjectLock()
+    init_pool(
+        profile_base_dir=CHROME_USER_DATA_DIR,
+        download_dir=os.getenv("FLOW_DOWNLOAD_DIR", "./downloads"),
+    )
 
     try:
         await claim_loop(api, profile_mgr, project_lock)
     finally:
+        await shutdown_pool()
         await api.close()
         logger.info("Worker shut down cleanly.")
 

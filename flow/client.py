@@ -302,6 +302,53 @@ class FlowClient:
         await self.stop()
 
     # ------------------------------------------------------------------
+    # Pool helpers — reuse one browser across multiple jobs
+    # ------------------------------------------------------------------
+
+    def is_healthy(self) -> bool:
+        """Return True if browser + page are still usable.
+
+        Used by BrowserPool to decide whether to reuse or restart the
+        client between jobs. Cheap: no round-trip to Chrome.
+        """
+        if self.page is None or self.browser is None:
+            return False
+        try:
+            if self.page.is_closed():
+                return False
+        except Exception:
+            return False
+        if self._chrome_proc is not None and self._chrome_proc.poll() is not None:
+            return False
+        return True
+
+    async def reset_for_next_job(self, target_url: str | None = None) -> None:
+        """Clear per-job state so the same client can run another job.
+
+        Clears captured network buffers and optional navigation target.
+        Does NOT close the browser. Caller typically passes the Flow
+        homepage for L1 jobs; L2+ handlers navigate to the project/edit
+        URL themselves so target_url is usually None for those.
+        """
+        self._video_urls.clear()
+        self._calls.clear()
+        self._media_id_events.clear()
+        self._gen_id = None
+        # Keep _account_info — it's a cached read of /v1/credits and
+        # stays valid across jobs on the same session.
+
+        if target_url and self.page is not None:
+            try:
+                await self.page.goto(
+                    target_url, wait_until="domcontentloaded", timeout=30000
+                )
+            except Exception as exc:
+                logger.warning(
+                    "reset_for_next_job: goto %r failed: %s", target_url[:80], exc
+                )
+                raise
+
+    # ------------------------------------------------------------------
     # Mode A -- Native Chrome via CDP
     # ------------------------------------------------------------------
 
