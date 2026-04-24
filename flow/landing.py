@@ -105,12 +105,17 @@ async def _dismiss_landing_once(
         if not clicked:
             continue
 
+        # Memory `feedback_flow_marketing_landing_bypass.md`: "click + settle
+        # + proceed". The CTA's React onClick can fire an async SPA route that
+        # takes several seconds, during which the scroll listener mutates the
+        # URL to `#partners` / `#capabilities`. Abandoning the candidate on
+        # that URL change kills the very navigation we want. Just click, wait
+        # the full timeout, poll is_ready — never bail on URL state.
         deadline = time.monotonic() + per_click_timeout_sec
         success = False
         while time.monotonic() < deadline:
             await asyncio.sleep(0.4)
-            current = page.url
-            if "/project/" in current or "/edit/" in current:
+            if "/project/" in page.url or "/edit/" in page.url:
                 success = True
                 break
             try:
@@ -119,9 +124,6 @@ async def _dismiss_landing_once(
                     break
             except Exception:
                 pass
-            if is_marketing_anchor_url(current):
-                # Wrong CTA — URL degraded to an in-page scroll anchor.
-                break
 
         if success:
             return True
