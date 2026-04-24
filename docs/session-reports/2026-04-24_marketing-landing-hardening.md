@@ -98,6 +98,65 @@ actionability check entirely and dispatches at the element centre.
 Also added a `page.get_by_text("New project", exact=True)` fallback in
 `generate.py` so the tile is found regardless of tag.
 
+### Run 5 — A/B sticky across reloads (post-merge-eve regression)
+
+After the fix above merged-ready, a follow-up batch of 10 jobs hit a
+fifth failure mode. Two jobs completed, then 8 in a row failed with the
+same error as before: `Failed to find '+ New project' button`.
+
+Log pattern on every failing run:
+
+```
+Flow marketing landing detected — clicking 'button:has-text('Create with Flow')'
+CTA did not mount app within 8s (url=https://labs.google/fx/tools/flow#partners) — trying next
+Marketing landing persisted — reload retry 1/2
+Marketing landing persisted — reload retry 2/2
+Page URL at failure: https://labs.google/fx/tools/flow#partners
+```
+
+Failure screenshot (`debug_screens/new_project_btn_missing_20260424_183039.png`)
+showed only the marketing sticky header scrolled down to the Partners
+section — the app never mounted, not even after two reloads. Every
+"Create with Flow" candidate scroll-navigated to `#partners`, and plain
+`page.reload()` served the same variant each time.
+
+**Root cause:** the A/B assignment persists via `localStorage` /
+`sessionStorage`. Cloning the profile preserves these, and `page.reload()`
+doesn't touch them — so every retry rolls the same variant.
+
+**Fix (commit `7f6ac29`):** last-ditch storage-reset bounce. When the
+reload-retry loop exhausts without mounting:
+
+```python
+await page.evaluate(
+    "() => { try { localStorage.clear(); sessionStorage.clear(); } catch (e) {} }"
+)
+await page.goto("https://labs.google/fx", wait_until="domcontentloaded", timeout=15000)
+await asyncio.sleep(1.5)
+await page.goto("https://labs.google/fx/tools/flow",
+                wait_until="domcontentloaded", timeout=15000)
+```
+
+Cookies untouched → session auth intact. Fresh client storage + bouncing
+through the parent `/fx` domain forces a fresh A/B roll, then the CTA
+loop runs one last pass.
+
+Gated on `max_reloads>0` so the pre-#51 `max_reloads=0` single-pass
+contract is preserved.
+
+**Live verification** — job `34c073be-982c-4dc1-bdfd-4a0f6572ea3a`:
+
+```
+19:23:21 Marketing landing persisted — reload retry 1/2
+19:23:24 Marketing landing persisted — reload retry 2/2
+19:23:27 Reload-retry exhausted — resetting client storage + bounce via /fx
+19:23:49 Clicked new project via role=button name='New project'
+19:26:17 text-to-video DONE
+```
+
+Result: `status=completed`, `project_url=.../project/db767c00...`,
+`media_id=57812d68...`, 1080p download saved.
+
 ## Final architecture
 
 `flow/landing.py`:
