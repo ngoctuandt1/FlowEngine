@@ -581,42 +581,13 @@ async def finalize_operation(
 
     current_url = page.url
     parent_media_id = job.get("media_id")
-    url_media_id = extract_media_id(current_url)
-    # Canonical chain media_id resolution:
-    #  1. Prefer the network-captured generation mid from /pq/api responses
-    #     during this op — same source `generate.py` uses for L1. These are
-    #     the real generation ids minted by the backend.
-    #  2. Fallback to the latest DOM tile slug when network events are
-    #     missing/unusable. Tile strip is authoritative over the URL, which
-    #     frequently carries a clip-route slug that is neither parent nor
-    #     the new output (live-verified 2026-04-23).
-    #  3. Last resort: settled URL slug (may be stale).
     download_media_ids = result.get("media_ids") or []
-    network_media_id = next(
-        (mid for mid in download_media_ids if mid and mid != parent_media_id),
-        None,
+    media_id = await resolve_final_media_id(
+        page,
+        fallback=parent_media_id,
+        parent_media_id=parent_media_id,
+        download_media_ids=download_media_ids,
     )
-    tile_media_id = await find_latest_tile_slug(page)
-    if network_media_id:
-        media_id = network_media_id
-        logger.info(
-            "media_id from network events: %s (url=%s tile=%s)",
-            network_media_id[:20],
-            (url_media_id or "")[:20],
-            (tile_media_id or "")[:20],
-        )
-    elif tile_media_id and tile_media_id != parent_media_id:
-        logger.warning(
-            "No new network mid; using latest tile slug: parent=%s url=%s tile=%s",
-            (parent_media_id or "")[:20],
-            (url_media_id or "")[:20],
-            tile_media_id[:20],
-        )
-        media_id = tile_media_id
-    else:
-        media_id = await _extract_settled_route_media_id(
-            page, fallback=job.get("media_id")
-        )
 
     # Build edit_url
     edit_url_val = None
@@ -657,3 +628,51 @@ async def _extract_settled_route_media_id(page, fallback: str | None = None) -> 
             return media_id
         await asyncio.sleep(0.25)
     return fallback
+
+
+async def resolve_final_media_id(
+    page,
+    *,
+    fallback: str | None = None,
+    parent_media_id: str | None = None,
+    download_media_ids: list[str] | None = None,
+) -> str | None:
+    """Resolve the canonical media slug for a completed operation.
+
+    Priority (live-verified 2026-04-23, B39):
+    1. Network-captured generation mid — the first ``download_media_ids``
+       slug that isn't ``parent_media_id``. These are the real ids minted
+       by Flow's backend during submit and are the strongest signal.
+    2. Latest history tile slug when it differs from the parent — the UI's
+       own declaration of "most recent output". Tile strip beats URL,
+       which often carries a clip-route slug neither parent nor new
+       output.
+    3. Settled ``/edit/{slug}`` route — last resort; may be stale on the
+       extend-child path.
+    4. ``fallback`` — used only when the URL never settles to an /edit/
+       slug (typically the parent media, so callers can still build a
+       usable edit_url).
+    """
+    download_media_ids = download_media_ids or []
+    network_media_id = next(
+        (mid for mid in download_media_ids if mid and mid != parent_media_id),
+        None,
+    )
+    if network_media_id:
+        logger.info(
+            "media_id from network events: %s", network_media_id[:20]
+        )
+        return network_media_id
+
+    tile_media_id = await find_latest_tile_slug(page)
+    if tile_media_id and tile_media_id != parent_media_id:
+        url_media_id = extract_media_id(page.url)
+        logger.warning(
+            "No new network mid; using latest tile slug: parent=%s url=%s tile=%s",
+            (parent_media_id or "")[:20],
+            (url_media_id or "")[:20],
+            tile_media_id[:20],
+        )
+        return tile_media_id
+
+    return await _extract_settled_route_media_id(page, fallback=fallback)

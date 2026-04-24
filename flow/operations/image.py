@@ -12,21 +12,22 @@ Authoritative selectors from the 2026-04-20 probe/docs:
 import asyncio
 import logging
 import re
-from pathlib import Path
 
 from playwright.async_api import Locator
 
 from flow.download import download_video
 from flow.login import handle_login_redirect, is_login_page
 from flow.model_selector import _close_model_panel
-from flow.navigation import extract_media_id, extract_project_id, flow_url
+from flow.navigation import extract_project_id, flow_url
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
+from flow.operations._base import resolve_final_media_id
 from flow.operations.frames_to_video import (
     COMPOSER_MENU_SELECTORS,
     _click_new_project,
     _close_composer_menu,
     _open_composer_menu,
+    _resolve_image_input_path,
 )
 from flow.operations.generate import (
     _count_visible_cards,
@@ -41,6 +42,13 @@ IMAGE_MODEL_MAP = {
     "nano-banana-pro": "Nano Banana Pro",
     "nano-banana-2": "Nano Banana 2",
     "imagen-4": "Imagen 4",
+}
+
+IMAGE_MODEL_ALIASES = {
+    "nanobanana": "nano-banana-pro",
+    "nanobananapro": "nano-banana-pro",
+    "nanobanana2": "nano-banana-2",
+    "imagen4": "imagen-4",
 }
 
 IMAGE_RATIO_IDS = {
@@ -60,8 +68,8 @@ async def text_to_image(
     aspect_ratio: str = "16:9",
 ) -> dict:
     """Create a new image project from text with an optional reference image."""
-    if ref_image_path and not Path(ref_image_path).is_file():
-        raise RuntimeError(f"Reference image not found: {ref_image_path}")
+    if ref_image_path:
+        ref_image_path = _resolve_image_input_path(ref_image_path, label="Reference")
 
     page = client.page
     locale = ""
@@ -141,9 +149,9 @@ async def text_to_image(
         raise RuntimeError(f"Generation failed: {result.get('error', 'unknown')}")
 
     current_url = page.url
-    media_id = extract_media_id(current_url)
-    if not media_id and result.get("media_ids"):
-        media_id = result["media_ids"][0]
+    captured_media_ids = result.get("media_ids") or []
+    fallback_media_id = captured_media_ids[0] if captured_media_ids else None
+    media_id = await resolve_final_media_id(page, fallback=fallback_media_id)
 
     edit_url_val = None
     if media_id and project_id:
@@ -151,7 +159,7 @@ async def text_to_image(
 
     output_files = await download_video(
         client,
-        media_ids=result.get("media_ids", [media_id] if media_id else []),
+        media_ids=captured_media_ids or ([media_id] if media_id else []),
         prefix="t2i",
         quality="original",
         media_kind="image",
@@ -255,7 +263,8 @@ async def _ensure_image_mode(page) -> None:
 
 
 async def _select_image_model(page, model: str) -> None:
-    target_text = IMAGE_MODEL_MAP.get(model, IMAGE_MODEL_MAP["nano-banana-pro"])
+    normalized_model = _normalize_image_model(model)
+    target_text = IMAGE_MODEL_MAP[normalized_model]
     await _open_composer_menu(page)
     await _switch_to_image_output(page)
 
@@ -269,6 +278,29 @@ async def _select_image_model(page, model: str) -> None:
     await item.click(timeout=3000, force=True)
     await asyncio.sleep(0.5)
     await _close_model_panel(page, dropdown_was_opened=True)
+
+
+def _normalize_image_model(model: str | None) -> str:
+    """Canonicalize image model input to stable internal slugs."""
+    raw = str(model or "").strip()
+    if not raw:
+        return "nano-banana-pro"
+
+    lowered = raw.lower().replace("_", "-")
+    if lowered in IMAGE_MODEL_MAP:
+        return lowered
+
+    compact = re.sub(r"[^a-z0-9]+", "", lowered)
+    alias = IMAGE_MODEL_ALIASES.get(compact)
+    if alias:
+        return alias
+
+    for slug, label in IMAGE_MODEL_MAP.items():
+        if compact == re.sub(r"[^a-z0-9]+", "", label.lower()):
+            return slug
+
+    logger.warning("Unknown image model %r - falling back to nano-banana-pro", raw)
+    return "nano-banana-pro"
 
 
 async def _find_model_option(page, target_text: str):

@@ -1,3 +1,5 @@
+from pathlib import Path
+from uuid import uuid4
 from unittest.mock import AsyncMock
 
 
@@ -24,6 +26,12 @@ class _ProjectLockStub:
 
     def release(self, project_url):
         self.released.append(project_url)
+
+
+def _make_local_tmp() -> Path:
+    root = Path("tests") / "_tmp" / f"path_{uuid4().hex}"
+    root.mkdir(parents=True, exist_ok=True)
+    return root.resolve()
 
 
 async def test_dispatch_frames_to_video_routes_to_handler(monkeypatch):
@@ -99,3 +107,8 @@ async def test_dispatch_ingredients_to_video_routes_to_handler(monkeypatch):
     assert result["profile"] == "profile-c"
     assert profile_mgr.busy == [("profile-c", "job-3")]
     assert profile_mgr.available == ["profile-c"]
+
+
+# Upload-path resolver security contract tests live in
+# `tests/test_upload_resolution.py` (shipped separately via the
+# worker-upload-hardening PR).
