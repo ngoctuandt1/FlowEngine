@@ -351,9 +351,48 @@ class FlowClient:
                 no_viewport=True, accept_downloads=True
             )
 
-        # Pick primary page.
+        # Diagnostic: enumerate every context/page so we can spot stray
+        # session-restore windows that Playwright isn't driving.
+        try:
+            for ci, ctx in enumerate(self.browser.contexts):
+                for pi, pg in enumerate(ctx.pages):
+                    logger.info(
+                        "CDP attach: ctx[%d].pages[%d] url=%r", ci, pi, pg.url
+                    )
+        except Exception as exc:
+            logger.debug("page enumeration failed: %s", exc)
+
+        # Pick primary page — skip internal Chrome UI surfaces that CDP
+        # exposes as pages (omnibox popup dropdown, tab search, etc.).
+        # User-report 2026-04-24: `pages[0]` was `chrome://omnibox-popup.
+        # top-chrome/` which is the URL-bar autocomplete dropdown, not a
+        # web tab. Navigating it "succeeded" but the visible tab stayed
+        # on `chrome://new-tab-page/` → worker thought it was on Flow
+        # while the user saw a blank URL bar.
         pages = self.context.pages
-        self.page = pages[0] if pages else await self.context.new_page()
+
+        def _is_real_tab(p) -> bool:
+            u = (p.url or "").lower()
+            if u.startswith("chrome://omnibox"):
+                return False
+            if u.startswith("chrome://tab-search"):
+                return False
+            if u.startswith("devtools://"):
+                return False
+            return True
+
+        real_tabs = [p for p in pages if _is_real_tab(p)]
+        if real_tabs:
+            self.page = real_tabs[0]
+        elif pages:
+            # No real tab — open a fresh one we fully control.
+            self.page = await self.context.new_page()
+        else:
+            self.page = await self.context.new_page()
+        logger.info(
+            "CDP primary page picked: url=%r (real_tabs=%d/%d)",
+            self.page.url, len(real_tabs), len(pages),
+        )
         # Bind before any caller-driven navigation so the first generation's
         # response events can't slip past an unbound hook (issue #45).
         self._setup_network_hooks()
