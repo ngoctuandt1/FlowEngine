@@ -1,8 +1,107 @@
+# HANDOFF — 2026-04-24 (L1 marketing-landing bypass + 10-job batch)
+
+Next session picks up from here. Read top-to-bottom before running anything.
+Prior 2026-04-19 handoff kept below for history (§Archive).
+
+## TL;DR (2026-04-24)
+
+**Resolved:** L1 `text_to_video` intermittently hit Flow's public marketing
+variant at `labs.google/fx/tools/flow` ("Create with Flow" CTA) even on
+logged-in sessions and died silently at `_type_prompt` round 3. Fix wired
+into PR [#44](https://github.com/ngoctuandt1/FlowEngine/pull/44)
+(`claude/l1-mkt-landing-bypass`): click the CTA before the "+ New
+project" lookup, switch the lookup to `get_by_role(..., name=...)
+.filter(visible=True)` so hidden-DOM duplicates can't stall `.first`,
+drop false-matching `has-text('Create')` / `'Tạo'` fallbacks, and
+screenshot both failure paths to `debug_screens/`.
+
+**Verified live** on profile `ngoctuandt20`:
+
+| Chain | Jobs | Result |
+|---|---|---|
+| A | L1 | **FAILED** at Step 8 download (see §Open bug) — L2/L3 stuck pending |
+| B | L1 → L2 → L3 | ✓ ✓ ✓ |
+| C | L1 → L2 | ✓ ✓ |
+| D | L1 → L2 | ✓ ✓ |
+
+7/10 completed · 1/10 failed · 2/10 blocked-by-parent. All 4 L1 attempts
+confirmed the marketing-bypass fix works.
+
+## Open bug (NOT a PR #44 regression)
+
+Chain A L1 died with `text-to-video: no output file captured - download
+pipeline returned empty list`. Generation completed via DOM-stall
+detection (`Completion via DOM (stalled at 55% & new media card) after
+87s`), then `_media_id_events`, `_video_urls`, and the UI download
+fallback all returned empty. Subsequent L1s on chains B/C/D from the same
+worker succeeded → **first-request-after-Chrome-launch network-hook
+race**. Classify as P1 bug, open ticket separately.
+
+Diagnostic paths:
+- `flow/wait.py::_collect_media_ids` — check if `initial_media_count`
+  snapshot is set before the first network event can fire.
+- `flow/client.py::_on_response` — verify hook binds before first
+  navigation (race with `page.goto(homepage)`).
+- Likely fix: when DOM-completion path triggers with empty network
+  buffers, fall back to scraping the newly-rendered media card's
+  `data-mid` / `href=/edit/{mid}` from the DOM.
+
+## Repo state (main)
+
+- `master` HEAD `88d5bd3` (fix(worker): L1 parallelism task pool).
+- Open PR [#44](https://github.com/ngoctuandt1/FlowEngine/pull/44)
+  MERGEABLE, awaiting merge.
+- Merged this session: #42 (ci requests), #41 (#39 camera validator),
+  #36, #43 (L1 parallelism).
+- Closed scope-mismatch: #33, #34, #35, #40, #17, #18.
+- Open with review: #37.
+
+## Persistent memory added
+
+- [`feedback_flow_marketing_landing_bypass.md`](../../../Users/Tuan/.claude/projects/D--AI-FlowEngine/memory/feedback_flow_marketing_landing_bypass.md) — screenshot first, never misdiagnose the marketing variant as auth expiry; re-apply PR #44 if the CTA-click ever regresses.
+- [`feedback_l1_siblings_only.md`](../../../Users/Tuan/.claude/projects/D--AI-FlowEngine/memory/feedback_l1_siblings_only.md) — parallelism = L1 cross-profile only; never build L2-siblings-on-same-project; each L2 variant = independent child project chain.
+
+## Untracked artifacts (pr3-agent worktree)
+
+Left on disk, not committed:
+- `debug_screens/prompt_editor_missing_*.png` — screenshot that cracked the diagnosis.
+- `debug_screens/new_project_btn_missing_*.png` — 3× marketing-landing evidence.
+- `scripts/warm_flow.py` — one-shot Flow-session warmer (useful for manual re-login if cookies actually expire; distinct from `warm_profile.py` which only warms Gmail).
+- `test_batch_ids.json` — earlier-batch L1 IDs.
+
+Review + delete or promote to repo when convenient.
+
+## Playbook for next session
+
+```bash
+# Worker / server already running from pr3-agent worktree:
+# - server PID via run_server.py, port 8080
+# - worker pinned WORKER_PROFILES=ngoctuandt20 MAX_CONCURRENT_JOBS=1
+
+# Verify PR #44 green then squash-merge:
+export PATH="/c/Program Files/GitHub CLI:$PATH"
+gh pr view 44 --json statusCheckRollup,mergeStateStatus
+gh pr merge 44 --squash --delete-branch
+
+# After merge, re-sync pr3-agent onto master if continuing:
+cd /d/AI/FlowEngine/.claude/worktrees/pr3-agent
+git fetch origin && git reset --hard origin/master  # only if no uncommitted fixes
+```
+
+To reproduce the chain-A download race (open bug):
+1. Restart worker cold: kill all `python.exe run_worker.py` + stale `flow_ngoctuandt20_*` chromes.
+2. `curl -X POST /api/jobs` with a single L1 text-to-video.
+3. Expect FIRST L1 after fresh launch to hit `download pipeline returned empty list`; SECOND L1 from same worker succeeds.
+
+## Archive: 2026-04-19 handoff below (superseded)
+
+---
+
 # HANDOFF — 2026-04-19 16:30 (Run 19 L2 chain, BLOCKED)
 
 Next session picks up from here. Read top-to-bottom before running anything.
 
-## TL;DR
+## TL;DR (archived)
 
 L1 t2v stable (Run 18, 4/4). L2 extend BLOCKED: worker profile
 `ngoctuandt20` serves Flow **marketing landing page** at `/edit/`

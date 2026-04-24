@@ -50,10 +50,6 @@ NEW_PROJECT_SELECTORS = [
     "[aria-label*='new project' i]",
     "[aria-label*='dự án' i]",
     "[aria-label*='new' i][aria-label*='project' i]",
-    # Last resort: generic create buttons (can false-match welcome
-    # overlays — kept at the end).
-    "button:has-text('Create')",
-    "button:has-text('Tạo')",
 ]
 
 
@@ -117,20 +113,51 @@ async def text_to_video(
 
     # === Step 2: Click "+ New project" ===
     logger.info("Step 2: Create new project")
-    # Wait for homepage to fully load before looking for buttons
-    await asyncio.sleep(3)
+
+    # Flow sometimes serves the marketing landing ("Create with Flow" CTA)
+    # instead of the editor home — even for logged-in sessions. Click the
+    # CTA to bounce into the authenticated app before searching for the
+    # "+ New project" button. For L1 the URL stays on /tools/flow after
+    # the click (no /project/), so don't use recover_from_flow_landing's
+    # URL-based completion check — just click the CTA and settle.
+    for _cta_sel in (
+        "button:has-text('Create with Flow')",
+        "[role='button']:has-text('Create with Flow')",
+        "a:has-text('Create with Flow')",
+    ):
+        try:
+            cta = page.locator(_cta_sel).first
+            if await cta.is_visible(timeout=1500):
+                logger.info("Flow marketing landing detected — clicking '%s'", _cta_sel)
+                await cta.click(timeout=5000)
+                await asyncio.sleep(3)
+                break
+        except Exception:
+            continue
+
+    # Wait for homepage to fully load before looking for buttons.
+    try:
+        await page.wait_for_selector(
+            "button:has-text('New project'), button:has-text('Dự án mới'), button:has(i.google-symbols)",
+            state="attached",
+            timeout=15000,
+        )
+    except Exception:
+        logger.warning("New-project button did not attach within 15s — continuing")
+    await asyncio.sleep(2)
 
     # Dismiss any welcome/onboarding overlay first
     await _dismiss_overlays(page)
 
     new_project_clicked = False
 
-    for sel in NEW_PROJECT_SELECTORS:
+    # Prefer Playwright's accessible-name role lookup — survives Material
+    # Icon ligature renames (e.g. add_2 → SVG) and matches the visible
+    # button even when hidden duplicates exist earlier in DOM order.
+    role_candidates = ["New project", "Dự án mới", "Tạo dự án"]
+    for name in role_candidates:
         try:
-            btn = page.locator(sel).first
-            # Short probe first — icon selectors should match instantly
-            # on a loaded homepage; only the later text fallbacks need
-            # the longer wait.
+            btn = page.get_by_role("button", name=name).filter(visible=True).first
             if await btn.is_visible(timeout=2000):
                 try:
                     await btn.scroll_into_view_if_needed(timeout=2000)
@@ -138,20 +165,47 @@ async def text_to_video(
                     pass
                 await btn.click(timeout=5000)
                 new_project_clicked = True
-                logger.info("Clicked new project via: %s", sel)
+                logger.info("Clicked new project via role=button name=%r", name)
                 break
         except Exception:
             continue
 
     if not new_project_clicked:
-        # Last resort: screenshot for debug
+        for sel in NEW_PROJECT_SELECTORS:
+            try:
+                btn = page.locator(sel).locator("visible=true").first
+                if await btn.is_visible(timeout=2000):
+                    try:
+                        await btn.scroll_into_view_if_needed(timeout=2000)
+                    except Exception:
+                        pass
+                    await btn.click(timeout=5000)
+                    new_project_clicked = True
+                    logger.info("Clicked new project via: %s", sel)
+                    break
+            except Exception:
+                continue
+
+    if not new_project_clicked:
         try:
             title = await page.title()
             body_text = await page.evaluate("document.body?.innerText?.substring(0, 500) || ''")
             logger.error("Page title: %s", title)
+            logger.error("Page URL at failure: %s", page.url)
             logger.error("Page text preview: %s", body_text[:300])
         except Exception:
             pass
+        try:
+            import os as _os
+            from datetime import datetime as _dt
+            screens_dir = _os.path.join(_os.getcwd(), "debug_screens")
+            _os.makedirs(screens_dir, exist_ok=True)
+            ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+            path = _os.path.join(screens_dir, f"new_project_btn_missing_{ts}.png")
+            await page.screenshot(path=path, full_page=True)
+            logger.error("Saved failure screenshot: %s", path)
+        except Exception as e:
+            logger.error("Failed to save screenshot: %s", e)
         raise RuntimeError("Failed to find '+ New project' button on Flow homepage")
 
     # Wait for project editor to load — URL may contain /project/ or just change
@@ -512,15 +566,15 @@ async def _type_prompt(page, prompt: str):
         except Exception as e:
             logger.debug("JS fallback failed: %s", e)
 
-    # Debug: log page state before failing
+    # Debug: log page state + capture screenshot before failing
     try:
         title = await page.title()
         body_text = await page.evaluate(
             "document.body?.innerText?.substring(0, 500) || ''"
         )
         logger.error("Prompt editor not found — page title: %s", title)
+        logger.error("Page URL at failure: %s", page.url)
         logger.error("Page text preview: %s", body_text[:300])
-        # Log all editable elements on page
         editables = await page.evaluate("""() => {
             const els = document.querySelectorAll(
                 'textarea, [contenteditable="true"], [role="textbox"], [data-slate-editor]'
@@ -537,6 +591,18 @@ async def _type_prompt(page, prompt: str):
         logger.error("Editable elements on page: %s", editables)
     except Exception:
         pass
+
+    try:
+        import os as _os
+        from datetime import datetime as _dt
+        screens_dir = _os.path.join(_os.getcwd(), "debug_screens")
+        _os.makedirs(screens_dir, exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        path = _os.path.join(screens_dir, f"prompt_editor_missing_{ts}.png")
+        await page.screenshot(path=path, full_page=True)
+        logger.error("Saved failure screenshot: %s", path)
+    except Exception as e:
+        logger.error("Failed to save screenshot: %s", e)
 
     raise RuntimeError("Failed to find prompt editor after %d rounds" % MAX_ROUNDS)
 
