@@ -72,7 +72,7 @@ job_level     1 or 2+
 parent_job_id link to L1 (or previous L2) job
 chain_id      shared across all jobs in one chain
 project_url   created at L1, inherited by all L2+
-media_id      Re-extracted per op. Extend mints NEW uuid always. Camera-move mints NEW on early-chain (L2 off L1) but preserves on deep-chain. Live L2 insert/remove runs on 2026-04-20 showed both ops mint new outputs, but post-op extraction is currently unreliable until the parked media_id bug is fixed (see handoff §5 + reviews/4_media_id_bug.md). Child job inherits DIRECT parent's media_id + edit_url together (B22; B30/B32 walk-up superseded 2026-04-20 after Run 20 follow-up). See SPEC INV-5.
+media_id      Re-extracted per op. Extend mints NEW uuid always. Camera-move mints NEW on early-chain (L2 off L1) but preserves on deep-chain. L2 insert/remove mint NEW outputs; extraction resolved 2026-04-23 by trusting `/pq/api` network events over DOM tile over URL clip-route (commits `a771d86` / `1183a24` / `0bb9d29` / refactor `b62ac73`). Child job inherits DIRECT parent's media_id + edit_url together (B22; B30/B32 walk-up superseded 2026-04-20 after Run 20 follow-up). See SPEC INV-5.
 profile       Chrome profile dir name (= Google account identity)
 bbox          {x,y,w,h} normalized — required for insert/remove
 direction     preset string — required for camera-move
@@ -83,7 +83,7 @@ direction     preset string — required for camera-move
 2. **Navigate by `edit_url`** (`/edit/{media_id}`) — never use `video_index` / DOM card counting
 3. **Store everything** after completion: `project_url`, `media_id`, `profile`, `generation_id`
 4. **Serial per project** — `project_lock.py` ensures no two jobs run on same `project_url`
-5. `media_id` is **re-extracted per op** — extend-video always mints NEW; camera-move mints NEW on early-chain (L2 direct off L1) but preserves on deep-chain; live L2 insert/remove runs on 2026-04-20 showed both ops mint NEW outputs, but post-op extraction is currently unreliable until the parked media_id bug is fixed. Child inherits DIRECT parent's `media_id` + `edit_url` together (B22; B30/B32 walk-up superseded 2026-04-20 — see `849834e`, handoff §5, and `docs/session-reports/reviews/4_media_id_bug.md`).
+5. `media_id` is **re-extracted per op** — extend-video always mints NEW; camera-move mints NEW on early-chain (L2 direct off L1) but preserves on deep-chain; L2 insert/remove mint NEW outputs and extraction is resolved as of 2026-04-23 (`flow/operations/_base.py:finalize_operation` resolves network-mid → DOM tile → URL fallback; refactored to `resolve_final_media_id` helper in `b62ac73`). Child inherits DIRECT parent's `media_id` + `edit_url` together (B22; B30/B32 walk-up superseded 2026-04-20 — see `849834e` and [2026-04-23_l2-media-id-fix-live-verified.md](docs/session-reports/2026-04-23_l2-media-id-fix-live-verified.md)).
 
 ### Claim flow
 Worker `main.py` → `POST /api/worker/claim` with `profiles` list → server returns job where

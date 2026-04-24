@@ -9,7 +9,7 @@
 - **Image 2K/4K UI-upscale path: DONE v1** — env-gated, live-verified both qualities, composer-mode persistence handled.
 - **Multi-image iteration fix:** image UI branch now iterates all `media_ids` instead of dropping extras.
 - **Test suite: 153 → 192 passed** (+39 new unit tests covering the image upscale state machine).
-- **L2 insert/remove live-verified** (both produce files), but a media_id extraction bug was discovered and parked.
+- **L2 insert/remove live-verified** (both produce files); a media_id extraction bug was discovered and parked — **RESOLVED 2026-04-23** (see [2026-04-23_l2-media-id-fix-live-verified.md](2026-04-23_l2-media-id-fix-live-verified.md); fix commits `a771d86` / `1183a24` / `0bb9d29`; refactor `b62ac73`).
 
 ---
 
@@ -97,7 +97,10 @@ Both L2 jobs navigated correctly to `/edit/d406e882` (L1's edit_url) as input. P
 
 ---
 
-## 5. 🐛 Known bug (parked): L2 media_id extraction
+## 5. 🐛 Known bug (parked): L2 media_id extraction — ✅ RESOLVED 2026-04-23
+
+> **Status:** Fixed. `flow/operations/_base.py:finalize_operation` now resolves via network-mid → DOM tile → URL clip-route fallback (commits `a771d86` / `1183a24` / `0bb9d29`; refactored to `resolve_final_media_id` helper in `b62ac73`). Live stress on 2026-04-23: 10 L1 + 10 L2 (insert×5 + remove×5) → 20/20 distinct media_ids. See [2026-04-23_l2-media-id-fix-live-verified.md](2026-04-23_l2-media-id-fix-live-verified.md). Original bug description preserved below for history.
+
 
 **Symptom:** L2 insert-object and L2 remove-object both reported the SAME output media_id `632c087f-6777-42ac-84db-34fcc3621d9b`, despite producing different output files (5.4 MB vs 3.4 MB — so genuinely different videos).
 
@@ -141,7 +144,7 @@ All mocked (no real filesystem, no network, no Playwright).
 ## 8. Parked items (next sessions)
 
 ### HIGH priority
-- **L2 media_id extraction bug** (§5 above) — blocks any L3 chain on top of insert/remove.
+- ~~**L2 media_id extraction bug** (§5 above) — blocks any L3 chain on top of insert/remove.~~ ✅ Resolved 2026-04-23.
 
 ### LOW priority
 - **`.jpeg` preservation** — currently rewritten to `.jpg`; harmless but surprising.
