@@ -6,8 +6,10 @@ captures, DOM observer) to detect when a generation finishes or fails.
 
 import asyncio
 import logging
+import re
 import time
 
+from flow.media_id import looks_like_media_id, normalize_media_id
 from flow.recaptcha import detect_recaptcha, detect_recaptcha_in_network, RecaptchaError
 
 logger = logging.getLogger(__name__)
@@ -159,9 +161,10 @@ async def wait_for_completion(
                 dom["progress"], elapsed,
             )
             await asyncio.sleep(2)  # let media settle
+            media_ids = await _finalize_dom_completion(client, page)
             return _result(
                 True,
-                media_ids=_collect_media_ids(client),
+                media_ids=media_ids,
                 video_urls=video_urls[initial_video_count:],
             )
 
@@ -177,9 +180,10 @@ async def wait_for_completion(
                     last_progress, elapsed,
                 )
                 await asyncio.sleep(3)
+                media_ids = await _finalize_dom_completion(client, page)
                 return _result(
                     True,
-                    media_ids=_collect_media_ids(client),
+                    media_ids=media_ids,
                 )
 
         # --- No-signal watchdog ---
@@ -283,6 +287,88 @@ def _collect_media_ids(client, start_index: int = 0) -> list[str]:
         if mid:
             ids.add(mid)
     return list(ids)
+
+
+async def _finalize_dom_completion(client, page) -> list[str]:
+    """Return media_ids for a DOM-detected completion.
+
+    The three passive-network detectors can be empty if ``page.on('response')``
+    missed the events (cold-start race, issue #45). When the network buffer is
+    empty we scrape the just-rendered tile DOM and record any discovered ids
+    on the client so downstream code sees a normal media-event list.
+    """
+    ids = _collect_media_ids(client)
+    if ids:
+        return ids
+
+    scraped = await _scrape_media_ids_from_dom(page)
+    if not scraped:
+        return []
+
+    record = getattr(client, "_record_media_id", None)
+    if callable(record):
+        for mid in scraped:
+            record(mid, source="dom_scrape")
+    return _collect_media_ids(client) or scraped
+
+
+# Match a UUID or 24+ hex-char string embedded in a /edit/<id>[?#/] URL.
+_EDIT_HREF_RE = re.compile(
+    r"/edit/([A-Za-z0-9-]{16,})(?=[/?#]|$)"
+)
+
+
+async def _scrape_media_ids_from_dom(page) -> list[str]:
+    """Extract media_ids from the currently-rendered tile DOM.
+
+    Selection order: data-tile-id → a[href*="/edit/"] → [data-mid].
+    Returned list is de-duplicated, order-preserving, and filtered through
+    :func:`flow.media_id.looks_like_media_id`.
+    """
+    try:
+        candidates = await page.evaluate(
+            """() => {
+                const out = [];
+                document.querySelectorAll('[data-tile-id]').forEach(el => {
+                    const v = el.getAttribute('data-tile-id');
+                    if (v) out.push(v);
+                });
+                document.querySelectorAll('a[href*="/edit/"]').forEach(el => {
+                    const v = el.getAttribute('href');
+                    if (v) out.push(v);
+                });
+                document.querySelectorAll('[data-mid]').forEach(el => {
+                    const v = el.getAttribute('data-mid');
+                    if (v) out.push(v);
+                });
+                return out;
+            }"""
+        )
+    except Exception as exc:  # pragma: no cover - defensive against closed pages
+        logger.debug("DOM media-id scrape failed: %s", exc)
+        return []
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in candidates or []:
+        for mid in _extract_media_id_candidates(str(raw)):
+            n = normalize_media_id(mid)
+            if n and looks_like_media_id(n) and n not in seen:
+                seen.add(n)
+                out.append(n)
+    if out:
+        logger.info("DOM media-id scrape recovered %d id(s): %s", len(out), out)
+    return out
+
+
+def _extract_media_id_candidates(raw: str) -> list[str]:
+    """Yield id-like substrings from a raw attribute value."""
+    if not raw:
+        return []
+    hrefs = _EDIT_HREF_RE.findall(raw)
+    if hrefs:
+        return hrefs
+    return [raw]
 
 
 async def _settle_after_done(page, client, initial_url: str, initial_media_count: int) -> None:
