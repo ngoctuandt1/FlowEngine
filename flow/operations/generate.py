@@ -133,7 +133,7 @@ async def text_to_video(
             await page.wait_for_selector(
                 _NEW_PROJECT_APP_READY_SELECTOR,
                 state="attached",
-                timeout=500,
+                timeout=1000,
             )
             return True
         except Exception:
