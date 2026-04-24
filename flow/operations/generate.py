@@ -6,6 +6,7 @@ import re
 
 from flow.navigation import flow_url, extract_project_id
 from flow.login import is_login_page, handle_login_redirect
+from flow.landing import dismiss_flow_marketing_landing
 from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
@@ -117,33 +118,44 @@ async def text_to_video(
 
     # Flow sometimes serves the marketing landing ("Create with Flow" CTA)
     # instead of the editor home — even for logged-in sessions. Click the
-    # CTA to bounce into the authenticated app before searching for the
-    # "+ New project" button. For L1 the URL stays on /tools/flow after
-    # the click (no /project/), so don't use recover_from_flow_landing's
-    # URL-based completion check — just click the CTA and settle.
-    for _cta_sel in (
-        "button:has-text('Create with Flow')",
-        "[role='button']:has-text('Create with Flow')",
-        "a:has-text('Create with Flow')",
-    ):
-        try:
-            cta = page.locator(_cta_sel).first
-            if await cta.is_visible(timeout=1500):
-                logger.info("Flow marketing landing detected — clicking '%s'", _cta_sel)
-                await cta.click(timeout=5000)
-                await asyncio.sleep(3)
-                break
-        except Exception:
-            continue
+    # hero CTA (not the nav scroll-anchor sharing the same text — issue
+    # #48) to bounce into the authenticated app before searching for the
+    # "+ New project" button.
+    # The tile is variant-specific: sometimes rendered with visible text
+    # "New project", sometimes icon-only with accessible-name only. Probe
+    # both; role-based matcher matches the exact click path we use below.
+    _NEW_PROJECT_TEXT_SELECTOR = (
+        "text=New project, text=Dự án mới, text=Tạo dự án"
+    )
+    _NEW_PROJECT_ROLE_NAMES = ("New project", "Dự án mới", "Tạo dự án")
 
-    # Wait for homepage to fully load before looking for buttons.
-    try:
-        await page.wait_for_selector(
-            "button:has-text('New project'), button:has-text('Dự án mới'), button:has(i.google-symbols)",
-            state="attached",
-            timeout=15000,
+    async def _new_project_button_attached(timeout_ms: int = 1000) -> bool:
+        try:
+            await page.wait_for_selector(
+                _NEW_PROJECT_TEXT_SELECTOR,
+                state="attached",
+                timeout=timeout_ms,
+            )
+            return True
+        except Exception:
+            pass
+        per_name = max(250, timeout_ms // len(_NEW_PROJECT_ROLE_NAMES))
+        for name in _NEW_PROJECT_ROLE_NAMES:
+            try:
+                btn = page.get_by_role("button", name=name).filter(visible=True).first
+                if await btn.is_visible(timeout=per_name):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    if not await _new_project_button_attached(timeout_ms=1000):
+        await dismiss_flow_marketing_landing(
+            page, logger, _new_project_button_attached
         )
-    except Exception:
+
+    # Final settle — give slow renders a second chance before click.
+    if not await _new_project_button_attached(timeout_ms=15000):
         logger.warning("New-project button did not attach within 15s — continuing")
     await asyncio.sleep(2)
 
@@ -183,6 +195,47 @@ async def text_to_video(
                     await btn.click(timeout=5000)
                     new_project_clicked = True
                     logger.info("Clicked new project via: %s", sel)
+                    break
+            except Exception:
+                continue
+
+    # Last-resort: match the tile purely by its visible text. Flow renders
+    # "+ New project" as a <div> without role on some variants, so neither
+    # get_by_role nor tag-restricted CSS can see it. get_by_text is tag-
+    # agnostic; we then walk up to the clickable ancestor.
+    if not new_project_clicked:
+        for text in ("New project", "Dự án mới", "Tạo dự án"):
+            try:
+                tile = page.get_by_text(text, exact=True).first
+                if await tile.is_visible(timeout=2000):
+                    try:
+                        await tile.scroll_into_view_if_needed(timeout=2000)
+                    except Exception:
+                        pass
+                    try:
+                        await tile.click(timeout=5000)
+                    except Exception:
+                        # Text node may not itself be clickable — try the
+                        # nearest ancestor with a click handler.
+                        handle = await tile.element_handle()
+                        if handle is not None:
+                            await page.evaluate(
+                                """(el) => {
+                                    let cur = el;
+                                    for (let i = 0; i < 6 && cur; i++) {
+                                        const r = cur.getBoundingClientRect();
+                                        if (r.width > 80 && r.height > 40) {
+                                            cur.click();
+                                            return;
+                                        }
+                                        cur = cur.parentElement;
+                                    }
+                                    el.click();
+                                }""",
+                                handle,
+                            )
+                    new_project_clicked = True
+                    logger.info("Clicked new project via get_by_text(%r)", text)
                     break
             except Exception:
                 continue

@@ -302,6 +302,53 @@ class FlowClient:
         await self.stop()
 
     # ------------------------------------------------------------------
+    # Pool helpers — reuse one browser across multiple jobs
+    # ------------------------------------------------------------------
+
+    def is_healthy(self) -> bool:
+        """Return True if browser + page are still usable.
+
+        Used by BrowserPool to decide whether to reuse or restart the
+        client between jobs. Cheap: no round-trip to Chrome.
+        """
+        if self.page is None or self.browser is None:
+            return False
+        try:
+            if self.page.is_closed():
+                return False
+        except Exception:
+            return False
+        if self._chrome_proc is not None and self._chrome_proc.poll() is not None:
+            return False
+        return True
+
+    async def reset_for_next_job(self, target_url: str | None = None) -> None:
+        """Clear per-job state so the same client can run another job.
+
+        Clears captured network buffers and optional navigation target.
+        Does NOT close the browser. Caller typically passes the Flow
+        homepage for L1 jobs; L2+ handlers navigate to the project/edit
+        URL themselves so target_url is usually None for those.
+        """
+        self._video_urls.clear()
+        self._calls.clear()
+        self._media_id_events.clear()
+        self._gen_id = None
+        # Keep _account_info — it's a cached read of /v1/credits and
+        # stays valid across jobs on the same session.
+
+        if target_url and self.page is not None:
+            try:
+                await self.page.goto(
+                    target_url, wait_until="domcontentloaded", timeout=30000
+                )
+            except Exception as exc:
+                logger.warning(
+                    "reset_for_next_job: goto %r failed: %s", target_url[:80], exc
+                )
+                raise
+
+    # ------------------------------------------------------------------
     # Mode A -- Native Chrome via CDP
     # ------------------------------------------------------------------
 
@@ -351,9 +398,48 @@ class FlowClient:
                 no_viewport=True, accept_downloads=True
             )
 
-        # Pick primary page.
+        # Diagnostic: enumerate every context/page so we can spot stray
+        # session-restore windows that Playwright isn't driving.
+        try:
+            for ci, ctx in enumerate(self.browser.contexts):
+                for pi, pg in enumerate(ctx.pages):
+                    logger.info(
+                        "CDP attach: ctx[%d].pages[%d] url=%r", ci, pi, pg.url
+                    )
+        except Exception as exc:
+            logger.debug("page enumeration failed: %s", exc)
+
+        # Pick primary page — skip internal Chrome UI surfaces that CDP
+        # exposes as pages (omnibox popup dropdown, tab search, etc.).
+        # User-report 2026-04-24: `pages[0]` was `chrome://omnibox-popup.
+        # top-chrome/` which is the URL-bar autocomplete dropdown, not a
+        # web tab. Navigating it "succeeded" but the visible tab stayed
+        # on `chrome://new-tab-page/` → worker thought it was on Flow
+        # while the user saw a blank URL bar.
         pages = self.context.pages
-        self.page = pages[0] if pages else await self.context.new_page()
+
+        def _is_real_tab(p) -> bool:
+            u = (p.url or "").lower()
+            if u.startswith("chrome://omnibox"):
+                return False
+            if u.startswith("chrome://tab-search"):
+                return False
+            if u.startswith("devtools://"):
+                return False
+            return True
+
+        real_tabs = [p for p in pages if _is_real_tab(p)]
+        if real_tabs:
+            self.page = real_tabs[0]
+        elif pages:
+            # No real tab — open a fresh one we fully control.
+            self.page = await self.context.new_page()
+        else:
+            self.page = await self.context.new_page()
+        logger.info(
+            "CDP primary page picked: url=%r (real_tabs=%d/%d)",
+            self.page.url, len(real_tabs), len(pages),
+        )
         # Bind before any caller-driven navigation so the first generation's
         # response events can't slip past an unbound hook (issue #45).
         self._setup_network_hooks()

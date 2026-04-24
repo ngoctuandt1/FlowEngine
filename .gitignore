@@ -51,3 +51,8 @@ Thumbs.db
 tmp_*
 *.tmp
 tests/_tmp/
+
+# Debug artifacts
+debug_screens/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
