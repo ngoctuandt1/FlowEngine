@@ -121,15 +121,11 @@ async def text_to_video(
     # hero CTA (not the nav scroll-anchor sharing the same text — issue
     # #48) to bounce into the authenticated app before searching for the
     # "+ New project" button.
-    # Accept any of the homepage's "+ New project" triggers — different
-    # Flow variants render the tile as <button>, <a>, or <div role="button">.
+    # Any element containing "New project" text — Flow renders the tile as
+    # <div> (no role) on some variants, so tag-restricted CSS misses it.
+    # Playwright `text=` is tag-agnostic.
     _NEW_PROJECT_APP_READY_SELECTOR = (
-        "button:has-text('New project'), "
-        "a:has-text('New project'), "
-        "[role='button']:has-text('New project'), "
-        "button:has-text('Dự án mới'), "
-        "a:has-text('Dự án mới'), "
-        "[role='button']:has-text('Dự án mới')"
+        "text=New project, text=Dự án mới, text=Tạo dự án"
     )
 
     async def _new_project_button_attached() -> bool:
@@ -195,6 +191,47 @@ async def text_to_video(
                     await btn.click(timeout=5000)
                     new_project_clicked = True
                     logger.info("Clicked new project via: %s", sel)
+                    break
+            except Exception:
+                continue
+
+    # Last-resort: match the tile purely by its visible text. Flow renders
+    # "+ New project" as a <div> without role on some variants, so neither
+    # get_by_role nor tag-restricted CSS can see it. get_by_text is tag-
+    # agnostic; we then walk up to the clickable ancestor.
+    if not new_project_clicked:
+        for text in ("New project", "Dự án mới", "Tạo dự án"):
+            try:
+                tile = page.get_by_text(text, exact=True).first
+                if await tile.is_visible(timeout=2000):
+                    try:
+                        await tile.scroll_into_view_if_needed(timeout=2000)
+                    except Exception:
+                        pass
+                    try:
+                        await tile.click(timeout=5000)
+                    except Exception:
+                        # Text node may not itself be clickable — try the
+                        # nearest ancestor with a click handler.
+                        handle = await tile.element_handle()
+                        if handle is not None:
+                            await page.evaluate(
+                                """(el) => {
+                                    let cur = el;
+                                    for (let i = 0; i < 6 && cur; i++) {
+                                        const r = cur.getBoundingClientRect();
+                                        if (r.width > 80 && r.height > 40) {
+                                            cur.click();
+                                            return;
+                                        }
+                                        cur = cur.parentElement;
+                                    }
+                                    el.click();
+                                }""",
+                                handle,
+                            )
+                    new_project_clicked = True
+                    logger.info("Clicked new project via get_by_text(%r)", text)
                     break
             except Exception:
                 continue

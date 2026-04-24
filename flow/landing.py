@@ -91,29 +91,17 @@ async def _dismiss_landing_once(
             except Exception:
                 pass
 
+        # The marketing page has a sticky <header> and scroll-linked hash
+        # listener. Playwright's actionability check fails with "header
+        # intercepts pointer events" or scrolls the URL to #capabilities
+        # before the click lands. `force=True` skips the actionability
+        # check entirely and dispatches at the element's centre.
         clicked = False
         try:
-            await cta.click(timeout=5000)
+            await cta.click(timeout=5000, force=True)
             clicked = True
         except Exception as exc:
-            logger.warning(
-                "CTA click failed for '%s' (%s) — retrying via JS .click()",
-                selector, exc,
-            )
-            # Playwright aborts on `<html> intercepts pointer events`, which
-            # on this marketing variant is caused by scroll-into-view racing
-            # the SPA's scroll-linked hash. Dispatching .click() via JS
-            # fires the React handler without the coordinate round-trip.
-            try:
-                handle = await cta.element_handle()
-                if handle is not None:
-                    await page.evaluate("(el) => el.click()", handle)
-                    clicked = True
-            except Exception as exc2:
-                logger.warning(
-                    "JS fallback click also failed for '%s': %s",
-                    selector, exc2,
-                )
+            logger.warning("CTA click(force=True) failed for '%s': %s", selector, exc)
         if not clicked:
             continue
 

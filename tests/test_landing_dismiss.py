@@ -30,7 +30,7 @@ class FakeLocator:
     async def is_visible(self, timeout=None):
         return self._visible
 
-    async def click(self, timeout=None):
+    async def click(self, timeout=None, force=False):
         self.click_calls += 1
         if self._on_click is not None:
             self._on_click()
@@ -139,8 +139,8 @@ async def test_anchor_scroll_candidate_is_abandoned_for_next():
     # Patch good.click to also flip the ready flag post-click.
     orig_click = good.click
 
-    async def good_click(timeout=None):
-        await orig_click(timeout=timeout)
+    async def good_click(timeout=None, force=False):
+        await orig_click(timeout=timeout, force=force)
         set_ready_after_good_click()
 
     good.click = good_click  # type: ignore[assignment]
@@ -202,43 +202,6 @@ async def test_all_candidates_fail_returns_false():
 
 
 @pytest.mark.asyncio
-async def test_js_click_fallback_fires_when_playwright_click_fails():
-    """Playwright `<html> intercepts pointer events` → JS `.click()` rescues."""
-    page = FakePage()
-
-    class HandleBackedLocator(FakeLocator):
-        def __init__(self, *, visible, on_js_click):
-            super().__init__(visible=visible)
-            self._on_js_click = on_js_click
-
-        async def click(self, timeout=None):
-            raise RuntimeError("html intercepts pointer events")
-
-        async def element_handle(self):
-            handle = type("H", (), {})()
-            async def _js_click():
-                self._on_js_click()
-            handle._js_click = _js_click
-            return handle
-
-    def mount_app():
-        page.url = "https://labs.google/fx/tools/flow/project/js-123"
-
-    cta = HandleBackedLocator(visible=True, on_js_click=mount_app)
-    page.set("main button:has-text('Create with Flow')", cta)
-
-    async def is_ready():
-        return False
-
-    logger = logging.getLogger("test")
-    result = await landing.dismiss_flow_marketing_landing(
-        page, logger, is_ready, per_click_timeout_sec=2.0
-    )
-    assert result is True
-    assert any("el.click" in s for s in page.evaluate_calls)
-
-
-@pytest.mark.asyncio
 async def test_reload_retry_succeeds_when_second_pass_ready():
     """Issue #51 — A/B re-rolls on reload; second attempt enters app."""
     page = FakePage()
@@ -296,7 +259,7 @@ async def test_max_reloads_zero_preserves_single_pass():
 async def test_click_exception_moves_to_next_candidate():
     page = FakePage()
 
-    async def raise_on_click(timeout=None):
+    async def raise_on_click(timeout=None, force=False):
         raise RuntimeError("detached")
 
     broken = FakeLocator(visible=True)
