@@ -228,6 +228,7 @@ class FlowClient:
         self._media_id_events: list[dict[str, Any]] = []
         self._gen_id: str | None = None
         self._account_info: dict[str, Any] | None = None
+        self._hooks_bound: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -244,6 +245,9 @@ class FlowClient:
         else:
             await self._start_persistent()
 
+        # Layer-1 guard: helpers bind hooks immediately after self.page is
+        # assigned; this call is a no-op if they did, but keeps the old
+        # contract for any future code path that sets page elsewhere.
         self._setup_network_hooks()
         logger.info(
             "FlowClient ready  profile=%s  real_chrome=%s  headless=%s",
@@ -289,6 +293,7 @@ class FlowClient:
         self.browser = None
         self.context = None
         self._pw = None
+        self._hooks_bound = False
 
     async def __aenter__(self) -> "FlowClient":
         return await self.start()
@@ -349,6 +354,9 @@ class FlowClient:
         # Pick primary page.
         pages = self.context.pages
         self.page = pages[0] if pages else await self.context.new_page()
+        # Bind before any caller-driven navigation so the first generation's
+        # response events can't slip past an unbound hook (issue #45).
+        self._setup_network_hooks()
 
     # ------------------------------------------------------------------
     # Mode B -- Playwright persistent context
@@ -385,6 +393,9 @@ class FlowClient:
 
         pages = self.context.pages
         self.page = pages[0] if pages else await self.context.new_page()
+        # Bind before any caller-driven navigation so the first generation's
+        # response events can't slip past an unbound hook (issue #45).
+        self._setup_network_hooks()
 
     # ------------------------------------------------------------------
     # Profile preparation
@@ -412,10 +423,14 @@ class FlowClient:
     # ------------------------------------------------------------------
 
     def _setup_network_hooks(self) -> None:
-        """Bind ``page.on('response')`` to capture network traffic passively."""
-        if self.page is None:
+        """Bind ``page.on('response')`` to capture network traffic passively.
+
+        Idempotent: safe to call multiple times per client lifecycle.
+        """
+        if self.page is None or self._hooks_bound:
             return
         self.page.on("response", self._on_response)
+        self._hooks_bound = True
 
     async def _on_response(self, response: Any) -> None:
         """Classify and store interesting network responses.
