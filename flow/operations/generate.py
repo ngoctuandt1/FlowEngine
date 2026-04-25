@@ -124,8 +124,14 @@ async def text_to_video(
     # The tile is variant-specific: sometimes rendered with visible text
     # "New project", sometimes icon-only with accessible-name only. Probe
     # both; role-based matcher matches the exact click path we use below.
+    # Playwright's text engine does NOT union via comma — `text=A, text=B`
+    # is parsed as a single literal "A, text=B" query that never matches,
+    # which previously made `wait_for_selector` burn its full timeout (15s
+    # on the final probe = the bulk of the 18s gap between "Step 2" and
+    # "Clicked new project" observed on warm sessions, 2026-04-25). Use a
+    # regex `text=/.../` so the alternation is honoured by the text engine.
     _NEW_PROJECT_TEXT_SELECTOR = (
-        "text=New project, text=Dự án mới, text=Tạo dự án"
+        "text=/New project|Dự án mới|Tạo dự án/"
     )
     _NEW_PROJECT_ROLE_NAMES = ("New project", "Dự án mới", "Tạo dự án")
 

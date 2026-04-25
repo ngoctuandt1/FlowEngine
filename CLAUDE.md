@@ -141,8 +141,8 @@ Body: "Closes #N"
 | B1 | `b359c84` | Aspect ratio via Radix chip + `[id$="-trigger-PORTRAIT\|LANDSCAPE"]` |
 | B2 → B11 | `a165105` → `ce6683a` | Bbox: target largest `<canvas>` (≥300px), pointer-trust verify (was: wrong `<video>` thumbnail) |
 | B3 → B12 | `58937d4` → `78d3e40` | Camera preset: verify via `getComputedStyle(labelDiv).color` R+G+B<400 (was: aria-pressed signals never present) |
-| B4 | — | Deferred (chains table unused, P2) |
-| B10 | — | Deferred post-Phase-A (Pydantic `default_factory=datetime.utcnow` residual, P2) |
+| B4 | `4dcf50f` | Persist chain metadata + aggregated status API (un-deferred 2026-04-18) |
+| B10 | `fe13870` | Migrate `default_factory=datetime.utcnow` → tz-aware (un-deferred 2026-04-18) |
 | B13 | inline `9facbe3` | Resolved inline (docs cleanup) |
 
 **Validation tiers:**
@@ -163,7 +163,7 @@ Body: "Closes #N"
 
 - Test suite count moved from `153` to `192`.
 - Live-verified on 2026-04-20: image 4K `text-to-image` x3 on `ngoctuandt20`; L2 insert + remove on the same project.
-- Parked HIGH: L2 `media_id` extraction bug for insert/remove. See handoff §5 and `docs/session-reports/reviews/4_media_id_bug.md`.
+- L2 `media_id` extraction bug for insert/remove: **RESOLVED 2026-04-23** (commit `0bb9d29`, refactor `b62ac73`, doc PR `e79405d`/#53). See [2026-04-23_l2-media-id-fix-live-verified.md](docs/session-reports/2026-04-23_l2-media-id-fix-live-verified.md).
 - Current `master` context for this branch: handoff feature head `ef09a13` plus docs-sync head `4c2e529`.
 
 For future epics: create `docs/PRD_<EPIC>.md`, open issues on GitHub, branch `claude/bug-N-slug`

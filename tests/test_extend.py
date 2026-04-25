@@ -523,9 +523,10 @@ async def test_extend_finalize_multi_gen_downloads_all_outputs_after_t7(monkeypa
 
 
 @pytest.mark.xfail(
-    reason="Parked HIGH — L2 media_id extraction picks up transient "
-           "redirect ids instead of the settled route slug. See "
-           "docs/session-reports/reviews/4_media_id_bug.md.",
+    reason="Edge case of the L2 media_id extraction work resolved 2026-04-23 "
+           "(see docs/session-reports/2026-04-23_l2-media-id-fix-live-verified.md). "
+           "Production path uses /pq/api network events; this synthetic "
+           "redirect-id fixture still trips the resolver.",
     strict=False,
 )
 async def test_extend_finalize_stores_settled_route_media_id_not_redirect_ids(monkeypatch):
@@ -563,8 +564,8 @@ async def test_extend_finalize_stores_settled_route_media_id_not_redirect_ids(mo
 
 
 @pytest.mark.xfail(
-    reason="Parked HIGH — same L2 media_id extraction bug as the sibling "
-           "test above. See docs/session-reports/reviews/4_media_id_bug.md.",
+    reason="Same edge case as sibling test above; see "
+           "docs/session-reports/2026-04-23_l2-media-id-fix-live-verified.md.",
     strict=False,
 )
 async def test_extend_finalize_single_gen_still_uses_settled_route_media_id(monkeypatch):
