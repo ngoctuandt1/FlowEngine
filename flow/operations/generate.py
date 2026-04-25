@@ -8,6 +8,7 @@ from flow.navigation import flow_url, extract_project_id
 from flow.login import is_login_page, handle_login_redirect
 from flow.landing import dismiss_flow_marketing_landing
 from flow.model_selector import select_model, DEFAULT_MODEL
+from flow.selector_chain import click_first_visible
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.download import download_video
@@ -466,16 +467,16 @@ async def _dismiss_overlays(page):
         "button:has(i:has-text('close'))",
     ]
 
-    for sel in CLOSE_SELECTORS:
-        try:
-            btn = page.locator(sel).first
-            if await btn.is_visible(timeout=1000):
-                await btn.click(timeout=2000)
-                logger.info("Dismissed overlay via: %s", sel)
-                await asyncio.sleep(1)
-                return
-        except Exception:
-            continue
+    matched = await click_first_visible(
+        page,
+        CLOSE_SELECTORS,
+        is_visible_timeout_ms=1000,
+        click_timeout_ms=2000,
+        on_match=lambda sel: logger.info("Dismissed overlay via: %s", sel),
+    )
+    if matched is not None:
+        await asyncio.sleep(1)
+        return
 
     # Last resort: Escape (only runs if an overlay WAS detected — reduces
     # risk of dismissing unrelated UI).
