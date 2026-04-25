@@ -99,37 +99,3 @@ def looks_like_media_id(s: str) -> bool:
     if _HEX_RE.match(s):
         return True
     return False
-
-
-# ---------------------------------------------------------------------------
-# Bulk extraction from text / JSON
-# ---------------------------------------------------------------------------
-
-_EXTRACT_PATTERNS = [
-    re.compile(r'"name"\s*:\s*"([^"]+)"'),
-    re.compile(r'"mediaId"\s*:\s*"([^"]+)"'),
-    re.compile(r'"media_id"\s*:\s*"([^"]+)"'),
-    re.compile(r"[?&]name=([A-Za-z0-9._%-]+)"),
-]
-
-
-def extract_media_ids_from_text(text: str) -> list[str]:
-    """Regex-extract potential media IDs from a JSON blob or raw text.
-
-    Each returned ID is normalised and de-duplicated.
-    """
-    raw = str(text or "")
-    if not raw:
-        return []
-
-    seen: set[str] = set()
-    result: list[str] = []
-
-    for pat in _EXTRACT_PATTERNS:
-        for m in pat.finditer(raw):
-            n = normalize_media_id(m.group(1))
-            if n and looks_like_media_id(n) and n not in seen:
-                seen.add(n)
-                result.append(n)
-
-    return result

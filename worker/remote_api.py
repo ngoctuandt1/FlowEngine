@@ -1,7 +1,7 @@
 """HTTP client for FlowEngine server API.
 
-Handles claim, update, heartbeat, and profile listing
-with retry logic and connection error handling.
+Handles claim, update, and heartbeat with retry logic and
+connection error handling.
 """
 
 import logging
@@ -85,14 +85,6 @@ class RemoteAPI:
         resp = await self._request("POST", "/api/worker/heartbeat", json=payload)
         if resp is not None:
             resp.raise_for_status()
-
-    async def list_profiles(self) -> list[dict]:
-        """GET /api/profiles -- fetch all known profiles from server."""
-        resp = await self._request("GET", "/api/profiles")
-        if resp is None:
-            return []
-        resp.raise_for_status()
-        return resp.json()
 
     # ------------------------------------------------------------------
     # Internal HTTP helper with retries
