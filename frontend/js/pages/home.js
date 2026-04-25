@@ -90,20 +90,12 @@
 
   // ---- render: composer -----------------------------------------------------
 
-  function renderTabs() {
-    return `
-      <div class="composer-tabs" role="tablist">
-        ${MODE_TABS.map((t) => `
-          <button class="composer-tab ${t.id === mode ? 'active' : ''}"
-                  role="tab" aria-selected="${t.id === mode}"
-                  data-mode="${t.id}">
-            <span class="material-icons">${t.icon}</span>
-            <span>${t.label}</span>
-          </button>
-        `).join('')}
-      </div>
-    `;
-  }
+  // Mode tabs are NOT rendered as a separate top strip anymore — they
+  // live inside the settings popover, mirroring Flow's single-input
+  // composer where mode/model/aspect/output count are all behind a
+  // single gear chip. Kept the function as a stub to avoid touching
+  // call sites in renderComposer().
+  function renderTabs() { return ''; }
 
   function renderAttachments() {
     if (mode === 'frames') {
@@ -163,77 +155,88 @@
     `;
   }
 
+  // Chip cluster — Flow's composer has a single gear chip on the left
+  // edge that opens a settings panel containing mode + model + aspect
+  // + output count. We keep an extra Profile chip on the right edge
+  // because multi-account is engine-specific (Flow native = 1 account).
   function renderChips() {
-    const modelLabel = findLabel(modelOptionsFor(mode), model);
-    const aspectLabel = findLabel(aspectOptionsFor(mode), aspect);
-    const profileLabel = profile || 'Any profile';
+    const modeIcon = MODE_TABS.find((t) => t.id === mode)?.icon || 'movie';
+    const profileLabel = profile || 'Any account';
     return `
-      <div class="composer-chips">
-        <button class="chip" id="chip-model" data-popover="model">
-          <span class="material-icons">tune</span>
-          <span class="chip-label">${App.escapeHtml(modelLabel)}</span>
-          <span class="material-icons chip-caret">expand_more</span>
-        </button>
-        <button class="chip" id="chip-aspect" data-popover="aspect">
-          <span class="material-icons">aspect_ratio</span>
-          <span class="chip-label">${App.escapeHtml(aspectLabel)}</span>
-          <span class="material-icons chip-caret">expand_more</span>
-        </button>
-        <button class="chip" id="chip-profile" data-popover="profile">
-          <span class="material-icons">person</span>
-          <span class="chip-label">${App.escapeHtml(profileLabel)}</span>
-          <span class="material-icons chip-caret">expand_more</span>
-        </button>
-        <span class="chip chip-locked" title="Engine forces ×1 to control credits">
-          <span class="material-icons">looks_one</span>
-          <span class="chip-label">×1</span>
-        </span>
-      </div>
+      <button class="chip chip-settings" id="chip-settings" data-popover="settings"
+              title="Settings (mode / model / aspect)">
+        <span class="material-icons">${modeIcon}</span>
+        <span class="material-icons chip-caret">tune</span>
+      </button>
+      <span class="composer-chip-spacer"></span>
+      <button class="chip chip-profile-edge" id="chip-profile" data-popover="profile">
+        <span class="material-icons">person</span>
+        <span class="chip-label">${App.escapeHtml(profileLabel)}</span>
+      </button>
     `;
   }
 
   function renderPopovers() {
     const modelOpts = modelOptionsFor(mode);
     const aspectOpts = aspectOptionsFor(mode);
-    const opt = (o, current) => {
+    const opt = (o, current, group) => {
       const v = typeof o === 'string' ? o : o.value;
       const l = typeof o === 'string' ? o : o.label;
       return `<button class="popover-item ${v === current ? 'active' : ''}"
-                      data-value="${App.escapeHtml(v)}">${App.escapeHtml(l)}</button>`;
+                      data-group="${group}" data-value="${App.escapeHtml(v)}">${App.escapeHtml(l)}</button>`;
     };
     const profileOpt = (name, current) => `
       <button class="popover-item ${name === current ? 'active' : ''}"
-              data-value="${App.escapeHtml(name)}">${App.escapeHtml(name || 'Any profile')}</button>
+              data-group="profile" data-value="${App.escapeHtml(name)}">${App.escapeHtml(name || 'Any account')}</button>
     `;
     const profileEntries = [
       profileOpt('', profile),
       ...profiles.map((p) => profileOpt(p.name, profile)),
     ].join('');
+
+    // Single consolidated settings popover — mode + model + aspect +
+    // count, mirroring Flow's gear-chip panel. (Profile gets its own
+    // popover because it's engine-specific and the chip lives on the
+    // opposite edge.)
+    const modeRow = MODE_TABS.map((t) => `
+      <button class="settings-tab ${t.id === mode ? 'active' : ''}"
+              data-group="mode" data-value="${t.id}">
+        <span class="material-icons">${t.icon}</span>
+        <span>${t.label}</span>
+      </button>
+    `).join('');
+
     return `
-      <div class="popover" id="popover-model" hidden>
+      <div class="popover popover-settings" id="popover-settings" hidden>
+        <div class="popover-title">Mode</div>
+        <div class="settings-tab-row">${modeRow}</div>
         <div class="popover-title">Model</div>
-        ${modelOpts.map((o) => opt(o, model)).join('')}
-      </div>
-      <div class="popover" id="popover-aspect" hidden>
+        ${modelOpts.map((o) => opt(o, model, 'model')).join('')}
         <div class="popover-title">Aspect ratio</div>
-        ${aspectOpts.map((o) => opt(o, aspect)).join('')}
+        ${aspectOpts.map((o) => opt(o, aspect, 'aspect')).join('')}
+        <div class="popover-title">Output count</div>
+        <div class="popover-locked-row">
+          <span class="material-icons">looks_one</span>
+          <span>×1 (engine-locked)</span>
+        </div>
       </div>
       <div class="popover" id="popover-profile" hidden>
-        <div class="popover-title">Chrome profile</div>
+        <div class="popover-title">Engine profile</div>
         ${profileEntries}
       </div>
     `;
   }
 
   function renderComposer() {
+    const modeLabel = MODE_TABS.find((t) => t.id === mode).label.toLowerCase();
     return `
       <section class="composer-card">
-        ${renderTabs()}
-        <textarea id="home-prompt" class="composer-prompt"
-                  rows="3" placeholder="Describe the ${MODE_TABS.find((t) => t.id === mode).label.toLowerCase()} you want to generate..."></textarea>
         <div id="home-attachments">${renderAttachments()}</div>
-        <div class="composer-bottom">
-          ${renderChips()}
+        <div class="composer-row">
+          ${renderChips().split('<span class="composer-chip-spacer"></span>')[0]}
+          <textarea id="home-prompt" class="composer-prompt"
+                    rows="1" placeholder="Describe the ${modeLabel} you want to generate..."></textarea>
+          ${renderChips().split('<span class="composer-chip-spacer"></span>')[1]}
           <button class="composer-send" id="home-send" title="Generate (Ctrl+Enter)" aria-label="Generate">
             <span class="material-icons">arrow_upward</span>
           </button>
@@ -525,12 +528,28 @@
     });
     document.querySelectorAll('.popover').forEach((pop) => {
       pop.addEventListener('click', (e) => {
-        const item = e.target.closest('.popover-item');
+        const item = e.target.closest('.popover-item, .settings-tab');
         if (!item) return;
+        const group = item.dataset.group;
         const v = item.dataset.value;
-        if (pop.id === 'popover-model') model = v;
-        else if (pop.id === 'popover-aspect') aspect = v;
-        else if (pop.id === 'popover-profile') profile = v;
+        if (group === 'mode') {
+          if (mode !== v) {
+            mode = v;
+            // Mode change resets model/aspect to defaults of new mode
+            // and drops mode-specific attachments (frames-only,
+            // ingredients-only, etc).
+            model = defaultModelFor(mode);
+            const aOpts = aspectOptionsFor(mode).map((o) => (typeof o === 'string' ? o : o.value));
+            if (!aOpts.includes(aspect)) aspect = DEFAULT_ASPECT;
+            startImagePath = endImagePath = refImagePath = '';
+            ingredientImagePaths = [];
+            closePopovers();
+            repaintComposer();
+            return;
+          }
+        } else if (group === 'model') model = v;
+        else if (group === 'aspect') aspect = v;
+        else if (group === 'profile') profile = v;
         closePopovers();
         repaintChips();
       });
@@ -544,14 +563,18 @@
   }
 
   function repaintChips() {
-    const card = document.querySelector('.composer-card');
-    if (!card) return;
-    const oldChips = card.querySelector('.composer-chips');
-    if (oldChips) oldChips.outerHTML = renderChips();
-    const oldPops = card.querySelectorAll('.popover');
-    oldPops.forEach((p) => p.remove());
-    card.insertAdjacentHTML('beforeend', renderPopovers());
-    bindChips();
+    // The new single-row composer interleaves chips + textarea + send,
+    // so granular chip-only repaint isn't worth the complexity. Reuse
+    // the full composer repaint — preserves prompt text since we read
+    // before tearing down and restore after.
+    const ta = document.getElementById('home-prompt');
+    const draft = ta ? ta.value : '';
+    repaintComposer();
+    const ta2 = document.getElementById('home-prompt');
+    if (ta2 && draft) {
+      ta2.value = draft;
+      ta2.focus();
+    }
   }
 
   // ---- WS live updates ------------------------------------------------------

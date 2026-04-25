@@ -167,7 +167,7 @@ body.route-home #top-bar { display: none; }
   position: relative;
   max-width: 760px;
   margin: 0 auto 48px;
-  padding: 14px 14px 12px;
+  padding: 8px 8px 8px 8px;
   background: var(--bg-surface);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: var(--radius-card);
@@ -175,6 +175,37 @@ body.route-home #top-bar { display: none; }
     0 1px 0 rgba(255, 255, 255, 0.04) inset,
     0 12px 40px -12px rgba(0, 0, 0, 0.55);
 }
+
+/* Single-row composer — gear chip | + attach | textarea | profile chip | send.
+   Mirrors Flow's signed-in homepage prompt bar where mode/model/aspect
+   live behind a single gear popover, not as a top tab strip. */
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+}
+.composer-row .composer-prompt {
+  flex: 1;
+  min-height: 0;
+  height: 36px;
+  max-height: 200px;
+  padding: 8px 10px;
+  resize: none;
+  overflow-y: auto;
+}
+.chip-settings {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.chip-settings .chip-caret { display: none; }
+.chip-settings:hover { background: var(--bg-chip-hover); }
+.chip-profile-edge { max-width: 180px; }
 
 .composer-tabs {
   display: inline-flex;
@@ -397,6 +428,41 @@ body.route-home #top-bar { display: none; }
 }
 .popover-item:hover { background: rgba(255, 255, 255, 0.06); }
 .popover-item.active { background: var(--accent-soft); color: #fff; }
+.popover-settings { min-width: 280px; max-width: 340px; }
+.settings-tab-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+  padding: 4px 0 8px;
+}
+.settings-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.02);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.settings-tab:hover { background: rgba(255,255,255,0.06); }
+.settings-tab.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.settings-tab .material-icons { font-size: 18px; color: var(--text-secondary); }
+.settings-tab.active .material-icons { color: #c4b5fd; }
+.popover-locked-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.popover-locked-row .material-icons { font-size: 16px; }
 
 .composer-feedback {
   margin: 10px 6px 2px;
