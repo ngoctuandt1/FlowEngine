@@ -163,7 +163,7 @@ Body: "Closes #N"
 
 - Test suite count moved from `153` to `192`.
 - Live-verified on 2026-04-20: image 4K `text-to-image` x3 on `ngoctuandt20`; L2 insert + remove on the same project.
-- Parked HIGH: L2 `media_id` extraction bug for insert/remove. See handoff §5 and `docs/session-reports/reviews/4_media_id_bug.md`.
+- L2 `media_id` extraction bug for insert/remove: **RESOLVED 2026-04-23** (commit `0bb9d29`, refactor `b62ac73`, doc PR `e79405d`/#53). See [2026-04-23_l2-media-id-fix-live-verified.md](docs/session-reports/2026-04-23_l2-media-id-fix-live-verified.md).
 - Current `master` context for this branch: handoff feature head `ef09a13` plus docs-sync head `4c2e529`.
 
 For future epics: create `docs/PRD_<EPIC>.md`, open issues on GitHub, branch `claude/bug-N-slug`
