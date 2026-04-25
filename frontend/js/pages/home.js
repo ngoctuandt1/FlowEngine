@@ -234,9 +234,8 @@
         <div id="home-attachments">${renderAttachments()}</div>
         <div class="composer-bottom">
           ${renderChips()}
-          <button class="composer-send" id="home-send">
+          <button class="composer-send" id="home-send" title="Generate (Ctrl+Enter)" aria-label="Generate">
             <span class="material-icons">arrow_upward</span>
-            <span>Generate</span>
           </button>
         </div>
         ${renderPopovers()}
@@ -252,11 +251,11 @@
       return `
         <section class="recent-section">
           <div class="section-head">
-            <h3>Recent</h3>
+            <h3>Your videos</h3>
           </div>
           <div class="empty-state">
             <span class="material-icons">movie_filter</span>
-            <h3>No jobs yet</h3>
+            <h3>No videos yet</h3>
             <p>Submit your first prompt above to get started.</p>
           </div>
         </section>
@@ -266,12 +265,24 @@
     return `
       <section class="recent-section">
         <div class="section-head">
-          <h3>Recent</h3>
+          <h3>Your videos</h3>
           <a href="#dashboard" class="section-link">View all →</a>
         </div>
         <div class="project-grid" id="home-grid">${tiles}</div>
       </section>
     `;
+  }
+
+  // Pull a renderable media URL from a completed job.
+  // output_files entries are paths like "downloads\\t2v_1080p_*.mp4"
+  // — the server mounts /downloads, so we just need to forward-slash and
+  // strip the leading "downloads/".
+  function mediaUrlFor(job) {
+    const files = job.output_files || [];
+    const mp4 = files.find((f) => /\.mp4$/i.test(f));
+    if (!mp4) return null;
+    const norm = String(mp4).replace(/\\/g, '/').replace(/^downloads\//, '');
+    return `/downloads/${encodeURI(norm)}`;
   }
 
   // Whitelist of status values we render. Anything else falls back to
@@ -287,10 +298,17 @@
     const status = safeStatus(job.status);
     const type = job.type || 'text-to-video';
     const promptText = job.prompt || job.direction || '(no prompt)';
+    const mediaUrl = status === 'completed' ? mediaUrlFor(job) : null;
+    const thumb = mediaUrl
+      ? `<video class="tile-video" src="${App.escapeHtml(mediaUrl)}"
+                muted loop playsinline preload="metadata"
+                onmouseenter="this.play().catch(()=>{})"
+                onmouseleave="this.pause(); this.currentTime=0;"></video>`
+      : `<span class="material-icons type-icon ${App.jobTypeClass(type)}">${App.jobTypeIcon(type)}</span>`;
     return `
       <article class="project-tile status-${status}" data-job-id="${App.escapeHtml(job.id)}">
         <div class="tile-thumb">
-          <span class="material-icons type-icon ${App.jobTypeClass(type)}">${App.jobTypeIcon(type)}</span>
+          ${thumb}
           <span class="tile-status-badge ${App.statusBadge(status)}">${App.escapeHtml(status)}</span>
         </div>
         <div class="tile-body">
@@ -368,7 +386,7 @@
 
     const btn = document.getElementById('home-send');
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span><span>Sending...</span>';
+    btn.innerHTML = '<span class="spinner"></span>';
     try {
       const result = await API.jobs.create(data);
       showFeedback('ok', `Job created · <code>${App.escapeHtml(String(result?.id ?? ''))}</code>`);
@@ -393,7 +411,7 @@
       App.toast(`Submit failed: ${e.message}`, 'error');
     } finally {
       btn.disabled = false;
-      btn.innerHTML = '<span class="material-icons">arrow_upward</span><span>Generate</span>';
+      btn.innerHTML = '<span class="material-icons">arrow_upward</span>';
     }
   }
 
@@ -639,8 +657,7 @@
       return `
         <div class="home-canvas">
           <div class="home-hero">
-            <h1 class="home-title">What will you create today?</h1>
-            <p class="home-subtitle">Generate, extend, edit. Powered by Google Flow.</p>
+            <h1 class="home-title">What will you dream up today?</h1>
           </div>
           ${renderComposer()}
           <div id="home-recent">${renderGrid()}</div>

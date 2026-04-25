@@ -5,13 +5,14 @@
    ============================================ */
 
 :root {
-  --bg-canvas: #0f0f12;
-  --bg-surface: #1a1b1f;
+  --bg-canvas: #0e0e11;
+  --bg-surface: #18191e;
   --bg-chip: #23252b;
   --bg-chip-hover: #2c2e36;
   --accent-soft: rgba(124, 92, 255, 0.16);
   --ring-focus: #a892ff;
-  --radius-card: 20px;
+  --radius-card: 28px;
+  --radius-tile: 20px;
   --radius-chip: 999px;
   --appbar-height: 56px;
 }
@@ -19,9 +20,8 @@
 body {
   background-color: var(--bg-canvas);
   background-image:
-    radial-gradient(circle at 50% -10%, rgba(124, 92, 255, 0.18), transparent 38rem),
-    radial-gradient(circle at 100% 100%, rgba(99, 102, 241, 0.10), transparent 32rem),
-    linear-gradient(180deg, #131318 0%, var(--bg-canvas) 38rem);
+    radial-gradient(circle at 50% -8%, rgba(124, 92, 255, 0.10), transparent 32rem),
+    linear-gradient(180deg, #121216 0%, var(--bg-canvas) 28rem);
 }
 
 /* ---- App bar ------------------------------------------------------------ */
@@ -57,32 +57,35 @@ body {
 .brand-icon { color: var(--accent); font-size: 24px; }
 .brand-text { font-size: 16px; }
 
-.appbar-nav {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 18px;
-}
-.appbar-link {
+/* Tier badge + avatar pill — Flow's signed-in homepage cluster */
+.tier-badge {
   display: inline-flex;
   align-items: center;
-  height: 36px;
-  padding: 0 14px;
-  border-radius: var(--radius-chip);
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  background: linear-gradient(135deg, #c4b5fd, #7c5cff);
+  color: #0e0e11;
+  text-transform: uppercase;
+}
+.avatar-pill {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-chip);
+  border: 1px solid rgba(255,255,255,0.06);
   color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 500;
-  transition: background var(--transition), color var(--transition);
+  cursor: default;
 }
-.appbar-link:hover { background: rgba(255, 255, 255, 0.05); color: var(--text-primary); }
-.appbar-link.active {
-  background: var(--accent-soft);
-  color: var(--text-primary);
-}
-
-@media (max-width: 720px) {
-  .appbar-nav { display: none; }
-}
+.avatar-pill .material-icons { font-size: 22px; }
+.ws-indicator { padding: 0; height: 8px; width: 8px; }
+.ws-indicator .ws-label { display: none; }
+.ws-indicator .ws-dot { width: 8px; height: 8px; }
 
 /* ---- App layout (override style.css flex layout) ------------------------ */
 
@@ -337,19 +340,19 @@ body.route-home #top-bar { display: none; }
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  width: 36px;
   height: 36px;
-  padding: 0 16px;
+  padding: 0;
   border: 0;
-  border-radius: var(--radius-chip);
+  border-radius: 50%;
   background: linear-gradient(180deg, #8c6cff 0%, #7c5cff 100%);
   color: #fff;
-  font-weight: 600;
-  font-size: 13px;
   cursor: pointer;
   transition: filter var(--transition), transform var(--transition);
   box-shadow: 0 6px 16px -8px rgba(124, 92, 255, 0.7);
 }
+.composer-send .material-icons { font-size: 20px; }
 .composer-send:hover:not(:disabled) { filter: brightness(1.07); transform: translateY(-1px); }
 .composer-send:disabled { filter: grayscale(0.4) brightness(0.7); cursor: progress; }
 .composer-send .spinner {
@@ -434,13 +437,22 @@ body.route-home #top-bar { display: none; }
 .project-tile {
   display: flex;
   flex-direction: column;
-  border-radius: 16px;
+  border-radius: var(--radius-tile);
   overflow: hidden;
   background: var(--bg-surface);
   border: 1px solid rgba(255, 255, 255, 0.05);
   cursor: pointer;
   transition: transform var(--transition), border-color var(--transition), box-shadow var(--transition);
 }
+.tile-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+.tile-thumb { position: relative; }
 .project-tile:hover {
   transform: translateY(-2px);
   border-color: var(--accent-border);
