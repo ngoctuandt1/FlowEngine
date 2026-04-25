@@ -3,78 +3,75 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#0a0a0c">
+  <meta name="theme-color" content="#0f0f12">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%278%27 fill=%27%237c5cff%27/%3E%3Cpath d=%27M10 8v16l13-8z%27 fill=%27white%27/%3E%3C/svg%3E">
-  <title>FlowEngine Dashboard</title>
+  <title>FlowEngine</title>
   <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/flow-shell.css">
   <link rel="stylesheet" href="https://fonts.googleapis.com/icon?family=Material+Icons">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
 </head>
 <body>
   <div class="route-anchors" aria-hidden="true">
+    <span id="home"></span>
     <span id="dashboard"></span>
     <span id="create"></span>
     <span id="chains"></span>
     <span id="profiles"></span>
     <span id="settings"></span>
   </div>
+
   <div id="app">
-    <nav id="sidebar">
+    <!-- Top app bar (visible on all routes) -->
+    <header id="appbar">
+      <div class="appbar-left">
+        <button id="menu-toggle" class="icon-btn" aria-label="Open navigation">
+          <span class="material-icons">menu</span>
+        </button>
+        <a href="#home" class="appbar-brand">
+          <span class="material-icons brand-icon">movie_filter</span>
+          <span class="brand-text">FlowEngine</span>
+        </a>
+      </div>
+      <nav class="appbar-nav">
+        <a href="#home" class="appbar-link" data-page="home">Home</a>
+        <a href="#dashboard" class="appbar-link" data-page="dashboard">Dashboard</a>
+        <a href="#chains" class="appbar-link" data-page="chains">Chains</a>
+        <a href="#profiles" class="appbar-link" data-page="profiles">Profiles</a>
+        <a href="#settings" class="appbar-link" data-page="settings">Settings</a>
+      </nav>
+      <div class="appbar-right">
+        <div id="ws-status" class="ws-indicator disconnected">
+          <span class="ws-dot"></span>
+          <span class="ws-label">Disconnected</span>
+        </div>
+        <button id="refresh-btn" class="icon-btn" title="Refresh" aria-label="Refresh current page">
+          <span class="material-icons">refresh</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Sidebar (drawer-style, hidden by default; toggled via menu button) -->
+    <nav id="sidebar" class="drawer">
       <div class="sidebar-header">
         <span class="material-icons logo-icon">movie_filter</span>
         <h1 class="logo-text">FlowEngine</h1>
       </div>
       <ul class="nav-links">
-        <li>
-          <a href="#dashboard" class="nav-link active" data-page="dashboard">
-            <span class="material-icons">dashboard</span>
-            <span class="nav-label">Dashboard</span>
-          </a>
-        </li>
-        <li>
-          <a href="#create" class="nav-link" data-page="create">
-            <span class="material-icons">add_circle</span>
-            <span class="nav-label">Create Job</span>
-          </a>
-        </li>
-        <li>
-          <a href="#chains" class="nav-link" data-page="chains">
-            <span class="material-icons">link</span>
-            <span class="nav-label">Chains</span>
-          </a>
-        </li>
-        <li>
-          <a href="#profiles" class="nav-link" data-page="profiles">
-            <span class="material-icons">people</span>
-            <span class="nav-label">Profiles</span>
-          </a>
-        </li>
-        <li>
-          <a href="#settings" class="nav-link" data-page="settings">
-            <span class="material-icons">settings</span>
-            <span class="nav-label">Settings</span>
-          </a>
-        </li>
+        <li><a href="#home" class="nav-link" data-page="home"><span class="material-icons">home</span><span class="nav-label">Home</span></a></li>
+        <li><a href="#dashboard" class="nav-link" data-page="dashboard"><span class="material-icons">dashboard</span><span class="nav-label">Dashboard</span></a></li>
+        <li><a href="#create" class="nav-link" data-page="create"><span class="material-icons">add_circle</span><span class="nav-label">Create Job</span></a></li>
+        <li><a href="#chains" class="nav-link" data-page="chains"><span class="material-icons">link</span><span class="nav-label">Chains</span></a></li>
+        <li><a href="#profiles" class="nav-link" data-page="profiles"><span class="material-icons">people</span><span class="nav-label">Profiles</span></a></li>
+        <li><a href="#settings" class="nav-link" data-page="settings"><span class="material-icons">settings</span><span class="nav-label">Settings</span></a></li>
       </ul>
-      <div class="sidebar-footer">
-        <div id="ws-status" class="ws-indicator disconnected">
-          <span class="ws-dot"></span>
-          <span class="ws-label">Disconnected</span>
-        </div>
-      </div>
     </nav>
+    <div id="sidebar-scrim" class="scrim" aria-hidden="true"></div>
 
     <main id="content">
       <header id="top-bar">
-        <button id="menu-toggle" class="icon-btn" aria-label="Open navigation">
-          <span class="material-icons">menu</span>
-        </button>
-        <h2 id="page-title">Dashboard</h2>
-        <div class="top-bar-actions">
-          <button id="refresh-btn" class="icon-btn" title="Refresh" aria-label="Refresh current page">
-            <span class="material-icons">refresh</span>
-          </button>
-        </div>
+        <h2 id="page-title">Home</h2>
+        <div class="top-bar-actions"></div>
       </header>
       <div id="page-container">
         <!-- Pages load here -->
@@ -102,6 +99,7 @@
   <script src="js/api.js"></script>
   <script src="js/ws.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/pages/home.js"></script>
   <script src="js/pages/dashboard.js"></script>
   <script src="js/pages/create-job.js"></script>
   <script src="js/pages/chain-builder.js"></script>

@@ -20,25 +20,20 @@ const App = {
     // Listen for hash changes
     window.addEventListener('hashchange', () => this._onRoute());
 
-    // Menu toggle for mobile
+    // Menu toggle (drawer-style sidebar)
     const toggle = document.getElementById('menu-toggle');
     const sidebar = document.getElementById('sidebar');
+    const scrim = document.getElementById('sidebar-scrim');
+    const closeDrawer = () => {
+      sidebar?.classList.remove('open');
+      scrim?.classList.remove('open');
+    };
     if (toggle && sidebar) {
       toggle.addEventListener('click', () => {
-        sidebar.classList.toggle('open');
+        const open = sidebar.classList.toggle('open');
+        scrim?.classList.toggle('open', open);
       });
-
-      // Close sidebar on outside click (mobile)
-      document.addEventListener('click', (e) => {
-        if (
-          sidebar.classList.contains('open') &&
-          !sidebar.contains(e.target) &&
-          e.target !== toggle &&
-          !toggle.contains(e.target)
-        ) {
-          sidebar.classList.remove('open');
-        }
-      });
+      scrim?.addEventListener('click', closeDrawer);
     }
 
     // Refresh button
@@ -75,11 +70,11 @@ const App = {
    * Handle route changes.
    */
   _onRoute() {
-    const hash = location.hash.slice(1) || 'dashboard';
+    const hash = location.hash.slice(1) || 'home';
     const pageName = hash.split('/')[0];
 
     if (!this.pages[pageName]) {
-      location.hash = '#dashboard';
+      location.hash = '#home';
       return;
     }
 
@@ -100,8 +95,8 @@ const App = {
 
     this.currentPage = name;
 
-    // Update nav
-    document.querySelectorAll('.nav-link').forEach((link) => {
+    // Update nav (sidebar + appbar)
+    document.querySelectorAll('.nav-link, .appbar-link').forEach((link) => {
       link.classList.toggle('active', link.dataset.page === name);
     });
 
@@ -109,8 +104,16 @@ const App = {
     const titleEl = document.getElementById('page-title');
     if (titleEl) titleEl.textContent = page.title;
 
-    // Close mobile sidebar
+    // Mark route on body for route-scoped CSS (e.g. hide top-bar on #home)
+    document.body.className = document.body.className
+      .split(/\s+/)
+      .filter((c) => !c.startsWith('route-'))
+      .concat(`route-${name}`)
+      .join(' ').trim();
+
+    // Close drawer
     document.getElementById('sidebar')?.classList.remove('open');
+    document.getElementById('sidebar-scrim')?.classList.remove('open');
 
     // Render page
     const container = document.getElementById('page-container');
