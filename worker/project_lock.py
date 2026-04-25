@@ -6,7 +6,6 @@ on the same Flow project.
 """
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +40,6 @@ class ProjectLock:
             logger.info(
                 "Project lock RELEASED: %s (was job %s)", project_url, removed
             )
-
-    def is_locked(self, project_url: str) -> bool:
-        """Return True if *project_url* is currently locked."""
-        return project_url in self._locks
-
-    def get_lock_holder(self, project_url: str) -> Optional[str]:
-        """Return the job_id holding the lock, or None."""
-        return self._locks.get(project_url)
 
     def __repr__(self) -> str:
         return f"<ProjectLock locks={dict(self._locks)}>"
