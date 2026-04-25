@@ -12,6 +12,7 @@ import os
 import signal
 import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -66,6 +67,66 @@ def _handle_signal() -> None:
     """Set the shutdown flag on SIGINT / SIGTERM."""
     logger.info("Shutdown signal received -- finishing current work ...")
     _shutdown.set()
+
+
+# ======================================================================
+# Pre-flight checks
+# ======================================================================
+
+def _profile_looks_warm(profile_dir: Path) -> bool:
+    """Heuristic: a "warm" Chrome profile has a Default/ subdir with a
+    Cookies SQLite file. Empty / freshly-created dirs (e.g. when running
+    from a worktree where chrome-profiles/ was auto-mkdir'd by tooling)
+    fail this check.
+
+    We deliberately don't open the Cookies DB — Chrome may be running and
+    holding a lock. Existence + non-zero size is enough signal to catch
+    the "wrong dir" mistake before burning a job.
+    """
+    if not profile_dir.is_dir():
+        return False
+    # Modern Chrome stores the active profile in <user-data-dir>/Default/
+    candidates = [
+        profile_dir / "Default" / "Cookies",
+        profile_dir / "Default" / "Network" / "Cookies",
+    ]
+    return any(p.is_file() and p.stat().st_size > 0 for p in candidates)
+
+
+def preflight_profiles(
+    chrome_user_data_dir: str,
+    profile_names: list[str],
+) -> list[str]:
+    """Return a list of human-readable problems with the configured
+    profile dirs. Empty list = all good.
+
+    Catches the most common DX trap: running the worker from a fresh
+    git worktree where ``./chrome-profiles/<name>/`` exists but contains
+    no cookies — the worker would otherwise march all the way to Flow
+    and fail with the misleading "+ New project button missing" error.
+    """
+    base = Path(chrome_user_data_dir).expanduser().resolve()
+    problems: list[str] = []
+    if not base.is_dir():
+        problems.append(
+            f"CHROME_USER_DATA_DIR={base} does not exist. "
+            f"Set the env var to an absolute path containing warmed profiles."
+        )
+        return problems
+    for name in profile_names:
+        profile_dir = base / name
+        if not profile_dir.is_dir():
+            problems.append(
+                f"Profile '{name}' missing at {profile_dir}. "
+                f"Run scripts/warm_profile.py {name} first."
+            )
+        elif not _profile_looks_warm(profile_dir):
+            problems.append(
+                f"Profile '{name}' at {profile_dir} has no cookies — "
+                f"likely an empty / freshly-created dir. "
+                f"Warm it via: python scripts/warm_profile.py {name}"
+            )
+    return problems
 
 
 # ======================================================================
@@ -185,9 +246,22 @@ async def run() -> None:
     logger.info("=" * 60)
     logger.info("FlowEngine Worker  %s", WORKER_ID)
     logger.info("Server:   %s", SERVER_URL)
+    logger.info("Chrome:   %s", Path(CHROME_USER_DATA_DIR).resolve())
     logger.info("Profiles: %s", ", ".join(WORKER_PROFILES))
     logger.info("Poll:     %ds", POLL_INTERVAL_SEC)
     logger.info("=" * 60)
+
+    # Fail fast on misconfigured profile dirs — the most common DX trap
+    # is running from a worktree where ./chrome-profiles is empty.
+    problems = preflight_profiles(CHROME_USER_DATA_DIR, WORKER_PROFILES)
+    if problems:
+        for p in problems:
+            logger.error("Preflight: %s", p)
+        logger.error(
+            "Refusing to start. Set CHROME_USER_DATA_DIR to an absolute "
+            "path with warmed profiles, or run scripts/warm_profile.py."
+        )
+        sys.exit(2)
 
     # Wire up graceful shutdown
     loop = asyncio.get_running_loop()
