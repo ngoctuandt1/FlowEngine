@@ -141,8 +141,8 @@ Body: "Closes #N"
 | B1 | `b359c84` | Aspect ratio via Radix chip + `[id$="-trigger-PORTRAIT\|LANDSCAPE"]` |
 | B2 → B11 | `a165105` → `ce6683a` | Bbox: target largest `<canvas>` (≥300px), pointer-trust verify (was: wrong `<video>` thumbnail) |
 | B3 → B12 | `58937d4` → `78d3e40` | Camera preset: verify via `getComputedStyle(labelDiv).color` R+G+B<400 (was: aria-pressed signals never present) |
-| B4 | — | Deferred (chains table unused, P2) |
-| B10 | — | Deferred post-Phase-A (Pydantic `default_factory=datetime.utcnow` residual, P2) |
+| B4 | `4dcf50f` | Persist chain metadata + aggregated status API (un-deferred 2026-04-18) |
+| B10 | `fe13870` | Migrate `default_factory=datetime.utcnow` → tz-aware (un-deferred 2026-04-18) |
 | B13 | inline `9facbe3` | Resolved inline (docs cleanup) |
 
 **Validation tiers:**

@@ -77,8 +77,8 @@ Single-day landing of B1-B12 + Tier 1 DOM validation. Tag: `v0.2.0-phase-a` at `
 
 | Date | Report | Type | Status | Outcome |
 |---|---|---|---|---|
-| 04-18 | [B4_chains-table](2026-04-18_B4_chains-table.md) | `B4` triage | 🗄️ | Deferred (chains table unused, P2) |
-| 04-18 | [B10_pydantic-default-factory](2026-04-18_B10_pydantic-default-factory.md) | `B10` triage | 🗄️ | Deferred (Pydantic residual, P2) |
+| 04-18 | [B4_chains-table](2026-04-18_B4_chains-table.md) | `B4` fix | ✅ | Persist chain metadata + aggregated status API (`4dcf50f`) — un-deferred from Phase A |
+| 04-18 | [B10_pydantic-default-factory](2026-04-18_B10_pydantic-default-factory.md) | `B10` fix | ✅ | Migrate `default_factory=datetime.utcnow` → tz-aware (`fe13870`) |
 | 04-18 | [B16_submit-iterate](2026-04-18_B16_submit-iterate.md) | `B16` fix | ✅ | Submit confirmation iterate strategy |
 | 04-18 | [B17_lp-precheck](2026-04-18_B17_lp-precheck.md) | `B17` fix | ✅ | LP pre-flight credit check |
 | 04-18 | [B18_homepage-locale-fix](2026-04-18_B18_homepage-locale-fix.md) | `B18` fix | ✅ | Locale-independent homepage detection |
@@ -230,10 +230,10 @@ Each item lists the reports that touched it, in order. The most recent entry is 
 - 2026-04-24 [live_verify_post_45_44 §"PR #44 verdict"](2026-04-24_live_verify_post_45_44.md) — J1 still failed; selector matched scroll-anchor variant. Hardening incomplete for this A/B variant.
 - 2026-04-25 [session-handoff §Gap 1 + finding3-no-repro](2026-04-25_session-handoff.md) — Finding 3 (separate from this) NO-REPRO; underlying landing edge case still open.
 
-### P-03 — REM `Failed to find Remove button` (single occurrence) 🟡
+### P-03 — REM `Failed to find Remove button` (single occurrence) 🟢
 
 - 2026-04-24 [live_verify_post_45_44 §"REM failure"](2026-04-24_live_verify_post_45_44.md) — single sample; could be DOM shift post-INS.
-- 2026-04-25 [session-handoff §Gap 3](2026-04-25_session-handoff.md) — file issue only if repro on next run.
+- 2026-04-25 [session-handoff §Gap 3](2026-04-25_session-handoff.md) — LOW priority; file issue only if repro on next run.
 
 ### P-04 — frames-to-video / ingredients-to-video live verification 🟡
 
@@ -250,10 +250,14 @@ Each item lists the reports that touched it, in order. The most recent entry is 
 - 2026-04-23 [l2-media-id-fix-live-verified](2026-04-23_l2-media-id-fix-live-verified.md) — production resolver passes live.
 - `tests/test_extend.py` + `tests/test_camera_l2.py` — 3 synthetic-fixture edge cases stay `xfail` (commit `4721912` rewrites the reasons; bug fix scope did not cover these orderings).
 
-### P-07 — `B4` chains table + `B10` Pydantic residual 🟢
+### P-07 — RESOLVED ✅ (was: B4 chains table + B10 Pydantic residual)
 
-- 2026-04-18 [B4_chains-table](2026-04-18_B4_chains-table.md) — deferred P2 (chains table unused).
-- 2026-04-18 [B10_pydantic-default-factory](2026-04-18_B10_pydantic-default-factory.md) — deferred P2.
+Both items shipped on 2026-04-18 — kept as a closed entry only so the
+historical "Deferred" classification in earlier `CLAUDE.md` revisions does
+not lead future readers astray:
+
+- B4 — landed `4dcf50f` (chain metadata + aggregated status API) per [B4_chains-table report](2026-04-18_B4_chains-table.md).
+- B10 — landed `fe13870` (tz-aware `default_factory`) per [B10 report](2026-04-18_B10_pydantic-default-factory.md).
 
 ---
 
