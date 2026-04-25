@@ -101,6 +101,24 @@ def test_preflight_all_warm(tmp_path):
     assert problems == []
 
 
+def test_profile_looks_warm_swallows_oserror(tmp_path, monkeypatch):
+    """Symlink loops, permission denied, or offline network drives must
+    degrade to False, not crash preflight. (Codex review #8.)"""
+    profile = tmp_path / "alice"
+    profile.mkdir()
+
+    real_is_file = type(profile).is_file
+
+    def boom(self):
+        if "Cookies" in self.name:
+            raise PermissionError(f"simulated EACCES on {self}")
+        return real_is_file(self)
+
+    monkeypatch.setattr(type(profile), "is_file", boom)
+    # Should return False, not raise.
+    assert _profile_looks_warm(profile) is False
+
+
 def test_preflight_mixed_one_warm_one_cold(tmp_path):
     cookies = tmp_path / "alice" / "Default" / "Cookies"
     cookies.parent.mkdir(parents=True)

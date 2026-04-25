@@ -82,15 +82,29 @@ def _profile_looks_warm(profile_dir: Path) -> bool:
     We deliberately don't open the Cookies DB — Chrome may be running and
     holding a lock. Existence + non-zero size is enough signal to catch
     the "wrong dir" mistake before burning a job.
+
+    Defensive against OSError: symlink loops, permission denied, and
+    offline network drives all degrade to ``False`` so preflight surfaces
+    a readable diagnostic rather than crashing.
     """
-    if not profile_dir.is_dir():
+    try:
+        if not profile_dir.is_dir():
+            return False
+        # Modern Chrome stores the active profile in <user-data-dir>/Default/
+        candidates = [
+            profile_dir / "Default" / "Cookies",
+            profile_dir / "Default" / "Network" / "Cookies",
+        ]
+        for p in candidates:
+            try:
+                if p.is_file() and p.stat().st_size > 0:
+                    return True
+            except OSError:
+                continue
         return False
-    # Modern Chrome stores the active profile in <user-data-dir>/Default/
-    candidates = [
-        profile_dir / "Default" / "Cookies",
-        profile_dir / "Default" / "Network" / "Cookies",
-    ]
-    return any(p.is_file() and p.stat().st_size > 0 for p in candidates)
+    except OSError as exc:
+        logger.warning("profile-warm check failed for %s: %s", profile_dir, exc)
+        return False
 
 
 def preflight_profiles(

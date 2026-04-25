@@ -41,7 +41,8 @@
   const MAX_INGREDIENTS = 10;
   const RECENT_LIMIT = 12;
 
-  // page-scoped state
+  // page-scoped state — reset on every render() so re-entering #home
+  // never resurrects stale uploads / tab choices from a prior session.
   let mode = 'video';
   let profiles = [];
   let recentJobs = [];
@@ -53,6 +54,19 @@
   let refImagePath = '';
   let ingredientImagePaths = [];
   let wsUnsubs = [];
+  // global-listener handles, tracked so destroy() can pull them.
+  let docClickHandler = null;
+
+  function resetState() {
+    mode = 'video';
+    model = DEFAULT_MODEL;
+    aspect = DEFAULT_ASPECT;
+    profile = '';
+    startImagePath = '';
+    endImagePath = '';
+    refImagePath = '';
+    ingredientImagePaths = [];
+  }
 
   // ---- helpers --------------------------------------------------------------
 
@@ -260,8 +274,17 @@
     `;
   }
 
+  // Whitelist of status values we render. Anything else falls back to
+  // 'pending' so a malformed/hostile API value cannot break out of the
+  // class attribute and become an XSS sink.
+  const ALLOWED_STATUS = new Set(['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
+
+  function safeStatus(s) {
+    return ALLOWED_STATUS.has(s) ? s : 'pending';
+  }
+
   function renderTile(job) {
-    const status = job.status || 'pending';
+    const status = safeStatus(job.status);
     const type = job.type || 'text-to-video';
     const promptText = job.prompt || job.direction || '(no prompt)';
     return `
@@ -494,7 +517,12 @@
         repaintChips();
       });
     });
-    document.addEventListener('click', closePopovers);
+    // Managed doc-click handler — only attach once across renders so
+    // navigating away + back doesn't leak a fresh listener every time.
+    if (!docClickHandler) {
+      docClickHandler = closePopovers;
+      document.addEventListener('click', docClickHandler);
+    }
   }
 
   function repaintChips() {
@@ -563,12 +591,16 @@
   }
 
   function bindGrid() {
-    const grid = document.getElementById('home-grid');
-    if (!grid) return;
-    grid.addEventListener('click', async (e) => {
+    // Delegate on the stable parent (#home-recent never gets innerHTML-
+    // replaced after mount — only its child #home-grid does). This means
+    // the click handler survives every WS-driven repaintGrid().
+    const wrap = document.getElementById('home-recent');
+    if (!wrap) return;
+    wrap.addEventListener('click', async (e) => {
       const tile = e.target.closest('.project-tile');
       if (!tile) return;
       const id = tile.dataset.jobId;
+      if (!id) return;
       try {
         const job = await API.jobs.get(id);
         const body = `
@@ -599,8 +631,10 @@
     icon: 'movie_filter',
 
     async render() {
-      // reset transient state on every render to avoid stale uploads
-      ingredientImagePaths = [];
+      // Reset all page-scoped state every render — re-entering #home from
+      // a different route must not resurrect stale uploads, mode, model,
+      // aspect, or profile picks from a prior session. (Codex review #1.)
+      resetState();
       await Promise.all([fetchProfiles(), fetchRecent()]);
       return `
         <div class="home-canvas">
@@ -622,6 +656,13 @@
 
     destroy() {
       detachWS();
+      // Pull the managed doc-click listener so navigating away from
+      // #home doesn't leave a popover-closer attached forever. (Codex
+      // review #6.)
+      if (docClickHandler) {
+        document.removeEventListener('click', docClickHandler);
+        docClickHandler = null;
+      }
     },
   };
 

@@ -44,12 +44,12 @@ Default route on first load redirects `''` → `#home` (was `#dashboard`).
 
 ### 5.1 App shell
 
-- **Top app bar** (replaces sidebar as primary nav on `#home`):
-  - Left: logo mark + "FlowEngine" wordmark.
-  - Center: nothing (Flow's bar is asymmetric — left-aligned brand, right-aligned actions).
-  - Right: profile selector chip (dropdown of warm Chrome profiles), WS status dot, overflow menu (Dashboard / Chains / Profiles / Settings).
-- **Main canvas**: scroll container, max-width ≈ 1200px, centered.
-- Sidebar from current build is **retired on `#home`** but preserved on `#dashboard` / `#chains` / `#profiles` / `#settings` for table-heavy pages.
+- **Top app bar** (primary nav on every route):
+  - Left: hamburger toggle for sidebar drawer + logo mark + "FlowEngine" wordmark.
+  - Mid-left: inline link nav (`Home / Dashboard / Chains / Profiles / Settings`) — visible on ≥ 720 px, collapsed into the drawer below that.
+  - Right: WS status pill + refresh button. (Profile picking lives on the composer chip, not in the app bar — multi-account is composer-scoped, not session-scoped.)
+- **Main canvas**: scroll container, max-width ≈ 1180 px, centered.
+- **Sidebar**: drawer-style on every route (off-canvas, scrim-backed). Slides in via the hamburger button. The earlier draft of this PRD called for a permanent rail on table pages; we converged on a single drawer shell so the home/non-home transition has no layout shift. Table pages still have full width because the drawer is off-canvas by default.
 
 ### 5.2 Composer card (`#home` hero)
 
