@@ -13,7 +13,7 @@ Tuy nhiên có **3 gap** từ live-verify 2026-04-24 chưa được file thành 
 
 | Gap | Loại | Mức ưu tiên | Đã có issue? |
 |---|---|---|---|
-| L1 "reuse existing project" (Finding 3) | Bug suspect | HIGH | ❌ chưa file |
+| L1 "reuse existing project" (Finding 3) | Bug suspect | ~~HIGH~~ → **CLOSED-NO-REPRO 2026-04-25** | n/a — see [2026-04-25_finding3-no-repro.md](2026-04-25_finding3-no-repro.md) |
 | #45/#46 cold-start race retest multi-profile | Verification debt | MED | ❌ chưa retest |
 | REM `Failed to find Remove button` single-shot | Flaky / 1-sample | LOW | ❌ chờ repro lần 2 |
 | Stale ref `docs/session-reports/reviews/4_media_id_bug.md` | Doc cleanup | LOW | ❌ |
