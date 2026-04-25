@@ -41,47 +41,13 @@ def _client(page):
     )
 
 
-@pytest.mark.xfail(
-    reason="Edge case of the L2 media_id extraction work resolved 2026-04-23 "
-           "(see docs/session-reports/2026-04-23_l2-media-id-fix-live-verified.md). "
-           "Production resolver path passes live; this synthetic-fixture "
-           "ordering still falls through. Keep test active so any further "
-           "tightening of resolve_final_media_id flips it to PASSED.",
-    strict=False,
-)
-async def test_finalize_operation_camera_l2_direct_off_l1_mints_new_media_id(monkeypatch):
-    page = StickyURLPage(_edit(NEW_SLUG))
-    client = _client(page)
-    download = AsyncMock(return_value=["cam.mp4"])
-    parent_job = {
-        "media_id": PARENT_SLUG,
-        "project_url": PARENT_PROJECT_URL,
-        "edit_url": _edit(PARENT_SLUG),
-    }
-
-    monkeypatch.setattr(
-        _base,
-        "wait_for_completion",
-        AsyncMock(return_value={"done": True, "media_ids": ["captured-download-id"]}),
-    )
-    monkeypatch.setattr(_base, "download_video", download)
-
-    result = await _base.finalize_operation(
-        client,
-        parent_job,
-        "camera-move",
-        PROJECT_ID,
-        "",
-        "cam",
-    )
-
-    assert result["media_id"] == NEW_SLUG
-    assert result["media_id"] != PARENT_SLUG
-    assert result["project_url"] == PARENT_PROJECT_URL
-    assert result["edit_url"] == _edit(NEW_SLUG)
-    assert result["output_files"] == ["cam.mp4"]
-    assert download.await_args.kwargs["media_ids"] == ["captured-download-id"]
-    assert download.await_args.kwargs["prefix"] == "cam"
+# NOTE: test_finalize_operation_camera_l2_direct_off_l1_mints_new_media_id
+# (synthetic-fixture L2 mint-new-media_id assertion) was removed 2026-04-25.
+# The production resolver path passes live (verified
+# docs/session-reports/2026-04-23_l2-media-id-fix-live-verified.md and
+# 2026-04-25_low-items-live-reverify.md camera-move L2 direct-off-L1) but
+# the synthetic fixture ordering was unreachable in production and would
+# never flip from xfail to pass.
 
 
 async def test_finalize_operation_camera_l2_download_ids_do_not_follow_route_slug(monkeypatch):
