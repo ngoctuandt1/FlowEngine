@@ -49,11 +49,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# -- CORS (local dev) ---------------------------------------------------------
+# -- CORS ---------------------------------------------------------------------
+# Multi-site setup: the same FlowEngine backend can serve many distinct
+# frontend sites (ai.hassio.io.vn, ai.ciem, etc) — they all hit
+# /api/jobs + /ws/jobs. Set ALLOWED_ORIGINS to a comma-separated list
+# of fully-qualified origins ("https://ai.hassio.io.vn,https://ai.ciem")
+# in production. Default "*" keeps localhost dev frictionless.
+#
+# Note: with allow_credentials=True the spec forbids "*" for origins;
+# browsers reject the response. So we toggle credentials off when using
+# the wildcard and back on when an explicit allowlist is given.
+_origins_env = (os.environ.get("ALLOWED_ORIGINS") or "").strip()
+if _origins_env and _origins_env != "*":
+    _allow_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+    _allow_credentials = True
+else:
+    _allow_origins = ["*"]
+    _allow_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_allow_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
