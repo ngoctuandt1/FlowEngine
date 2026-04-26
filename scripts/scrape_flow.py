@@ -15,16 +15,55 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).parent / ".claude/worktrees/phase-web-ui"
+
+def _pick_free_port() -> int:
+    """Bind to port 0 to get a kernel-assigned free port. Avoids the
+    hard-coded 60042 collision risk Codex flagged."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+# Resolve the repo root (scripts/..) and add it to sys.path so the
+# `scripts.warm_profile` import works regardless of where this script
+# is invoked from.
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts.warm_profile import _launch_real_chrome  # noqa: E402
 
-OUT_DIR = Path(__file__).parent / "flow_design_refs"
-OUT_DIR.mkdir(exist_ok=True)
+# warm_profile builds a Chrome profile path relative to CWD via
+# `Path("chrome-profiles")`. Worktrees often have an empty auto-mkdir'd
+# `chrome-profiles/{NAME}/Default/` from earlier runs; the *master*
+# tree has the real warmed cookies. Walk ancestors and pick the first
+# that actually contains a non-zero Cookies file.
+PROFILE_NAME = os.environ.get("FLOW_PROFILE_NAME", "ngoctuandt20")
+def _has_warm_cookies(base: Path) -> bool:
+    for cand in (
+        base / "chrome-profiles" / PROFILE_NAME / "Default" / "Network" / "Cookies",
+        base / "chrome-profiles" / PROFILE_NAME / "Default" / "Cookies",
+    ):
+        try:
+            if cand.is_file() and cand.stat().st_size > 0:
+                return True
+        except OSError:
+            pass
+    return False
+
+_master_candidate = ROOT
+for _candidate in (ROOT, *ROOT.parents):
+    if _has_warm_cookies(_candidate):
+        _master_candidate = _candidate
+        break
+os.chdir(_master_candidate)
+
+OUT_DIR = ROOT / "docs" / "design_refs"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+CDP_PORT = int(os.environ.get("FLOW_SCRAPE_CDP_PORT", "0")) or _pick_free_port()
 
 
 # CSS properties we care about for the clone.
@@ -47,8 +86,12 @@ PROPS = [
 async def main() -> None:
     from playwright.async_api import async_playwright
 
-    profile_dir = (Path(__file__).parent / "chrome-profiles" / "ngoctuandt20").resolve()
-    cdp_port = 60043
+    # CWD was set above to the tree that owns the warmed profile, so
+    # warm_profile's relative `Path("chrome-profiles") / NAME` resolves
+    # to the real cookies dir. Use a free port (parametrised) so two
+    # scrape runs don't fight.
+    profile_dir = (Path.cwd() / "chrome-profiles" / PROFILE_NAME).resolve()
+    cdp_port = CDP_PORT
     chrome = _launch_real_chrome(profile_dir, cdp_port)
 
     try:
@@ -94,9 +137,21 @@ async def main() -> None:
                   const findByText = (sel, text) => Array.from(document.querySelectorAll(sel))
                     .find((e) => (e.innerText || '').trim() === text);
 
-                  // Topbar = first <header> or [role=banner] near top
-                  const topbar = document.querySelector('header, [role=banner]') ||
-                                 document.querySelector('body > div > div:first-child');
+                  // Topbar — Flow's signed-in homepage doesn't use
+                  // <header>/[role=banner], so fall back to the
+                  // brand-text element ("Flow"), then walk up to the
+                  // first ancestor that's display:flex justify
+                  // space-between (the actual app bar).
+                  let topbar = null;
+                  const brand = findByText('span, h1, div, a', 'Flow');
+                  for (let el = brand; el; el = el.parentElement) {{
+                    const cs = getComputedStyle(el);
+                    if (cs.display === 'flex' && cs.justifyContent === 'space-between' && el.getBoundingClientRect().width > 800) {{
+                      topbar = el;
+                      break;
+                    }}
+                  }}
+                  if (!topbar) topbar = brand;
 
                   // Real Flow tile structure (verified):
                   //   <div class="sc-c371c8f2-2 jqtfJg">  <- row wrapper
@@ -124,9 +179,19 @@ async def main() -> None:
                     rect: t.getBoundingClientRect(),
                   }}));
 
-                  // New project CTA — look for "New project" / "+ New project" text
-                  const newProj = findByText('button, a, div, span', 'New project') ||
-                                  Array.from(document.querySelectorAll('*')).find((e) => /new project/i.test(e.innerText) && e.children.length < 5);
+                  // New project CTA — Flow's signed-in homepage shows
+                  // a "+ New project" pill that often only appears on
+                  // hover or in an empty-state slot. Restrict to leaf
+                  // nodes (no descendants matching) so we don't pick up
+                  // the whole document.
+                  const newProj = Array.from(document.querySelectorAll('button, a, span, div'))
+                    .find((e) => {{
+                      const t = (e.innerText || '').trim().toLowerCase();
+                      if (!t.startsWith('new project') && t !== '+ new project') return false;
+                      // Skip if this element has descendants that also match.
+                      return !Array.from(e.querySelectorAll('button,a,span,div'))
+                        .some((c) => /^(\\+\\s*)?new project/i.test((c.innerText||'').trim()));
+                    }}) || null;
 
                   // ULTRA badge
                   const ultra = findByText('span, div, button', 'ULTRA') ||

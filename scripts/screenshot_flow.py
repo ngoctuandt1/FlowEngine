@@ -6,24 +6,59 @@ ngoctuandt20 profile) so we land on Flow signed-in, not the OAuth wall.
 from __future__ import annotations
 
 import asyncio
+import os
+import socket
 import sys
 from pathlib import Path
 
-# Path tweak so `from scripts.warm_profile import ...` works.
-ROOT = Path(__file__).parent / ".claude/worktrees/phase-web-ui"
+
+def _pick_free_port() -> int:
+    """Bind to port 0 → kernel picks a free one. Avoids 60042 collision."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+# Repo root = scripts/.. — add to sys.path so `from scripts.warm_profile`
+# resolves regardless of caller CWD. Earlier the path was
+# `Path(__file__).parent / ".claude/worktrees/phase-web-ui"` which only
+# worked when the script lived at the repo root.
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+PROFILE_NAME = os.environ.get("FLOW_PROFILE_NAME", "ngoctuandt20")
+# Chdir to the ancestor whose chrome-profiles dir actually has warmed
+# cookies (worktrees often have empty auto-mkdir'd profile shells that
+# would launch Chrome onto an OAuth wall).
+def _has_warm_cookies(base: Path) -> bool:
+    for cand in (
+        base / "chrome-profiles" / PROFILE_NAME / "Default" / "Network" / "Cookies",
+        base / "chrome-profiles" / PROFILE_NAME / "Default" / "Cookies",
+    ):
+        try:
+            if cand.is_file() and cand.stat().st_size > 0:
+                return True
+        except OSError:
+            pass
+    return False
+
+for _candidate in (ROOT, *ROOT.parents):
+    if _has_warm_cookies(_candidate):
+        os.chdir(_candidate)
+        break
 
 from scripts.warm_profile import _launch_real_chrome  # noqa: E402
 
-OUT_DIR = Path(__file__).parent / "flow_design_refs"
-OUT_DIR.mkdir(exist_ok=True)
+OUT_DIR = ROOT / "docs" / "design_refs"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+CDP_PORT = int(os.environ.get("FLOW_SCREENSHOT_CDP_PORT", "0")) or _pick_free_port()
 
 
 async def main() -> None:
     from playwright.async_api import async_playwright
 
-    profile_dir = (Path(__file__).parent / "chrome-profiles" / "ngoctuandt20").resolve()
-    cdp_port = 60042
+    profile_dir = (Path.cwd() / "chrome-profiles" / PROFILE_NAME).resolve()
+    cdp_port = CDP_PORT
     chrome = _launch_real_chrome(profile_dir, cdp_port)
 
     try:
