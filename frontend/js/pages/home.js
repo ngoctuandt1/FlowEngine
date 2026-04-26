@@ -250,29 +250,31 @@
   // ---- render: project grid -------------------------------------------------
 
   function renderGrid() {
-    if (recentJobs.length === 0) {
-      return `
-        <section class="recent-section">
-          <div class="section-head">
-            <h3>Your videos</h3>
-          </div>
-          <div class="empty-state">
-            <span class="material-icons">movie_filter</span>
-            <h3>No videos yet</h3>
-            <p>Submit your first prompt above to get started.</p>
-          </div>
-        </section>
-      `;
-    }
-    const tiles = recentJobs.map(renderTile).join('');
+    // Flow's homepage has NO "Your videos" header and NO "View all" link
+    // — just a bare 3-col grid of large tiles, with the "+ New project"
+    // CTA injected as a tile-shaped placeholder inline in the grid
+    // (centered slot). Captured 2026-04-26.
+    const tiles = recentJobs.map(renderTile);
+    // Insert + New tile in the middle slot. Flow puts it roughly at
+    // the centre of the visible row.
+    const insertAt = Math.min(Math.floor(tiles.length / 2), 5);
+    tiles.splice(insertAt, 0, renderNewProjectTile());
     return `
-      <section class="recent-section">
-        <div class="section-head">
-          <h3>Your videos</h3>
-          <a href="#dashboard" class="section-link">View all →</a>
+      <div class="project-grid" id="home-grid">${tiles.join('')}</div>
+    `;
+  }
+
+  function renderNewProjectTile() {
+    return `
+      <a class="project-tile new-project-tile" href="#create"
+         title="New project" aria-label="New project">
+        <div class="tile-thumb">
+          <div class="new-project-pill">
+            <span class="material-icons">add</span>
+            <span>New project</span>
+          </div>
         </div>
-        <div class="project-grid" id="home-grid">${tiles}</div>
-      </section>
+      </a>
     `;
   }
 
@@ -308,21 +310,27 @@
                 onmouseenter="this.play().catch(()=>{})"
                 onmouseleave="this.pause(); this.currentTime=0;"></video>`
       : `<span class="material-icons type-icon ${App.jobTypeClass(type)}">${App.jobTypeIcon(type)}</span>`;
+    // Flow's tile chrome is minimal: full-bleed thumbnail, date overlay
+    // bottom-left, "Veo" / model badge bottom-right. No prompt preview,
+    // no profile, no type label. We only show the FAILED badge
+    // explicitly because that's a meaningful state — completed jobs
+    // don't carry a green badge in Flow.
+    const failedBadge = status === 'failed'
+      ? `<span class="tile-status-badge badge-failed">FAILED</span>`
+      : '';
+    const dateLabel = App.formatDate(job.created_at);
+    const modelBadge = (job.model || '').toLowerCase().includes('veo') ? 'Veo'
+      : (type === 'text-to-image' ? 'Image' : 'Veo');
     return `
-      <article class="project-tile status-${status}" data-job-id="${App.escapeHtml(job.id)}">
+      <article class="project-tile status-${status}"
+               data-job-id="${App.escapeHtml(job.id)}"
+               title="${App.escapeHtml(promptText)}">
         <div class="tile-thumb">
           ${thumb}
-          <span class="tile-status-badge ${App.statusBadge(status)}">${App.escapeHtml(status)}</span>
+          ${failedBadge}
         </div>
-        <div class="tile-body">
-          <div class="tile-prompt" title="${App.escapeHtml(promptText)}">${App.escapeHtml(App.truncate(promptText, 80))}</div>
-          <div class="tile-meta">
-            <span>${App.escapeHtml(type)}</span>
-            <span>·</span>
-            <span>${App.escapeHtml(job.profile || '—')}</span>
-            <span>·</span>
-            <span>${App.escapeHtml(App.formatDate(job.created_at))}</span>
-          </div>
+        <div class="tile-overlay">
+          <span class="tile-date">${App.escapeHtml(dateLabel)}</span>
         </div>
       </article>
     `;
