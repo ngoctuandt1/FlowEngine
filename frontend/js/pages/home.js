@@ -677,19 +677,25 @@
       // aspect, or profile picks from a prior session. (Codex review #1.)
       resetState();
       await Promise.all([fetchProfiles(), fetchRecent()]);
+      // Layout matches Flow's signed-in homepage architecturally:
+      // - NO hero copy, NO inline composer
+      // - just the project gallery + a floating "+ New project" CTA
+      // - clicking + routes to #create (existing full composer page)
+      // The composer surface previously rendered here was a misread of
+      // Flow's IA — Flow puts the composer inside /project/<id>, not on
+      // home. Captured 2026-04-26 via scripts/screenshot_flow.py.
       return `
-        <div class="home-canvas">
-          <div class="home-hero">
-            <h1 class="home-title">What will you dream up today?</h1>
-          </div>
-          ${renderComposer()}
+        <div class="home-canvas home-canvas-gallery">
           <div id="home-recent">${renderGrid()}</div>
+          <a class="new-project-fab" href="#create" title="New project">
+            <span class="material-icons">add</span>
+            <span>New project</span>
+          </a>
         </div>
       `;
     },
 
     mount() {
-      bindAll();
       bindGrid();
       attachWS();
     },

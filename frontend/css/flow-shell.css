@@ -141,6 +141,37 @@ body.route-home #top-bar { display: none; }
   margin: 24px auto 80px;
 }
 
+/* Flow's signed-in homepage = project gallery + floating + button.
+   No hero, no inline composer. */
+.home-canvas-gallery {
+  position: relative;
+  width: min(1320px, 100% - 32px);
+  margin: 16px auto 96px;
+}
+.home-canvas-gallery .recent-section { margin-top: 0; }
+
+/* Floating "New project" CTA — Flow places this in the gallery. */
+.new-project-fab {
+  position: fixed;
+  left: 50%;
+  bottom: 32px;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #8c6cff 0%, #7c5cff 100%);
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  box-shadow: 0 14px 40px -10px rgba(124, 92, 255, 0.7);
+  transition: filter var(--transition), transform var(--transition);
+}
+.new-project-fab:hover { color: #fff; filter: brightness(1.07); transform: translate(-50%, -2px); }
+.new-project-fab .material-icons { font-size: 22px; }
+
 .home-hero {
   text-align: center;
   margin: 32px 0 28px;
@@ -496,8 +527,8 @@ body.route-home #top-bar { display: none; }
 
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
 }
 
 .project-tile {
@@ -527,7 +558,7 @@ body.route-home #top-bar { display: none; }
 
 .tile-thumb {
   position: relative;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 4 / 3;
   background:
     radial-gradient(circle at 30% 30%, rgba(124, 92, 255, 0.22), transparent 60%),
     linear-gradient(135deg, #1f2026 0%, #15161a 100%);
