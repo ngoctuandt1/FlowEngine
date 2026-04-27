@@ -8,10 +8,11 @@ import re
 from typing import Any
 
 from fastapi import HTTPException
+from pydantic import BaseModel
 
 from server.db.database import get_db
 from server.models.job import ChainCreate, JobCreate
-from server.models.template import Template
+from server.models.template import Template, TemplateStep
 
 
 VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
@@ -33,7 +34,14 @@ def _row_to_template(row) -> Template:
     )
 
 
+def _normalize_template_value(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(exclude_none=True)
+    return value
+
+
 def _scan_value(value: Any, found: set[str]) -> None:
+    value = _normalize_template_value(value)
     if isinstance(value, str):
         for match in PLACEHOLDER_RE.finditer(value):
             var_name = match.group(1)
@@ -52,14 +60,14 @@ def _scan_value(value: Any, found: set[str]) -> None:
             _scan_value(item, found)
 
 
-def extract_placeholders(steps: list[dict[str, Any]]) -> set[str]:
+def extract_placeholders(steps: list[TemplateStep]) -> set[str]:
     """Collect all placeholder variable names used by a template."""
     found: set[str] = set()
     _scan_value(steps, found)
     return found
 
 
-def validate_template_steps(steps: list[dict[str, Any]]) -> set[str]:
+def validate_template_steps(steps: list[TemplateStep]) -> set[str]:
     """Validate placeholder syntax used in template steps."""
     return extract_placeholders(steps)
 
@@ -72,6 +80,7 @@ def validate_vars(vars: dict[str, str]) -> None:
 
 
 def _substitute_value(value: Any, vars: dict[str, str], missing: set[str]) -> Any:
+    value = _normalize_template_value(value)
     if isinstance(value, str):
         def repl(match: re.Match[str]) -> str:
             var_name = match.group(1)
@@ -108,7 +117,7 @@ async def create_template(template: Template) -> Template:
                 template.id,
                 template.name,
                 template.description,
-                json.dumps(template.steps),
+                json.dumps([step.model_dump(exclude_none=True) for step in template.steps]),
                 template.created_at.isoformat(),
                 template.updated_at.isoformat(),
             ),
@@ -152,7 +161,7 @@ async def update_template(template_id: str, template: Template) -> Template | No
             (
                 template.name,
                 template.description,
-                json.dumps(template.steps),
+                json.dumps([step.model_dump(exclude_none=True) for step in template.steps]),
                 template.updated_at.isoformat(),
                 template_id,
             ),

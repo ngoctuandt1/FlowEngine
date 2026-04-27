@@ -33,6 +33,12 @@ class MediaMergeRequest(BaseModel):
     output_name: str | None = None
 
 
+class MergeResponse(BaseModel):
+    output_path: str
+    duration_seconds: float
+    source_count: int
+
+
 def _relative_output_path(output_path: Path) -> str:
     return Path("merges", output_path.name).as_posix()
 
@@ -140,8 +146,8 @@ def _concat_file_entry(path: Path) -> str:
     return f"file '{normalized}'\n"
 
 
-@router.post("/merge")
-async def merge_media(request: MediaMergeRequest):
+@router.post("/merge", response_model=MergeResponse)
+async def merge_media(request: MediaMergeRequest) -> MergeResponse:
     _validate_source_count(request.input_paths)
 
     resolved_inputs = [_resolve_input_path(raw_path) for raw_path in request.input_paths]
@@ -199,8 +205,8 @@ async def merge_media(request: MediaMergeRequest):
             detail=f"ffmpeg merge failed: {result.stderr.strip() or 'unknown error'}",
         )
 
-    return {
-        "output_path": _relative_output_path(output_path),
-        "duration_seconds": total_duration_seconds,
-        "source_count": len(resolved_inputs),
-    }
+    return MergeResponse(
+        output_path=_relative_output_path(output_path),
+        duration_seconds=total_duration_seconds,
+        source_count=len(resolved_inputs),
+    )

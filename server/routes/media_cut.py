@@ -23,6 +23,11 @@ class MediaCutRequest(BaseModel):
     end_seconds: float
 
 
+class CutResponse(BaseModel):
+    output_path: str
+    duration_seconds: float
+
+
 def _relative_output_path(output_path: Path) -> str:
     return Path("cuts", output_path.name).as_posix()
 
@@ -78,8 +83,8 @@ def _validate_range(start_seconds: float, end_seconds: float) -> float:
     return duration_seconds
 
 
-@router.post("/cut")
-async def cut_media(request: MediaCutRequest):
+@router.post("/cut", response_model=CutResponse)
+async def cut_media(request: MediaCutRequest) -> CutResponse:
     """Create a new MP4 cut from an uploaded or downloaded source file."""
     input_path = _resolve_input_path(request.input_path)
     duration_seconds = _validate_range(request.start_seconds, request.end_seconds)
@@ -116,7 +121,7 @@ async def cut_media(request: MediaCutRequest):
         _cleanup_partial_output(output_path)
         raise HTTPException(status_code=500, detail="ffmpeg failed to cut media")
 
-    return {
-        "output_path": _relative_output_path(output_path),
-        "duration_seconds": duration_seconds,
-    }
+    return CutResponse(
+        output_path=_relative_output_path(output_path),
+        duration_seconds=duration_seconds,
+    )

@@ -12,6 +12,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from server.models.job import Job
+
 
 class Chain(BaseModel):
     """Immutable metadata row in the `chains` table.
@@ -43,3 +45,10 @@ class ChainAggregate(BaseModel):
     status: str
     progress: ChainProgress
     jobs: list[str]
+
+
+class ChainCreateResponse(BaseModel):
+    """Chain creation response returned by POST /api/chains and template instantiate."""
+
+    chain_id: str
+    jobs: list[Job]

@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from server.models.chain import Chain
+from server.models.chain import Chain, ChainCreateResponse
 from server.models.job import ChainCreate, Job, JobCreate, JobStatus
 from server.db.chain_store import create_chain, get_chain_aggregate
 from server.db.job_store import create_job, get_job, list_jobs, get_children, delete_job, get_job_counts, recover_stale_jobs
@@ -96,8 +96,8 @@ async def create_single_job(req: JobCreate):
     return job
 
 
-@router.post("/chains", status_code=201)
-async def create_chain_endpoint(req: ChainCreate):  # POST /api/chains
+@router.post("/chains", response_model=ChainCreateResponse, status_code=201)
+async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POST /api/chains
     """Create a chain of linked jobs.
 
     All jobs share the same chain_id. Each subsequent job in the list

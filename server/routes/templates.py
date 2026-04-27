@@ -16,14 +16,15 @@ from server.db.template_store import (
     validate_template_steps,
     validate_vars,
 )
+from server.models.chain import ChainCreateResponse
 from server.models.template import Template, TemplateCreate, TemplateInstantiate
 
 
 router = APIRouter(prefix="/api/templates", tags=["templates"])
 
 
-@router.post("", status_code=201)
-async def create_template_endpoint(req: TemplateCreate):
+@router.post("", response_model=Template, response_model_exclude_none=True, status_code=201)
+async def create_template_endpoint(req: TemplateCreate) -> Template:
     validate_template_steps(req.steps)
     template = Template(
         name=req.name,
@@ -34,21 +35,21 @@ async def create_template_endpoint(req: TemplateCreate):
     return template
 
 
-@router.get("")
-async def list_templates_endpoint():
+@router.get("", response_model=list[Template], response_model_exclude_none=True)
+async def list_templates_endpoint() -> list[Template]:
     return await list_templates()
 
 
-@router.get("/{template_id}")
-async def get_template_endpoint(template_id: str):
+@router.get("/{template_id}", response_model=Template, response_model_exclude_none=True)
+async def get_template_endpoint(template_id: str) -> Template:
     template = await get_template(template_id)
     if template is None:
         raise HTTPException(404, f"Template {template_id} not found")
     return template
 
 
-@router.put("/{template_id}")
-async def update_template_endpoint(template_id: str, req: TemplateCreate):
+@router.put("/{template_id}", response_model=Template, response_model_exclude_none=True)
+async def update_template_endpoint(template_id: str, req: TemplateCreate) -> Template:
     validate_template_steps(req.steps)
     existing = await get_template(template_id)
     if existing is None:
@@ -73,8 +74,10 @@ async def delete_template_endpoint(template_id: str):
     return {"deleted": template_id}
 
 
-@router.post("/{template_id}/instantiate")
-async def instantiate_template_endpoint(template_id: str, req: TemplateInstantiate):
+@router.post("/{template_id}/instantiate", response_model=ChainCreateResponse)
+async def instantiate_template_endpoint(
+    template_id: str, req: TemplateInstantiate
+) -> ChainCreateResponse:
     if req.template_id != template_id:
         raise HTTPException(422, "template_id in path and body must match")
     validate_vars(req.vars)
