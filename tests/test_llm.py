@@ -10,6 +10,7 @@ import server.routes.llm as llm_routes
 @pytest.fixture(autouse=True)
 def llm_enabled(monkeypatch):
     monkeypatch.setattr(config, "LLM_DISABLED", False, raising=False)
+    monkeypatch.setattr(server.llm, "LLM_AVAILABLE", True, raising=False)
 
 
 async def test_auto_prompt_happy_path(api_client, monkeypatch):
@@ -126,3 +127,16 @@ async def test_auto_prompt_returns_503_on_anthropic_auth_error(api_client, monke
 
     assert response.status_code == 503
     assert "invalid or unauthorized" in response.json()["detail"]
+
+
+async def test_llm_endpoints_return_503_when_anthropic_package_missing(api_client, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-key-chong-login")
+    monkeypatch.setattr(server.llm, "LLM_AVAILABLE", False, raising=False)
+
+    auto_prompt = await api_client.post("/api/llm/auto-prompt", json={"topic": "forest spirits"})
+    expand_prompt = await api_client.post("/api/llm/expand-prompt", json={"idea": "slow aerial over cliffs"})
+    shot_list = await api_client.post("/api/llm/shot-list", json={"scene": "desert convoy"})
+
+    assert auto_prompt.status_code == 503
+    assert expand_prompt.status_code == 503
+    assert shot_list.status_code == 503

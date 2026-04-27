@@ -68,6 +68,11 @@ def _raise_if_llm_unavailable() -> None:
             status_code=503,
             detail="ANTHROPIC_API_KEY is not set. Configure it to enable LLM helpers.",
         )
+    if not llm_client.LLM_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="anthropic package is not installed. Install it to enable LLM helpers.",
+        )
 
 
 async def _call_claude_or_503(*, system: str, user: str, max_tokens: int) -> str:

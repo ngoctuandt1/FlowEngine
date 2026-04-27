@@ -5,8 +5,14 @@ from __future__ import annotations
 import os
 from typing import Any
 
+try:
+    import anthropic
+except ImportError:  # pragma: no cover - optional dependency in some environments
+    anthropic = None
+
 
 DEFAULT_MODEL = "claude-3-5-sonnet-20241022"
+LLM_AVAILABLE = anthropic is not None
 _cached_client: Any | None = None
 _cached_api_key: str | None = None
 
@@ -22,12 +28,10 @@ def _get_client() -> Any:
     if _cached_client is not None and _cached_api_key == api_key:
         return _cached_client
 
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError as exc:
-        raise RuntimeError("anthropic package is not installed") from exc
+    if not LLM_AVAILABLE:
+        raise RuntimeError("anthropic package is not installed")
 
-    _cached_client = AsyncAnthropic(api_key=api_key)
+    _cached_client = anthropic.AsyncAnthropic(api_key=api_key)
     _cached_api_key = api_key
     return _cached_client
 
