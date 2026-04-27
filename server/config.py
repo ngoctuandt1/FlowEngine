@@ -18,6 +18,9 @@ DATA_DIR.mkdir(exist_ok=True)
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8080"))
 API_KEY = os.getenv("API_KEY", "dev-key")
+LLM_DISABLED = os.getenv("LLM_DISABLED", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 # Database
 DATABASE_PATH = os.getenv("DATABASE_PATH", str(DATA_DIR / "flowengine.db"))
