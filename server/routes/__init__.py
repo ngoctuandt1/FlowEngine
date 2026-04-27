@@ -8,6 +8,7 @@ from server.routes.media_fetch import router as media_fetch_router
 from server.routes.characters import router as characters_router
 from server.routes.llm import router as llm_router
 from server.routes.product_pipeline import router as product_pipeline_router
+from server.routes.retarget import router as retarget_router
 from server.routes.uploads import router as uploads_router
 from server.routes.worker import router as worker_router
 from server.routes.profiles import router as profiles_router
@@ -24,6 +25,7 @@ __all__ = [
     "characters_router",
     "llm_router",
     "product_pipeline_router",
+    "retarget_router",
     "uploads_router",
     "worker_router",
     "profiles_router",

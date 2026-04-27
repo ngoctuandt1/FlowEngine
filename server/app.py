@@ -19,6 +19,7 @@ from server.routes import (
     profiles_router,
     product_pipeline_router,
     prompt_builder_router,
+    retarget_router,
     templates_router,
     tts_router,
     uploads_router,
@@ -82,6 +83,7 @@ app.include_router(media_fetch_router)
 app.include_router(characters_router)
 app.include_router(llm_router)
 app.include_router(product_pipeline_router)
+app.include_router(retarget_router)
 app.include_router(uploads_router)
 app.include_router(worker_router)
 app.include_router(profiles_router)
