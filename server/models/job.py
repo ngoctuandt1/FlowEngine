@@ -1,10 +1,11 @@
 """Job data models for FlowEngine."""
 
+import uuid
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Optional
+
 from pydantic import BaseModel, Field, model_validator
-import uuid
 
 
 # Canonical camera-move presets (duplicated from flow.operations.camera to keep
@@ -99,7 +100,7 @@ class JobCreate(BaseModel):
 
 class ChainCreate(BaseModel):
     """Request body for creating a job chain."""
-    jobs: list[JobCreate]
+    jobs: list[JobCreate] = Field(min_length=1)
     profile: Optional[str] = None  # Pin to specific profile
 
 

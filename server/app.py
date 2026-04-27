@@ -9,7 +9,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.routes import jobs_router, uploads_router, worker_router, profiles_router, ws_router
+from server.routes import (
+    characters_router,
+    jobs_router,
+    llm_router,
+    media_cut_router,
+    media_fetch_router,
+    media_merge_router,
+    profiles_router,
+    product_pipeline_router,
+    prompt_builder_router,
+    retarget_router,
+    templates_router,
+    tts_router,
+    uploads_router,
+    worker_router,
+    ws_router,
+)
 
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
@@ -60,9 +76,19 @@ app.add_middleware(
 
 # -- API routes ----------------------------------------------------------------
 app.include_router(jobs_router)
+app.include_router(prompt_builder_router)
+app.include_router(media_cut_router)
+app.include_router(media_merge_router)
+app.include_router(media_fetch_router)
+app.include_router(characters_router)
+app.include_router(llm_router)
+app.include_router(product_pipeline_router)
+app.include_router(retarget_router)
 app.include_router(uploads_router)
 app.include_router(worker_router)
 app.include_router(profiles_router)
+app.include_router(templates_router)
+app.include_router(tts_router)
 app.include_router(ws_router)
 
 # -- Static files (frontend) --------------------------------------------------

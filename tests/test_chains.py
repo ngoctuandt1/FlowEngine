@@ -126,6 +126,12 @@ async def test_post_chains_inserts_chain_row(api_client):
     assert row["profile"] == "prof-x"
 
 
+async def test_post_chains_rejects_empty_jobs(api_client):
+    response = await api_client.post("/api/chains", json={"jobs": []})
+
+    assert response.status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # API — GET /api/chains/{id} aggregated response
 # ---------------------------------------------------------------------------

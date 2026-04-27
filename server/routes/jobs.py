@@ -5,8 +5,8 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from server.models.chain import Chain
-from server.models.job import Job, JobCreate, JobStatus, ChainCreate
+from server.models.chain import Chain, ChainCreateResponse
+from server.models.job import ChainCreate, Job, JobCreate, JobStatus
 from server.db.chain_store import create_chain, get_chain_aggregate
 from server.db.job_store import create_job, get_job, list_jobs, get_children, delete_job, get_job_counts, recover_stale_jobs
 from server.routes.ws import broadcast_job_update
@@ -22,6 +22,9 @@ def _resolve_model(req: JobCreate) -> str:
 
 
 # -- Helpers -------------------------------------------------------------------
+
+def validate_job_create(req: JobCreate) -> None:
+    """Reserved for route-level job validation that Pydantic does not cover."""
 
 def _build_job(req: JobCreate, *, profile: Optional[str] = None,
                chain_id: Optional[str] = None, job_level: int = 1) -> Job:
@@ -73,14 +76,15 @@ async def create_single_job(req: JobCreate):
             if req.media_id is None:
                 req.media_id = parent.media_id
 
+    validate_job_create(req)
     job = _build_job(req, profile=profile, job_level=job_level)
     await create_job(job)
     await broadcast_job_update(job)
     return job
 
 
-@router.post("/chains", status_code=201)
-async def create_chain_endpoint(req: ChainCreate):  # POST /api/chains
+@router.post("/chains", response_model=ChainCreateResponse, status_code=201)
+async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POST /api/chains
     """Create a chain of linked jobs.
 
     All jobs share the same chain_id. Each subsequent job in the list
@@ -89,6 +93,12 @@ async def create_chain_endpoint(req: ChainCreate):  # POST /api/chains
     B4: also INSERT a row into the `chains` table (immutable metadata).
     Aggregated status is computed on read — never synced from job updates.
     """
+    if not req.jobs:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="jobs must contain at least 1 item",
+        )
+
     chain = Chain(id=str(uuid.uuid4()), profile=req.profile)
     await create_chain(chain)
 
@@ -97,6 +107,7 @@ async def create_chain_endpoint(req: ChainCreate):  # POST /api/chains
     level = 1
 
     for step in req.jobs:
+        validate_job_create(step)
         step.parent_job_id = prev_id
         step.chain_id = chain.id
         job = _build_job(step, profile=req.profile, chain_id=chain.id, job_level=level)
