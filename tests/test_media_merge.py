@@ -1,6 +1,8 @@
 from pathlib import Path
 from subprocess import CompletedProcess
+import subprocess
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -183,3 +185,169 @@ def test_media_merge_response_contains_output_path(temp_db_path, monkeypatch, tm
 
     assert response.status_code == 200
     assert response.json()["output_path"].startswith("merges/")
+
+
+def test_media_merge_accepts_absolute_paths_under_allowed_roots(temp_db_path, monkeypatch, tmp_path):
+    import server.routes.media_merge as media_merge
+
+    client, download_dir, upload_dir, _ = _build_client(monkeypatch, tmp_path)
+    first = download_dir / "a.mp4"
+    second = upload_dir / "b.mp4"
+    first.write_bytes(b"a")
+    second.write_bytes(b"b")
+
+    def fake_run(command, **kwargs):
+        output_path = Path(command[-1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"merged")
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(media_merge.shutil, "which", lambda name: None)
+    monkeypatch.setattr(media_merge.subprocess, "run", fake_run)
+
+    response = client.post(
+        "/api/media/merge",
+        json={"input_paths": [str(first.resolve()), str(second.resolve())]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source_count"] == 2
+
+
+def test_media_merge_resolves_existing_relative_download_path(temp_db_path, monkeypatch, tmp_path):
+    import server.routes.media_merge as media_merge
+
+    client, download_dir, _, _ = _build_client(monkeypatch, tmp_path)
+    (download_dir / "x.mp4").write_bytes(b"x")
+    (download_dir / "y.mp4").write_bytes(b"y")
+
+    def fake_run(command, **kwargs):
+        output_path = Path(command[-1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"merged")
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(media_merge.shutil, "which", lambda name: None)
+    monkeypatch.setattr(media_merge.subprocess, "run", fake_run)
+
+    response = client.post(
+        "/api/media/merge",
+        json={"input_paths": ["x.mp4", "y.mp4"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source_count"] == 2
+
+
+def test_media_merge_returns_504_and_cleans_partial_output_on_ffmpeg_timeout(
+    temp_db_path, monkeypatch, tmp_path
+):
+    import server.routes.media_merge as media_merge
+
+    client, download_dir, _, merge_dir = _build_client(monkeypatch, tmp_path)
+    (download_dir / "a.mp4").write_bytes(b"a")
+    (download_dir / "b.mp4").write_bytes(b"b")
+
+    def fake_run(command, **kwargs):
+        if command[0] == "ffprobe":
+            return CompletedProcess(command, 0, stdout="10\n", stderr="")
+        output_path = Path(command[-1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"partial")
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(media_merge.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(media_merge.subprocess, "run", fake_run)
+
+    response = client.post(
+        "/api/media/merge",
+        json={"input_paths": ["downloads/a.mp4", "downloads/b.mp4"]},
+    )
+
+    assert response.status_code == 504
+    assert response.json()["detail"] == "ffmpeg merge timed out"
+    assert list(merge_dir.glob("*.mp4")) == []
+
+
+def test_media_merge_returns_500_and_cleans_partial_output_on_ffmpeg_oserror(
+    temp_db_path, monkeypatch, tmp_path
+):
+    import server.routes.media_merge as media_merge
+
+    client, download_dir, _, merge_dir = _build_client(monkeypatch, tmp_path)
+    (download_dir / "a.mp4").write_bytes(b"a")
+    (download_dir / "b.mp4").write_bytes(b"b")
+
+    def fake_run(command, **kwargs):
+        if command[0] == "ffprobe":
+            return CompletedProcess(command, 0, stdout="10\n", stderr="")
+        output_path = Path(command[-1])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"partial")
+        raise OSError("ffmpeg missing")
+
+    monkeypatch.setattr(media_merge.shutil, "which", lambda name: "ffprobe")
+    monkeypatch.setattr(media_merge.subprocess, "run", fake_run)
+
+    response = client.post(
+        "/api/media/merge",
+        json={"input_paths": ["downloads/a.mp4", "downloads/b.mp4"]},
+    )
+
+    assert response.status_code == 500
+    assert "ffmpeg unavailable" in response.json()["detail"]
+    assert list(merge_dir.glob("*.mp4")) == []
+
+
+def test_probe_duration_seconds_returns_504_on_timeout(monkeypatch):
+    import server.routes.media_merge as media_merge
+
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(media_merge.subprocess, "run", fake_run)
+
+    with pytest.raises(media_merge.HTTPException) as exc_info:
+        media_merge._probe_duration_seconds(Path("clip.mp4"))
+
+    assert exc_info.value.status_code == 504
+    assert exc_info.value.detail == "ffprobe timed out for clip.mp4"
+
+
+def test_probe_duration_seconds_rejects_invalid_duration(monkeypatch):
+    import server.routes.media_merge as media_merge
+
+    monkeypatch.setattr(
+        media_merge.subprocess,
+        "run",
+        lambda command, **kwargs: CompletedProcess(command, 0, stdout="not-a-number", stderr=""),
+    )
+
+    with pytest.raises(media_merge.HTTPException) as exc_info:
+        media_merge._probe_duration_seconds(Path("clip.mp4"))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "invalid ffprobe duration for clip.mp4"
+
+
+def test_media_merge_surfaces_filelist_write_failure(temp_db_path, monkeypatch, tmp_path):
+    import server.app
+    import server.routes.media_merge as media_merge
+
+    client, download_dir, upload_dir, merge_dir = _build_client(monkeypatch, tmp_path)
+    (download_dir / "a.mp4").write_bytes(b"a")
+    (download_dir / "b.mp4").write_bytes(b"b")
+
+    def fail_write_text(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(media_merge.shutil, "which", lambda name: None)
+    monkeypatch.setattr(media_merge.Path, "write_text", fail_write_text)
+    client = TestClient(server.app.app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/media/merge",
+        json={"input_paths": ["downloads/a.mp4", "downloads/b.mp4"]},
+    )
+
+    assert response.status_code == 500
