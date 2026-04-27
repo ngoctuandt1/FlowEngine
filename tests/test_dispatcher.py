@@ -109,6 +109,32 @@ async def test_dispatch_ingredients_to_video_routes_to_handler(monkeypatch):
     assert profile_mgr.available == ["profile-c"]
 
 
+async def test_dispatch_audio_to_video_returns_stub_failure():
+    from worker import dispatcher
+
+    profile_mgr = _ProfileManagerStub()
+    project_lock = _ProjectLockStub()
+    job = {
+        "id": "job-4",
+        "type": "audio-to-video",
+        "profile": "profile-d",
+        "job_level": 1,
+        "prompt": "Sync visuals to the beat",
+        "audio_path": "uploads/track.wav",
+    }
+
+    result = await dispatcher.dispatch_job(job, profile_mgr, project_lock)
+
+    assert result == {
+        "status": "failed",
+        "error": "audio-to-video driver not yet implemented",
+    }
+    assert profile_mgr.busy == [("profile-d", "job-4")]
+    assert profile_mgr.available == ["profile-d"]
+    assert project_lock.acquired == []
+    assert project_lock.released == []
+
+
 # Upload-path resolver security contract tests live in
 # `tests/test_upload_resolution.py` (shipped separately via the
 # worker-upload-hardening PR).
