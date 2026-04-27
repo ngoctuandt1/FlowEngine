@@ -13,7 +13,6 @@ const CONST = (() => {
   const JOB_TYPES = [
     { id: 'text-to-video', label: 'Text to Video', icon: 'videocam', shortLabel: 'T2V' },
     { id: 'frames-to-video', label: 'Frames to Video', icon: 'image', shortLabel: 'Frames' },
-    { id: 'audio-to-video', label: 'Audio to Video', icon: 'mic', shortLabel: 'A2V' },
     { id: 'ingredients-to-video', label: 'Ingredients to Video', icon: 'photo_library', shortLabel: 'Refs' },
     { id: 'text-to-image', label: 'Text to Image', icon: 'photo', shortLabel: 'T2I' },
     { id: 'extend-video', label: 'Extend', icon: 'add_to_queue', shortLabel: 'Extend' },

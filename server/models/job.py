@@ -23,7 +23,6 @@ CAMERA_PRESETS: frozenset[str] = frozenset({
 class JobType(str, Enum):
     TEXT_TO_VIDEO = "text-to-video"
     FRAMES_TO_VIDEO = "frames-to-video"
-    AUDIO_TO_VIDEO = "audio-to-video"
     INGREDIENTS_TO_VIDEO = "ingredients-to-video"
     TEXT_TO_IMAGE = "text-to-image"
     EXTEND_VIDEO = "extend-video"
@@ -72,7 +71,6 @@ class JobCreate(BaseModel):
     # Operation-specific
     bbox: Optional[BBox] = None
     direction: Optional[str] = None  # Camera preset name
-    audio_path: Optional[str] = None
     start_image_path: Optional[str] = None
     end_image_path: Optional[str] = None
     ingredient_image_paths: list[str] = Field(default_factory=list)
@@ -130,7 +128,6 @@ class Job(BaseModel):
     aspect_ratio: str = "16:9"
     bbox: Optional[BBox] = None
     direction: Optional[str] = None
-    audio_path: Optional[str] = None
     start_image_path: Optional[str] = None
     end_image_path: Optional[str] = None
     ingredient_image_paths: list[str] = Field(default_factory=list)
@@ -167,7 +164,6 @@ class JobUpdate(BaseModel):
     media_id: Optional[str] = None
     edit_url: Optional[str] = None
     profile: Optional[str] = None
-    audio_path: Optional[str] = None
     output_files: Optional[list[str]] = None
     generation_id: Optional[str] = None
     safety_filter: Optional[Literal["block_most", "block_some", "block_few"]] = None

@@ -56,65 +56,6 @@ async def test_post_ingredients_to_video_round_trips_ingredient_paths(api_client
     assert body["ingredient_image_paths"] == ["uploads/a.png", "uploads/b.png"]
 
 
-async def test_post_audio_to_video_keeps_audio_path(api_client):
-    payload = {
-        "type": "audio-to-video",
-        "prompt": "Turn this piano riff into a moody neon city montage",
-        "audio_path": "uploads/source-audio.wav",
-    }
-
-    response = await api_client.post("/api/jobs", json=payload)
-
-    assert response.status_code == 201
-    body = response.json()
-    assert body["type"] == "audio-to-video"
-    assert body["audio_path"] == "uploads/source-audio.wav"
-
-
-async def test_post_audio_to_video_requires_audio_path(api_client):
-    payload = {
-        "type": "audio-to-video",
-        "prompt": "Animate to the beat",
-    }
-
-    response = await api_client.post("/api/jobs", json=payload)
-
-    assert response.status_code == 422
-    assert response.json()["detail"] == "audio-to-video job requires 'audio_path'"
-
-
-async def test_post_audio_to_video_requires_prompt(api_client):
-    payload = {
-        "type": "audio-to-video",
-        "audio_path": "uploads/source-audio.wav",
-    }
-
-    response = await api_client.post("/api/jobs", json=payload)
-
-    assert response.status_code == 422
-    assert response.json()["detail"] == "audio-to-video job requires 'prompt'"
-
-
-async def test_list_jobs_includes_audio_to_video(api_client):
-    payload = {
-        "type": "audio-to-video",
-        "prompt": "Build a video around this synth loop",
-        "audio_path": "uploads/loop.mp3",
-    }
-
-    create_response = await api_client.post("/api/jobs", json=payload)
-    assert create_response.status_code == 201
-
-    list_response = await api_client.get("/api/jobs")
-
-    assert list_response.status_code == 200
-    jobs = list_response.json()
-    assert any(
-        job["type"] == "audio-to-video" and job["audio_path"] == "uploads/loop.mp3"
-        for job in jobs
-    )
-
-
 async def test_post_job_with_safety_filter_round_trips(api_client):
     response = await api_client.post(
         "/api/jobs",
@@ -264,9 +205,9 @@ async def test_list_jobs_applies_filters(api_client):
     second = await api_client.post(
         "/api/jobs",
         json={
-            "type": "audio-to-video",
-            "prompt": "Animate from audio",
-            "audio_path": "uploads/filter.wav",
+            "type": "ingredients-to-video",
+            "prompt": "Animate from references",
+            "ingredient_image_paths": ["uploads/filter.png"],
             "profile": "other-profile",
         },
     )

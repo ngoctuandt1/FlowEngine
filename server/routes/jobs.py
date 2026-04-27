@@ -3,7 +3,7 @@
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query
 
 from server.models.chain import Chain, ChainCreateResponse
 from server.models.job import ChainCreate, Job, JobCreate, JobStatus
@@ -24,18 +24,7 @@ def _resolve_model(req: JobCreate) -> str:
 # -- Helpers -------------------------------------------------------------------
 
 def validate_job_create(req: JobCreate) -> None:
-    """Apply route-level validation for job types with custom requirements."""
-    if req.type.value == "audio-to-video":
-        if not req.audio_path:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="audio-to-video job requires 'audio_path'",
-            )
-        if not req.prompt:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="audio-to-video job requires 'prompt'",
-            )
+    """Reserved for route-level job validation that Pydantic does not cover."""
 
 def _build_job(req: JobCreate, *, profile: Optional[str] = None,
                chain_id: Optional[str] = None, job_level: int = 1) -> Job:
@@ -51,7 +40,6 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
         media_id=req.media_id,
         bbox=req.bbox,
         direction=req.direction,
-        audio_path=req.audio_path,
         start_image_path=req.start_image_path,
         end_image_path=req.end_image_path,
         ingredient_image_paths=req.ingredient_image_paths,

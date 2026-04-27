@@ -177,27 +177,6 @@ async def test_create_template_rejects_empty_steps(api_client):
     assert response.status_code == 422
 
 
-async def test_instantiate_template_applies_audio_validation(api_client):
-    response = await api_client.post(
-        "/api/templates",
-        json={
-            "name": "Audio template",
-            "description": None,
-            "steps": [{"type": "audio-to-video", "prompt": "Animate {{subject}}"}],
-        },
-    )
-    assert response.status_code == 201
-    created = response.json()
-
-    instantiate_response = await api_client.post(
-        f"/api/templates/{created['id']}/instantiate",
-        json={"template_id": created["id"], "vars": {"subject": "storm"}},
-    )
-
-    assert instantiate_response.status_code == 422
-    assert instantiate_response.json()["detail"] == "audio-to-video job requires 'audio_path'"
-
-
 async def test_instantiate_template_rejects_invalid_var_name(api_client):
     created = await _create_template(api_client)
 

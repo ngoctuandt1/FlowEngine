@@ -202,9 +202,6 @@ async def instantiate(template_id: str, vars: dict[str, str]) -> Any:
         jobs=[JobCreate.model_validate(step) for step in resolved_steps],
     )
 
-    from server.routes.jobs import create_chain_endpoint, validate_job_create
-
-    for job in chain_request.jobs:
-        validate_job_create(job)
+    from server.routes.jobs import create_chain_endpoint
 
     return await create_chain_endpoint(chain_request)
