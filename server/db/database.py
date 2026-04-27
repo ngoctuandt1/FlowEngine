@@ -87,6 +87,11 @@ CREATE INDEX IF NOT EXISTS idx_profiles_status  ON profiles(status);
 """
 
 
+async def _ensure_table(db: aiosqlite.Connection, name: str, ddl: str) -> None:
+    """Create a table if it does not already exist."""
+    await db.execute(f"CREATE TABLE IF NOT EXISTS {name} ({ddl})")
+
+
 async def _ensure_job_column(db: aiosqlite.Connection, name: str, ddl: str) -> None:
     """Add a jobs column if it is missing from an existing database."""
     cursor = await db.execute("PRAGMA table_info(jobs)")
@@ -100,6 +105,18 @@ async def init_db() -> None:
     """Create tables and indices if they don't exist yet."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.executescript(_SCHEMA_SQL)
+        await _ensure_table(
+            db,
+            "templates",
+            """
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            description TEXT,
+            steps_json  TEXT NOT NULL,
+            created_at  TEXT,
+            updated_at  TEXT
+            """,
+        )
         await _ensure_job_column(db, "start_image_path", "start_image_path TEXT")
         await _ensure_job_column(db, "end_image_path", "end_image_path TEXT")
         await _ensure_job_column(
