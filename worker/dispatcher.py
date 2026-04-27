@@ -261,6 +261,11 @@ async def handle_ingredients_to_video(job: dict) -> dict:
     return result
 
 
+async def handle_audio_to_video(job: dict) -> dict:
+    """Stub until the Flow audio-to-video driver is implemented."""
+    raise NotImplementedError("audio-to-video driver not yet implemented")
+
+
 async def handle_extend(job: dict) -> dict:
     """Extend-video: navigate to edit URL, extend with prompt + LP model."""
     from flow.operations.extend import extend_video
@@ -371,6 +376,7 @@ async def handle_camera(job: dict) -> dict:
 HANDLER_MAP: dict[str, Callable[[dict], Coroutine]] = {
     "text-to-video": handle_text_to_video,
     "frames-to-video": handle_frames_to_video,
+    "audio-to-video": handle_audio_to_video,
     "ingredients-to-video": handle_ingredients_to_video,
     "text-to-image": handle_text_to_image,
     "extend-video": handle_extend,

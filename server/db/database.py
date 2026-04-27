@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     aspect_ratio    TEXT NOT NULL DEFAULT '16:9',
     bbox_json       TEXT,          -- JSON serialised BBox
     direction       TEXT,
+    audio_path      TEXT,
     start_image_path TEXT,
     end_image_path  TEXT,
     ingredient_image_paths_json TEXT,
@@ -140,6 +141,7 @@ async def init_db() -> None:
         )
         await _ensure_job_column(db, "start_image_path", "start_image_path TEXT")
         await _ensure_job_column(db, "end_image_path", "end_image_path TEXT")
+        await _ensure_job_column(db, "audio_path", "audio_path TEXT")
         await _ensure_job_column(
             db,
             "ingredient_image_paths_json",

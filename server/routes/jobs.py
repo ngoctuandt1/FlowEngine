@@ -3,7 +3,7 @@
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, status
 
 from server.models.chain import Chain
 from server.models.job import Job, JobCreate, JobStatus, ChainCreate
@@ -23,6 +23,20 @@ def _resolve_model(req: JobCreate) -> str:
 
 # -- Helpers -------------------------------------------------------------------
 
+def _validate_job_create(req: JobCreate) -> None:
+    """Apply route-level validation for job types with custom requirements."""
+    if req.type.value == "audio-to-video":
+        if not req.audio_path:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="audio-to-video job requires 'audio_path'",
+            )
+        if not req.prompt:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="audio-to-video job requires 'prompt'",
+            )
+
 def _build_job(req: JobCreate, *, profile: Optional[str] = None,
                chain_id: Optional[str] = None, job_level: int = 1) -> Job:
     """Construct a Job record from a creation request."""
@@ -37,6 +51,7 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
         media_id=req.media_id,
         bbox=req.bbox,
         direction=req.direction,
+        audio_path=req.audio_path,
         start_image_path=req.start_image_path,
         end_image_path=req.end_image_path,
         ingredient_image_paths=req.ingredient_image_paths,
@@ -73,6 +88,7 @@ async def create_single_job(req: JobCreate):
             if req.media_id is None:
                 req.media_id = parent.media_id
 
+    _validate_job_create(req)
     job = _build_job(req, profile=profile, job_level=job_level)
     await create_job(job)
     await broadcast_job_update(job)
