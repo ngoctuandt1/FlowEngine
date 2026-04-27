@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from server.routes import (
     jobs_router,
+    media_cut_router,
     profiles_router,
     prompt_builder_router,
     uploads_router,
@@ -68,6 +69,7 @@ app.add_middleware(
 # -- API routes ----------------------------------------------------------------
 app.include_router(jobs_router)
 app.include_router(prompt_builder_router)
+app.include_router(media_cut_router)
 app.include_router(uploads_router)
 app.include_router(worker_router)
 app.include_router(profiles_router)
