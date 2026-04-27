@@ -2,15 +2,23 @@
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
+from server.auth import require_worker_token
 from server.models.job import JobUpdate
 from server.db.job_store import claim_next_job, get_job, update_job
 from server.routes.ws import broadcast_job_update
 
 
-router = APIRouter(prefix="/api/worker", tags=["worker"])
+# Bearer-token auth on every worker endpoint. Default API_KEY=dev-key
+# keeps local development unauth'd; production deploys MUST set a strong
+# API_KEY (the auth helper warns once at startup if the default is in use).
+router = APIRouter(
+    prefix="/api/worker",
+    tags=["worker"],
+    dependencies=[Depends(require_worker_token)],
+)
 
 
 # -- Request bodies ------------------------------------------------------------

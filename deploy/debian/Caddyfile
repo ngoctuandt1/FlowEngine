@@ -1,0 +1,57 @@
+# Caddy alternative to nginx — pick ONE.
+# Caddy auto-provisions Let's Encrypt certs on first request, no certbot needed.
+#
+# Install:        apt install -y caddy
+# Drop file at:   /etc/caddy/Caddyfile
+# Reload:         systemctl reload caddy
+
+ai.ciem {
+    # TLS is automatic — Caddy handles ACME on its own.
+    encode zstd gzip
+
+    # Optional dashboard basic-auth. Generate hash via:
+    #   caddy hash-password
+    # basicauth /* {
+    #     flow $2a$14$REPLACE_ME_WITH_REAL_BCRYPT_HASH
+    # }
+
+    # Worker endpoint allowlist (defense-in-depth on top of API_KEY).
+    # Replace 203.0.113.42 with the Windows worker's public IP, or use
+    # a Tailscale/WireGuard tunnel and put the tunnel IP here.
+    # @worker_ip {
+    #     path /api/worker/*
+    #     remote_ip 203.0.113.42 100.64.0.0/10
+    # }
+    # @worker_blocked {
+    #     path /api/worker/*
+    #     not remote_ip 203.0.113.42 100.64.0.0/10
+    # }
+    # respond @worker_blocked 403
+
+    # Reverse proxy everything (including ws upgrades) to uvicorn.
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # Long-lived WebSocket upgrades.
+        transport http {
+            read_timeout  1h
+            write_timeout 1h
+        }
+    }
+
+    log {
+        output file /var/log/caddy/flowengine.log {
+            roll_size 10mb
+            roll_keep 14
+        }
+        format console
+        level INFO
+    }
+
+    # 25MB upload cap — match nginx config.
+    request_body {
+        max_size 25MB
+    }
+}

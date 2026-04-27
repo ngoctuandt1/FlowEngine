@@ -1,0 +1,50 @@
+[Unit]
+Description=FlowEngine API + dashboard (FastAPI + Uvicorn)
+Documentation=https://github.com/ngoctuandt1/FlowEngine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=flowengine
+Group=flowengine
+WorkingDirectory=/opt/flowengine
+EnvironmentFile=/etc/flowengine/flowengine.env
+
+# Bind to localhost — nginx/Caddy fronts TLS on 443.
+ExecStart=/opt/flowengine/.venv/bin/uvicorn server.app:app \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --workers 1 \
+    --proxy-headers \
+    --forwarded-allow-ips=127.0.0.1 \
+    --log-level info \
+    --no-access-log
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/flowengine /var/log/flowengine
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+# Reasonable resource ceilings for a single-tenant API.
+LimitNOFILE=65536
+MemoryMax=1G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
