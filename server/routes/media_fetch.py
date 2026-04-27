@@ -12,10 +12,31 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import yt_dlp
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, Field, field_validator
 
-router = APIRouter(prefix="/api/media", tags=["media"])
+
+class _ValidationErrorAsBadRequestRoute(APIRoute):
+    def get_route_handler(self) -> Any:
+        original_route_handler = super().get_route_handler()
+
+        async def custom_route_handler(request: Request) -> Any:
+            try:
+                return await original_route_handler(request)
+            except RequestValidationError as exc:
+                first_error = exc.errors()[0]
+                raise HTTPException(status_code=400, detail=first_error["msg"]) from exc
+
+        return custom_route_handler
+
+
+router = APIRouter(
+    prefix="/api/media",
+    tags=["media"],
+    route_class=_ValidationErrorAsBadRequestRoute,
+)
 
 ALLOWED_MAX_HEIGHTS = {360, 480, 720, 1080}
 DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -53,6 +74,8 @@ def _validate_hostname_resolution(host: str) -> None:
         elif family == socket.AF_INET6:
             candidate_ip = sockaddr[0]
         else:
+            continue
+        if not isinstance(candidate_ip, str):
             continue
         if _is_forbidden_ip(candidate_ip):
             raise ValueError("url host is not allowed")
@@ -144,13 +167,7 @@ def _build_output_path() -> Path:
 
 
 @router.post("/fetch-url", response_model=FetchUrlResponse)
-async def fetch_media_url(payload: dict[str, Any]) -> FetchUrlResponse:
-    try:
-        request = FetchUrlRequest.model_validate(payload)
-    except ValidationError as exc:
-        first_error = exc.errors()[0]
-        raise HTTPException(status_code=400, detail=first_error["msg"]) from exc
-
+async def fetch_media_url(request: FetchUrlRequest) -> FetchUrlResponse:
     output_path = _build_output_path()
     format_selector = (
         f"bestvideo[height<=?{request.max_height}]+bestaudio/"

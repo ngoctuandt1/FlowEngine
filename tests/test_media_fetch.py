@@ -183,3 +183,19 @@ def test_fetch_url_rejects_dns_rebinding_target(temp_db_path, monkeypatch, tmp_p
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Value error, url host is not allowed"
+
+
+def test_fetch_url_openapi_uses_typed_request_and_response(temp_db_path, monkeypatch, tmp_path):
+    client, _, _ = _client_with_data_dir(monkeypatch, tmp_path)
+
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/api/media/fetch-url"]["post"]
+    request_body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+
+    assert request_body_schema == {"$ref": "#/components/schemas/FetchUrlRequest"}
+    assert response_schema == {"$ref": "#/components/schemas/FetchUrlResponse"}
+    assert (
+        "additionalProperties"
+        not in schema["components"]["schemas"]["FetchUrlRequest"]
+    )
