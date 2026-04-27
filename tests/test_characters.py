@@ -13,7 +13,16 @@ def character_upload_dir(tmp_path, monkeypatch):
     return tmp_path.resolve()
 
 
+def _write_upload(upload_dir: Path, relative_path: str) -> Path:
+    path = upload_dir / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"test-image")
+    return path
+
+
 async def test_create_character(api_client, character_upload_dir):
+    _write_upload(character_upload_dir, "portrait.png")
+    _write_upload(character_upload_dir, "profile.png")
     payload = {
         "name": "Astra",
         "description": "Lead explorer",
@@ -30,6 +39,8 @@ async def test_create_character(api_client, character_upload_dir):
 
 
 async def test_list_characters(api_client, character_upload_dir):
+    _write_upload(character_upload_dir, "bravo.png")
+    _write_upload(character_upload_dir, "alpha.png")
     await api_client.post(
         "/api/characters",
         json={"name": "Bravo", "image_paths": ["bravo.png"]},
@@ -47,6 +58,7 @@ async def test_list_characters(api_client, character_upload_dir):
 
 
 async def test_get_character(api_client, character_upload_dir):
+    _write_upload(character_upload_dir, "cipher.png")
     created = await api_client.post(
         "/api/characters",
         json={"name": "Cipher", "image_paths": ["cipher.png"]},
@@ -62,6 +74,7 @@ async def test_get_character(api_client, character_upload_dir):
 
 
 async def test_update_character(api_client, character_upload_dir):
+    _write_upload(character_upload_dir, "delta.png")
     created = await api_client.post(
         "/api/characters",
         json={"name": "Delta", "image_paths": ["delta.png"]},
@@ -69,6 +82,8 @@ async def test_update_character(api_client, character_upload_dir):
     character_id = created.json()["id"]
 
     nested = character_upload_dir / "nested" / "delta-2.png"
+    nested.parent.mkdir(parents=True, exist_ok=True)
+    nested.write_bytes(b"updated-image")
     payload = {
         "name": "Delta Prime",
         "description": "Updated notes",
@@ -85,6 +100,7 @@ async def test_update_character(api_client, character_upload_dir):
 
 
 async def test_delete_character(api_client, character_upload_dir):
+    _write_upload(character_upload_dir, "echo.png")
     created = await api_client.post(
         "/api/characters",
         json={"name": "Echo", "image_paths": ["echo.png"]},
@@ -103,6 +119,7 @@ async def test_delete_character(api_client, character_upload_dir):
 async def test_create_character_name_uniqueness_returns_409(
     api_client, character_upload_dir
 ):
+    _write_upload(character_upload_dir, "foxtrot.png")
     payload = {"name": "Foxtrot", "image_paths": ["foxtrot.png"]}
     await api_client.post("/api/characters", json=payload)
 
@@ -125,6 +142,18 @@ async def test_create_character_rejects_path_outside_upload_dir(
 
     assert response.status_code == 400
     assert "escapes FLOW_UPLOAD_DIR" in response.json()["detail"]
+
+
+async def test_create_character_rejects_nonexistent_path_under_upload_dir(
+    api_client, character_upload_dir
+):
+    response = await api_client.post(
+        "/api/characters",
+        json={"name": "India", "image_paths": ["uploads/test.png"]},
+    )
+
+    assert response.status_code == 400
+    assert "does not exist under FLOW_UPLOAD_DIR" in response.json()["detail"]
 
 
 @pytest.mark.parametrize(

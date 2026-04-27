@@ -21,7 +21,7 @@ UPLOAD_DIR = Path(os.environ.get("FLOW_UPLOAD_DIR", "./uploads")).resolve()
 
 
 def _normalize_image_path(path_value: str) -> str:
-    """Validate that an image path resolves under FLOW_UPLOAD_DIR."""
+    """Validate that an image path resolves under FLOW_UPLOAD_DIR and exists."""
     trimmed = (path_value or "").strip()
     if not trimmed:
         raise HTTPException(400, "Image path must not be empty")
@@ -39,6 +39,11 @@ def _normalize_image_path(path_value: str) -> str:
         raise HTTPException(
             400,
             f"Image path escapes FLOW_UPLOAD_DIR: {path_value}",
+        )
+    if not resolved.is_file():
+        raise HTTPException(
+            400,
+            f"Image path does not exist under FLOW_UPLOAD_DIR: {path_value}",
         )
 
     return Path("uploads", *resolved.relative_to(UPLOAD_DIR).parts).as_posix()
