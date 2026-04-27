@@ -1,5 +1,5 @@
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -9,20 +9,17 @@ import server.routes.retarget as retarget
 def _patch_dirs(monkeypatch, tmp_path):
     download_dir = (tmp_path / "downloads").resolve()
     upload_dir = (tmp_path / "uploads").resolve()
-    data_dir = (tmp_path / "data").resolve()
     download_dir.mkdir(parents=True, exist_ok=True)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    data_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("FLOW_DOWNLOAD_DIR", str(download_dir))
     monkeypatch.setenv("FLOW_UPLOAD_DIR", str(upload_dir))
-    monkeypatch.setattr(retarget, "DATA_DIR", data_dir, raising=False)
-    return download_dir, upload_dir, data_dir
+    return download_dir, upload_dir
 
 
 @pytest.mark.asyncio
 async def test_post_retarget_happy_path_queues_frames_job(api_client, monkeypatch, tmp_path):
-    download_dir, _, data_dir = _patch_dirs(monkeypatch, tmp_path)
+    download_dir, upload_dir = _patch_dirs(monkeypatch, tmp_path)
     ref_video = download_dir / "reference.mp4"
     ref_video.write_text("video", encoding="utf-8")
 
@@ -57,7 +54,8 @@ async def test_post_retarget_happy_path_queues_frames_job(api_client, monkeypatc
     assert response.status_code == 200
     body = response.json()
     assert body["job_id"] == created_jobs[0].id
-    assert Path(body["frame_path"]).parent == data_dir / "retarget"
+    assert body["frame_path"].startswith("retarget/frame_")
+    assert (upload_dir / body["frame_path"]).is_file()
     assert "queued" in body["message"].lower()
 
     assert len(ffmpeg_calls) == 1
@@ -111,7 +109,7 @@ async def test_post_retarget_rejects_absolute_path_outside_allowed_dirs(api_clie
 
 @pytest.mark.asyncio
 async def test_post_retarget_returns_500_when_ffmpeg_fails(api_client, monkeypatch, tmp_path):
-    _, upload_dir, _ = _patch_dirs(monkeypatch, tmp_path)
+    _, upload_dir = _patch_dirs(monkeypatch, tmp_path)
     ref_video = upload_dir / "reference.mp4"
     ref_video.write_text("video", encoding="utf-8")
 
@@ -138,7 +136,7 @@ async def test_post_retarget_returns_500_when_ffmpeg_fails(api_client, monkeypat
 
 @pytest.mark.asyncio
 async def test_post_retarget_missing_new_prompt_returns_422(api_client, monkeypatch, tmp_path):
-    download_dir, _, _ = _patch_dirs(monkeypatch, tmp_path)
+    download_dir, _ = _patch_dirs(monkeypatch, tmp_path)
     ref_video = download_dir / "reference.mp4"
     ref_video.write_text("video", encoding="utf-8")
 
@@ -152,7 +150,7 @@ async def test_post_retarget_missing_new_prompt_returns_422(api_client, monkeypa
 
 @pytest.mark.asyncio
 async def test_post_retarget_rejects_negative_frame_seconds(api_client, monkeypatch, tmp_path):
-    download_dir, _, _ = _patch_dirs(monkeypatch, tmp_path)
+    download_dir, _ = _patch_dirs(monkeypatch, tmp_path)
     ref_video = download_dir / "reference.mp4"
     ref_video.write_text("video", encoding="utf-8")
 
@@ -170,7 +168,7 @@ async def test_post_retarget_rejects_negative_frame_seconds(api_client, monkeypa
 
 @pytest.mark.asyncio
 async def test_post_retarget_returns_job_id_from_created_job(api_client, monkeypatch, tmp_path):
-    download_dir, _, _ = _patch_dirs(monkeypatch, tmp_path)
+    download_dir, _ = _patch_dirs(monkeypatch, tmp_path)
     ref_video = download_dir / "reference.mp4"
     ref_video.write_text("video", encoding="utf-8")
 
@@ -201,7 +199,7 @@ async def test_post_retarget_returns_job_id_from_created_job(api_client, monkeyp
 
 @pytest.mark.asyncio
 async def test_post_retarget_returns_502_when_job_submission_fails(api_client, monkeypatch, tmp_path):
-    download_dir, _, _ = _patch_dirs(monkeypatch, tmp_path)
+    download_dir, _ = _patch_dirs(monkeypatch, tmp_path)
     ref_video = download_dir / "reference.mp4"
     ref_video.write_text("video", encoding="utf-8")
 

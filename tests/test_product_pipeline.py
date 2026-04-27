@@ -27,9 +27,8 @@ async def test_post_product_pipeline_happy_path_builds_expected_chain(api_client
         return {
             "chain_id": "chain-123",
             "jobs": [
-                _fake_job("step-1", JobType.TEXT_TO_IMAGE),
-                _fake_job("step-2", JobType.FRAMES_TO_VIDEO),
-                _fake_job("step-3", JobType.EXTEND_VIDEO),
+                _fake_job("step-1", JobType.FRAMES_TO_VIDEO),
+                _fake_job("step-2", JobType.EXTEND_VIDEO),
             ],
         }
 
@@ -52,24 +51,19 @@ async def test_post_product_pipeline_happy_path_builds_expected_chain(api_client
     assert response.status_code == 201
     assert response.json() == {
         "chain_id": "chain-123",
-        "step_ids": ["step-1", "step-2", "step-3"],
+        "step_ids": ["step-1", "step-2"],
     }
 
     chain_req = captured["req"]
     assert chain_req.profile == "profile-a"
-    assert len(chain_req.jobs) == 3
-    assert chain_req.jobs[0].type == JobType.TEXT_TO_IMAGE
+    assert len(chain_req.jobs) == 2
+    assert chain_req.jobs[0].type == JobType.FRAMES_TO_VIDEO
     assert chain_req.jobs[0].prompt == (
-        "Luxury skincare bottle on reflective glass hero shot, product front view"
-    )
-    assert chain_req.jobs[0].ref_image_path == str(image_path)
-    assert chain_req.jobs[1].type == JobType.FRAMES_TO_VIDEO
-    assert chain_req.jobs[1].prompt == (
         "Luxury skincare bottle on reflective glass, smooth camera dolly-in"
     )
-    assert chain_req.jobs[1].start_image_path == "{step1_output}"
-    assert chain_req.jobs[2].type == JobType.EXTEND_VIDEO
-    assert chain_req.jobs[2].prompt == (
+    assert chain_req.jobs[0].start_image_path == str(image_path)
+    assert chain_req.jobs[1].type == JobType.EXTEND_VIDEO
+    assert chain_req.jobs[1].prompt == (
         "Luxury skincare bottle on reflective glass, dramatic reveal"
     )
     assert all(job.aspect_ratio == "9:16" for job in chain_req.jobs)
@@ -150,9 +144,8 @@ async def test_post_product_pipeline_defaults_profile_and_aspect_ratio(api_clien
         return {
             "chain_id": "chain-defaults",
             "jobs": [
-                _fake_job("step-1", JobType.TEXT_TO_IMAGE),
-                _fake_job("step-2", JobType.FRAMES_TO_VIDEO),
-                _fake_job("step-3", JobType.EXTEND_VIDEO),
+                _fake_job("step-1", JobType.FRAMES_TO_VIDEO),
+                _fake_job("step-2", JobType.EXTEND_VIDEO),
             ],
         }
 
@@ -176,9 +169,8 @@ async def test_post_product_pipeline_defaults_profile_and_aspect_ratio(api_clien
     chain_req = captured["req"]
     assert chain_req.profile is None
     assert [job.type for job in chain_req.jobs] == [
-        JobType.TEXT_TO_IMAGE,
         JobType.FRAMES_TO_VIDEO,
         JobType.EXTEND_VIDEO,
     ]
     assert all(job.aspect_ratio == "16:9" for job in chain_req.jobs)
-    assert chain_req.jobs[0].ref_image_path == "uploads/product.png"
+    assert chain_req.jobs[0].start_image_path == "uploads/product.png"

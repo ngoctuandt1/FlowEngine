@@ -32,14 +32,20 @@ def _client_with_data_dir(monkeypatch, tmp_path):
     import server.routes.media_fetch
     import server.app
 
-    data_dir = tmp_path / "data"
-    monkeypatch.setattr(server.routes.media_fetch, "DATA_DIR", data_dir, raising=False)
-    return TestClient(server.app.app), data_dir, server.routes.media_fetch
+    download_dir = (tmp_path / "downloads").resolve()
+    download_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("FLOW_DOWNLOAD_DIR", str(download_dir))
+    return TestClient(server.app.app), download_dir, server.routes.media_fetch
 
 
 def test_fetch_url_happy_path(temp_db_path, monkeypatch, tmp_path):
-    client, data_dir, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
+    client, download_dir, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(media_fetch.yt_dlp, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(
+        media_fetch.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(media_fetch.socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
+    )
 
     response = client.post(
         "/api/media/fetch-url",
@@ -48,9 +54,9 @@ def test_fetch_url_happy_path(temp_db_path, monkeypatch, tmp_path):
 
     assert response.status_code == 200
     body = response.json()
-    output_path = Path(body["output_path"])
+    output_path = download_dir / body["output_path"]
     assert output_path.is_file()
-    assert output_path.parent == data_dir / "fetched"
+    assert output_path.parent == download_dir / "fetched"
     assert body["title"] == "Example video"
     assert body["duration_seconds"] == 42
     assert body["source_url"] == "https://www.youtube.com/watch?v=demo"
@@ -72,7 +78,13 @@ def test_fetch_url_rejects_non_http_urls(temp_db_path, monkeypatch, tmp_path, ur
     [
         "http://localhost/video.mp4",
         "http://127.0.0.1/video.mp4",
+        "http://10.0.0.25/video.mp4",
+        "http://172.16.5.4/video.mp4",
+        "http://192.168.1.10/video.mp4",
         "http://169.254.10.20/video.mp4",
+        "http://[::1]/video.mp4",
+        "http://[fe80::1]/video.mp4",
+        "http://224.0.0.1/video.mp4",
         "http://service.internal/video.mp4",
     ],
 )
@@ -86,7 +98,12 @@ def test_fetch_url_rejects_denied_hosts(temp_db_path, monkeypatch, tmp_path, url
 
 
 def test_fetch_url_rejects_invalid_max_height(temp_db_path, monkeypatch, tmp_path):
-    client, _, _ = _client_with_data_dir(monkeypatch, tmp_path)
+    client, _, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        media_fetch.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(media_fetch.socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
+    )
 
     response = client.post(
         "/api/media/fetch-url",
@@ -99,6 +116,11 @@ def test_fetch_url_rejects_invalid_max_height(temp_db_path, monkeypatch, tmp_pat
 
 def test_fetch_url_maps_download_error_to_502(temp_db_path, monkeypatch, tmp_path):
     client, _, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        media_fetch.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(media_fetch.socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
+    )
 
     class FailingYoutubeDL:
         def __init__(self, options):
@@ -125,9 +147,14 @@ def test_fetch_url_maps_download_error_to_502(temp_db_path, monkeypatch, tmp_pat
     assert "secret" not in response.text
 
 
-def test_fetch_url_output_path_stays_under_data_dir(temp_db_path, monkeypatch, tmp_path):
-    client, data_dir, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
+def test_fetch_url_output_path_stays_under_download_dir(temp_db_path, monkeypatch, tmp_path):
+    client, download_dir, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(media_fetch.yt_dlp, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(
+        media_fetch.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(media_fetch.socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
+    )
 
     response = client.post(
         "/api/media/fetch-url",
@@ -135,7 +162,24 @@ def test_fetch_url_output_path_stays_under_data_dir(temp_db_path, monkeypatch, t
     )
 
     assert response.status_code == 200
-    output_path = Path(response.json()["output_path"]).resolve()
-    assert output_path.is_relative_to(data_dir.resolve())
+    output_path = download_dir / response.json()["output_path"]
+    assert output_path.is_relative_to(download_dir.resolve())
     assert output_path.name.startswith("fetch_")
     assert output_path.suffix == ".mp4"
+
+
+def test_fetch_url_rejects_dns_rebinding_target(temp_db_path, monkeypatch, tmp_path):
+    client, _, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        media_fetch.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(media_fetch.socket.AF_INET, None, None, "", ("10.0.0.8", 0))],
+    )
+
+    response = client.post(
+        "/api/media/fetch-url",
+        json={"url": "https://example.com/video.mp4"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Value error, url host is not allowed"

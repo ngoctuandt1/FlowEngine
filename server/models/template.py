@@ -14,7 +14,7 @@ class TemplateCreate(BaseModel):
 
     name: str
     description: str | None = None
-    steps: list[dict[str, Any]]
+    steps: list[dict[str, Any]] = Field(min_length=1)
 
 
 class Template(BaseModel):
@@ -23,7 +23,7 @@ class Template(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     description: str | None = None
-    steps: list[dict[str, Any]]
+    steps: list[dict[str, Any]] = Field(min_length=1)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

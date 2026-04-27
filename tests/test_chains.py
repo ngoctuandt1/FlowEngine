@@ -126,6 +126,22 @@ async def test_post_chains_inserts_chain_row(api_client):
     assert row["profile"] == "prof-x"
 
 
+async def test_post_chains_rejects_empty_jobs(api_client):
+    response = await api_client.post("/api/chains", json={"jobs": []})
+
+    assert response.status_code == 422
+
+
+async def test_post_chains_applies_audio_validation(api_client):
+    response = await api_client.post(
+        "/api/chains",
+        json={"jobs": [{"type": "audio-to-video", "prompt": "Animate this track"}]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "audio-to-video job requires 'audio_path'"
+
+
 # ---------------------------------------------------------------------------
 # API — GET /api/chains/{id} aggregated response
 # ---------------------------------------------------------------------------

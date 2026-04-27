@@ -8,13 +8,11 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from server.config import DATA_DIR
-
 router = APIRouter(prefix="/api/media", tags=["media"])
 
 DOWNLOAD_DIR = Path(os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")).expanduser().resolve()
 UPLOAD_DIR = Path(os.environ.get("FLOW_UPLOAD_DIR", "./uploads")).expanduser().resolve()
-CUTS_DIR = (DATA_DIR / "cuts").resolve()
+CUTS_DIR = (DOWNLOAD_DIR / "cuts").resolve()
 MAX_CUT_DURATION_SECONDS = 600
 FFMPEG_TIMEOUT_SECONDS = 120
 
@@ -23,6 +21,17 @@ class MediaCutRequest(BaseModel):
     input_path: str
     start_seconds: float
     end_seconds: float
+
+
+def _relative_output_path(output_path: Path) -> str:
+    return Path("cuts", output_path.name).as_posix()
+
+
+def _cleanup_partial_output(output_path: Path) -> None:
+    try:
+        output_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _resolve_input_path(input_path: str) -> Path:
@@ -78,27 +87,36 @@ async def cut_media(request: MediaCutRequest):
     CUTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = CUTS_DIR / f"cut_{uuid4()}.mp4"
 
-    result = subprocess.run(
-        [
-            "ffmpeg",
-            "-ss",
-            str(request.start_seconds),
-            "-to",
-            str(request.end_seconds),
-            "-i",
-            str(input_path),
-            "-c",
-            "copy",
-            str(output_path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=FFMPEG_TIMEOUT_SECONDS,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-ss",
+                str(request.start_seconds),
+                "-to",
+                str(request.end_seconds),
+                "-i",
+                str(input_path),
+                "-c",
+                "copy",
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=FFMPEG_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _cleanup_partial_output(output_path)
+        raise HTTPException(status_code=504, detail="ffmpeg cut timed out") from exc
+    except OSError as exc:
+        _cleanup_partial_output(output_path)
+        raise HTTPException(status_code=500, detail=f"ffmpeg unavailable: {exc}") from exc
+
     if result.returncode != 0:
+        _cleanup_partial_output(output_path)
         raise HTTPException(status_code=500, detail="ffmpeg failed to cut media")
 
     return {
-        "output_path": str(output_path),
+        "output_path": _relative_output_path(output_path),
         "duration_seconds": duration_seconds,
     }

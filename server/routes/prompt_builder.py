@@ -1,9 +1,9 @@
 """JSON prompt builder endpoint."""
 
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 
 
 router = APIRouter(prefix="/api/prompt-builder", tags=["prompt"])
@@ -26,7 +26,7 @@ FIELD_ORDER = (
 
 
 class PromptSpec(BaseModel):
-    subject: str
+    subject: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     action: Optional[str] = None
     environment: Optional[str] = None
     mood: Optional[str] = None

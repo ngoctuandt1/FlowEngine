@@ -10,7 +10,7 @@ def _make_client(temp_db_path, monkeypatch, tmp_path):
 
     download_dir = (tmp_path / "downloads").resolve()
     upload_dir = (tmp_path / "uploads").resolve()
-    cuts_dir = (tmp_path / "data" / "cuts").resolve()
+    cuts_dir = (download_dir / "cuts").resolve()
     download_dir.mkdir(parents=True, exist_ok=True)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
@@ -53,7 +53,7 @@ def test_media_cut_happy_path_runs_ffmpeg_and_returns_duration(temp_db_path, mon
     assert response.status_code == 200
     payload = response.json()
     assert payload["duration_seconds"] == 3.5
-    assert Path(payload["output_path"]).parent == cuts_dir
+    assert payload["output_path"].startswith("cuts/cut_")
     assert calls["cmd"][:7] == [
         "ffmpeg",
         "-ss",
@@ -63,7 +63,7 @@ def test_media_cut_happy_path_runs_ffmpeg_and_returns_duration(temp_db_path, mon
         "-i",
         str(source),
     ]
-    assert calls["cmd"][-2:] == ["copy", str(Path(payload["output_path"]))]
+    assert calls["cmd"][-2:] == ["copy", str(cuts_dir / Path(payload["output_path"]).name)]
     assert calls["capture_output"] is True
     assert calls["text"] is True
     assert calls["timeout"] == 120
@@ -148,7 +148,7 @@ def test_media_cut_returns_500_when_ffmpeg_fails(temp_db_path, monkeypatch, tmp_
     assert response.json()["detail"] == "ffmpeg failed to cut media"
 
 
-def test_media_cut_output_path_resolves_under_data_dir(temp_db_path, monkeypatch, tmp_path):
+def test_media_cut_output_path_resolves_under_download_dir(temp_db_path, monkeypatch, tmp_path):
     client, _download_dir, upload_dir, cuts_dir = _make_client(temp_db_path, monkeypatch, tmp_path)
     source = upload_dir / "clip.mp4"
     source.write_bytes(b"fake-video")
@@ -171,6 +171,5 @@ def test_media_cut_output_path_resolves_under_data_dir(temp_db_path, monkeypatch
     )
 
     assert response.status_code == 200
-    output_path = Path(response.json()["output_path"]).resolve()
-    assert output_path.is_relative_to(cuts_dir.parent)
-    assert output_path.is_relative_to(cuts_dir)
+    output_path = cuts_dir / Path(response.json()["output_path"]).name
+    assert output_path.parent == cuts_dir

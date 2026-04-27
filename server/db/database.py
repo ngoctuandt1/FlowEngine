@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     end_image_path  TEXT,
     ingredient_image_paths_json TEXT,
     ref_image_path  TEXT,
+    safety_filter   TEXT,
 
     -- Output
     output_files_json TEXT,        -- JSON serialised list[str]
@@ -123,6 +124,15 @@ async def _ensure_character_column(
         await db.execute(f"ALTER TABLE characters ADD COLUMN {ddl}")
 
 
+async def _ensure_template_column(db: aiosqlite.Connection, name: str, ddl: str) -> None:
+    """Add a templates column if it is missing from an existing database."""
+    cursor = await db.execute("PRAGMA table_info(templates)")
+    rows = await cursor.fetchall()
+    columns = {row[1] for row in rows}
+    if name not in columns:
+        await db.execute(f"ALTER TABLE templates ADD COLUMN {ddl}")
+
+
 async def init_db() -> None:
     """Create tables and indices if they don't exist yet."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
@@ -148,6 +158,7 @@ async def init_db() -> None:
             "ingredient_image_paths_json TEXT",
         )
         await _ensure_job_column(db, "ref_image_path", "ref_image_path TEXT")
+        await _ensure_job_column(db, "safety_filter", "safety_filter TEXT")
         await _ensure_character_column(db, "description", "description TEXT")
         await _ensure_character_column(
             db,
@@ -156,6 +167,10 @@ async def init_db() -> None:
         )
         await _ensure_character_column(db, "created_at", "created_at TEXT")
         await _ensure_character_column(db, "updated_at", "updated_at TEXT")
+        await _ensure_template_column(db, "description", "description TEXT")
+        await _ensure_template_column(db, "steps_json", "steps_json TEXT NOT NULL DEFAULT '[]'")
+        await _ensure_template_column(db, "created_at", "created_at TEXT")
+        await _ensure_template_column(db, "updated_at", "updated_at TEXT")
         await db.commit()
 
 

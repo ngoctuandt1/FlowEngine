@@ -1,10 +1,11 @@
 """Job data models for FlowEngine."""
 
+import uuid
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
+
 from pydantic import BaseModel, Field, model_validator
-import uuid
 
 
 # Canonical camera-move presets (duplicated from flow.operations.camera to keep
@@ -76,6 +77,7 @@ class JobCreate(BaseModel):
     end_image_path: Optional[str] = None
     ingredient_image_paths: list[str] = Field(default_factory=list)
     ref_image_path: Optional[str] = None
+    safety_filter: Optional[Literal["block_most", "block_some", "block_few"]] = None
 
     @model_validator(mode="after")
     def _validate_camera_direction(self) -> "JobCreate":
@@ -101,7 +103,7 @@ class JobCreate(BaseModel):
 
 class ChainCreate(BaseModel):
     """Request body for creating a job chain."""
-    jobs: list[JobCreate]
+    jobs: list[JobCreate] = Field(min_length=1)
     profile: Optional[str] = None  # Pin to specific profile
 
 
@@ -133,6 +135,7 @@ class Job(BaseModel):
     end_image_path: Optional[str] = None
     ingredient_image_paths: list[str] = Field(default_factory=list)
     ref_image_path: Optional[str] = None
+    safety_filter: Optional[Literal["block_most", "block_some", "block_few"]] = None
 
     # Output
     output_files: list[str] = Field(default_factory=list)
@@ -167,5 +170,6 @@ class JobUpdate(BaseModel):
     audio_path: Optional[str] = None
     output_files: Optional[list[str]] = None
     generation_id: Optional[str] = None
+    safety_filter: Optional[Literal["block_most", "block_some", "block_few"]] = None
     error: Optional[str] = None
     completed_at: Optional[datetime] = None

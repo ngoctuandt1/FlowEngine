@@ -10,7 +10,7 @@ def _build_client(monkeypatch, tmp_path):
 
     download_dir = tmp_path / "downloads"
     upload_dir = tmp_path / "uploads"
-    merge_dir = tmp_path / "data" / "merges"
+    merge_dir = download_dir / "merges"
     download_dir.mkdir(parents=True)
     upload_dir.mkdir(parents=True)
 
@@ -55,8 +55,7 @@ def test_media_merge_happy_path(temp_db_path, monkeypatch, tmp_path):
     body = response.json()
     assert body["source_count"] == 2
     assert body["duration_seconds"] == 31.0
-    assert Path(body["output_path"]).parent == merge_dir
-    assert Path(body["output_path"]).name.startswith("merge_")
+    assert body["output_path"].startswith("merges/merge_")
     assert Path(body["output_path"]).suffix == ".mp4"
     assert len(calls) == 3
     ffmpeg_command, ffmpeg_kwargs = calls[-1]
@@ -183,4 +182,4 @@ def test_media_merge_response_contains_output_path(temp_db_path, monkeypatch, tm
     )
 
     assert response.status_code == 200
-    assert response.json()["output_path"].startswith(str(merge_dir))
+    assert response.json()["output_path"].startswith("merges/")

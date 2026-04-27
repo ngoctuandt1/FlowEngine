@@ -57,7 +57,12 @@ def _validate_brief(brief: str) -> str:
 
 @router.post("/", status_code=201)
 async def create_product_pipeline(req: ProductPipelineCreate):
-    """Queue a three-step product ad pipeline via the existing chain API."""
+    """Queue a frames-to-video job plus extend-video follow-up.
+
+    Keep this as a pure video chain for now: Flow L1 image projects cannot be
+    shared with the frames-to-video step, and the backend does not resolve
+    placeholder outputs like "{step1_output}" across chain steps.
+    """
     product_image_path = _resolve_product_image_path(req.product_image_path)
     brief = _validate_brief(req.brief)
 
@@ -65,16 +70,10 @@ async def create_product_pipeline(req: ProductPipelineCreate):
         profile=req.profile,
         jobs=[
             JobCreate(
-                type=JobType.TEXT_TO_IMAGE,
-                prompt=f"{brief} hero shot, product front view",
-                aspect_ratio=req.aspect_ratio,
-                ref_image_path=product_image_path,
-            ),
-            JobCreate(
                 type=JobType.FRAMES_TO_VIDEO,
                 prompt=f"{brief}, smooth camera dolly-in",
                 aspect_ratio=req.aspect_ratio,
-                start_image_path="{step1_output}",
+                start_image_path=product_image_path,
             ),
             JobCreate(
                 type=JobType.EXTEND_VIDEO,

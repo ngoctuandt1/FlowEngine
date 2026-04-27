@@ -61,6 +61,15 @@ async def test_assemble_prompt_requires_subject(api_client):
     assert response.status_code == 422
 
 
+async def test_assemble_prompt_rejects_whitespace_only_subject(api_client):
+    response = await api_client.post(
+        "/api/prompt-builder/assemble",
+        json=_payload(subject="   "),
+    )
+
+    assert response.status_code == 422
+
+
 async def test_assemble_prompt_rejects_field_over_200_chars(api_client):
     response = await api_client.post(
         "/api/prompt-builder/assemble",

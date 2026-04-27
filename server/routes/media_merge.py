@@ -12,9 +12,6 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from server.config import DATA_DIR
-
-
 def _resolve_dir(env_var: str, default: str) -> Path:
     raw_value = (os.environ.get(env_var) or "").strip() or default
     return Path(raw_value).expanduser().resolve()
@@ -24,7 +21,7 @@ router = APIRouter(prefix="/api/media", tags=["media"])
 
 DOWNLOAD_DIR = _resolve_dir("FLOW_DOWNLOAD_DIR", "./downloads")
 UPLOAD_DIR = _resolve_dir("FLOW_UPLOAD_DIR", "./uploads")
-MERGE_DIR = (DATA_DIR / "merges").resolve()
+MERGE_DIR = (DOWNLOAD_DIR / "merges").resolve()
 MAX_SOURCE_COUNT = 20
 MIN_SOURCE_COUNT = 2
 MAX_TOTAL_DURATION_SECONDS = 30 * 60
@@ -34,6 +31,17 @@ SUBPROCESS_TIMEOUT_SECONDS = 120
 class MediaMergeRequest(BaseModel):
     input_paths: list[str]
     output_name: str | None = None
+
+
+def _relative_output_path(output_path: Path) -> str:
+    return Path("merges", output_path.name).as_posix()
+
+
+def _cleanup_partial_output(output_path: Path) -> None:
+    try:
+        output_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _strip_known_prefix(raw_path: str, expected_prefix: str) -> Path:
@@ -83,22 +91,28 @@ def _resolve_input_path(raw_path: str) -> Path:
 
 
 def _probe_duration_seconds(path: Path) -> float:
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail=f"ffprobe timed out for {path.name}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"ffprobe unavailable: {exc}") from exc
+
     if result.returncode != 0:
         raise HTTPException(
             status_code=400,
@@ -152,33 +166,41 @@ async def merge_media(request: MediaMergeRequest):
             "".join(_concat_file_entry(path) for path in resolved_inputs),
             encoding="utf-8",
         )
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(file_list_path),
-                "-c",
-                "copy",
-                str(output_path),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=SUBPROCESS_TIMEOUT_SECONDS,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(file_list_path),
+                    "-c",
+                    "copy",
+                    str(output_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            _cleanup_partial_output(output_path)
+            raise HTTPException(status_code=504, detail="ffmpeg merge timed out") from exc
+        except OSError as exc:
+            _cleanup_partial_output(output_path)
+            raise HTTPException(status_code=500, detail=f"ffmpeg unavailable: {exc}") from exc
 
     if result.returncode != 0:
+        _cleanup_partial_output(output_path)
         raise HTTPException(
             status_code=500,
             detail=f"ffmpeg merge failed: {result.stderr.strip() or 'unknown error'}",
         )
 
     return {
-        "output_path": str(output_path),
+        "output_path": _relative_output_path(output_path),
         "duration_seconds": total_duration_seconds,
         "source_count": len(resolved_inputs),
     }

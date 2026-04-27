@@ -186,11 +186,16 @@ async def instantiate(template_id: str, vars: dict[str, str]) -> Any:
     if missing:
         missing_names = ", ".join(sorted(missing))
         raise HTTPException(422, f"Missing template variables: {missing_names}")
+    if not resolved_steps:
+        raise HTTPException(422, "template steps must contain at least 1 item")
 
     chain_request = ChainCreate(
         jobs=[JobCreate.model_validate(step) for step in resolved_steps],
     )
 
-    from server.routes.jobs import create_chain_endpoint
+    from server.routes.jobs import create_chain_endpoint, validate_job_create
+
+    for job in chain_request.jobs:
+        validate_job_create(job)
 
     return await create_chain_endpoint(chain_request)

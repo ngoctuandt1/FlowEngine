@@ -60,6 +60,7 @@ async def create_job(job: Job) -> Job:
                 profile, project_url, media_id, edit_url,
                 prompt, model, aspect_ratio, bbox_json, direction, audio_path,
                 start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
+                safety_filter,
                 output_files_json, generation_id,
                 worker_id, claimed_at, completed_at, error,
                 created_at, updated_at
@@ -69,7 +70,7 @@ async def create_job(job: Job) -> Job:
                 ?, ?, ?, ?, ?,
                 ?,
                 ?, ?, ?, ?,
-                ?, ?,
+                ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?
             )
@@ -95,6 +96,7 @@ async def create_job(job: Job) -> Job:
                 job.end_image_path,
                 json.dumps(job.ingredient_image_paths) if job.ingredient_image_paths else None,
                 job.ref_image_path,
+                job.safety_filter,
                 json.dumps(job.output_files) if job.output_files else None,
                 job.generation_id,
                 job.worker_id,

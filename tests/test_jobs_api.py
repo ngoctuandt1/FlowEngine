@@ -110,3 +110,48 @@ async def test_list_jobs_includes_audio_to_video(api_client):
         job["type"] == "audio-to-video" and job["audio_path"] == "uploads/loop.mp3"
         for job in jobs
     )
+
+
+async def test_post_job_with_safety_filter_round_trips(api_client):
+    response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "A dramatic fashion film",
+            "safety_filter": "block_some",
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["safety_filter"] == "block_some"
+
+
+async def test_post_job_without_safety_filter_defaults_null(api_client):
+    response = await api_client.post(
+        "/api/jobs",
+        json={"type": "text-to-video", "prompt": "A clean product render"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["safety_filter"] is None
+
+
+async def test_list_jobs_includes_safety_filter(api_client):
+    create_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "A city skyline at dusk",
+            "safety_filter": "block_few",
+        },
+    )
+    assert create_response.status_code == 201
+
+    list_response = await api_client.get("/api/jobs")
+
+    assert list_response.status_code == 200
+    assert any(
+        job["type"] == "text-to-video" and job["safety_filter"] == "block_few"
+        for job in list_response.json()
+    )

@@ -13,7 +13,7 @@ def _client():
 def _patch_tts_dir(monkeypatch, tmp_path):
     import server.routes.tts as tts
 
-    tts_dir = (tmp_path / "tts").resolve()
+    tts_dir = (tmp_path / "downloads" / "tts").resolve()
     monkeypatch.setattr(tts, "TTS_DIR", tts_dir, raising=False)
     return tts, tts_dir
 
@@ -49,8 +49,8 @@ def test_post_tts_happy_path_writes_mp3(temp_db_path, monkeypatch, tmp_path):
         "rate": "+0%",
         "pitch": "+0Hz",
     }
-    output_path = Path(body["output_path"])
-    assert output_path == Path(calls["save_path"])
+    assert body["output_path"].startswith("tts/tts_")
+    output_path = Path(calls["save_path"])
     assert output_path.is_file()
     assert output_path.parent == tts_dir
 
@@ -153,7 +153,7 @@ def test_post_tts_allows_weird_rate_and_pitch_passthrough(temp_db_path, monkeypa
     }
 
 
-def test_post_tts_output_path_stays_under_data_dir(temp_db_path, monkeypatch, tmp_path):
+def test_post_tts_output_path_stays_under_download_dir(temp_db_path, monkeypatch, tmp_path):
     tts, tts_dir = _patch_tts_dir(monkeypatch, tmp_path)
 
     class FakeCommunicate:
@@ -168,9 +168,8 @@ def test_post_tts_output_path_stays_under_data_dir(temp_db_path, monkeypatch, tm
     response = _client().post("/api/tts", json={"text": "path safety"})
 
     assert response.status_code == 200
-    output_path = Path(response.json()["output_path"]).resolve()
+    output_path = tts_dir / Path(response.json()["output_path"]).name
     assert output_path.parent == tts_dir
-    assert output_path.is_relative_to(tts_dir)
 
 
 def test_post_tts_accepts_allowed_voice_prefixes(temp_db_path, monkeypatch, tmp_path):

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
+import os
+import socket
 import threading
 from pathlib import Path
 from typing import Any
@@ -12,14 +15,47 @@ import yt_dlp
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from server.config import DATA_DIR
-
-
 router = APIRouter(prefix="/api/media", tags=["media"])
 
 ALLOWED_MAX_HEIGHTS = {360, 480, 720, 1080}
 DOWNLOAD_TIMEOUT_SECONDS = 60
 _ERROR_MESSAGE = "Failed to fetch media from source URL"
+
+
+def _resolve_download_dir() -> Path:
+    return Path(os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")).expanduser().resolve()
+
+
+def _is_forbidden_ip(ip_text: str) -> bool:
+    ip = ipaddress.ip_address(ip_text)
+    return any(
+        (
+            ip.is_private,
+            ip.is_loopback,
+            ip.is_link_local,
+            ip.is_multicast,
+            ip.is_reserved,
+        )
+    )
+
+
+def _validate_hostname_resolution(host: str) -> None:
+    # This blocks obvious DNS rebinding targets at validation time, but yt-dlp
+    # resolves the hostname again later so a small TOCTOU window still exists.
+    try:
+        addrinfos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise ValueError("url host could not be resolved") from exc
+
+    for family, *_rest, sockaddr in addrinfos:
+        if family == socket.AF_INET:
+            candidate_ip = sockaddr[0]
+        elif family == socket.AF_INET6:
+            candidate_ip = sockaddr[0]
+        else:
+            continue
+        if _is_forbidden_ip(candidate_ip):
+            raise ValueError("url host is not allowed")
 
 
 class FetchUrlRequest(BaseModel):
@@ -37,8 +73,13 @@ class FetchUrlRequest(BaseModel):
             raise ValueError("url host is required")
         if host == "localhost" or host == "internal" or host.endswith(".internal"):
             raise ValueError("url host is not allowed")
-        if host.startswith("127.") or host.startswith("169.254."):
-            raise ValueError("url host is not allowed")
+        try:
+            parsed_ip = ipaddress.ip_address(host)
+        except ValueError:
+            _validate_hostname_resolution(host)
+        else:
+            if _is_forbidden_ip(str(parsed_ip)):
+                raise ValueError("url host is not allowed")
         return value
 
     @field_validator("max_height")
@@ -59,10 +100,12 @@ class FetchUrlResponse(BaseModel):
 def _extract_info_with_timeout(url: str, options: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
     result: dict[str, Any] = {}
     error: dict[str, BaseException] = {}
+    downloader_ref: dict[str, Any] = {}
 
     def run_download() -> None:
         try:
             with yt_dlp.YoutubeDL(options) as downloader:
+                downloader_ref["instance"] = downloader
                 result["info"] = downloader.extract_info(url, download=True)
         except BaseException as exc:  # pragma: no cover - rethrown below
             error["exc"] = exc
@@ -71,6 +114,12 @@ def _extract_info_with_timeout(url: str, options: dict[str, Any], timeout_second
     worker.start()
     worker.join(timeout_seconds)
     if worker.is_alive():
+        # Best effort only: yt-dlp does not guarantee prompt child-process
+        # teardown here, so a small timeout leakage window still exists.
+        downloader = downloader_ref.get("instance")
+        cancel = getattr(downloader, "cancel", None)
+        if callable(cancel):
+            cancel()
         raise TimeoutError(f"Download timed out after {timeout_seconds} seconds")
     if "exc" in error:
         raise error["exc"]
@@ -87,7 +136,7 @@ def _select_primary_info(info: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_output_path() -> Path:
-    fetched_dir = DATA_DIR / "fetched"
+    fetched_dir = _resolve_download_dir() / "fetched"
     fetched_dir.mkdir(parents=True, exist_ok=True)
     output_path = (fetched_dir / f"fetch_{uuid4()}.mp4").resolve()
     output_path.relative_to(fetched_dir.resolve())
@@ -139,7 +188,7 @@ async def fetch_media_url(payload: dict[str, Any]) -> FetchUrlResponse:
         or request.url
     )
     return FetchUrlResponse(
-        output_path=str(output_path),
+        output_path=Path("fetched", output_path.name).as_posix(),
         title=selected_info.get("title"),
         duration_seconds=selected_info.get("duration"),
         source_url=source_url,

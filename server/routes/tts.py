@@ -1,13 +1,12 @@
 """Text-to-speech endpoints backed by edge-tts."""
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
-
-from server.config import DATA_DIR
 
 try:
     import edge_tts
@@ -24,7 +23,7 @@ VOICE_PREFIXES = (
     "ja-JP-",
     "ko-KR-",
 )
-TTS_DIR = (DATA_DIR / "tts").resolve()
+TTS_DIR = (Path(os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")).expanduser().resolve() / "tts").resolve()
 CHARS_PER_SECOND_ESTIMATE = 12.5
 
 
@@ -55,7 +54,7 @@ def _estimate_duration_seconds(text: str) -> float:
 
 @router.post("", response_model=TTSResponse)
 async def synthesize_tts(payload: TTSRequest) -> TTSResponse:
-    """Synthesize speech to a local mp3 file under DATA_DIR/tts."""
+    """Synthesize speech to a local mp3 file under FLOW_DOWNLOAD_DIR/tts."""
     if edge_tts is None:
         raise HTTPException(500, "edge-tts dependency is not installed")
 
@@ -75,7 +74,7 @@ async def synthesize_tts(payload: TTSRequest) -> TTSResponse:
     await communicator.save(str(output_path))
 
     return TTSResponse(
-        output_path=str(output_path),
+        output_path=Path("tts", output_path.name).as_posix(),
         duration_seconds_estimate=_estimate_duration_seconds(payload.text),
         voice=payload.voice,
     )

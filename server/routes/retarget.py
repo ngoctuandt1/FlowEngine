@@ -8,7 +8,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from server.config import DATA_DIR
 from server.db.job_store import create_job
 from server.models.job import Job, JobType
 
@@ -83,10 +82,12 @@ def _resolve_reference_video_path(raw_path: str) -> Path:
 async def create_retarget_job(req: RetargetRequest):
     """Extract a representative frame and queue a frames-to-video job."""
     reference_video = _resolve_reference_video_path(req.reference_video_path)
+    upload_dir = _resolve_data_dir("FLOW_UPLOAD_DIR", "./uploads")
 
-    retarget_dir = DATA_DIR / "retarget"
+    retarget_dir = upload_dir / "retarget"
     retarget_dir.mkdir(parents=True, exist_ok=True)
     frame_path = retarget_dir / f"frame_{uuid.uuid4()}.jpg"
+    relative_frame_path = Path("retarget") / frame_path.name
 
     try:
         subprocess.run(
@@ -117,7 +118,7 @@ async def create_retarget_job(req: RetargetRequest):
         model=req.model,
         aspect_ratio=req.aspect_ratio,
         profile=req.profile,
-        start_image_path=str(frame_path),
+        start_image_path=relative_frame_path.as_posix(),
     )
 
     try:
@@ -127,6 +128,6 @@ async def create_retarget_job(req: RetargetRequest):
 
     return {
         "job_id": job.id,
-        "frame_path": str(frame_path),
+        "frame_path": relative_frame_path.as_posix(),
         "message": "Reference frame extracted and frames-to-video job queued.",
     }
