@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.routes import (
+    characters_router,
     jobs_router,
     media_cut_router,
     media_fetch_router,
@@ -75,6 +76,7 @@ app.include_router(prompt_builder_router)
 app.include_router(media_cut_router)
 app.include_router(media_merge_router)
 app.include_router(media_fetch_router)
+app.include_router(characters_router)
 app.include_router(uploads_router)
 app.include_router(worker_router)
 app.include_router(profiles_router)

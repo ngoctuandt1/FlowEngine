@@ -77,6 +77,15 @@ CREATE TABLE IF NOT EXISTS profiles (
     created_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS characters (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT,
+    image_paths TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 -- Indices for hot query paths
 CREATE INDEX IF NOT EXISTS idx_jobs_status      ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_chain_id    ON jobs(chain_id);
@@ -84,6 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_parent      ON jobs(parent_job_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_profile     ON jobs(profile);
 CREATE INDEX IF NOT EXISTS idx_jobs_project_url ON jobs(project_url);
 CREATE INDEX IF NOT EXISTS idx_profiles_status  ON profiles(status);
+CREATE INDEX IF NOT EXISTS idx_characters_name  ON characters(name);
 """
 
 
@@ -94,6 +104,17 @@ async def _ensure_job_column(db: aiosqlite.Connection, name: str, ddl: str) -> N
     columns = {row[1] for row in rows}
     if name not in columns:
         await db.execute(f"ALTER TABLE jobs ADD COLUMN {ddl}")
+
+
+async def _ensure_character_column(
+    db: aiosqlite.Connection, name: str, ddl: str
+) -> None:
+    """Add a characters column if it is missing from an existing database."""
+    cursor = await db.execute("PRAGMA table_info(characters)")
+    rows = await cursor.fetchall()
+    columns = {row[1] for row in rows}
+    if name not in columns:
+        await db.execute(f"ALTER TABLE characters ADD COLUMN {ddl}")
 
 
 async def init_db() -> None:
@@ -108,6 +129,14 @@ async def init_db() -> None:
             "ingredient_image_paths_json TEXT",
         )
         await _ensure_job_column(db, "ref_image_path", "ref_image_path TEXT")
+        await _ensure_character_column(db, "description", "description TEXT")
+        await _ensure_character_column(
+            db,
+            "image_paths",
+            "image_paths TEXT NOT NULL DEFAULT '[]'",
+        )
+        await _ensure_character_column(db, "created_at", "created_at TEXT")
+        await _ensure_character_column(db, "updated_at", "updated_at TEXT")
         await db.commit()
 
 
