@@ -117,7 +117,7 @@ async def test_instantiate_template_happy_path(api_client):
             "vars": {"subject": "dragons"},
         },
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
 
     body = response.json()
     assert body["chain_id"]
@@ -162,7 +162,7 @@ async def test_instantiate_template_forwards_to_chain_creation(monkeypatch, api_
             "vars": {"subject": "phoenix"},
         },
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert response.json()["chain_id"] == "mock-chain"
     assert captured["req"].jobs[0].prompt == "Intro phoenix"
     assert captured["req"].jobs[1].prompt == "Continue phoenix"

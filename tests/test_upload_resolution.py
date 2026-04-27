@@ -52,6 +52,12 @@ def test_strips_leading_uploads_prefix(upload_dir):
     assert Path(resolved) == upload_dir / "photo.png"
 
 
+def test_retarget_frame_path_resolves_under_flow_upload_dir(upload_dir):
+    from worker.dispatcher import _resolve_upload_path
+    resolved = _resolve_upload_path("retarget/frame_123.jpg")
+    assert Path(resolved) == upload_dir / "retarget" / "frame_123.jpg"
+
+
 def test_strips_leading_uploads_prefix_case_insensitively(upload_dir):
     from worker.dispatcher import _resolve_upload_path
     resolved = _resolve_upload_path("Uploads/photo.png")

@@ -127,7 +127,7 @@ async def test_dispatch_audio_to_video_returns_stub_failure():
 
     assert result == {
         "status": "failed",
-        "error": "audio-to-video driver not yet implemented",
+        "error": "audio-to-video driver not implemented",
     }
     assert profile_mgr.busy == [("profile-d", "job-4")]
     assert profile_mgr.available == ["profile-d"]

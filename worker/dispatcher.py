@@ -14,9 +14,42 @@ from worker.project_lock import ProjectLock
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_repo_root() -> Path:
+    """Return the shared repo root, including when running from a git worktree."""
+    for base in Path(__file__).resolve().parents:
+        git_marker = base / ".git"
+        if git_marker.is_dir():
+            return base
+        if not git_marker.is_file():
+            continue
+
+        raw = git_marker.read_text(encoding="utf-8").strip()
+        if not raw.startswith("gitdir:"):
+            continue
+
+        git_dir = Path(raw[7:].strip())
+        if not git_dir.is_absolute():
+            git_dir = (base / git_dir).resolve()
+
+        if git_dir.parent.name == "worktrees":
+            return git_dir.parents[2]
+        return base
+
+    return Path.cwd().resolve()
+
+
+def _resolve_data_dir(env_var: str, default_name: str) -> Path:
+    """Resolve data dirs consistently across normal checkouts and git worktrees."""
+    raw_value = (os.environ.get(env_var) or "").strip()
+    if raw_value:
+        return Path(raw_value).expanduser().resolve()
+    return (_resolve_repo_root() / default_name).resolve()
+
+
 PROFILE_BASE_DIR = os.environ.get("CHROME_USER_DATA_DIR", "./chrome-profiles")
-DOWNLOAD_DIR = os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")
-UPLOAD_DIR = Path(os.environ.get("FLOW_UPLOAD_DIR", "./uploads")).resolve()
+DOWNLOAD_DIR = str(_resolve_data_dir("FLOW_DOWNLOAD_DIR", "downloads"))
+UPLOAD_DIR = _resolve_data_dir("FLOW_UPLOAD_DIR", "uploads")
 
 
 # ======================================================================
@@ -263,7 +296,10 @@ async def handle_ingredients_to_video(job: dict) -> dict:
 
 async def handle_audio_to_video(job: dict) -> dict:
     """Stub until the Flow audio-to-video driver is implemented."""
-    raise NotImplementedError("audio-to-video driver not yet implemented")
+    return {
+        "status": "failed",
+        "error": "audio-to-video driver not implemented",
+    }
 
 
 async def handle_extend(job: dict) -> dict:
@@ -439,7 +475,10 @@ async def dispatch_job(
         )
         result = await with_retry(handler, job, max_retries=2, job_id=job_id)
 
-        # Attach common fields to result
+        if result.get("status") == "failed":
+            return result
+
+        # Attach common fields to successful results.
         result["status"] = "completed"
         result.setdefault("profile", profile)
         return result
@@ -463,6 +502,8 @@ async def dispatch_job(
                 logger.info("Retrying job %s after AIgglog login", job_id)
                 try:
                     result = await with_retry(handler, job, max_retries=1, job_id=job_id)
+                    if result.get("status") == "failed":
+                        return result
                     result["status"] = "completed"
                     result.setdefault("profile", profile)
                     return result

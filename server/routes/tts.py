@@ -56,7 +56,7 @@ def _estimate_duration_seconds(text: str) -> float:
 async def synthesize_tts(payload: TTSRequest) -> TTSResponse:
     """Synthesize speech to a local mp3 file under FLOW_DOWNLOAD_DIR/tts."""
     if edge_tts is None:
-        raise HTTPException(500, "edge-tts dependency is not installed")
+        raise HTTPException(503, "edge-tts dependency is not installed")
 
     TTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = (TTS_DIR / f"tts_{uuid4()}.mp3").resolve()

@@ -74,7 +74,7 @@ async def delete_template_endpoint(template_id: str):
     return {"deleted": template_id}
 
 
-@router.post("/{template_id}/instantiate", response_model=ChainCreateResponse)
+@router.post("/{template_id}/instantiate", response_model=ChainCreateResponse, status_code=201)
 async def instantiate_template_endpoint(
     template_id: str, req: TemplateInstantiate
 ) -> ChainCreateResponse:

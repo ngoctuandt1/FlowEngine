@@ -4,6 +4,7 @@ import pytest
 
 import server.config as config
 import server.llm
+import server.routes.llm as llm_routes
 
 
 @pytest.fixture(autouse=True)
@@ -111,3 +112,17 @@ async def test_shot_list_returns_503_when_llm_disabled(api_client, monkeypatch):
     response = await api_client.post("/api/llm/shot-list", json={"scene": "desert convoy"})
 
     assert response.status_code == 503
+
+
+async def test_auto_prompt_returns_503_on_anthropic_auth_error(api_client, monkeypatch):
+    class FakeAuthError(Exception):
+        pass
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "bad-key")
+    monkeypatch.setattr(llm_routes, "AnthropicAuthenticationError", (FakeAuthError,), raising=False)
+    monkeypatch.setattr(server.llm, "call_claude", AsyncMock(side_effect=FakeAuthError("unauthorized")))
+
+    response = await api_client.post("/api/llm/auto-prompt", json={"topic": "forest spirits"})
+
+    assert response.status_code == 503
+    assert "invalid or unauthorized" in response.json()["detail"]

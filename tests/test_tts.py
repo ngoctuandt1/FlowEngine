@@ -190,3 +190,13 @@ def test_post_tts_accepts_allowed_voice_prefixes(temp_db_path, monkeypatch, tmp_
         assert response.status_code == 200
 
     assert voices == ["vi-VN-HoaiMyNeural", "en-US-JennyNeural", "en-GB-SoniaNeural", "ja-JP-NanamiNeural", "ko-KR-SunHiNeural"]
+
+
+def test_post_tts_returns_503_when_edge_tts_missing(temp_db_path, monkeypatch, tmp_path):
+    tts, _ = _patch_tts_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(tts, "edge_tts", None, raising=False)
+
+    response = _client().post("/api/tts", json={"text": "dependency check"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "edge-tts dependency is not installed"

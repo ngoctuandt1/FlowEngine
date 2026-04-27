@@ -51,6 +51,11 @@ class ShotListResponse(BaseModel):
 
 SHOT_LIST_ADAPTER = TypeAdapter(list[Shot])
 
+try:
+    from anthropic import AuthenticationError as AnthropicAuthenticationError
+except ImportError:  # pragma: no cover - optional dependency in tests
+    AnthropicAuthenticationError = ()
+
 
 def _raise_if_llm_unavailable() -> None:
     if config.LLM_DISABLED:
@@ -65,10 +70,20 @@ def _raise_if_llm_unavailable() -> None:
         )
 
 
+async def _call_claude_or_503(*, system: str, user: str, max_tokens: int) -> str:
+    _raise_if_llm_unavailable()
+    try:
+        return await llm_client.call_claude(system=system, user=user, max_tokens=max_tokens)
+    except AnthropicAuthenticationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="ANTHROPIC_API_KEY is invalid or unauthorized. Configure a valid key to enable LLM helpers.",
+        ) from exc
+
+
 @router.post("/auto-prompt", response_model=PromptResponse)
 async def auto_prompt(body: AutoPromptRequest) -> PromptResponse:
-    _raise_if_llm_unavailable()
-    prompt = await llm_client.call_claude(
+    prompt = await _call_claude_or_503(
         system=(
             "you generate concise (<60 words) Veo-3 video prompts. "
             f"style: {body.style}. respond with the prompt only."
@@ -81,8 +96,7 @@ async def auto_prompt(body: AutoPromptRequest) -> PromptResponse:
 
 @router.post("/expand-prompt", response_model=PromptResponse)
 async def expand_prompt(body: ExpandPromptRequest) -> PromptResponse:
-    _raise_if_llm_unavailable()
-    prompt = await llm_client.call_claude(
+    prompt = await _call_claude_or_503(
         system=(
             "expand the user idea into a detailed cinematic Veo prompt with "
             "camera, lighting, motion, mood. <80 words."
@@ -95,8 +109,7 @@ async def expand_prompt(body: ExpandPromptRequest) -> PromptResponse:
 
 @router.post("/shot-list", response_model=ShotListResponse)
 async def shot_list(body: ShotListRequest) -> ShotListResponse:
-    _raise_if_llm_unavailable()
-    raw = await llm_client.call_claude(
+    raw = await _call_claude_or_503(
         system=(
             "Return JSON only. Build a cinematic Veo shot list as a JSON array. "
             "Each item must contain shot_n, description, duration_seconds. "
