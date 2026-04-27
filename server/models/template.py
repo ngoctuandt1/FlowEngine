@@ -27,7 +27,6 @@ class TemplateStep(BaseModel):
     end_image_path: str | None = None
     ref_image_path: str | None = None
     ingredient_image_paths: list[str] | None = None
-    audio_path: str | None = None
     safety_filter: Literal["block_most", "block_some", "block_few"] | None = None
 
 

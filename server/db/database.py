@@ -156,7 +156,6 @@ async def init_db() -> None:
             "ingredient_image_paths_json TEXT",
         )
         await _ensure_job_column(db, "ref_image_path", "ref_image_path TEXT")
-        await _ensure_job_column(db, "safety_filter", "safety_filter TEXT")
         await _ensure_character_column(db, "description", "description TEXT")
         await _ensure_character_column(
             db,

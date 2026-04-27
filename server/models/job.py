@@ -3,7 +3,7 @@
 import uuid
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Literal, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -75,7 +75,6 @@ class JobCreate(BaseModel):
     end_image_path: Optional[str] = None
     ingredient_image_paths: list[str] = Field(default_factory=list)
     ref_image_path: Optional[str] = None
-    safety_filter: Optional[Literal["block_most", "block_some", "block_few"]] = None
 
     @model_validator(mode="after")
     def _validate_camera_direction(self) -> "JobCreate":
@@ -132,7 +131,6 @@ class Job(BaseModel):
     end_image_path: Optional[str] = None
     ingredient_image_paths: list[str] = Field(default_factory=list)
     ref_image_path: Optional[str] = None
-    safety_filter: Optional[Literal["block_most", "block_some", "block_few"]] = None
 
     # Output
     output_files: list[str] = Field(default_factory=list)
@@ -166,6 +164,5 @@ class JobUpdate(BaseModel):
     profile: Optional[str] = None
     output_files: Optional[list[str]] = None
     generation_id: Optional[str] = None
-    safety_filter: Optional[Literal["block_most", "block_some", "block_few"]] = None
     error: Optional[str] = None
     completed_at: Optional[datetime] = None

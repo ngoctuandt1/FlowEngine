@@ -40,6 +40,7 @@ async def test_create_template(api_client):
     assert row["name"] == "Starter chain"
     assert row["description"] == "Reusable workflow"
     assert "{{subject}}" in row["steps_json"]
+    assert "audio_path" not in row["steps_json"]
 
 
 async def test_list_templates(api_client):
