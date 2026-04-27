@@ -16,6 +16,7 @@ from server.routes import (
     media_merge_router,
     profiles_router,
     prompt_builder_router,
+    tts_router,
     uploads_router,
     worker_router,
     ws_router,
@@ -77,6 +78,7 @@ app.include_router(media_fetch_router)
 app.include_router(uploads_router)
 app.include_router(worker_router)
 app.include_router(profiles_router)
+app.include_router(tts_router)
 app.include_router(ws_router)
 
 # -- Static files (frontend) --------------------------------------------------

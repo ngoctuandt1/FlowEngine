@@ -8,6 +8,7 @@ from server.routes.media_fetch import router as media_fetch_router
 from server.routes.uploads import router as uploads_router
 from server.routes.worker import router as worker_router
 from server.routes.profiles import router as profiles_router
+from server.routes.tts import router as tts_router
 from server.routes.ws import router as ws_router
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "uploads_router",
     "worker_router",
     "profiles_router",
+    "tts_router",
     "ws_router",
 ]
