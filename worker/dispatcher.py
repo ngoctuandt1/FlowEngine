@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Coroutine
 
-from flow.retry import with_retry, is_transient
+from flow.recaptcha import RecaptchaError
+from flow.retry import with_retry
 from worker.browser_pool import get_pool
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
@@ -50,6 +51,23 @@ def _resolve_data_dir(env_var: str, default_name: str) -> Path:
 PROFILE_BASE_DIR = os.environ.get("CHROME_USER_DATA_DIR", "./chrome-profiles")
 DOWNLOAD_DIR = str(_resolve_data_dir("FLOW_DOWNLOAD_DIR", "downloads"))
 UPLOAD_DIR = _resolve_data_dir("FLOW_UPLOAD_DIR", "uploads")
+
+
+def _auto_replace_profiles_enabled() -> bool:
+    value = (os.environ.get("FLOW_AUTO_REPLACE_PROFILES") or "1").strip()
+    return value != "0"
+
+
+def _profile_base_dir() -> Path:
+    return Path(
+        os.environ.get("CHROME_USER_DATA_DIR", "./chrome-profiles")
+    ).expanduser().resolve()
+
+
+def _credentials_file_path() -> Path:
+    return Path(
+        os.environ.get("FLOW_PROFILE_LIST_FILE", "profiles_ultra.txt")
+    ).expanduser().resolve()
 
 
 # ======================================================================
@@ -473,6 +491,67 @@ async def dispatch_job(
         result["status"] = "completed"
         result.setdefault("profile", profile)
         return result
+
+    except RecaptchaError as exc:
+        old_profile = profile
+        error_message = f"recaptcha_{exc.kind}_burned_{old_profile}"
+        blocked_url = str(exc.url or "")[:160]
+        logger.error(
+            "Job %s hit reCAPTCHA kind=%s profile=%s url=%s",
+            job_id,
+            exc.kind,
+            old_profile,
+            blocked_url or "<unknown>",
+        )
+        if old_profile and _auto_replace_profiles_enabled():
+            swap_failed_logged = False
+            try:
+                from worker.profile_swapper import ProfileSwapper
+
+                swapper = ProfileSwapper(
+                    profile_base_dir=_profile_base_dir(),
+                    credentials_file=_credentials_file_path(),
+                )
+                new_profile = await asyncio.to_thread(
+                    swapper.swap_burned,
+                    old_profile,
+                )
+            except Exception:
+                logger.exception(
+                    "Profile burned, swap failed; pool exhausted or warm failed"
+                )
+                swap_failed_logged = True
+                new_profile = None
+
+            if new_profile:
+                profile_manager.replace_profile(old_profile, new_profile)
+                logger.info(
+                    "Profile burned, auto-replaced: %s -> %s",
+                    old_profile,
+                    new_profile,
+                )
+                if manage_profile:
+                    profile = ""
+            else:
+                if not swap_failed_logged:
+                    logger.error(
+                        "Profile burned, swap failed; pool exhausted or warm failed"
+                    )
+                remove_profile = getattr(profile_manager, "remove_profile", None)
+                if callable(remove_profile):
+                    remove_profile(old_profile)
+                    if manage_profile:
+                        profile = ""
+        elif old_profile:
+            logger.warning(
+                "FLOW_AUTO_REPLACE_PROFILES=0; profile %s burned, manual recovery needed",
+                old_profile,
+            )
+        return {
+            "status": "failed",
+            "error": error_message,
+            "error_message": error_message,
+        }
 
     except Exception as exc:
         # --- Auto-login via AIgglog when session expired ---

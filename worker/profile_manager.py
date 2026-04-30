@@ -70,6 +70,22 @@ class ProfileManager:
             return None
         return info["current_job"]
 
+    def replace_profile(self, old: str, new: str) -> None:
+        """Atomically replace a burned profile with a fresh one."""
+        old_info = self.profiles.pop(old, None)
+        new_info = self.profiles.pop(new, None)
+        if old_info is None:
+            logger.warning(
+                "replace_profile: old profile %r missing; appending %s",
+                old,
+                new,
+            )
+        self.profiles[new] = new_info or {
+            "status": "available",
+            "current_job": None,
+        }
+        logger.warning("Profile burned, swapped: %s -> %s", old, new)
+
     def __repr__(self) -> str:
         avail = self.get_available()
         busy = [n for n in self.profiles if n not in avail]
