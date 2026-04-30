@@ -8,7 +8,6 @@ import re
 import shutil
 import subprocess
 import time
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -17,18 +16,7 @@ from flow.login import PROFILE_LIST_FILE
 
 logger = logging.getLogger(__name__)
 
-_UNICODE_FALLBACKS = str.maketrans(
-    {
-        "\u00df": "ss",
-        "\u00e6": "ae",
-        "\u00f0": "d",
-        "\u00f8": "o",
-        "\u0153": "oe",
-        "\u00fe": "th",
-        "\u0111": "d",
-        "\u0142": "l",
-    }
-)
+_FILESYSTEM_UNSAFE_CHARS = re.compile(r'[\/\\:*?"<>|]')
 
 
 @dataclass(frozen=True)
@@ -51,17 +39,14 @@ class ProfileSwapper:
         self.repo_root = Path(__file__).resolve().parents[1]
 
     def derive_profile_name(self, email: str) -> str:
-        local_part = email.split("@", 1)[0].strip().lower()
-        local_part = local_part.split("+", 1)[0].replace(".", "")
-        local_part = local_part.translate(_UNICODE_FALLBACKS)
-        ascii_local = (
-            unicodedata.normalize("NFKD", local_part)
-            .encode("ascii", "ignore")
-            .decode("ascii")
-        )
-        sanitized = re.sub(r"[^a-z0-9_]+", "_", ascii_local)
-        sanitized = re.sub(r"_+", "_", sanitized).strip("_")
-        return (sanitized or "profile")[:32]
+        """Use the email local-part as the profile name, replacing only
+        filesystem-reserved path characters with ``_`` so
+        ``flow.login._load_credentials`` can still match the raw
+        ``email.split("@")[0]`` alias.
+        """
+        local_part = email.split("@", 1)[0].strip()
+        sanitized = _FILESYSTEM_UNSAFE_CHARS.sub("_", local_part)
+        return sanitized or "profile"
 
     def available_credentials(self) -> list[CredEntry]:
         credentials_path = self._credentials_path()
@@ -118,11 +103,21 @@ class ProfileSwapper:
         return None
 
     def warm_new_profile(self, profile_name: str, timeout: int = 180) -> bool:
+        env = os.environ.copy()
+        # Keep warm_profile on this swapper's profile root, provide a DISPLAY
+        # for headful Chrome under Xvfb, force the real-Chrome path, point
+        # login lookup at the same credential file, and preserve base-profile
+        # bootstrap behavior.
+        env.setdefault("CHROME_USER_DATA_DIR", str(self.profile_base_dir))
+        env.setdefault("DISPLAY", os.environ.get("DISPLAY", ":99"))
+        env.setdefault("FLOW_REAL_CHROME", "1")
+        env.setdefault("FLOW_PROFILE_LIST_FILE", str(self.credentials_file))
+        env.setdefault("FLOW_USE_BASE_PROFILE", "1")
         try:
             result = subprocess.run(
                 ["python", "scripts/warm_profile.py", profile_name],
                 cwd=self.repo_root,
-                env=os.environ.copy(),
+                env=env,
                 timeout=timeout,
                 check=False,
             )

@@ -4,8 +4,9 @@ Usage
 -----
     python scripts/warm_profile.py ngoctuandt20
 
-Opens a real Chrome window against ``chrome-profiles/{profile}`` via a local
-CDP port, navigates to Gmail, and drives the Google sign-in flow via
+Opens a real Chrome window against
+``${CHROME_USER_DATA_DIR:-chrome-profiles}/{profile}`` via a local CDP port,
+navigates to Gmail, and drives the Google sign-in flow via
 ``flow.login.handle_login_redirect`` (credentials read from
 ``profiles_ultra.txt``). Cookies + IndexedDB state persist to the profile
 directory; subsequent FlowEngine worker launches clone that profile and
@@ -229,8 +230,14 @@ def _stop_chrome_process(proc: subprocess.Popen) -> None:
         proc.wait(timeout=5)
 
 
+def _profile_base_dir() -> Path:
+    return Path(
+        os.environ.get("CHROME_USER_DATA_DIR", "chrome-profiles")
+    ).expanduser().resolve()
+
+
 async def warm(profile: str) -> int:
-    profile_dir = (Path("chrome-profiles") / profile).resolve()
+    profile_dir = (_profile_base_dir() / profile).resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
     log.info("Profile dir: %s", profile_dir)
 
