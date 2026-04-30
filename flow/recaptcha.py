@@ -2,8 +2,11 @@
 
 import asyncio
 import logging
+from typing import Literal
 
 logger = logging.getLogger(__name__)
+
+RecaptchaKind = Literal["v3_invisible", "v2_visible"]
 
 
 async def detect_recaptcha(page) -> bool:
@@ -71,32 +74,93 @@ async def detect_recaptcha(page) -> bool:
         return False
 
 
-async def detect_recaptcha_in_network(client) -> bool:
-    """Check if recent network responses indicate reCAPTCHA/bot blocking.
+def _classify_recaptcha_url(url: str) -> RecaptchaKind | None:
+    url_lower = url.lower()
+    if "recaptcha" not in url_lower:
+        return None
+    if "recaptcha/api2/anchor" in url_lower:
+        return "v2_visible"
+    if any(
+        token in url_lower
+        for token in (
+            "recaptcha/enterprise/clr",
+            "recaptcha/enterprise/reload",
+            "recaptcha/enterprise/webworker",
+            "recaptcha/enterprise/token",
+        )
+    ):
+        return "v3_invisible"
+    return "v3_invisible"
 
-    Signals:
-    - HTTP 403 on generation/operations endpoints
-    - HTTP 429 (rate limited)
-    - Response bodies containing "captcha" or "bot"
-    """
-    calls = getattr(client, "_calls", [])
 
-    for call in reversed(calls[-50:]):
-        url = str(call.get("url", "")).lower()
-        status = call.get("status", 0)
+def _nearest_adjacent_recaptcha_call(calls: list[dict], blocked_call: dict) -> dict | None:
+    blocked_ts = blocked_call.get("ts")
+    if not isinstance(blocked_ts, (int, float)):
+        return None
 
-        # 403/429 on critical endpoints
-        if status in (403, 429) and ("operations/" in url or "generate" in url or "trpc" in url):
-            logger.warning("Bot block signal: HTTP %d on %s", status, url[:80])
-            return True
+    nearest: dict | None = None
+    nearest_delta: float | None = None
+    for call in calls:
+        url = str(call.get("url", ""))
+        if _classify_recaptcha_url(url) is None:
+            continue
+        call_ts = call.get("ts")
+        if not isinstance(call_ts, (int, float)):
+            continue
+        delta = abs(float(blocked_ts) - float(call_ts))
+        if delta > 30:
+            continue
+        if nearest_delta is None or delta < nearest_delta:
+            nearest = call
+            nearest_delta = delta
+    return nearest
 
-        # Response body contains captcha indicators
+
+def _find_recaptcha_signal(calls: list[dict]) -> tuple[RecaptchaKind, dict] | None:
+    recent_calls = calls[-50:]
+    for call in reversed(recent_calls):
+        url = str(call.get("url", ""))
+        status = int(call.get("status", 0) or 0)
+        kind = _classify_recaptcha_url(url)
+        if kind is not None:
+            logger.warning("reCAPTCHA network signal: kind=%s url=%s", kind, url[:120])
+            return kind, call
+
+        if status in (403, 429):
+            adjacent_call = _nearest_adjacent_recaptcha_call(recent_calls, call)
+            if adjacent_call is not None:
+                blocked_url = str(call.get("url", ""))
+                logger.warning(
+                    "reCAPTCHA-adjacent block: HTTP %d on %s",
+                    status,
+                    blocked_url[:120],
+                )
+                return "v3_invisible", adjacent_call
+
         body = call.get("body", "")
         if isinstance(body, str) and ("captcha" in body.lower() or "bot" in body.lower()):
             logger.warning("Bot block signal: captcha text in response body")
-            return True
+            return "v3_invisible", call
 
-    return False
+    return None
+
+
+def first_recaptcha_call(client) -> dict | None:
+    """Return the latest call dict that triggered network reCAPTCHA detection."""
+    calls = getattr(client, "_calls", [])
+    signal = _find_recaptcha_signal(calls)
+    if signal is None:
+        return None
+    return signal[1]
+
+
+async def detect_recaptcha_in_network(client) -> RecaptchaKind | None:
+    """Classify recent network responses that indicate reCAPTCHA/bot blocking."""
+    calls = getattr(client, "_calls", [])
+    signal = _find_recaptcha_signal(calls)
+    if signal is None:
+        return None
+    return signal[0]
 
 
 async def handle_recaptcha(client) -> bool:
@@ -127,4 +191,11 @@ async def handle_recaptcha(client) -> bool:
 
 class RecaptchaError(Exception):
     """Raised when reCAPTCHA blocks an operation."""
-    pass
+
+    def __init__(self, kind: RecaptchaKind, url: str = ""):
+        self.kind = kind
+        self.url = url
+        message = f"reCAPTCHA detected ({kind})"
+        if url:
+            message = f"{message}: {url}"
+        super().__init__(message)

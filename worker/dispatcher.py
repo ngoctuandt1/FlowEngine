@@ -226,6 +226,7 @@ async def handle_frames_to_video(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await frames_to_video(
             client,
             prompt=job.get("prompt", ""),
@@ -260,6 +261,7 @@ async def handle_text_to_image(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await text_to_image(
             client,
             prompt=job.get("prompt", ""),
@@ -296,6 +298,7 @@ async def handle_ingredients_to_video(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await ingredients_to_video(
             client,
             prompt=job.get("prompt", ""),

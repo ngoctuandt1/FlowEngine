@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from flow import client as client_module
 from flow import wait
 from flow.operations import _base
 from worker import dispatcher
@@ -141,3 +142,19 @@ async def test_failed_job_error_surfaces_capture_path(monkeypatch):
     error_message = result.get("error_message", result["error"])
     assert result["status"] == "failed"
     assert "[cap=/tmp/fake.png]" in error_message
+
+
+async def test_failure_message_does_not_reuse_stale_capture_after_reset(monkeypatch):
+    client = client_module.FlowClient("profile-a", real_chrome=False)
+    client._last_failure_capture = "/tmp/stale.png"
+    client._last_failure_kind = "timeout"
+
+    await client.reset_for_next_job()
+
+    capture_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(_base, "_capture_failure_artifact", capture_mock)
+
+    message = await _base.failure_message_with_capture(client, "timeout", "timeout")
+
+    assert message == "timeout"
+    capture_mock.assert_awaited_once_with(client, "timeout", extra=None)
