@@ -70,6 +70,23 @@ class ProfileManager:
             return None
         return info["current_job"]
 
+    def remove_profile(self, name: str) -> None:
+        """Remove a profile from the worker pool."""
+        removed = self.profiles.pop(name, None)
+        if removed is None:
+            return
+        logger.info("Profile removed from pool: %s", name)
+
+    def replace_profile(self, old: str, new: str) -> None:
+        """Replace a burned profile with a fresh one."""
+        self.profiles.pop(new, None)
+        self.remove_profile(old)
+        self.profiles[new] = {
+            "status": "available",
+            "current_job": None,
+        }
+        logger.info("Profile burned, swapped: %s -> %s", old, new)
+
     def __repr__(self) -> str:
         avail = self.get_available()
         busy = [n for n in self.profiles if n not in avail]
