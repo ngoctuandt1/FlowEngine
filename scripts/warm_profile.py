@@ -87,9 +87,15 @@ _WORKSPACE_SIGNIN_SELECTORS = (
 CHROME_CANDIDATES = (
     lambda: os.environ.get("FLOW_WARM_CHROME_PATH"),
     lambda: os.environ.get("CHROME_PATH"),
+    # Windows install locations
     lambda: r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     lambda: r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     lambda: str(Path.home() / "AppData/Local/Google/Chrome/Application/chrome.exe"),
+    # Linux install locations (Debian/Ubuntu google-chrome-stable, Chromium)
+    lambda: "/usr/bin/google-chrome",
+    lambda: "/usr/bin/google-chrome-stable",
+    lambda: "/usr/bin/chromium-browser",
+    lambda: "/usr/bin/chromium",
 )
 
 
