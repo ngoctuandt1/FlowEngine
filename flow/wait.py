@@ -10,7 +10,12 @@ import re
 import time
 
 from flow.media_id import looks_like_media_id, normalize_media_id
-from flow.recaptcha import detect_recaptcha, detect_recaptcha_in_network, RecaptchaError
+from flow.recaptcha import (
+    RecaptchaError,
+    detect_recaptcha,
+    detect_recaptcha_in_network,
+    first_recaptcha_call,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +96,10 @@ async def wait_for_completion(
             logger.error("Wait timeout after %.0fs", elapsed)
             return _result(False, error="timeout")
 
+        network_kind = await detect_recaptcha_in_network(client)
+        if network_kind:
+            raise _build_network_recaptcha_error(client, network_kind)
+
         # --- Method 1: reverse API inspection ---
         api = _check_api_signals(client)
         if api["done"]:
@@ -106,6 +115,10 @@ async def wait_for_completion(
                 media_ids=_collect_media_ids(client, start_index=initial_media_count),
             )
         if api["error"]:
+            if api["error"] in {"blocked_403", "blocked_429"}:
+                network_kind = await detect_recaptcha_in_network(client)
+                if network_kind:
+                    raise _build_network_recaptcha_error(client, network_kind)
             logger.error("API error: %s", api["error"])
             return _result(False, error=api["error"])
         if api["progress"] > last_progress:
@@ -116,8 +129,8 @@ async def wait_for_completion(
         now = time.monotonic()
         if now - last_recaptcha_check >= 10:
             last_recaptcha_check = now
-            if await detect_recaptcha(page) or await detect_recaptcha_in_network(client):
-                raise RecaptchaError("reCAPTCHA detected during generation wait")
+            if await detect_recaptcha(page):
+                raise RecaptchaError(kind="v2_visible", url=page.url)
 
         # --- Method 2: network video captures ---
         video_urls = getattr(client, "_video_urls", [])
@@ -233,6 +246,12 @@ def _result(
         "video_urls": video_urls or [],
         "error": error,
     }
+
+
+def _build_network_recaptcha_error(client, kind: str) -> RecaptchaError:
+    call = first_recaptcha_call(client) or {}
+    url = str(call.get("url", "")) or None
+    return RecaptchaError(kind=kind, url=url)
 
 
 # ------------------------------------------------------------------

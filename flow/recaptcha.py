@@ -2,8 +2,19 @@
 
 import asyncio
 import logging
+from collections.abc import Callable
+from typing import Literal
 
 logger = logging.getLogger(__name__)
+
+RecaptchaKind = Literal["v3_invisible", "v2_visible"]
+
+_RECAPTCHA_V3_TOKENS = (
+    "recaptcha/enterprise/clr",
+    "recaptcha/enterprise/reload",
+    "recaptcha/enterprise/webworker",
+    "recaptcha/enterprise/token",
+)
 
 
 async def detect_recaptcha(page) -> bool:
@@ -71,32 +82,83 @@ async def detect_recaptcha(page) -> bool:
         return False
 
 
-async def detect_recaptcha_in_network(client) -> bool:
-    """Check if recent network responses indicate reCAPTCHA/bot blocking.
+def _is_recaptcha_url(url: str) -> bool:
+    return "recaptcha" in url.lower()
 
-    Signals:
-    - HTTP 403 on generation/operations endpoints
-    - HTTP 429 (rate limited)
-    - Response bodies containing "captcha" or "bot"
-    """
+
+def _is_non_recaptcha_failure(call: dict) -> bool:
+    status = int(call.get("status", 0) or 0)
+    if status not in (403, 429):
+        return False
+    return not _is_recaptcha_url(str(call.get("url", "")))
+
+
+def _find_latest_matching_call(
+    calls: list[dict],
+    predicate: Callable[[dict], bool],
+) -> dict | None:
+    for call in reversed(calls):
+        if predicate(call):
+            return call
+    return None
+
+
+def _find_recaptcha_signal(calls: list[dict]) -> tuple[RecaptchaKind, dict] | None:
+    recent_calls = calls[-50:]
+    v2_call = _find_latest_matching_call(
+        recent_calls,
+        lambda call: "recaptcha/api2/anchor" in str(call.get("url", "")).lower(),
+    )
+    if v2_call is not None:
+        url = str(v2_call.get("url", ""))
+        logger.warning("reCAPTCHA network signal: kind=v2_visible url=%s", url[:120])
+        return "v2_visible", v2_call
+
+    recaptcha_call = _find_latest_matching_call(
+        recent_calls,
+        lambda call: _is_recaptcha_url(str(call.get("url", ""))),
+    )
+    if recaptcha_call is None:
+        return None
+
+    failure_call = _find_latest_matching_call(recent_calls, _is_non_recaptcha_failure)
+    if failure_call is None:
+        return None
+
+    v3_call = _find_latest_matching_call(
+        recent_calls,
+        lambda call: any(
+            token in str(call.get("url", "")).lower()
+            for token in _RECAPTCHA_V3_TOKENS
+        ),
+    )
+    signal_call = v3_call or recaptcha_call
+    logger.warning(
+        "reCAPTCHA-adjacent block: HTTP %s on %s",
+        failure_call.get("status", 0),
+        str(failure_call.get("url", ""))[:120],
+    )
+    return "v3_invisible", signal_call
+
+    return None
+
+
+def first_recaptcha_call(client) -> dict | None:
+    """Return the reCAPTCHA-related call that triggered classification."""
     calls = getattr(client, "_calls", [])
+    signal = _find_recaptcha_signal(calls)
+    if signal is None:
+        return None
+    return signal[1]
 
-    for call in reversed(calls[-50:]):
-        url = str(call.get("url", "")).lower()
-        status = call.get("status", 0)
 
-        # 403/429 on critical endpoints
-        if status in (403, 429) and ("operations/" in url or "generate" in url or "trpc" in url):
-            logger.warning("Bot block signal: HTTP %d on %s", status, url[:80])
-            return True
-
-        # Response body contains captcha indicators
-        body = call.get("body", "")
-        if isinstance(body, str) and ("captcha" in body.lower() or "bot" in body.lower()):
-            logger.warning("Bot block signal: captcha text in response body")
-            return True
-
-    return False
+async def detect_recaptcha_in_network(client) -> RecaptchaKind | None:
+    """Classify recent network responses that indicate reCAPTCHA/bot blocking."""
+    calls = getattr(client, "_calls", [])
+    signal = _find_recaptcha_signal(calls)
+    if signal is None:
+        return None
+    return signal[0]
 
 
 async def handle_recaptcha(client) -> bool:
@@ -127,4 +189,17 @@ async def handle_recaptcha(client) -> bool:
 
 class RecaptchaError(Exception):
     """Raised when reCAPTCHA blocks an operation."""
-    pass
+
+    def __init__(self, kind: RecaptchaKind | str, url: str | None = None):
+        self.url = url
+
+        if kind in ("v3_invisible", "v2_visible"):
+            self.kind = kind
+            message = f"reCAPTCHA detected ({kind})"
+            if url:
+                message = f"{message}: {url}"
+        else:
+            self.kind = "v3_invisible"
+            message = str(kind)
+
+        super().__init__(message)
