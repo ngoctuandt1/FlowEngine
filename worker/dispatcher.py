@@ -494,12 +494,14 @@ async def dispatch_job(
 
     except RecaptchaError as exc:
         old_profile = profile
-        error_message = f"recaptcha_{exc.kind}_burned_{old_profile}"
-        blocked_url = str(exc.url or "")[:160]
+        kind = getattr(exc, "kind", None) or "unknown"
+        url = getattr(exc, "url", None)
+        error_message = f"recaptcha_{kind}_burned_{old_profile}"
+        blocked_url = str(url or "")[:160]
         logger.error(
             "Job %s hit reCAPTCHA kind=%s profile=%s url=%s",
             job_id,
-            exc.kind,
+            kind,
             old_profile,
             blocked_url or "<unknown>",
         )
@@ -537,14 +539,15 @@ async def dispatch_job(
                     logger.error(
                         "Profile burned, swap failed; pool exhausted or warm failed"
                     )
-                remove_profile = getattr(profile_manager, "remove_profile", None)
-                if callable(remove_profile):
-                    remove_profile(old_profile)
-                    if manage_profile:
-                        profile = ""
+                profile_manager.remove_profile(old_profile)
+                if manage_profile:
+                    profile = ""
         elif old_profile:
+            profile_manager.remove_profile(old_profile)
+            if manage_profile:
+                profile = ""
             logger.warning(
-                "FLOW_AUTO_REPLACE_PROFILES=0; profile %s burned, manual recovery needed",
+                "FLOW_AUTO_REPLACE_PROFILES=0; profile %s burned and removed from pool; manual recovery needed",
                 old_profile,
             )
         return {

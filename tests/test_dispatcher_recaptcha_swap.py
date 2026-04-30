@@ -11,6 +11,7 @@ class _ProfileManagerStub:
         self.busy = []
         self.available = []
         self.replace_profile = Mock()
+        self.remove_profile = Mock()
 
     def mark_busy(self, profile, job_id):
         self.busy.append((profile, job_id))
@@ -37,6 +38,10 @@ class _FakeRecaptchaError(Exception):
         self.kind = kind
         self.url = url
         super().__init__(f"reCAPTCHA detected ({kind})")
+
+
+class _LegacyRecaptchaError(Exception):
+    pass
 
 
 def _reload_dispatcher():
@@ -118,10 +123,54 @@ async def test_dispatch_job_swaps_burned_profile_on_recaptcha(
         (tmp_path / "profiles_ultra.txt").resolve(),
     )]
     profile_mgr.replace_profile.assert_called_once_with("oldprofile", "newprofile")
+    profile_mgr.remove_profile.assert_not_called()
     assert profile_mgr.available == []
 
 
-async def test_dispatch_job_skips_swap_when_auto_replace_disabled(
+async def test_dispatch_job_handles_legacy_recaptcha_error_signature(
+    monkeypatch,
+    caplog,
+    tmp_path,
+):
+    dispatcher = _reload_dispatcher()
+    assert "worker.profile_swapper" not in sys.modules
+
+    monkeypatch.delenv("FLOW_AUTO_REPLACE_PROFILES", raising=False)
+    monkeypatch.setenv("CHROME_USER_DATA_DIR", str(tmp_path / "chrome-profiles"))
+    monkeypatch.setenv(
+        "FLOW_PROFILE_LIST_FILE",
+        str(tmp_path / "profiles_ultra.txt"),
+    )
+    monkeypatch.setattr(dispatcher, "RecaptchaError", _LegacyRecaptchaError)
+    monkeypatch.setattr(dispatcher.asyncio, "to_thread", _run_to_thread)
+
+    swap_calls, _ = _install_fake_swapper(
+        monkeypatch,
+        new_profile="newprofile",
+    )
+    handler = AsyncMock(side_effect=_LegacyRecaptchaError("legacy message"))
+    monkeypatch.setitem(dispatcher.HANDLER_MAP, "text-to-video", handler)
+
+    profile_mgr = _ProfileManagerStub()
+    project_lock = _ProjectLockStub()
+    job = {
+        "id": "job-rec-legacy",
+        "type": "text-to-video",
+        "profile": "oldprofile",
+        "job_level": 1,
+    }
+
+    with caplog.at_level(logging.INFO, logger="worker.dispatcher"):
+        result = await dispatcher.dispatch_job(job, profile_mgr, project_lock)
+
+    assert result["status"] == "failed"
+    assert result["error_message"] == "recaptcha_unknown_burned_oldprofile"
+    assert swap_calls == ["oldprofile"]
+    profile_mgr.replace_profile.assert_called_once_with("oldprofile", "newprofile")
+    profile_mgr.remove_profile.assert_not_called()
+
+
+async def test_dispatch_job_removes_burned_profile_when_auto_replace_disabled(
     monkeypatch,
     caplog,
 ):
@@ -158,10 +207,12 @@ async def test_dispatch_job_skips_swap_when_auto_replace_disabled(
     assert result["error_message"] == "recaptcha_v3_invisible_burned_oldprofile"
     assert swap_calls == []
     profile_mgr.replace_profile.assert_not_called()
+    profile_mgr.remove_profile.assert_called_once_with("oldprofile")
+    assert profile_mgr.available == []
     assert "manual recovery needed" in caplog.text
 
 
-async def test_dispatch_job_logs_swap_failure_when_replacement_unavailable(
+async def test_dispatch_job_removes_burned_profile_when_replacement_unavailable(
     monkeypatch,
     caplog,
 ):
@@ -196,4 +247,6 @@ async def test_dispatch_job_logs_swap_failure_when_replacement_unavailable(
     assert result["error_message"] == "recaptcha_v3_invisible_burned_oldprofile"
     assert swap_calls == ["oldprofile"]
     profile_mgr.replace_profile.assert_not_called()
+    profile_mgr.remove_profile.assert_called_once_with("oldprofile")
+    assert profile_mgr.available == []
     assert "swap failed" in caplog.text
