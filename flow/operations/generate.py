@@ -782,6 +782,21 @@ async def _set_aspect_ratio(page, ratio: str):
         logger.info("Aspect ratio set to %s (chip verified: %s)", ratio, expected_icon)
 
 
+def _chip_text_matches_output_count(chip_text: str, count: int) -> bool:
+    """Return True when the composer chip confirms the requested output count."""
+    chip_text_l = chip_text.lower()
+    if count == 1:
+        # Flow UI builds observed on Linux 2026-04-30 render single-output as
+        # either `1x` or `x1`; keep explicit x2/x3/x4 rejects to catch leaks.
+        return (
+            ("1x" in chip_text_l or "x1" in chip_text_l)
+            and "x2" not in chip_text_l
+            and "x3" not in chip_text_l
+            and "x4" not in chip_text_l
+        )
+    return f"x{count}" in chip_text_l
+
+
 async def _set_output_count(page, count: int = 1):
     """B35: force Flow composer count chip to x{count} (default x1).
 
@@ -832,7 +847,7 @@ async def _set_output_count(page, count: int = 1):
 
     chip_text = await chip_btn.inner_text(timeout=2000)
     expected = f"x{count}"
-    if expected not in chip_text:
+    if not _chip_text_matches_output_count(chip_text, count):
         logger.warning(
             "Output count set to x%d but chip verify failed: chip_text=%r expected substring %r",
             count, chip_text, expected,
