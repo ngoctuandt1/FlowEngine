@@ -161,6 +161,14 @@ export FLOW_ALLOW_ROOT_NO_SANDBOX=1
 python run_worker.py
 ```
 
+## Auto-replace burned profiles
+
+When Flow trips reCAPTCHA v3 invisible bot protection, the worker marks the current Chrome profile as burned, fails the active job, then tries to replace that profile automatically before the next claim cycle. The replacement path is: detect reCAPTCHA -> archive the burned profile -> pick the next fresh credential from `profiles_ultra.txt` -> warm that profile -> resume with the refreshed pool.
+
+Set `FLOW_AUTO_REPLACE_PROFILES=0` to disable the automatic swap. If the env var is unset, the default is `1`, so burned profiles are auto-replaced when a fresh account is available.
+
+This only works if `FLOW_PROFILE_LIST_FILE` points at a populated `profiles_ultra.txt` with more fresh accounts than the worker's active pool. Keep spare warmed credentials available beyond the profiles currently listed in `WORKER_PROFILES`, or the swap path will exhaust the pool and stop at a failed job.
+
 ## File-sharing the downloads
 
 The dashboard renders generated `<video>` tiles via `/downloads/<file>.mp4`. The worker writes those files locally on Windows, and the server is serving them from `/var/lib/flowengine/downloads` on Debian — they're not the same directory by default.
