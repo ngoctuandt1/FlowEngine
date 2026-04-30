@@ -78,10 +78,11 @@ Environment variables:
                                 ingredient_image_paths. Missing/empty ->
                                 ingredients-to-video is SKIPPED.
 
-The worker resolves image paths relative to ``FLOW_UPLOAD_DIR`` (server-side).
-This script passes the absolute paths it discovers; if the worker runs on a
-different host, pre-upload the images and point these env vars at the
-server-visible ``uploads/<...>`` paths instead.
+When FLOW_TEST_FRAMES_DIR / FLOW_TEST_INGREDIENTS_DIR are set, this harness
+stages the discovered images into ``FLOW_UPLOAD_DIR/livetest_<ts>/`` and
+submits worker-safe relative paths only. The staging dir must therefore be
+visible to the worker process. If ``FLOW_UPLOAD_DIR`` is unset, the script uses
+the same repo-root-aware default resolution as ``worker/dispatcher.py``.
 """
 
 from __future__ import annotations
@@ -90,11 +91,13 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -198,6 +201,19 @@ class SubmittedJob:
 class SubmissionPlan:
     jobs: list[dict[str, Any]]
     warnings: list[str] = field(default_factory=list)
+    staging_reports: list["StagingReport"] = field(default_factory=list)
+
+
+@dataclass
+class StagingReport:
+    label: str
+    source_dir: Path
+    source_images: list[Path]
+    upload_dir: Path
+    staging_rel_dir: str
+    staging_abs_dir: Path
+    relative_paths: list[str]
+    dry_run: bool = False
 
 
 def _l1_payloads() -> list[dict[str, Any]]:
@@ -221,13 +237,12 @@ def _l1_payloads() -> list[dict[str, Any]]:
     ]
 
 
-def _frames_payloads(frames_dir: Path) -> list[dict[str, Any]]:
-    """Two frames-to-video jobs using the first 1-2 images from frames_dir."""
-    images = _list_images(frames_dir)
-    if not images:
+def _frames_payloads(staged_paths: list[str]) -> list[dict[str, Any]]:
+    """Two frames-to-video jobs using the first 1-2 staged upload paths."""
+    if not staged_paths:
         return []
-    start_a = str(images[0])
-    end_a = str(images[1]) if len(images) >= 2 else None
+    start_a = staged_paths[0]
+    end_a = staged_paths[1] if len(staged_paths) >= 2 else None
     return [
         {
             "type": "frames-to-video",
@@ -245,12 +260,11 @@ def _frames_payloads(frames_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _ingredients_payloads(ingredients_dir: Path) -> list[dict[str, Any]]:
-    """Two ingredients-to-video jobs using up to 3 images from ingredients_dir."""
-    images = _list_images(ingredients_dir)
-    if not images:
+def _ingredients_payloads(staged_paths: list[str]) -> list[dict[str, Any]]:
+    """Two ingredients-to-video jobs using up to 3 staged upload paths."""
+    if not staged_paths:
         return []
-    refs = [str(p) for p in images[:3]]
+    refs = staged_paths[:3]
     return [
         {
             "type": "ingredients-to-video",
@@ -445,6 +459,87 @@ def _env_dir(name: str) -> Optional[Path]:
     return Path(raw).expanduser()
 
 
+def _resolve_repo_root() -> Path:
+    """Return the shared repo root, including when running from a git worktree."""
+    for base in Path(__file__).resolve().parents:
+        git_marker = base / ".git"
+        if git_marker.is_dir():
+            return base
+        if not git_marker.is_file():
+            continue
+
+        raw = git_marker.read_text(encoding="utf-8").strip()
+        if not raw.startswith("gitdir:"):
+            continue
+
+        git_dir = Path(raw[7:].strip())
+        if not git_dir.is_absolute():
+            git_dir = (base / git_dir).resolve()
+
+        if git_dir.parent.name == "worktrees":
+            return git_dir.parents[2]
+        return base
+
+    return Path.cwd().resolve()
+
+
+def _resolve_upload_dir() -> Path:
+    """Match the worker's FLOW_UPLOAD_DIR resolution contract."""
+    raw_value = (os.environ.get("FLOW_UPLOAD_DIR") or "").strip()
+    if raw_value:
+        return Path(raw_value).expanduser().resolve()
+    return (_resolve_repo_root() / "uploads").resolve()
+
+
+def _new_stage_run_id() -> str:
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S_%fZ")
+
+
+def _stage_test_images(
+    source_dir: Path,
+    *,
+    label: str,
+    upload_dir: Path,
+    run_id: str,
+    seen_relative_paths: set[str],
+    dry_run: bool,
+) -> Optional[StagingReport]:
+    images = _list_images(source_dir)
+    if not images:
+        return None
+
+    staging_rel_dir = f"livetest_{run_id}"
+    staging_abs_dir = upload_dir / staging_rel_dir
+    relative_paths: list[str] = []
+
+    for image in images:
+        relative_path = f"{staging_rel_dir}/{image.name}"
+        relative_key = relative_path.lower()
+        if relative_key in seen_relative_paths:
+            raise RuntimeError(
+                f"Duplicate staged upload target detected for {image.name!r}; "
+                "ensure FLOW_TEST_* directories do not reuse basenames."
+            )
+        seen_relative_paths.add(relative_key)
+        relative_paths.append(relative_path)
+
+    if not dry_run:
+        staging_abs_dir.mkdir(parents=True, exist_ok=True)
+        for image in images:
+            shutil.copy2(image, staging_abs_dir / image.name)
+
+    return StagingReport(
+        label=label,
+        source_dir=source_dir,
+        source_images=images,
+        upload_dir=upload_dir,
+        staging_rel_dir=staging_rel_dir,
+        staging_abs_dir=staging_abs_dir,
+        relative_paths=relative_paths,
+        dry_run=dry_run,
+    )
+
+
 def _job_type_counts_from_plan(plan_jobs: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for step in plan_jobs:
@@ -490,6 +585,21 @@ def _print_plan_table(plan_jobs: list[dict[str, Any]]) -> None:
     sys.stdout.flush()
 
 
+def _print_staging_plan(staging_reports: list[StagingReport]) -> None:
+    if not staging_reports:
+        return
+
+    sys.stdout.write("\nDry-run staging plan:\n")
+    for report in staging_reports:
+        sys.stdout.write(
+            f"  {report.label:<12} {len(report.relative_paths)} image(s) -> "
+            f"{report.staging_abs_dir}{os.sep}\n"
+        )
+        for source, relative_path in zip(report.source_images, report.relative_paths, strict=True):
+            sys.stdout.write(f"    {source.name} -> {relative_path}\n")
+    sys.stdout.flush()
+
+
 def _print_job_table(jobs: list[SubmittedJob]) -> None:
     sys.stdout.write("\nSubmitted jobs:\n")
     sys.stdout.write(f"  {'level':<5}  {'chain':<10}  {'type':<22}  {'job_id':<36}  parent\n")
@@ -506,6 +616,7 @@ def build_submission_plan(
     *,
     skip_frames: bool,
     skip_ingredients: bool,
+    dry_run: bool = False,
 ) -> SubmissionPlan:
     """Build the full submission plan with symbolic parent references.
 
@@ -514,7 +625,11 @@ def build_submission_plan(
     """
     warnings: list[str] = []
     plan_jobs: list[dict[str, Any]] = []
+    staging_reports: list[StagingReport] = []
     sweep = _l2_chain_payload()
+    run_id = _new_stage_run_id()
+    upload_dir = _resolve_upload_dir()
+    seen_relative_paths: set[str] = set()
 
     # Pre-flight: submit all four L1 t2v chain heads before any L2 step.
     plan_jobs.extend(step for step in sweep if step["job_level"] == 1)
@@ -534,13 +649,22 @@ def build_submission_plan(
                 "Set it to a directory with image files to include them."
             )
         else:
-            payloads = _frames_payloads(frames_dir)
+            staged = _stage_test_images(
+                frames_dir,
+                label="frames",
+                upload_dir=upload_dir,
+                run_id=run_id,
+                seen_relative_paths=seen_relative_paths,
+                dry_run=dry_run,
+            )
+            payloads = _frames_payloads(staged.relative_paths) if staged else []
             if not payloads:
                 warnings.append(
                     f"FLOW_TEST_FRAMES_DIR={frames_dir} has no image files; "
                     "SKIPPING frames-to-video."
                 )
             else:
+                staging_reports.append(staged)
                 for idx, payload in enumerate(payloads, start=1):
                     plan_jobs.append(_plan_step(f"l1_frames_{idx}", "frames", 1, payload))
 
@@ -553,24 +677,49 @@ def build_submission_plan(
                 "FLOW_TEST_INGREDIENTS_DIR not set; SKIPPING 2x ingredients-to-video."
             )
         else:
-            payloads = _ingredients_payloads(ingredients_dir)
+            staged = _stage_test_images(
+                ingredients_dir,
+                label="ingredients",
+                upload_dir=upload_dir,
+                run_id=run_id,
+                seen_relative_paths=seen_relative_paths,
+                dry_run=dry_run,
+            )
+            payloads = _ingredients_payloads(staged.relative_paths) if staged else []
             if not payloads:
                 warnings.append(
                     f"FLOW_TEST_INGREDIENTS_DIR={ingredients_dir} has no image files; SKIPPING."
                 )
             else:
+                staging_reports.append(staged)
                 for idx, payload in enumerate(payloads, start=1):
                     plan_jobs.append(
                         _plan_step(f"l1_ingredients_{idx}", "ingredients", 1, payload)
                     )
 
     plan_jobs.extend(step for step in sweep if step["job_level"] > 1)
-    return SubmissionPlan(jobs=plan_jobs, warnings=warnings)
+    return SubmissionPlan(jobs=plan_jobs, warnings=warnings, staging_reports=staging_reports)
 
 
 def _log_plan_warnings(plan: SubmissionPlan) -> None:
     for warning in plan.warnings:
         logger.warning(warning)
+
+
+def _log_staging_reports(plan: SubmissionPlan) -> None:
+    for report in plan.staging_reports:
+        if report.dry_run:
+            logger.info(
+                "Dry run: would stage %d test images to %s/",
+                len(report.relative_paths),
+                report.staging_abs_dir,
+            )
+        else:
+            logger.info(
+                "Staged %d test images to %s/",
+                len(report.relative_paths),
+                report.staging_abs_dir,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -636,6 +785,7 @@ def submit_all(
         skip_ingredients=skip_ingredients,
     )
     _log_plan_warnings(plan)
+    _log_staging_reports(plan)
     return _submit_plan(api, plan)
 
 
@@ -787,11 +937,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     plan = build_submission_plan(
         skip_frames=args.skip_frames,
         skip_ingredients=args.skip_ingredients,
+        dry_run=args.dry_run,
     )
     _log_plan_warnings(plan)
+    _log_staging_reports(plan)
 
     if args.dry_run:
         logger.info("Dry run enabled; no HTTP requests will be sent.")
+        _print_staging_plan(plan.staging_reports)
         _print_plan_table(plan.jobs)
         _print_credit_tally(
             _job_type_counts_from_plan(plan.jobs),
