@@ -214,6 +214,35 @@ def _build_window_geometry_args() -> list[str]:
     return args
 
 
+def _guard_linux_root_chrome_launch(args: list[str]) -> None:
+    """Gate Linux root Chrome launches behind an explicit env opt-in."""
+    if _IS_WINDOWS or platform.system() != "Linux":
+        return
+
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != 0:
+        return
+
+    if "--no-sandbox" in args:
+        return
+
+    if os.environ.get("FLOW_ALLOW_ROOT_NO_SANDBOX", "").strip() == "1":
+        args.append("--no-sandbox")
+        logger.warning(
+            "Running Chrome as root with --no-sandbox "
+            "(FLOW_ALLOW_ROOT_NO_SANDBOX=1). Prefer running as a non-root user."
+        )
+        return
+
+    raise RuntimeError(
+        "Refusing to launch Chrome as root without --no-sandbox. Either run "
+        "the worker as a non-root user (recommended; see "
+        "deploy/debian/README.md) or set FLOW_ALLOW_ROOT_NO_SANDBOX=1 to "
+        "enable --no-sandbox automatically. Auto-adding --no-sandbox is "
+        "gated to avoid silent security boundary changes."
+    )
+
+
 # ---------------------------------------------------------------------------
 # FlowClient
 # ---------------------------------------------------------------------------
@@ -433,6 +462,7 @@ class FlowClient:
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0
             )
 
+        _guard_linux_root_chrome_launch(cmd)
         logger.info("Launching Chrome CDP: port=%d  profile=%s", self.debug_port, self._temp_profile)
         self._chrome_proc = subprocess.Popen(cmd, **popen_kwargs)
 
@@ -521,6 +551,7 @@ class FlowClient:
         if in_docker:
             args.extend(["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"])
 
+        _guard_linux_root_chrome_launch(args)
         self.context = await self._pw.chromium.launch_persistent_context(
             user_data_dir=str(self._temp_profile),
             channel="chrome",

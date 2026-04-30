@@ -109,7 +109,9 @@ The Bearer token (`API_KEY`) gates the worker endpoints server-side, but defense
 
 The dashboard surfaces (`/api/jobs`, `/api/profiles`, `/`) are intentionally open. If you don't want the dashboard public, add basic-auth in nginx (`auth_basic` directive — example commented in the conf) or via `caddy hash-password` for Caddy.
 
-## Wire up the worker (on Windows)
+## Wire up the worker
+
+### On Windows
 
 On the Windows host that runs Chrome:
 
@@ -124,6 +126,40 @@ python run_worker.py
 ```
 
 The worker preflight (added in PR #61) checks the profile dir is warm before claiming, and exits 2 with a hint if it isn't — so a misconfigured Windows host fails fast rather than spamming Flow with a sign-in screen.
+
+### Running the worker on Linux
+
+If you choose to run a worker on Linux, do **not** launch Chrome as `root` by default. Chrome refuses to start as `uid=0` without `--no-sandbox`, and FlowEngine intentionally does not add that flag silently because it weakens Chrome's sandbox boundary.
+
+Recommended: create or reuse the `flowengine` system user, make it the owner of `/opt/flowengine`, and run the worker as that user.
+
+```bash
+# Reuse the service account from the manual install steps, or create it if needed.
+adduser --system --group --home /opt/flowengine --shell /usr/sbin/nologin flowengine
+chown -R flowengine:flowengine /opt/flowengine
+
+sudo -u flowengine bash -lc '
+cd /opt/flowengine
+export SERVER_URL="https://ai.ciem"
+export API_KEY="<paste the value from /etc/flowengine/flowengine.env>"
+export WORKER_PROFILES="ngoctuandt20"
+export CHROME_USER_DATA_DIR="/opt/flowengine/chrome-profiles"
+python run_worker.py
+'
+```
+
+If you are forced to run the worker as `root` (for example in CI or a tightly constrained container), set `FLOW_ALLOW_ROOT_NO_SANDBOX=1`. FlowEngine will then append `--no-sandbox` explicitly and log a warning. Treat this as an escape hatch, not the default.
+
+```bash
+cd /opt/flowengine
+export SERVER_URL="https://ai.ciem"
+export API_KEY="<paste the value from /etc/flowengine/flowengine.env>"
+export WORKER_PROFILES="ngoctuandt20"
+export CHROME_USER_DATA_DIR="/opt/flowengine/chrome-profiles"
+export FLOW_ALLOW_ROOT_NO_SANDBOX=1
+
+python run_worker.py
+```
 
 ## File-sharing the downloads
 
