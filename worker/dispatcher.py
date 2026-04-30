@@ -109,23 +109,38 @@ async def _client_lease(profile: str):
 
 
 def _kill_chrome_for_profile(profile: str):
-    """Kill any Chrome processes using this profile (Windows wmic).
+    """Kill any Chrome processes using this profile (cross-platform).
 
     Called between AIgglog login and job retry to ensure profile is unlocked
     and cookies are flushed to disk.
+
+    On Windows uses ``wmic`` to match by command-line; on Linux/macOS uses
+    ``pkill -f`` against the profile path so only chrome processes whose
+    ``--user-data-dir`` references this profile are terminated (matches the
+    selective-kill rule from memory ``feedback_chrome_kill_selective.md``).
     """
+    import platform
     import subprocess
     from pathlib import Path
 
     profile_dir = os.path.join(PROFILE_BASE_DIR, profile)
 
     try:
-        subprocess.run(
-            ["wmic", "process", "where",
-             f"commandline like '%{profile}%' and name='chrome.exe'",
-             "call", "terminate"],
-            capture_output=True, timeout=10,
-        )
+        if platform.system() == "Windows":
+            subprocess.run(
+                ["wmic", "process", "where",
+                 f"commandline like '%{profile}%' and name='chrome.exe'",
+                 "call", "terminate"],
+                capture_output=True, timeout=10,
+            )
+        else:
+            # pkill -f matches the full command line; the resolved profile
+            # path is unique enough to avoid hitting unrelated chrome procs.
+            resolved = str(Path(profile_dir).resolve())
+            subprocess.run(
+                ["pkill", "-f", f"--user-data-dir={resolved}"],
+                capture_output=True, timeout=10,
+            )
     except Exception as e:
         logger.debug("Chrome kill for %s: %s", profile, e)
 
