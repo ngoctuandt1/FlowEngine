@@ -14,6 +14,7 @@ import logging
 
 from flow.submit import submit_with_confirmation
 from flow.operations._base import (
+    failure_message_with_capture,
     navigate_to_edit,
     wait_for_video_loaded,
     click_action_button,
@@ -72,7 +73,7 @@ async def camera_move(
     await wait_for_video_loaded(page)
 
     # Step 3: Click Camera button
-    clicked = await click_action_button(page, CAMERA_BUTTONS)
+    clicked = await click_action_button(page, CAMERA_BUTTONS, client=client)
     if not clicked:
         try:
             icon_btn = page.locator(CAMERA_ICON_SELECTOR).first
@@ -85,7 +86,9 @@ async def camera_move(
             pass
 
     if not clicked:
-        raise RuntimeError("Failed to find Camera button")
+        msg = "Failed to find Camera button"
+        msg = await failure_message_with_capture(client, "camera_button_not_found", msg)
+        raise RuntimeError(msg)
 
     await asyncio.sleep(1)  # Wait for preset grid to render
 
@@ -106,7 +109,9 @@ async def camera_move(
     # Step 5: Click preset thumbnail
     preset_clicked = await _click_preset(page, direction)
     if not preset_clicked:
-        raise RuntimeError(f"Failed to find camera preset: {direction}")
+        msg = f"Failed to find camera preset: {direction}"
+        msg = await failure_message_with_capture(client, "camera_preset_not_found", msg)
+        raise RuntimeError(msg)
 
     # Step 6: Submit
     before_cards = await count_visible_cards(page)
@@ -115,9 +120,12 @@ async def camera_move(
     confirmed = await submit_with_confirmation(
         client,
         before_card_count=before_cards,
+        failure_kind="camera_submit_not_confirmed",
     )
     if not confirmed:
-        raise RuntimeError("Camera submit not confirmed")
+        msg = "Camera submit not confirmed"
+        msg = await failure_message_with_capture(client, "camera_submit_not_confirmed", msg)
+        raise RuntimeError(msg)
 
     # Step 7: Wait + Download + Return
     return await finalize_operation(

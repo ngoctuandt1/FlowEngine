@@ -50,9 +50,47 @@ AIGGLOG_PATH = os.environ.get(
 
 class NeedAutoLogin(RuntimeError):
     """Raised when login cannot be resolved at all."""
-    def __init__(self, profile_name: str):
+
+    def __init__(self, profile_name: str, capture_path: str | None = None):
         self.profile_name = profile_name
-        super().__init__(f"Auto-login needed for profile: {profile_name}")
+        self.capture_path = capture_path
+        message = f"Auto-login needed for profile: {profile_name}"
+        if capture_path:
+            message = f"{message} [cap={capture_path}]"
+        super().__init__(message)
+
+
+def _capture_job_id(client) -> str:
+    return str(getattr(client, "_job_id", "unknown") or "unknown")
+
+
+async def _capture_login_failure(
+    client,
+    kind: str,
+    *,
+    extra: dict | None = None,
+) -> str | None:
+    if client is None:
+        return None
+    try:
+        from flow.diagnostics import capture_failure
+    except Exception:
+        return None
+    try:
+        cap = await capture_failure(
+            client,
+            job_id=_capture_job_id(client),
+            kind=kind,
+            extra=extra,
+        )
+    except Exception:
+        cap = None
+    if cap:
+        cap_text = cap.as_posix() if hasattr(cap, "as_posix") else str(cap)
+        setattr(client, "_last_failure_capture", cap_text)
+        setattr(client, "_last_failure_kind", kind)
+        return cap_text
+    return None
 
 
 def is_login_page(url: str) -> bool:
@@ -77,14 +115,17 @@ def is_gmail_inbox(url: str) -> bool:
 # Credential loading
 # ======================================================================
 
-def _load_credentials(profile_name: str) -> dict | None:
+def _load_credentials(
+    profile_name: str,
+    profile_list_file: str | Path | None = None,
+) -> dict | None:
     """Load credentials from profiles_ultra.txt for a given profile.
 
     Format: profile_path|email|password|2fa_secret|recovery_email
 
     Returns dict with keys: email, password, totp_secret, recovery
     """
-    profile_list = Path(PROFILE_LIST_FILE)
+    profile_list = Path(profile_list_file or PROFILE_LIST_FILE)
     if not profile_list.exists():
         logger.error("profiles_ultra.txt not found: %s", profile_list)
         return None
@@ -140,6 +181,7 @@ async def handle_login_redirect(
     page,
     timeout: int = LOGIN_TIMEOUT,
     profile_name: str = "",
+    client=None,
 ) -> bool:
     """Handle Google login redirect — full Playwright-based auto-login.
 
@@ -150,6 +192,7 @@ async def handle_login_redirect(
     Returns True if back on Flow.
     Raises NeedAutoLogin only as last resort.
     """
+    client = client or getattr(page, "_flow_client", None)
     current = page.url
     if not is_login_page(current):
         return True
@@ -167,7 +210,8 @@ async def handle_login_redirect(
     creds = _load_credentials(profile_name)
     if not creds:
         logger.error("No credentials for %s — cannot auto-login", profile_name)
-        raise NeedAutoLogin(profile_name)
+        cap = await _capture_login_failure(client, "login_no_credentials")
+        raise NeedAutoLogin(profile_name, capture_path=cap)
 
     logger.info("Starting Playwright auto-login for %s", creds["email"])
 
@@ -235,7 +279,8 @@ async def handle_login_redirect(
                 await _handle_totp_step(page, creds["totp_secret"])
             else:
                 logger.error("2FA required but no TOTP secret")
-                raise NeedAutoLogin(profile_name)
+                cap = await _capture_login_failure(client, "login_totp_secret_missing")
+                raise NeedAutoLogin(profile_name, capture_path=cap)
         elif step == "challenge_select":
             await _handle_challenge_selection(page)
         elif step == "consent":
@@ -253,7 +298,12 @@ async def handle_login_redirect(
         await asyncio.sleep(3)
 
     logger.error("Login not resolved after %ds", timeout)
-    raise NeedAutoLogin(profile_name)
+    cap = await _capture_login_failure(
+        client,
+        "login_timeout",
+        extra={"timeout_sec": timeout},
+    )
+    raise NeedAutoLogin(profile_name, capture_path=cap)
 
 
 # ======================================================================

@@ -23,6 +23,78 @@ from flow.download import download_video
 logger = logging.getLogger(__name__)
 
 
+def _capture_job_id(client) -> str:
+    return str(getattr(client, "_job_id", "unknown") or "unknown")
+
+
+async def _capture_failure_artifact(
+    client,
+    kind: str,
+    *,
+    extra: dict | None = None,
+) -> str | None:
+    if client is None:
+        return None
+    try:
+        from flow.diagnostics import capture_failure
+    except Exception:
+        return None
+    try:
+        cap = await capture_failure(
+            client,
+            job_id=_capture_job_id(client),
+            kind=kind,
+            extra=extra,
+        )
+    except Exception:
+        cap = None
+    if cap:
+        cap_text = cap.as_posix() if hasattr(cap, "as_posix") else str(cap)
+        setattr(client, "_last_failure_capture", cap_text)
+        setattr(client, "_last_failure_kind", kind)
+        return cap_text
+    return None
+
+
+def _append_capture_suffix(message: str, cap: str | None) -> str:
+    if cap and "[cap=" not in message:
+        return f"{message} [cap={cap}]"
+    return message
+
+
+async def failure_message_with_capture(
+    client,
+    kind: str,
+    message: str,
+    *,
+    extra: dict | None = None,
+) -> str:
+    if "[cap=" in message:
+        return message
+    last_cap = getattr(client, "_last_failure_capture", None)
+    last_kind = getattr(client, "_last_failure_kind", None)
+    if last_cap and last_kind == kind:
+        return _append_capture_suffix(message, str(last_cap))
+    cap = await _capture_failure_artifact(client, kind, extra=extra)
+    return _append_capture_suffix(message, cap)
+
+
+def failure_kind_from_error(job_type: str, error: str) -> str:
+    text = str(error).lower()
+    for token in (
+        "blocked_403",
+        "blocked_429",
+        "no_signal_timeout",
+        "timeout",
+        "all_failed",
+        "no_credits",
+        "policy",
+    ):
+        if token in text:
+            return token
+    return f"{job_type.replace('-', '_')}_failed"
+
+
 async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     """Navigate to the video edit page.
 
@@ -45,9 +117,11 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             edit_url_val = build_edit_url(project_id, media_id, locale)
 
     if not edit_url_val:
-        raise RuntimeError(
+        msg = (
             f"Cannot navigate: no edit_url, project_url={project_url_val}, media_id={media_id}"
         )
+        msg = await failure_message_with_capture(client, "no_edit_url", msg)
+        raise RuntimeError(msg)
 
     # Strategy: direct goto(edit_url) is the fast path. On EN-locale Google
     # accounts the Flow SPA mounts the editor on /edit/{media_id} without
@@ -69,10 +143,12 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
         logger.warning("Login redirect on edit navigation — resolving")
         profile_name = getattr(client, "profile_name", "") or ""
         login_ok = await handle_login_redirect(
-            page, timeout=60, profile_name=profile_name,
+            page, timeout=60, profile_name=profile_name, client=client,
         )
         if not login_ok:
-            raise RuntimeError("Google login required — session expired")
+            msg = "Google login required — session expired"
+            msg = await failure_message_with_capture(client, "google_login_required", msg)
+            raise RuntimeError(msg)
         await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(3)
 
@@ -87,10 +163,12 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             "URL: %s  profile: %s  target: %s",
             current[:100], getattr(client, "profile_name", "?"), target_url[:100],
         )
-        raise RuntimeError(
+        msg = (
             f"Project not accessible for profile {getattr(client, 'profile_name', '?')} "
             f"— wrong account or project deleted"
         )
+        msg = await failure_message_with_capture(client, "project_not_accessible", msg)
+        raise RuntimeError(msg)
 
     # If we're on the project page (not edit), click a video tile
     if "/edit/" not in page.url:
@@ -112,10 +190,12 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
         # recover. Surface this as a B22-inheritance hint so operators
         # look at the claim-time ancestor rather than hunt DOM changes.
         logger.error("SPA stripped /edit/ segment. URL: %s", current[:100])
-        raise RuntimeError(
+        msg = (
             f"SPA stripped /edit/ segment → {current}. "
             f"Media may be stale post-sibling-extend. Check B22 inheritance."
         )
+        msg = await failure_message_with_capture(client, "spa_stripped_edit_route", msg)
+        raise RuntimeError(msg)
 
     # B32 (2026-04-19): job.media_id is the SEMANTIC target (what the
     # operation wants to edit), which after B30 walk-up may differ from
@@ -162,10 +242,12 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
         )
         recovered = await _click_video_tile(page, "")
         if not recovered or not await _editor_mounted(page, timeout_ms=8000):
-            raise RuntimeError(
+            msg = (
                 f"Editor did not mount for {edit_url_val} and first-tile recovery "
                 f"failed. Parent media may be stale (consumed by sibling op)."
             )
+            msg = await failure_message_with_capture(client, "editor_not_mounted", msg)
+            raise RuntimeError(msg)
         if media_id:
             await _activate_clip_tile(page, media_id)
 
@@ -282,7 +364,13 @@ _MODE_ICON_BY_TITLE = {
 }
 
 
-async def click_action_button(page, button_texts: list[str], timeout_ms: int = 5000) -> bool:
+async def click_action_button(
+    page,
+    button_texts: list[str],
+    timeout_ms: int = 5000,
+    *,
+    client=None,
+) -> bool:
     """Click a mode-switch button (Extend/Insert/Remove/Camera) on /edit/.
 
     Live-verified 2026-04-19 on VI profile: each mode button has a stable
@@ -311,10 +399,12 @@ async def click_action_button(page, button_texts: list[str], timeout_ms: int = 5
                 # time out with a misleading "Failed to find button" error.
                 # Raise early with the B22-inheritance diagnostic instead.
                 if not await btn.is_enabled():
-                    raise RuntimeError(
+                    msg = (
                         f"Mode button {text!r} disabled — extend-child lockout "
                         f"(FLOW_BUTTON_EXACT §5.1). Check B22 inheritance."
                     )
+                    msg = await failure_message_with_capture(client, "extend_child_lockout", msg)
+                    raise RuntimeError(msg)
                 await btn.click(timeout=timeout_ms)
                 logger.info("Clicked mode button via title=%r", text)
                 await asyncio.sleep(0.5)
@@ -334,10 +424,12 @@ async def click_action_button(page, button_texts: list[str], timeout_ms: int = 5
             btn = page.locator(f"button:has(i:text-is('{icon}'))").first
             if await btn.is_visible(timeout=1500):
                 if not await btn.is_enabled():
-                    raise RuntimeError(
+                    msg = (
                         f"Mode button {text!r} disabled — extend-child lockout "
                         f"(FLOW_BUTTON_EXACT §5.1). Check B22 inheritance."
                     )
+                    msg = await failure_message_with_capture(client, "extend_child_lockout", msg)
+                    raise RuntimeError(msg)
                 await btn.click(timeout=timeout_ms)
                 logger.info("Clicked mode button via icon=%r (requested title=%r)", icon, text)
                 await asyncio.sleep(0.5)
@@ -575,7 +667,13 @@ async def finalize_operation(
 
     if not result.get("done"):
         error = result.get("error", "unknown")
-        raise RuntimeError(f"{job_type} failed: {error}")
+        msg = f"{job_type} failed: {error}"
+        msg = await failure_message_with_capture(
+            client,
+            failure_kind_from_error(job_type, error),
+            msg,
+        )
+        raise RuntimeError(msg)
 
     logger.info("%s complete!", job_type)
 
@@ -603,7 +701,13 @@ async def finalize_operation(
         prefix=download_prefix,
     )
     if not output_files:
-        raise RuntimeError(f"{job_type}: no output file captured")
+        msg = f"{job_type}: no output file captured"
+        msg = await failure_message_with_capture(
+            client,
+            f"{job_type.replace('-', '_')}_no_output_file",
+            msg,
+        )
+        raise RuntimeError(msg)
 
     # Build project_url
     proj_url = job.get("project_url")

@@ -10,6 +10,7 @@ import logging
 from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.submit import submit_with_confirmation
 from flow.operations._base import (
+    failure_message_with_capture,
     navigate_to_edit,
     wait_for_video_loaded,
     click_action_button,
@@ -83,7 +84,7 @@ async def extend_video(
     if panel_open:
         logger.info("Extend panel already open — skipping Extend button click")
     else:
-        clicked = await click_action_button(page, EXTEND_BUTTONS)
+        clicked = await click_action_button(page, EXTEND_BUTTONS, client=client)
         if not clicked:
             # Try icon-based fallbacks
             for sel in EXTEND_ICON_SELECTORS:
@@ -133,13 +134,17 @@ async def extend_video(
                 logger.error("Extend button not found. Visible buttons: %s", buttons)
             except Exception:
                 pass
-            raise RuntimeError("Failed to find Extend button (panel was not already open)")
+            msg = "Failed to find Extend button (panel was not already open)"
+            msg = await failure_message_with_capture(client, "extend_button_not_found", msg)
+            raise RuntimeError(msg)
 
         # Step 3.5: Verify extend panel opened after click
         await asyncio.sleep(1)
         panel_open = await _verify_extend_panel(page)
         if not panel_open:
-            raise RuntimeError("Extend panel did not open after clicking Extend button")
+            msg = "Extend panel did not open after clicking Extend button"
+            msg = await failure_message_with_capture(client, "extend_panel_not_open", msg)
+            raise RuntimeError(msg)
 
     # Step 4: Type prompt (optional)
     if prompt:
@@ -156,6 +161,7 @@ async def extend_video(
         client,
         before_card_count=before_cards,
         prompt_text=prompt,
+        failure_kind="extend_submit_not_confirmed",
     )
     if not confirmed:
         # Log page state for diagnosis
@@ -168,7 +174,9 @@ async def extend_video(
             )
         except Exception:
             pass
-        raise RuntimeError("Extend submit not confirmed — generation did not start")
+        msg = "Extend submit not confirmed — generation did not start"
+        msg = await failure_message_with_capture(client, "extend_submit_not_confirmed", msg)
+        raise RuntimeError(msg)
 
     # Step 7: Wait + Download + Return
     return await finalize_operation(

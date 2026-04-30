@@ -24,6 +24,38 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _capture_job_id(client) -> str:
+    return str(getattr(client, "_job_id", "unknown") or "unknown")
+
+
+async def _capture_submit_failure(
+    client,
+    kind: str,
+    *,
+    extra: dict | None = None,
+) -> str | None:
+    try:
+        from flow.diagnostics import capture_failure
+    except Exception:
+        return None
+    try:
+        cap = await capture_failure(
+            client,
+            job_id=_capture_job_id(client),
+            kind=kind,
+            extra=extra,
+        )
+    except Exception:
+        cap = None
+    if cap:
+        cap_text = cap.as_posix() if hasattr(cap, "as_posix") else str(cap)
+        setattr(client, "_last_failure_capture", cap_text)
+        setattr(client, "_last_failure_kind", kind)
+        return cap_text
+    return None
+
+
 # Exact-text selector: button that contains a child ``<i>`` whose text is
 # EXACTLY "arrow_forward". Playwright's ``:text-is`` engine does the exact
 # match (trimmed), so no fuzzy overlap with other Material Icons. Verified
@@ -94,6 +126,7 @@ async def submit_with_confirmation(
     timeout_sec: float = 15.0,
     prompt_text: str = "",
     scope: str | None = None,
+    failure_kind: str = "submit_not_confirmed",
 ) -> bool:
     """Click submit and confirm the submission was accepted.
 
@@ -120,6 +153,11 @@ async def submit_with_confirmation(
     clicked = await click_submit(page, scope=scope)
     if not clicked:
         logger.error("Failed to find/click submit button (scope=%s)", scope)
+        await _capture_submit_failure(
+            client,
+            failure_kind,
+            extra={"reason": "click_submit_failed", "scope": scope or ""},
+        )
         return False
 
     poll_interval = 0.5
@@ -171,6 +209,15 @@ async def submit_with_confirmation(
         getattr(client, "_gen_id", None),
         await _count_cards(page),
         page.url[:100],
+    )
+    await _capture_submit_failure(
+        client,
+        failure_kind,
+        extra={
+            "reason": "submit_not_confirmed",
+            "scope": scope or "",
+            "timeout_sec": timeout_sec,
+        },
     )
     return False
 
