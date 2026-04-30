@@ -214,25 +214,23 @@ def _build_window_geometry_args() -> list[str]:
     return args
 
 
-def _guard_linux_root_chrome_launch(args: list[str]) -> None:
-    """Gate Linux root Chrome launches behind an explicit env opt-in."""
+def _apply_root_sandbox_guard(args: list[str]) -> list[str]:
+    """Return launch args after enforcing the Linux root sandbox policy."""
     if _IS_WINDOWS or platform.system() != "Linux":
-        return
+        return args
 
     geteuid = getattr(os, "geteuid", None)
     if geteuid is None or geteuid() != 0:
-        return
-
-    if "--no-sandbox" in args:
-        return
+        return args
 
     if os.environ.get("FLOW_ALLOW_ROOT_NO_SANDBOX", "").strip() == "1":
-        args.append("--no-sandbox")
+        if "--no-sandbox" not in args:
+            args.append("--no-sandbox")
         logger.warning(
-            "Running Chrome as root with --no-sandbox "
-            "(FLOW_ALLOW_ROOT_NO_SANDBOX=1). Prefer running as a non-root user."
+            "Running Chrome as root with FLOW_ALLOW_ROOT_NO_SANDBOX=1 and "
+            "--no-sandbox. Prefer running as a non-root user."
         )
-        return
+        return args
 
     raise RuntimeError(
         "Refusing to launch Chrome as root without --no-sandbox. Either run "
@@ -462,7 +460,7 @@ class FlowClient:
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0
             )
 
-        _guard_linux_root_chrome_launch(cmd)
+        cmd = _apply_root_sandbox_guard(cmd)
         logger.info("Launching Chrome CDP: port=%d  profile=%s", self.debug_port, self._temp_profile)
         self._chrome_proc = subprocess.Popen(cmd, **popen_kwargs)
 
@@ -544,14 +542,15 @@ class FlowClient:
             "--no-default-browser-check",
             *_build_window_geometry_args(),
         ]
+        args = _apply_root_sandbox_guard(args)
 
         in_docker = Path("/.dockerenv").exists() or os.environ.get(
             "IS_DOCKER", ""
         ).strip().lower() in ("1", "true")
         if in_docker:
-            args.extend(["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"])
-
-        _guard_linux_root_chrome_launch(args)
+            if "--no-sandbox" not in args:
+                args.append("--no-sandbox")
+            args.extend(["--disable-setuid-sandbox", "--disable-dev-shm-usage"])
         self.context = await self._pw.chromium.launch_persistent_context(
             user_data_dir=str(self._temp_profile),
             channel="chrome",
