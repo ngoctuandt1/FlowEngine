@@ -195,6 +195,7 @@ async def handle_text_to_video(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await text_to_video(
             client,
             prompt=job.get("prompt", ""),
@@ -225,6 +226,7 @@ async def handle_frames_to_video(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await frames_to_video(
             client,
             prompt=job.get("prompt", ""),
@@ -259,6 +261,7 @@ async def handle_text_to_image(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await text_to_image(
             client,
             prompt=job.get("prompt", ""),
@@ -295,6 +298,7 @@ async def handle_ingredients_to_video(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await ingredients_to_video(
             client,
             prompt=job.get("prompt", ""),
@@ -326,6 +330,7 @@ async def handle_extend(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await extend_video(
             client,
             job=job,
@@ -353,6 +358,7 @@ async def handle_insert(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await insert_object(
             client,
             job=job,
@@ -379,6 +385,7 @@ async def handle_remove(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await remove_object(
             client,
             job=job,
@@ -404,6 +411,7 @@ async def handle_camera(job: dict) -> dict:
     )
 
     async with _client_lease(profile) as client:
+        client._job_id = job["id"]
         result = await camera_move(
             client,
             job=job,

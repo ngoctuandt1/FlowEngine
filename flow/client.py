@@ -317,8 +317,14 @@ class FlowClient:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def _clear_failure_cache(self) -> None:
+        for attr in ("_last_failure_capture", "_last_failure_kind"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+
     async def start(self) -> "FlowClient":
         """Launch the browser and return *self*."""
+        self._clear_failure_cache()
         self.download_dir.mkdir(parents=True, exist_ok=True)
 
         self._pw = await async_playwright().start()
@@ -413,6 +419,7 @@ class FlowClient:
         homepage for L1 jobs; L2+ handlers navigate to the project/edit
         URL themselves so target_url is usually None for those.
         """
+        self._clear_failure_cache()
         self._video_urls.clear()
         self._calls.clear()
         self._media_id_events.clear()
@@ -437,6 +444,7 @@ class FlowClient:
 
     async def _start_cdp(self) -> None:
         """Clone profile, launch chrome.exe, connect via CDP."""
+        self._clear_failure_cache()
         # Prepare profile.
         self._prepare_profile()
 
@@ -534,6 +542,7 @@ class FlowClient:
 
     async def _start_persistent(self) -> None:
         """Launch using Playwright's persistent-context API."""
+        self._clear_failure_cache()
         self._prepare_profile()
 
         args = [

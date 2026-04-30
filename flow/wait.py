@@ -9,6 +9,11 @@ import logging
 import re
 import time
 
+from flow.failure_capture import (
+    append_capture_suffix,
+    capture_failure_nonblocking,
+    message_with_failure_capture,
+)
 from flow.media_id import looks_like_media_id, normalize_media_id
 from flow.recaptcha import (
     RecaptchaError,
@@ -37,6 +42,42 @@ NO_SIGNAL_TIMEOUTS: dict[str, int] = {
     "camera-move": 180,
 }
 NO_SIGNAL_TIMEOUT_DEFAULT = 180
+
+
+def _normalize_failure_kind(text: str) -> str:
+    return (
+        str(text)
+        .split("[cap=", 1)[0]
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
+
+
+async def _result_with_capture(
+    client,
+    error: str,
+    *,
+    kind: str | None = None,
+    extra: dict | None = None,
+) -> dict:
+    failure_kind = kind or _normalize_failure_kind(error)
+    message = await message_with_failure_capture(
+        client,
+        failure_kind,
+        error,
+        extra=extra,
+    )
+    return _result(False, error=message)
+
+
+async def _raise_recaptcha_failure(client, error: RecaptchaError) -> None:
+    kind = getattr(error, "kind", None) or "unknown"
+    capture_path = await capture_failure_nonblocking(client, f"recaptcha_{kind}")
+    if capture_path:
+        setattr(error, "capture_path", capture_path)
+    raise error
 
 
 # ------------------------------------------------------------------
@@ -94,14 +135,22 @@ async def wait_for_completion(
         # Hard timeout
         if elapsed > timeout:
             logger.error("Wait timeout after %.0fs", elapsed)
-            return _result(False, error="timeout")
+            return await _result_with_capture(
+                client,
+                "timeout",
+                kind="timeout",
+                extra={"job_type": job_type, "elapsed_sec": round(elapsed, 1)},
+            )
 
         network_kind = await detect_recaptcha_in_network(client)
         if network_kind:
-            raise _build_network_recaptcha_error(client, network_kind)
+            await _raise_recaptcha_failure(
+                client,
+                _build_network_recaptcha_error(client, network_kind),
+            )
 
         # --- Method 1: reverse API inspection ---
-        api = _check_api_signals(client)
+        api = await _check_api_signals(client)
         if api["done"]:
             logger.info("Completion via API signal after %.0fs", elapsed)
             await _settle_after_done(
@@ -115,10 +164,14 @@ async def wait_for_completion(
                 media_ids=_collect_media_ids(client, start_index=initial_media_count),
             )
         if api["error"]:
-            if api["error"] in {"blocked_403", "blocked_429"}:
+            error_kind = _normalize_failure_kind(api["error"])
+            if error_kind in {"blocked_403", "blocked_429"}:
                 network_kind = await detect_recaptcha_in_network(client)
                 if network_kind:
-                    raise _build_network_recaptcha_error(client, network_kind)
+                    await _raise_recaptcha_failure(
+                        client,
+                        _build_network_recaptcha_error(client, network_kind),
+                    )
             logger.error("API error: %s", api["error"])
             return _result(False, error=api["error"])
         if api["progress"] > last_progress:
@@ -130,7 +183,10 @@ async def wait_for_completion(
         if now - last_recaptcha_check >= 10:
             last_recaptcha_check = now
             if await detect_recaptcha(page):
-                raise RecaptchaError(kind="v2_visible", url=page.url)
+                await _raise_recaptcha_failure(
+                    client,
+                    RecaptchaError(kind="v2_visible", url=page.url),
+                )
 
         # --- Method 2: network video captures ---
         video_urls = getattr(client, "_video_urls", [])
@@ -166,7 +222,11 @@ async def wait_for_completion(
                 logger.error("DOM error artifacts: %s + %s", shot, html)
             except Exception as dump_exc:  # pragma: no cover
                 logger.warning("error-dump failed: %s", dump_exc)
-            return _result(False, error=dom["error"])
+            return await _result_with_capture(
+                client,
+                str(dom["error"]),
+                kind=_normalize_failure_kind(str(dom["error"])),
+            )
         # New <video> element detected at any progress level = done
         if dom["new_video"]:
             logger.info(
@@ -211,7 +271,12 @@ async def wait_for_completion(
                 "(api_calls=%d, video_urls=%d, media_ids=%d, dom_progress=%d%%)",
                 no_signal_timeout, n_calls, n_videos, n_media, last_progress,
             )
-            return _result(False, error="no_signal_timeout")
+            return await _result_with_capture(
+                client,
+                "no_signal_timeout",
+                kind="no_signal_timeout",
+                extra={"job_type": job_type, "silent_sec": int(silence)},
+            )
         # Debug: log signal counts periodically when stalled
         if silence > 60 and int(elapsed) % 60 == 0 and elapsed > 0:
             n_calls = len(getattr(client, "_calls", []))
@@ -258,7 +323,7 @@ def _build_network_recaptcha_error(client, kind: str) -> RecaptchaError:
 # Signal readers
 # ------------------------------------------------------------------
 
-def _check_api_signals(client) -> dict:
+async def _check_api_signals(client) -> dict:
     """Scan ``client._calls`` for operation status."""
     result: dict = {
         "progress": 0,
@@ -276,7 +341,13 @@ def _check_api_signals(client) -> dict:
 
         # reCAPTCHA / quota block
         if status in (403, 429):
-            result["error"] = f"blocked_{status}"
+            error = f"blocked_{status}"
+            capture_path = await capture_failure_nonblocking(
+                client,
+                error,
+                extra={"url": str(url)[:200], "status": status},
+            )
+            result["error"] = append_capture_suffix(error, capture_path)
             return result
 
         if "operations/" not in url or not isinstance(body, dict):

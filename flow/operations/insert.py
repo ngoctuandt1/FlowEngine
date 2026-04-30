@@ -7,6 +7,7 @@ submits, waits, downloads.
 import asyncio
 import logging
 
+from flow.failure_capture import message_with_failure_capture
 from flow.submit import submit_with_confirmation
 from flow.operations._base import (
     navigate_to_edit,
@@ -60,7 +61,7 @@ async def insert_object(
     await wait_for_video_loaded(page)
 
     # Step 3: Click Insert button
-    clicked = await click_action_button(page, INSERT_BUTTONS)
+    clicked = await click_action_button(page, INSERT_BUTTONS, client=client)
     if not clicked:
         try:
             icon_btn = page.locator(INSERT_ICON_SELECTOR).first
@@ -73,7 +74,13 @@ async def insert_object(
             pass
 
     if not clicked:
-        raise RuntimeError("Failed to find Insert button")
+        message = "Failed to find Insert button"
+        message = await message_with_failure_capture(
+            client,
+            "insert_button_not_found",
+            message,
+        )
+        raise RuntimeError(message)
 
     # Step 4: Draw bbox (optional)
     if bbox:
@@ -95,9 +102,16 @@ async def insert_object(
         client,
         before_card_count=before_cards,
         prompt_text=prompt,
+        failure_kind="insert_submit_not_confirmed",
     )
     if not confirmed:
-        raise RuntimeError("Insert submit not confirmed")
+        message = "Insert submit not confirmed"
+        message = await message_with_failure_capture(
+            client,
+            "insert_submit_not_confirmed",
+            message,
+        )
+        raise RuntimeError(message)
 
     # Step 7: Wait + Download + Return
     return await finalize_operation(

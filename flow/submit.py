@@ -22,6 +22,8 @@ enabled + visible check picks the right one.
 import asyncio
 import logging
 
+from flow.failure_capture import capture_failure_nonblocking
+
 logger = logging.getLogger(__name__)
 
 # Exact-text selector: button that contains a child ``<i>`` whose text is
@@ -94,6 +96,7 @@ async def submit_with_confirmation(
     timeout_sec: float = 15.0,
     prompt_text: str = "",
     scope: str | None = None,
+    failure_kind: str = "submit_not_confirmed",
 ) -> bool:
     """Click submit and confirm the submission was accepted.
 
@@ -120,6 +123,11 @@ async def submit_with_confirmation(
     clicked = await click_submit(page, scope=scope)
     if not clicked:
         logger.error("Failed to find/click submit button (scope=%s)", scope)
+        await capture_failure_nonblocking(
+            client,
+            failure_kind,
+            extra={"reason": "click_submit_failed", "scope": scope or ""},
+        )
         return False
 
     poll_interval = 0.5
@@ -171,6 +179,15 @@ async def submit_with_confirmation(
         getattr(client, "_gen_id", None),
         await _count_cards(page),
         page.url[:100],
+    )
+    await capture_failure_nonblocking(
+        client,
+        failure_kind,
+        extra={
+            "reason": "submit_not_confirmed",
+            "scope": scope or "",
+            "timeout_sec": timeout_sec,
+        },
     )
     return False
 
