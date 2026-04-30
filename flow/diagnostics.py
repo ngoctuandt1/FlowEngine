@@ -68,6 +68,22 @@ def _redact_secrets(text: str) -> str:
     return redacted
 
 
+def _redact_url(url: str) -> str:
+    if not url:
+        return url
+
+    patterns = (
+        (
+            r"([?&#](key|access_token|signature|auth|password|api_key|token)=)[^&#]*",
+            r"\1***REDACTED***",
+        ),
+    )
+    out = str(url)
+    for pattern, replacement in patterns:
+        out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+    return out
+
+
 def _stringify_preview(value) -> str:
     if value is None:
         return ""
@@ -80,7 +96,7 @@ def _stringify_preview(value) -> str:
         except Exception:
             text = str(value)
 
-    return _redact_secrets(text)[:200]
+    return _redact_secrets(_redact_url(text))[:200]
 
 
 def _serialize_calls(client, extra: Optional[dict]) -> list[dict]:
@@ -88,7 +104,7 @@ def _serialize_calls(client, extra: Optional[dict]) -> list[dict]:
     calls = getattr(client, "_calls", []) or []
     for call in calls[-20:]:
         entry = {
-            "url": call.get("url", ""),
+            "url": _redact_url(call.get("url") or ""),
             "status": call.get("status"),
             "method": call.get("method", ""),
             "ts": call.get("ts"),
@@ -110,8 +126,9 @@ async def capture_failure(
 ) -> Optional[Path]:
     """Best-effort: screenshot page + dump last 20 _calls + save HTML snippet.
 
-    Returns path of the .png file (sibling .network.json + .html files share the prefix),
-    or None if capture failed (cap failure must NOT propagate - caller is in error path already).
+    Returns Path of the .png file if screenshot succeeded, else None
+    (siblings .network.json/.html may still exist on disk). Capture failure must NOT
+    propagate because the caller is already in an error path.
 
     Files written:
       <FLOW_ERROR_CAPTURE_DIR>/<unix_ts>_<job_id_short>_<kind>.png
@@ -135,12 +152,14 @@ async def capture_failure(
         network_path = capture_dir / f"{prefix}.network.json"
         html_path = capture_dir / f"{prefix}.html"
         page = getattr(client, "page", None)
-        wrote_any = False
+        wrote_png = False
+        wrote_network = False
+        wrote_html = False
 
         if _page_is_open(page):
             try:
                 await page.screenshot(path=str(png_path), full_page=False, timeout=5000)
-                wrote_any = True
+                wrote_png = True
             except Exception as exc:
                 logger.warning("capture_failure: screenshot failed for %s: %s", prefix, exc)
 
@@ -149,7 +168,7 @@ async def capture_failure(
                 json.dumps(_serialize_calls(client, extra), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            wrote_any = True
+            wrote_network = True
         except Exception as exc:
             logger.warning("capture_failure: network dump failed for %s: %s", prefix, exc)
 
@@ -159,11 +178,13 @@ async def capture_failure(
                     _sanitize_html_snippet(await page.content()),
                     encoding="utf-8",
                 )
-                wrote_any = True
+                wrote_html = True
             except Exception as exc:
                 logger.warning("capture_failure: html dump failed for %s: %s", prefix, exc)
 
-        return png_path if wrote_any else None
+        if not (wrote_png or wrote_network or wrote_html):
+            return None
+        return png_path if wrote_png else None
     except Exception as exc:
         logger.warning("capture_failure: unexpected failure for %s/%s: %s", job_id, kind, exc)
         return None

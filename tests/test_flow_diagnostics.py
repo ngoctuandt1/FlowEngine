@@ -104,7 +104,7 @@ async def test_capture_failure_disabled_by_env_returns_none(tmp_path, monkeypatc
     assert list(tmp_path.iterdir()) == []
 
 
-async def test_capture_failure_screenshot_error_still_writes_other_artifacts(tmp_path, monkeypatch):
+async def test_capture_failure_screenshot_error_returns_none_but_writes_other_artifacts(tmp_path, monkeypatch):
     monkeypatch.setenv("FLOW_ERROR_CAPTURE_DIR", str(tmp_path))
     monkeypatch.delenv("FLOW_ERROR_CAPTURE", raising=False)
     monkeypatch.setattr(diagnostics.time, "time", lambda: 1700000000)
@@ -115,7 +115,7 @@ async def test_capture_failure_screenshot_error_still_writes_other_artifacts(tmp
     result = await diagnostics.capture_failure(client, "abc12345-dead", "timeout")
 
     expected = tmp_path / "1700000000_abc12345_timeout.png"
-    assert result == expected
+    assert result is None
     assert not expected.exists()
     assert expected.with_suffix(".network.json").exists()
     assert expected.with_suffix(".html").exists()
@@ -162,6 +162,76 @@ async def test_capture_failure_redacts_obvious_secrets(tmp_path, monkeypatch):
     assert "abc123" not in preview
     assert "hidden" not in preview
     assert preview.count("***REDACTED***") >= 2
+
+
+async def test_capture_failure_redacts_url_secrets_in_network_dump(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLOW_ERROR_CAPTURE_DIR", str(tmp_path))
+    monkeypatch.delenv("FLOW_ERROR_CAPTURE", raising=False)
+    monkeypatch.setattr(diagnostics.time, "time", lambda: 1700000000)
+
+    page = _make_page()
+    secret_url = "https://api.google.com/v1/foo?key=secret123&access_token=accessSecret456"
+    client = _make_client(
+        calls=[
+            {
+                "url": secret_url,
+                "status": 200,
+                "method": "GET",
+                "ts": 104.0,
+                "body": f"upstream requested {secret_url}",
+            }
+        ],
+        page=page,
+    )
+
+    result = await diagnostics.capture_failure(client, "abc12345-dead", "blocked_403")
+    assert result is not None
+
+    network_path = result.with_suffix(".network.json")
+    network_text = network_path.read_text(encoding="utf-8")
+    network_data = json.loads(network_text)
+
+    assert "secret123" not in network_text
+    assert "accessSecret456" not in network_text
+    assert (
+        network_data[0]["url"]
+        == "https://api.google.com/v1/foo?key=***REDACTED***&access_token=***REDACTED***"
+    )
+    assert "***REDACTED***" in network_data[0]["body_preview"]
+    assert "secret123" not in network_data[0]["body_preview"]
+    assert "accessSecret456" not in network_data[0]["body_preview"]
+
+
+async def test_capture_failure_redacts_fragment_url_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLOW_ERROR_CAPTURE_DIR", str(tmp_path))
+    monkeypatch.delenv("FLOW_ERROR_CAPTURE", raising=False)
+    monkeypatch.setattr(diagnostics.time, "time", lambda: 1700000000)
+
+    page = _make_page()
+    secret_url = "https://example.com/callback#auth=fragmentAuthXYZ&token=fragSecret987"
+    client = _make_client(
+        calls=[
+            {
+                "url": secret_url,
+                "status": 200,
+                "method": "GET",
+                "ts": 105.0,
+                "body": f"redirected to {secret_url}",
+            }
+        ],
+        page=page,
+    )
+
+    result = await diagnostics.capture_failure(client, "abc12345-dead", "blocked_403")
+    assert result is not None
+
+    network_text = result.with_suffix(".network.json").read_text(encoding="utf-8")
+    network_data = json.loads(network_text)
+
+    assert "fragmentAuthXYZ" not in network_text
+    assert "fragSecret987" not in network_text
+    assert network_data[0]["url"] == "https://example.com/callback#auth=***REDACTED***&token=***REDACTED***"
+    assert "#auth=***REDACTED***&token=***REDACTED***" in network_data[0]["body_preview"]
 
 
 async def test_capture_failure_sanitizes_kind_in_filename(tmp_path, monkeypatch):
