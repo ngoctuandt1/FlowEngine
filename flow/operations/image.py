@@ -81,7 +81,7 @@ async def text_to_image(
     current = page.url
     if is_login_page(current):
         login_ok = await handle_login_redirect(
-            page, timeout=60, profile_name=client.profile_name,
+            page, timeout=60, profile_name=client.profile_name, client=client,
         )
         if not login_ok:
             raise RuntimeError("Google login required - profile session expired.")
@@ -105,7 +105,7 @@ async def text_to_image(
     current = page.url
     if is_login_page(current):
         login_ok = await handle_login_redirect(
-            page, timeout=90, profile_name=client.profile_name,
+            page, timeout=90, profile_name=client.profile_name, client=client,
         )
         if not login_ok:
             raise RuntimeError("Google login required - profile session expired.")

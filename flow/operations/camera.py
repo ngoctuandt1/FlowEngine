@@ -12,6 +12,7 @@ Camera mode is DIFFERENT from other operations:
 import asyncio
 import logging
 
+from flow.failure_capture import message_with_failure_capture
 from flow.submit import submit_with_confirmation
 from flow.operations._base import (
     navigate_to_edit,
@@ -72,7 +73,7 @@ async def camera_move(
     await wait_for_video_loaded(page)
 
     # Step 3: Click Camera button
-    clicked = await click_action_button(page, CAMERA_BUTTONS)
+    clicked = await click_action_button(page, CAMERA_BUTTONS, client=client)
     if not clicked:
         try:
             icon_btn = page.locator(CAMERA_ICON_SELECTOR).first
@@ -85,7 +86,13 @@ async def camera_move(
             pass
 
     if not clicked:
-        raise RuntimeError("Failed to find Camera button")
+        message = "Failed to find Camera button"
+        message = await message_with_failure_capture(
+            client,
+            "camera_button_not_found",
+            message,
+        )
+        raise RuntimeError(message)
 
     await asyncio.sleep(1)  # Wait for preset grid to render
 
@@ -106,7 +113,13 @@ async def camera_move(
     # Step 5: Click preset thumbnail
     preset_clicked = await _click_preset(page, direction)
     if not preset_clicked:
-        raise RuntimeError(f"Failed to find camera preset: {direction}")
+        message = f"Failed to find camera preset: {direction}"
+        message = await message_with_failure_capture(
+            client,
+            "camera_preset_not_found",
+            message,
+        )
+        raise RuntimeError(message)
 
     # Step 6: Submit
     before_cards = await count_visible_cards(page)
@@ -115,9 +128,16 @@ async def camera_move(
     confirmed = await submit_with_confirmation(
         client,
         before_card_count=before_cards,
+        failure_kind="camera_submit_not_confirmed",
     )
     if not confirmed:
-        raise RuntimeError("Camera submit not confirmed")
+        message = "Camera submit not confirmed"
+        message = await message_with_failure_capture(
+            client,
+            "camera_submit_not_confirmed",
+            message,
+        )
+        raise RuntimeError(message)
 
     # Step 7: Wait + Download + Return
     return await finalize_operation(

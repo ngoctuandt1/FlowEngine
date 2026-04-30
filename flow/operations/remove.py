@@ -7,6 +7,7 @@ submits, waits, downloads. No prompt needed.
 import asyncio
 import logging
 
+from flow.failure_capture import message_with_failure_capture
 from flow.submit import submit_with_confirmation
 from flow.operations._base import (
     navigate_to_edit,
@@ -57,7 +58,7 @@ async def remove_object(
     await wait_for_video_loaded(page)
 
     # Step 3: Click Remove button
-    clicked = await click_action_button(page, REMOVE_BUTTONS)
+    clicked = await click_action_button(page, REMOVE_BUTTONS, client=client)
     if not clicked:
         try:
             icon_btn = page.locator(REMOVE_ICON_SELECTOR).first
@@ -70,7 +71,13 @@ async def remove_object(
             pass
 
     if not clicked:
-        raise RuntimeError("Failed to find Remove button")
+        message = "Failed to find Remove button"
+        message = await message_with_failure_capture(
+            client,
+            "remove_button_not_found",
+            message,
+        )
+        raise RuntimeError(message)
 
     # Step 4: Draw bbox (REQUIRED for remove)
     if not bbox:
@@ -91,9 +98,16 @@ async def remove_object(
     confirmed = await submit_with_confirmation(
         client,
         before_card_count=before_cards,
+        failure_kind="remove_submit_not_confirmed",
     )
     if not confirmed:
-        raise RuntimeError("Remove submit not confirmed")
+        message = "Remove submit not confirmed"
+        message = await message_with_failure_capture(
+            client,
+            "remove_submit_not_confirmed",
+            message,
+        )
+        raise RuntimeError(message)
 
     # Step 6: Wait + Download + Return
     return await finalize_operation(

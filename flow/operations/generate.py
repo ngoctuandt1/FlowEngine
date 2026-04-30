@@ -12,7 +12,8 @@ from flow.selector_chain import click_first_visible
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.download import download_video
-from flow.operations._base import resolve_final_media_id
+from flow.failure_capture import message_with_failure_capture
+from flow.operations._base import failure_kind_from_error, resolve_final_media_id
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +101,16 @@ async def text_to_video(
     if is_login_page(current):
         logger.warning("Redirected to Google login — attempting auto-resolve")
         login_ok = await handle_login_redirect(
-            page, timeout=60, profile_name=client.profile_name,
+            page, timeout=60, profile_name=client.profile_name, client=client,
         )
         if not login_ok:
-            raise RuntimeError("Google login required — profile session expired.")
+            message = "Google login required — profile session expired."
+            message = await message_with_failure_capture(
+                client,
+                "google_login_required",
+                message,
+            )
+            raise RuntimeError(message)
         # Re-navigate after login resolution
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
@@ -267,7 +274,13 @@ async def text_to_video(
             logger.error("Saved failure screenshot: %s", path)
         except Exception as e:
             logger.error("Failed to save screenshot: %s", e)
-        raise RuntimeError("Failed to find '+ New project' button on Flow homepage")
+        message = "Failed to find '+ New project' button on Flow homepage"
+        message = await message_with_failure_capture(
+            client,
+            "new_project_button_not_found",
+            message,
+        )
+        raise RuntimeError(message)
 
     # Wait for project editor to load — URL may contain /project/ or just change
     try:
@@ -284,10 +297,16 @@ async def text_to_video(
     if is_login_page(current):
         logger.warning("Login redirect after Create click — handling")
         login_ok = await handle_login_redirect(
-            page, timeout=90, profile_name=client.profile_name,
+            page, timeout=90, profile_name=client.profile_name, client=client,
         )
         if not login_ok:
-            raise RuntimeError("Google login required — profile session expired.")
+            message = "Google login required — profile session expired."
+            message = await message_with_failure_capture(
+                client,
+                "google_login_required",
+                message,
+            )
+            raise RuntimeError(message)
         # Re-navigate to homepage and retry project creation
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(3)
@@ -360,10 +379,17 @@ async def text_to_video(
         before_card_count=before_cards,
         timeout_sec=15.0,
         prompt_text=prompt,
+        failure_kind="submit_not_confirmed",
     )
 
     if not confirmed:
-        raise RuntimeError("Submit not confirmed — generation may not have started")
+        message = "Submit not confirmed — generation may not have started"
+        message = await message_with_failure_capture(
+            client,
+            "submit_not_confirmed",
+            message,
+        )
+        raise RuntimeError(message)
 
     logger.info("Submit confirmed, waiting for generation...")
 
@@ -373,7 +399,13 @@ async def text_to_video(
 
     if not result.get("done"):
         error = result.get("error", "unknown")
-        raise RuntimeError(f"Generation failed: {error}")
+        message = f"Generation failed: {error}"
+        message = await message_with_failure_capture(
+            client,
+            failure_kind_from_error("text-to-video", error),
+            message,
+        )
+        raise RuntimeError(message)
 
     logger.info("Generation complete!")
 
@@ -398,7 +430,13 @@ async def text_to_video(
         prefix="t2v",
     )
     if not output_files:
-        raise RuntimeError("text-to-video: no output file captured - download pipeline returned empty list")
+        message = "text-to-video: no output file captured - download pipeline returned empty list"
+        message = await message_with_failure_capture(
+            client,
+            "text_to_video_no_output_file",
+            message,
+        )
+        raise RuntimeError(message)
 
     # Build project_url (without /edit/ part)
     proj_url = None
