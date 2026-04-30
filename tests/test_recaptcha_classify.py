@@ -44,7 +44,17 @@ async def test_detect_recaptcha_in_network_replays_2026_05_01_live_evidence():
                     "ts": 100.0,
                 }
             ],
-            "v3_invisible",
+            None,
+        ),
+        (
+            [
+                {
+                    "url": "https://www.google.com/recaptcha/enterprise/reload?k=6LdsFiUsAAAA",
+                    "status": 200,
+                    "ts": 100.0,
+                }
+            ],
+            None,
         ),
         (
             [
@@ -74,12 +84,27 @@ async def test_detect_recaptcha_in_network_replays_2026_05_01_live_evidence():
                     "ts": 100.0,
                 },
                 {
-                    "url": "https://www.google.com/recaptcha/enterprise/clr?k=6LdsFiUsAAAA",
+                    "url": "https://www.google.com/recaptcha/enterprise/reload?k=6LdsFiUsAAAA",
                     "status": 200,
                     "ts": 105.0,
                 },
             ],
             "v3_invisible",
+        ),
+        (
+            [
+                {
+                    "url": "https://www.google.com/recaptcha/api2/anchor?k=6LdsFiUsAAAA",
+                    "status": 200,
+                    "ts": 100.0,
+                },
+                {
+                    "url": "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoText",
+                    "status": 403,
+                    "ts": 101.0,
+                },
+            ],
+            "v2_visible",
         ),
         ([], None),
     ],

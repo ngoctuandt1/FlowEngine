@@ -15,13 +15,6 @@ _RECAPTCHA_V3_TOKENS = (
     "recaptcha/enterprise/webworker",
     "recaptcha/enterprise/token",
 )
-_BLOCKED_ENDPOINT_TOKENS = (
-    "operations/",
-    "generate",
-    "trpc",
-    "batchasync",
-    "aisandbox-pa",
-)
 
 
 async def detect_recaptcha(page) -> bool:
@@ -93,94 +86,59 @@ def _is_recaptcha_url(url: str) -> bool:
     return "recaptcha" in url.lower()
 
 
-def _find_first_matching_call(
+def _is_non_recaptcha_failure(call: dict) -> bool:
+    status = int(call.get("status", 0) or 0)
+    if status not in (403, 429):
+        return False
+    return not _is_recaptcha_url(str(call.get("url", "")))
+
+
+def _find_latest_matching_call(
     calls: list[dict],
     predicate: Callable[[dict], bool],
 ) -> dict | None:
-    for call in calls:
+    for call in reversed(calls):
         if predicate(call):
             return call
     return None
 
 
-def _is_blocked_generation_call(call: dict) -> bool:
-    url_lower = str(call.get("url", "")).lower()
-    status = int(call.get("status", 0) or 0)
-    if status not in (403, 429):
-        return False
-    return any(token in url_lower for token in _BLOCKED_ENDPOINT_TOKENS)
-
-
-def _nearest_recaptcha_call(calls: list[dict], blocked_call: dict) -> dict | None:
-    blocked_ts = blocked_call.get("ts")
-    if not isinstance(blocked_ts, (int, float)):
-        return None
-
-    nearest_call: dict | None = None
-    nearest_delta: float | None = None
-    for call in calls:
-        url = str(call.get("url", ""))
-        if not _is_recaptcha_url(url):
-            continue
-
-        call_ts = call.get("ts")
-        if not isinstance(call_ts, (int, float)):
-            continue
-
-        delta = abs(float(blocked_ts) - float(call_ts))
-        if delta > 30:
-            continue
-        if nearest_delta is None or delta < nearest_delta:
-            nearest_call = call
-            nearest_delta = delta
-
-    return nearest_call
-
-
 def _find_recaptcha_signal(calls: list[dict]) -> tuple[RecaptchaKind, dict] | None:
     recent_calls = calls[-50:]
+    v2_call = _find_latest_matching_call(
+        recent_calls,
+        lambda call: "recaptcha/api2/anchor" in str(call.get("url", "")).lower(),
+    )
+    if v2_call is not None:
+        url = str(v2_call.get("url", ""))
+        logger.warning("reCAPTCHA network signal: kind=v2_visible url=%s", url[:120])
+        return "v2_visible", v2_call
 
-    direct_signal_checks = (
-        (
-            "v3_invisible",
-            lambda call: any(
-                token in str(call.get("url", "")).lower()
-                for token in _RECAPTCHA_V3_TOKENS
-            ),
-        ),
-        (
-            "v2_visible",
-            lambda call: "recaptcha/api2/anchor" in str(call.get("url", "")).lower(),
-        ),
-        (
-            "v3_invisible",
-            lambda call: int(call.get("status", 0) or 0) in (403, 429)
-            and _is_recaptcha_url(str(call.get("url", ""))),
+    recaptcha_call = _find_latest_matching_call(
+        recent_calls,
+        lambda call: _is_recaptcha_url(str(call.get("url", ""))),
+    )
+    if recaptcha_call is None:
+        return None
+
+    failure_call = _find_latest_matching_call(recent_calls, _is_non_recaptcha_failure)
+    if failure_call is None:
+        return None
+
+    v3_call = _find_latest_matching_call(
+        recent_calls,
+        lambda call: any(
+            token in str(call.get("url", "")).lower()
+            for token in _RECAPTCHA_V3_TOKENS
         ),
     )
-    for kind, predicate in direct_signal_checks:
-        call = _find_first_matching_call(recent_calls, predicate)
-        if call is None:
-            continue
-
-        url = str(call.get("url", ""))
-        logger.warning("reCAPTCHA network signal: kind=%s url=%s", kind, url[:120])
-        return kind, call
-
-    for call in recent_calls:
-        if not _is_blocked_generation_call(call):
-            continue
-
-        recaptcha_call = _nearest_recaptcha_call(recent_calls, call)
-        if recaptcha_call is None:
-            continue
-
-        logger.warning(
-            "reCAPTCHA-adjacent block: HTTP %s on %s",
-            call.get("status", 0),
-            str(call.get("url", ""))[:120],
-        )
-        return "v3_invisible", recaptcha_call
+    signal_call = v3_call or recaptcha_call
+    logger.warning(
+        "reCAPTCHA-adjacent block: HTTP %s on %s",
+        failure_call.get("status", 0),
+        str(failure_call.get("url", ""))[:120],
+    )
+    return "v3_invisible", signal_call
 
     return None
 
