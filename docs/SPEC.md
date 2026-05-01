@@ -3,6 +3,8 @@
 > **Đây là document master. Mọi công việc trên codebase phải đọc file này trước.**
 > Created: 2026-04-17
 > Status: AUTHORITATIVE — nếu file khác mâu thuẫn với file này, file này thắng.
+> Last synced: Synced with master `408d598` on 2026-05-01.
+> Recent changes: INV-5 synced to direct-parent inheritance; extend always mints NEW; camera is early-chain NEW / deep-chain preserved; insert/remove final media_id resolves network -> DOM tile -> URL fallback.
 
 ---
 
@@ -88,41 +90,31 @@
 **Implementation:** `worker/project_lock.py` + điều kiện `NO active claim on project_url` trong `claim_next_job`.
 
 ### INV-5: Engine Re-Extracts `media_id` per Operation
-> **Sau mỗi operation, engine PHẢI re-extract `media_id` từ `page.url` / network và lưu DB. Chain tiếp sau inherit parent's FINAL media_id qua B22 + B30 walk-up — KHÔNG assume `media_id` stable qua mọi op.**
+> **Sau mỗi operation, engine PHẢI lưu final `media_id` thực tế và child job PHẢI inherit DIRECT parent's `media_id` + `edit_url` together. KHÔNG split hai field này, KHÔNG walk-up past the direct parent.**
 
-**Behavior matrix (empirical, revised 2026-04-19 post-B28/B29/B30; refined post-B32/Run12):**
+**Current contract (master sync 2026-05-01):**
 
-| Operation | `media_id` post-op | Chain inherits from |
+| Operation | Final `media_id` stored | Child claim target |
 |---|---|---|
-| `extend-video` | **NEW uuid** — /edit/{new_media} is the extend-output (sidebar disabled) | **Grandparent** (B30 walk-up) |
-| `camera-move` | **Context-dependent** — mints NEW on early positions (L2 directly off L1 t2v), **preserves** on deep-chain positions where URL is pinned to an active clip via B32 tile-activation | Direct parent (B22) |
-| `insert-object` / `remove-object` | Preserved (in-place on active clip) — verified Tier 2 Run 12 post-B32 on deep-chain positions | Direct parent (B22) |
+| `extend-video` | **NEW** uuid always | Direct parent's final `media_id` + `edit_url` together |
+| `camera-move` | **NEW** on early-chain (L2 direct off L1); **preserved** on deep-chain | Direct parent's final `media_id` + `edit_url` together |
+| `insert-object` / `remove-object` | **NEW** output slug at L2+ | Direct parent's final `media_id` + `edit_url` together |
 
-**Evidence:**
-- Tier 2 Run 10 (2026-04-19) — J1 t2v `5920c395-…` → J2 camera-move `e219fc6c-…` (**NEW** — camera at L2 direct-off-L1) → J3 insert-object `e219fc6c-…` (preserved). See `docs/E2E_RESULTS_PHASE_A.md`.
-- Tier 2 Run 12 (2026-04-19, post-B32) — chain `t2v → extend → insert → remove → camera` on ngoctuandt20: J1 t2v `a33b2e9d` → J2 extend `7d53d6fc` (**NEW** per extend) → J3 insert `7d53d6fc` (preserved) → J4 remove `7d53d6fc` (preserved) → **J5 camera-move `7d53d6fc`** (preserved — **did NOT mint new**). See `docs/session-reports/2026-04-19_Tier2_Run12_B32_verify.md` §7 finding-1.
-- WORKPLAN §5.2 Tests 2/3/4 (2026-04-19) — full-chain live runs confirm extend-video mints NEW media_id; chain skips extend-output via B22+B30 inheritance.
-- `docs/session-reports/2026-04-19_B28_B29_probe.md` — DOM probe: extend-output /edit/{new_media} has Insert/Remove/Camera buttons visible but `[disabled]` (extend-child lockout); stale L1 /edit/{old_media} gets `/edit/` stripped by SPA post-sibling-extend.
+**Resolution order (`flow/operations/_base.py:resolve_final_media_id`, refactor `b62ac73`):**
+1. Network-captured generation `media_id`
+2. Latest DOM/history tile slug
+3. Settled `/edit/{media_id}` route
+4. Fallback input `media_id` only when Flow never settles to a usable `/edit/` slug
 
-**Camera-move nuance (B33, 2026-04-19):** camera-move's media_id behavior is context-dependent:
-- **Early chain (L2 direct off L1 t2v):** Flow mints NEW media — new clip added to project, URL transitions from `/edit/{L1}` → `/edit/{new}`. B22 inheritance for next L3 op captures the NEW uuid correctly.
-- **Deep chain (L3+ after insert/remove/extend where URL is pinned via B32 tile-activation):** Flow applies camera motion IN-PLACE on the active clip — preserves media_id. The post-op URL stays on the existing active clip. B22 inheritance captures the preserved uuid.
-
-This is not an engine bug — Flow's behavior genuinely differs by context, and `finalize_operation` re-extracts from `page.url` correctly in both cases (INV-3 Store Everything still holds). Downstream ops read the final stored `media_id` via B22 and work correctly regardless of whether the value changed.
-
-**Hệ quả:**
-- Chain qua `extend-video` PHẢI dùng B30 walk-up: claim-layer skip extend ancestor(s) đến first non-extend ancestor. B32 split: `edit_url` from direct parent (fresh), `media_id` from walk-up (semantic target). Worker navigates to direct parent's URL, then `_activate_clip_tile(target_media_id)` switches Flow's active clip → sidebar Insert/Remove/Camera re-enable.
-- Chain qua `camera-move` dùng J[camera]'s **post-op** media_id trực tiếp (non-extend → B22 baseline, B30 no-op). `media_id` may be NEW (early-chain) or preserved (deep-chain) — engine handles both via `finalize_operation` re-extraction.
-- `extend-video`: URL sau = `/edit/{new_media_id}`; Insert/Remove/Camera sidebar buttons DISABLED on this URL (B28 extend-child lockout). Use B32 tile activation to re-enable on target clip.
-- `camera-move`: URL sau = `/edit/{active_media_id}` (may be new or same as parent); sidebar buttons enabled.
-- Wrong-tile click trong multi-video project = vi phạm INV-5 (engine acts on WRONG media_id — sibling video thay vì target). B14 `_click_video_tile` media_id-aware guard + B32 `_activate_clip_tile` by target media_id guard against this in both nav-fallback and post-nav activation paths.
+**Notes:**
+- `server/db/job_store.py:claim_next_job` copies `profile`, `project_url`, `media_id`, and `edit_url` from the **direct parent row** in one transaction. The old B30/B32 walk-up split was superseded on 2026-04-20 (`849834e`).
+- `flow/operations/extend.py`, `insert.py`, `remove.py`, and `camera.py` all call `finalize_operation()`, so every completed op stores the clip Flow actually produced before the next child claims.
+- Camera-move is intentionally context-dependent: early-chain camera creates a new clip; deep-chain camera keeps the active clip's slug. This is a Flow behavior difference, not an engine bug.
 
 **Kiểm tra:**
-- `flow/operations/_base.py:finalize_operation` re-extract media_id từ `page.url` / network — KHÔNG return input media_id.
-- `flow/operations/_base.py:click_action_button` B28 `is_enabled()` check raises "extend-child lockout" diagnostic khi nhắm sai media.
-- `flow/operations/_base.py:navigate_to_edit` B29 final URL check raises "SPA stripped" khi stale media bị SPA strip `/edit/`.
-- `flow/operations/_base.py:_activate_clip_tile` B32 dispatches MouseEvent sequence on `[data-tile-id='fe_id_{media_id}']` to switch active clip when URL media ≠ target media.
-- `server/db/job_store.py:claim_next_job` L2+ branch: B22 direct-parent inheritance for `profile` + `project_url` + `edit_url`; B30 walk-up past `extend-video` ancestors for `media_id` only (B32 split).
+- `tests/test_claim_algorithm.py` direct-parent cases: extend child inherits the immediate parent's `media_id` + `edit_url` together; non-extend parents preserve the same contract.
+- `tests/test_l2_media_id.py` + `tests/test_latest_tile_slug.py`: final `media_id` resolution prefers network -> DOM tile -> settled URL fallback.
+- `CLAUDE.md` is the current canonical summary for the chain invariants and per-op `media_id` behavior.
 
 ---
 
@@ -576,7 +568,7 @@ OUTPUT: {project_url, media_id, edit_url, output_files, generation_id, profile}
 
 ```
 INPUT: job = {id, type="extend-video", project_url, media_id, profile, prompt?, model}
-OUTPUT: {project_url, media_id (SAME), edit_url, output_files, generation_id, profile}
+OUTPUT: {project_url, media_id (NEW final output), edit_url, output_files, generation_id, profile}
 ```
 
 ### Steps
@@ -585,12 +577,12 @@ OUTPUT: {project_url, media_id (SAME), edit_url, output_files, generation_id, pr
 1. Dispatcher → run_extend(client, job, prompt, model)
 
 2. flow/operations/_base.py:navigate_to_edit(client, job):
-   a. Build edit_url = f"{project_url}/edit/{media_id}"
-   b. page.goto(edit_url)
-   c. Wait for <video> element visible (wait_for_video_loaded)
-   d. VERIFY: media_id trong page.url — nếu không khớp → FAIL
-   e. Nếu redirect login → trigger AIgglog, retry 1 lần
-   f. Nếu URL 404 → fallback click tile theo media_id match (last resort)
+   a. Dùng `job.edit_url` nếu có; nếu thiếu thì rebuild từ `project_url` + `media_id`
+   b. `page.goto(edit_url)` là primary path
+   c. Nếu redirect login → trigger AIgglog, retry target URL 1 lần
+   d. Nếu SPA land ở `/project/` → fallback click tile theo `media_id`
+   e. Nếu biết target `media_id` → `_activate_clip_tile(page, media_id)` để pin active clip
+   f. Nếu editor vẫn không mount → first-tile recovery, fail nếu vẫn không vào được edit view
 
 3. flow/operations/extend.py:run_extend:
    a. click_action_button("Extend" / "Mở rộng" / icon [class*="keyboard_double_arrow_right"])
@@ -599,7 +591,7 @@ OUTPUT: {project_url, media_id (SAME), edit_url, output_files, generation_id, pr
    d. select_model(LP) — verify "0 credits"
    e. submit_with_confirmation()
    f. wait_for_completion(timeout=600)
-   g. Extract new media_id from URL — verify SAME as input (INV-5)
+   g. Resolve final media_id via `resolve_final_media_id()` — extend output PHẢI là **NEW** uuid (INV-5)
    h. download_video(media_id)
    i. return finalize_operation(result)
 
@@ -611,7 +603,7 @@ OUTPUT: {project_url, media_id (SAME), edit_url, output_files, generation_id, pr
 | Triệu chứng | Lý do | Fix |
 |---|---|---|
 | URL redirect về homepage | Profile chưa login account của project | Check profile = parent.profile (INV-1) |
-| media_id changed sau extend | Flow đã tạo version mới (bất thường) | ⚠️ LOG rõ, update job với media_id mới |
+| media_id không đổi sau extend | Final-media resolution bug | Check `resolve_final_media_id()` + network/tile fallback; extend must persist a NEW media_id |
 | `navigate_to_edit` 404 | project_url sai hoặc project bị xoá | FAIL job, log error |
 | Extend panel không mở | Click sai button | Check selector icon class |
 
@@ -635,7 +627,7 @@ OUTPUT: same shape as extend
 6. Click composer → type prompt
 7. submit_with_confirmation()
 8. wait_for_completion(timeout=300)
-9. Extract media_id — SAME as input (INV-5)
+9. Resolve final media_id via `resolve_final_media_id()` — expect a NEW output slug, not the input media_id (INV-5)
 10. download_video(media_id)
 11. return finalize_operation(result)
 ```
@@ -673,7 +665,7 @@ OUTPUT: same shape
 6. KHÔNG type prompt (chế độ remove không cần)
 7. submit_with_confirmation()
 8. wait_for_completion(timeout=300)
-9. Extract media_id — SAME
+9. Resolve final media_id via `resolve_final_media_id()` — expect a NEW output slug, not the input media_id (INV-5)
 10. download_video
 11. return finalize_operation
 ```
@@ -714,7 +706,7 @@ OUTPUT: same shape
    - generic "See how many credits this generation will use" + generic "Create"
    - KHÔNG phải arrow_forward
 7. wait_for_completion(timeout=300)
-8. Extract media_id — **NEW uuid** (camera-move mints new media — Tier 2 Run 10 2026-04-19 J1→J2 confirms). `finalize_operation` re-extracts from `page.url`; store as the op's completed `media_id`. Chain tiếp sau inherit qua B22 sẽ đọc giá trị mới này. See INV-5 behavior matrix.
+8. Resolve final media_id via `resolve_final_media_id()` — **NEW** on early-chain (L2 direct off L1), **preserved** on deep-chain. Store the final value for downstream direct-parent inheritance (INV-5).
 9. download_video
 10. return finalize_operation
 ```
@@ -787,15 +779,15 @@ Tại thời điểm T=0:
 
 Tại T=1:
   - W1 poll → claim Job B (L2, parent profile=alpha, W1 có alpha → OK)
-  - W1 chạy extend → complete → Job B: project_url=P1, media_id=M1 (SAME), profile=alpha
+  - W1 chạy extend → complete → Job B: project_url=P1, media_id=M2 (NEW extend output), profile=alpha
 
 Tại T=2:
-  - W1 poll → claim Job C (L2, parent profile=alpha → OK)
-  - W1 chạy insert → complete → Job C: same project_url, same media_id
+  - W1 poll → claim Job C (L3, parent profile=alpha → OK)
+  - W1 chạy insert → complete → Job C: same project_url, media_id=M3 (NEW insert output)
 
 Tại T=3:
-  - W1 poll → claim Job D (L2, parent profile=alpha → OK)
-  - W1 chạy camera → complete → Job D: same project_url, same media_id
+  - W1 poll → claim Job D (L4, parent profile=alpha → OK)
+  - W1 chạy camera → complete → Job D: same project_url, media_id=M3 (deep-chain camera preserves current clip)
 
 Chain complete. Output: 4 file trong downloads/, all versions trong history panel Flow.
 ```
@@ -1165,11 +1157,14 @@ Extend không mở popup — chỉ toggle highlight toolbar + đổi composer pl
 ### D.1.4 — Model selector biến mất trong Insert/Remove/Camera
 3 mode này dùng model mặc định của Flow. KHÔNG gọi `select_model()` trong các op này.
 
-### D.1.5 — media_id CHỈ có trong URL
-Info panel (ⓘ) không hiển thị media_id. Phải parse từ URL.
+### D.1.5 — Canonical media_id không hiện rõ trong UI
+Info panel (ⓘ) không hiển thị canonical media_id một cách hữu ích. Engine resolve final value theo thứ tự: network event → latest DOM/history tile → `/edit/{media_id}` URL fallback.
 
-### D.1.6 — Operations do NOT create new media_id
-Extend/Insert/Remove/Camera → same media_id, same URL, +1 history entry. Nếu media_id đổi sau op → bất thường, log rõ.
+### D.1.6 — KHÔNG được assume media_id ổn định qua các op
+- `extend-video` luôn mint NEW `media_id`
+- `insert-object` / `remove-object` mint NEW output slug
+- `camera-move` mint NEW ở early-chain L2-off-L1, nhưng preserve ở deep-chain
+Downstream job phải đọc parent result đã được persist, không được reuse giả định cũ từ ancestor khác.
 
 ### D.1.7 — Camera submit UI khác
 Camera mode:
@@ -1216,7 +1211,7 @@ Hai thao tác NHÌN GIỐNG NHAU nhưng khác bản chất:
 |---|---|---|
 | Driver | UI click button "Extend" | API call with `endImage.mediaId` |
 | Input | 1 video hiện có | 1 ảnh start + 1 ảnh end |
-| Output media_id | **SAME** (update in-place — INV-5) | **NEW** uuid |
+| Output media_id | **NEW** uuid (INV-5) | **NEW** uuid |
 | Dùng được cho | Kéo dài từ frame cuối hiện tại | Morph giữa 2 frame bất kỳ |
 | Chain kiểu L2/L3/L4 | ✅ | ❌ (mỗi lần phải tạo ảnh start mới) |
 
