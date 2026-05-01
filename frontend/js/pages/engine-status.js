@@ -4,7 +4,6 @@
  */
 (() => {
   const REFRESH_MS = 5000;
-  const ACTIVE_HEARTBEAT_MS = 60000;
   const FAILED_LOG_LIMIT = 10;
 
   const state = {
@@ -25,26 +24,6 @@
 
   function normalizeProfiles(result) {
     return Array.isArray(result) ? result : result?.profiles || [];
-  }
-
-  function normalizeWorkers(result) {
-    if (!result) return [];
-    if (Array.isArray(result)) {
-      return result
-        .map((worker) => ({
-          id: worker?.id || worker?.worker_id || worker?.name || '',
-          lastHeartbeat: worker?.last_heartbeat || worker?.lastHeartbeat || worker?.heartbeat || null,
-        }))
-        .filter((worker) => worker.id);
-    }
-
-    if (typeof result === 'object') {
-      return Object.entries(result)
-        .map(([id, lastHeartbeat]) => ({ id, lastHeartbeat }))
-        .filter((worker) => worker.id);
-    }
-
-    return [];
   }
 
   function coerceDate(value) {
@@ -73,50 +52,20 @@
     return `${diffDay}d ago`;
   }
 
-  function formatElapsed(ms) {
-    if (!Number.isFinite(ms) || ms < 0) return '-';
-
-    const totalSec = Math.floor(ms / 1000);
-    const days = Math.floor(totalSec / 86400);
-    const hours = Math.floor((totalSec % 86400) / 3600);
-    const minutes = Math.floor((totalSec % 3600) / 60);
-    const seconds = totalSec % 60;
-
-    if (days > 0) return `${days}d ${hours}h`;
-    if (hours > 0) return `${hours}h ${minutes}m`;
-    if (minutes > 0) return `${minutes}m ${seconds}s`;
-    return `${seconds}s`;
-  }
-
-  function resolveUptime(health) {
-    if (!health || typeof health !== 'object') return null;
-
-    if (typeof health.uptime === 'string' && health.uptime.trim()) {
-      return health.uptime.trim();
-    }
-
-    if (Number.isFinite(health.uptime_seconds)) {
-      return formatElapsed(health.uptime_seconds * 1000);
-    }
-
-    if (Number.isFinite(health.uptime_ms)) {
-      return formatElapsed(health.uptime_ms);
-    }
-
-    const startedAt = coerceDate(health.started_at || health.startedAt);
-    if (startedAt) {
-      return formatElapsed(Date.now() - startedAt.getTime());
-    }
-
-    return null;
-  }
-
   function escapeAttr(value) {
     return App.escapeHtml(String(value || ''));
   }
 
-  function unique(values) {
-    return Array.from(new Set(values.filter(Boolean)));
+  function getErrorMessage(reason) {
+    if (typeof reason?.message === 'string' && reason.message.trim()) {
+      return reason.message.trim();
+    }
+
+    if (typeof reason === 'string' && reason.trim()) {
+      return reason.trim();
+    }
+
+    return String(reason || 'Unknown error');
   }
 
   function truncateId(id) {
@@ -174,141 +123,101 @@
     );
   }
 
-  function buildWorkerRows(workers, profiles, activeJobs) {
-    const workerProfiles = new Map();
-    const workerJobs = new Map();
-    const knownWorkerIds = new Set();
-
-    profiles.forEach((profile) => {
-      const workerId = profile?.worker_id;
-      if (!workerId) return;
-      knownWorkerIds.add(workerId);
-      if (!workerProfiles.has(workerId)) workerProfiles.set(workerId, []);
-      workerProfiles.get(workerId).push(profile);
-    });
-
-    activeJobs.forEach((job) => {
-      const workerId = job?.worker_id;
-      if (!workerId) return;
-      knownWorkerIds.add(workerId);
-      if (!workerJobs.has(workerId)) workerJobs.set(workerId, []);
-      workerJobs.get(workerId).push(job);
-    });
-
-    workers.forEach((worker) => {
-      if (worker?.id) knownWorkerIds.add(worker.id);
-    });
-
-    const heartbeatByWorker = new Map(
-      workers.map((worker) => [worker.id, worker.lastHeartbeat])
-    );
-
-    return Array.from(knownWorkerIds)
-      .map((workerId) => {
-        const assignedProfiles = workerProfiles.get(workerId) || [];
-        const jobs = workerJobs.get(workerId) || [];
-        const pinnedProfiles = unique([
-          ...assignedProfiles.map((profile) => profile?.name || profile?.profile_name || ''),
-          ...jobs.map((job) => job?.profile || ''),
-        ]).sort((a, b) => a.localeCompare(b));
-        const currentJobs = unique([
-          ...assignedProfiles.map((profile) => profile?.current_job_id || ''),
-          ...jobs.map((job) => job?.id || ''),
-        ]);
-        const heartbeat = heartbeatByWorker.get(workerId) || null;
-        const heartbeatDate = coerceDate(heartbeat);
-        const isActive = heartbeatDate
-          ? Date.now() - heartbeatDate.getTime() <= ACTIVE_HEARTBEAT_MS
-          : null;
-
-        return {
-          id: workerId,
-          heartbeat,
-          isActive,
-          pinnedProfiles,
-          currentJobs,
-        };
-      })
+  function buildWorkerRows(profiles) {
+    return profiles
+      .filter((profile) => profile?.current_job_id)
+      .map((profile) => ({
+        profileName: profile?.name || profile?.profile_name || '-',
+        workerId: profile?.worker_id || '',
+        currentJobId: profile?.current_job_id || '',
+      }))
       .sort((a, b) => {
-        const leftActive = a.isActive ? 1 : 0;
-        const rightActive = b.isActive ? 1 : 0;
-        if (leftActive !== rightActive) return rightActive - leftActive;
-
-        const leftTime = coerceDate(a.heartbeat)?.getTime() || 0;
-        const rightTime = coerceDate(b.heartbeat)?.getTime() || 0;
-        if (leftTime !== rightTime) return rightTime - leftTime;
-
-        return a.id.localeCompare(b.id);
+        const left = `${a.workerId} ${a.profileName}`.trim().toLowerCase();
+        const right = `${b.workerId} ${b.profileName}`.trim().toLowerCase();
+        return left.localeCompare(right);
       });
   }
 
-  function deriveCounts(countsResult, pendingJobs, claimedJobs, runningJobs, failedJobs) {
+  function deriveCounts(countsResult, pendingJobs, failedJobs) {
     const counts = countsResult && typeof countsResult === 'object' ? countsResult : {};
     return {
       pending: Number.isFinite(counts.pending) ? counts.pending : pendingJobs.length,
-      claimed: Number.isFinite(counts.claimed) ? counts.claimed : claimedJobs.length,
-      running: Number.isFinite(counts.running) ? counts.running : runningJobs.length,
+      claimed: Number.isFinite(counts.claimed) ? counts.claimed : 0,
+      running: Number.isFinite(counts.running) ? counts.running : 0,
       failed: Number.isFinite(counts.failed) ? counts.failed : failedJobs.length,
     };
   }
 
-  function buildSnapshot(raw) {
-    const profiles = normalizeProfiles(raw.profiles?.value);
-    const pendingJobs = sortByCreatedAsc(normalizeJobList(raw.pending?.value));
-    const claimedJobs = normalizeJobList(raw.claimed?.value);
-    const runningJobs = normalizeJobList(raw.running?.value);
-    const failedAll = sortByRecentFailure(normalizeJobList(raw.failed?.value));
+  function buildSnapshot(raw, errors) {
+    const profiles = errors.profiles ? [] : normalizeProfiles(raw.profiles?.value);
+    const pendingJobs = errors.pending ? [] : sortByCreatedAsc(normalizeJobList(raw.pending?.value));
+    const failedAll = errors.failed ? [] : sortByRecentFailure(normalizeJobList(raw.failed?.value));
     const failedJobs = failedAll.slice(0, FAILED_LOG_LIMIT);
-    const activeJobs = [...claimedJobs, ...runningJobs];
-    const workers = normalizeWorkers(raw.workers?.value);
-    const counts = deriveCounts(raw.counts?.value, pendingJobs, claimedJobs, runningJobs, failedAll);
-    const health = raw.health?.value && typeof raw.health.value === 'object' ? raw.health.value : null;
-    const uptime = resolveUptime(health);
+    const counts = errors.counts ? null : deriveCounts(raw.counts?.value, pendingJobs, failedAll);
+    const health = errors.health || !(raw.health?.value && typeof raw.health.value === 'object')
+      ? null
+      : raw.health.value;
     const pStats = profileStats(profiles);
-    const workerRows = buildWorkerRows(workers, profiles, activeJobs);
-    const workersAvailable = raw.workers?.status === 'fulfilled';
-    const activeWorkerCount = workersAvailable
-      ? workerRows.filter((worker) => worker.isActive).length
-      : null;
+    const workerRows = buildWorkerRows(profiles);
 
     return {
       capturedAt: Date.now(),
       health: {
+        error: errors.health || null,
         ok: health?.status === 'ok',
-        label: health?.status === 'ok' ? 'Healthy' : (health?.status ? String(health.status) : 'Unknown'),
-        uptime,
+        label: errors.health
+          ? 'Failed'
+          : health?.status === 'ok'
+            ? 'Healthy'
+            : (health?.status ? String(health.status) : 'Unknown'),
       },
       workers: {
-        available: workersAvailable,
-        total: workersAvailable ? workers.length : null,
-        active: workersAvailable ? activeWorkerCount : null,
+        error: errors.profiles || null,
+        busy: workerRows.length,
         rows: workerRows,
       },
       profiles: {
+        error: errors.profiles || null,
         total: profiles.length,
         idle: pStats.idle,
         busy: pStats.busy,
         quarantined: pStats.quarantined,
       },
       jobs: {
-        pending: counts.pending,
-        claimed: counts.claimed,
-        running: counts.running,
-        failed: counts.failed,
-        inFlight: counts.pending + counts.claimed + counts.running,
+        summaryError: errors.counts || null,
+        pendingError: errors.pending || null,
+        failedError: errors.failed || null,
+        pending: counts?.pending ?? null,
+        claimed: counts?.claimed ?? null,
+        running: counts?.running ?? null,
+        failed: counts?.failed ?? null,
+        inFlight: counts ? counts.pending + counts.claimed + counts.running : null,
         queue: pendingJobs,
         failedRecent: failedJobs,
-      },
-      meta: {
-        workersEndpointError: raw.workers?.status === 'rejected' ? raw.workers.reason : null,
       },
     };
   }
 
-  function renderStatCard({ icon, label, value, detail, statusClass, dotColor = null }) {
+  function renderInlineError(message, extraStyle = '') {
+    return `
+      <div style="display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border-radius:12px; border:1px solid rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.12); color: #fecaca; font-size: 13px; line-height: 1.5; ${extraStyle}">
+        <span class="material-icons" style="font-size:18px; flex:0 0 auto;">error</span>
+        <span>Failed to load: ${App.escapeHtml(message)}</span>
+      </div>
+    `;
+  }
+
+  function renderStatCard({ icon, label, value, detail, statusClass, dotColor = null, error = null }) {
     const dotHtml = dotColor
       ? `<span style="display:inline-block; width:10px; height:10px; border-radius:999px; background:${dotColor};"></span>`
       : '';
+    const detailHtml = error
+      ? renderInlineError(error, 'margin-top: 10px;')
+      : `
+          <div style="margin-top:8px; color: var(--text-muted); font-size: 12px; line-height: 1.45;">
+            ${App.escapeHtml(detail)}
+          </div>
+        `;
 
     return `
       <div class="stat-card">
@@ -321,9 +230,7 @@
             ${dotHtml}
             <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${App.escapeHtml(String(value))}</span>
           </div>
-          <div style="margin-top:8px; color: var(--text-muted); font-size: 12px; line-height: 1.45;">
-            ${App.escapeHtml(detail)}
-          </div>
+          ${detailHtml}
         </div>
       </div>
     `;
@@ -332,25 +239,37 @@
   function renderWorkersPanel(snapshot) {
     const { workers } = snapshot;
 
-    if (!workers.rows.length) {
-      const message = workers.available
-        ? 'No worker heartbeats or active assignments yet.'
-        : 'Worker heartbeat endpoint unavailable in this environment.';
-
+    if (workers.error) {
       return `
         <div class="table-container">
           <div class="section-header" style="padding: 18px 20px 0;">
             <div>
-              <h3 class="section-title">Active Workers</h3>
+              <h3 class="section-title">Workers</h3>
               <p style="margin-top:4px; color: var(--text-muted); font-size: 13px;">
-                Heartbeats in the last 60 seconds count as active.
+                Active rows are derived from profiles with a current job.
+              </p>
+            </div>
+          </div>
+          ${renderInlineError(workers.error, 'margin: 18px 20px 20px;')}
+        </div>
+      `;
+    }
+
+    if (!workers.rows.length) {
+      return `
+        <div class="table-container">
+          <div class="section-header" style="padding: 18px 20px 0;">
+            <div>
+              <h3 class="section-title">Workers</h3>
+              <p style="margin-top:4px; color: var(--text-muted); font-size: 13px;">
+                Active rows are derived from profiles with a current job.
               </p>
             </div>
           </div>
           <div class="empty-state" style="padding: 28px 20px 24px;">
             <span class="material-icons">hub</span>
-            <h3>No worker data</h3>
-            <p>${App.escapeHtml(message)}</p>
+            <h3>No workers currently busy</h3>
+            <p>Worker rows appear when a profile has a current job assigned.</p>
           </div>
         </div>
       `;
@@ -358,32 +277,13 @@
 
     const rows = workers.rows
       .map((worker) => {
-        const profileLabel = worker.pinnedProfiles.length
-          ? App.escapeHtml(worker.pinnedProfiles.join(', '))
-          : '-';
-        const currentJobHtml = worker.currentJobs.length
-          ? worker.currentJobs.map(renderJobLink).join('<span style="color: var(--text-muted);">, </span>')
-          : '<span>-</span>';
-        const heartbeatStatus = worker.isActive === null
-          ? '-'
-          : worker.isActive
-            ? 'Active'
-            : 'Stale';
-        const heartbeatBadge = worker.isActive === null
-          ? '<span style="color: var(--text-muted);">-</span>'
-          : `<span class="${App.statusBadge(worker.isActive ? 'completed' : 'failed')}">${App.escapeHtml(heartbeatStatus)}</span>`;
-
         return `
           <tr>
-            <td title="${escapeAttr(worker.id)}">
-              <div style="display:flex; flex-direction:column; gap:4px;">
-                <code>${App.escapeHtml(worker.id)}</code>
-                <span style="color: var(--text-muted); font-size: 12px;">${heartbeatBadge}</span>
-              </div>
+            <td title="${escapeAttr(worker.profileName)}">${App.escapeHtml(worker.profileName)}</td>
+            <td title="${escapeAttr(worker.workerId || '')}">
+              ${worker.workerId ? `<code>${App.escapeHtml(worker.workerId)}</code>` : '<span>-</span>'}
             </td>
-            <td title="${escapeAttr(profileLabel)}">${profileLabel}</td>
-            <td>${currentJobHtml}</td>
-            <td title="${escapeAttr(worker.heartbeat || '')}">${App.escapeHtml(formatAge(worker.heartbeat))}</td>
+            <td>${renderJobLink(worker.currentJobId)}</td>
           </tr>
         `;
       })
@@ -393,19 +293,18 @@
       <div class="table-container">
         <div class="section-header" style="padding: 18px 20px 0;">
           <div>
-            <h3 class="section-title">Active Workers</h3>
+            <h3 class="section-title">Workers</h3>
             <p style="margin-top:4px; color: var(--text-muted); font-size: 13px;">
-              Name, pinned profiles, current job, and last heartbeat age.
+              Active rows are derived from profiles with a current job.
             </p>
           </div>
         </div>
         <table>
           <thead>
             <tr>
+              <th>Profile</th>
               <th>Worker</th>
-              <th>Profile Pinned</th>
               <th>Current Job</th>
-              <th>Heartbeat Age</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -415,6 +314,22 @@
   }
 
   function renderQueuePanel(snapshot) {
+    if (snapshot.jobs.pendingError) {
+      return `
+        <div class="table-container">
+          <div class="section-header" style="padding: 18px 20px 0;">
+            <div>
+              <h3 class="section-title">Job Queue</h3>
+              <p style="margin-top:4px; color: var(--text-muted); font-size: 13px;">
+                Pending jobs sorted oldest-first.
+              </p>
+            </div>
+          </div>
+          ${renderInlineError(snapshot.jobs.pendingError, 'margin: 18px 20px 20px;')}
+        </div>
+      `;
+    }
+
     const jobs = snapshot.jobs.queue;
 
     if (!jobs.length) {
@@ -486,6 +401,22 @@
   }
 
   function renderFailureStrip(snapshot) {
+    if (snapshot.jobs.failedError) {
+      return `
+        <div class="card">
+          <div class="section-header" style="margin-bottom: 12px;">
+            <div>
+              <h3 class="section-title">Last Errors</h3>
+              <p style="margin-top:4px; color: var(--text-muted); font-size: 13px;">
+                Last 10 failed jobs and their surfaced error text.
+              </p>
+            </div>
+          </div>
+          ${renderInlineError(snapshot.jobs.failedError, 'margin: 0 0 4px;')}
+        </div>
+      `;
+    }
+
     const jobs = snapshot.jobs.failedRecent;
 
     if (!jobs.length) {
@@ -546,18 +477,16 @@
   }
 
   function renderContent(snapshot) {
-    const workersValue = snapshot.workers.available
-      ? `${snapshot.workers.active} / ${snapshot.workers.total}`
-      : '-';
-    const workersDetail = snapshot.workers.available
-      ? 'active / total heartbeats in the last 60s'
-      : 'Worker heartbeat API unavailable';
-    const profilesValue = String(snapshot.profiles.idle);
+    const workersValue = snapshot.workers.error ? 'Failed' : `${snapshot.workers.busy} busy`;
+    const workersDetail = 'Busy profiles with a current job';
+    const profilesValue = snapshot.profiles.error ? 'Failed' : `${snapshot.profiles.idle} idle`;
     const profilesDetail = `${snapshot.profiles.busy} busy | ${snapshot.profiles.quarantined} quarantined`;
-    const jobsValue = String(snapshot.jobs.inFlight);
+    const jobsValue = snapshot.jobs.summaryError ? 'Failed' : String(snapshot.jobs.inFlight);
     const jobsDetail = `${snapshot.jobs.running} running | ${snapshot.jobs.pending} pending | ${snapshot.jobs.claimed} claimed`;
     const serverValue = snapshot.health.label;
-    const serverDetail = `Uptime ${snapshot.health.uptime || '-'}`;
+    const serverDetail = snapshot.health.ok
+      ? 'Health endpoint responding.'
+      : 'Health endpoint returned a non-ok status.';
 
     return `
       <div style="display:grid; gap:16px;">
@@ -579,33 +508,55 @@
             label: 'Server Status',
             value: serverValue,
             detail: serverDetail,
-            statusClass: snapshot.health.ok ? 'completed' : 'pending',
-            dotColor: snapshot.health.ok ? 'var(--success)' : 'var(--warning)',
+            error: snapshot.health.error,
+            statusClass: snapshot.health.error
+              ? 'failed'
+              : snapshot.health.ok
+                ? 'completed'
+                : 'pending',
+            dotColor: snapshot.health.error
+              ? 'var(--error)'
+              : snapshot.health.ok
+                ? 'var(--success)'
+                : 'var(--warning)',
           })}
           ${renderStatCard({
             icon: 'hub',
             label: 'Workers',
             value: workersValue,
             detail: workersDetail,
-            statusClass: snapshot.workers.available ? 'running' : 'pending',
+            error: snapshot.workers.error,
+            statusClass: snapshot.workers.error
+              ? 'failed'
+              : snapshot.workers.busy > 0
+                ? 'running'
+                : 'completed',
           })}
           ${renderStatCard({
             icon: 'people',
             label: 'Profiles',
-            value: `${profilesValue} idle`,
+            value: profilesValue,
             detail: profilesDetail,
-            statusClass: snapshot.profiles.quarantined > 0
-              ? 'pending'
-              : snapshot.profiles.busy > 0
-                ? 'running'
-                : 'completed',
+            error: snapshot.profiles.error,
+            statusClass: snapshot.profiles.error
+              ? 'failed'
+              : snapshot.profiles.quarantined > 0
+                ? 'pending'
+                : snapshot.profiles.busy > 0
+                  ? 'running'
+                  : 'completed',
           })}
           ${renderStatCard({
             icon: 'dns',
             label: 'Jobs In Flight',
             value: jobsValue,
             detail: jobsDetail,
-            statusClass: snapshot.jobs.failed > 0 ? 'pending' : 'running',
+            error: snapshot.jobs.summaryError,
+            statusClass: snapshot.jobs.summaryError
+              ? 'failed'
+              : snapshot.jobs.failed > 0
+                ? 'pending'
+                : 'running',
           })}
         </div>
 
@@ -627,29 +578,32 @@
   async function fetchSnapshot() {
     const requestId = ++state.requestId;
 
-    const [health, counts, profiles, workers, pending, claimed, running, failed] = await Promise.allSettled([
+    const [health, counts, profiles, pending, failed] = await Promise.allSettled([
       API.fetch('/health'),
       API.jobs.counts(),
       API.profiles.list(),
-      API.fetch('/api/worker/workers'),
       API.jobs.list({ status: 'pending' }),
-      API.jobs.list({ status: 'claimed' }),
-      API.jobs.list({ status: 'running' }),
       API.jobs.list({ status: 'failed' }),
     ]);
 
     if (requestId !== state.requestId) return state.snapshot;
 
-    state.snapshot = buildSnapshot({
+    const results = {
       health,
       counts,
       profiles,
-      workers,
       pending,
-      claimed,
-      running,
       failed,
+    };
+    const errors = {};
+
+    Object.entries(results).forEach(([key, result]) => {
+      if (result.status === 'rejected') {
+        errors[key] = getErrorMessage(result.reason);
+      }
     });
+
+    state.snapshot = buildSnapshot(results, errors);
 
     return state.snapshot;
   }
