@@ -102,7 +102,6 @@
 
   function renderTile(job) {
     const status = safeStatus(job.status);
-    const type = job.type || 'text-to-video';
     const safeJobId = App.escapeHtml(String(job.id || ''));
     const promptText = job.prompt || job.direction || '(no prompt)';
     const media = status === 'completed' ? primaryMedia(job) : null;
@@ -112,7 +111,7 @@
       ? (media.kind === 'video'
         ? mediaTileHelper().videoTag({ src: media.url, poster: media.poster, alt: promptText })
         : mediaTileHelper().imgTag({ src: media.url, alt: promptText }))
-      : `<span class="material-icons type-icon ${App.jobTypeClass(type)}">${App.jobTypeIcon(type)}</span>`;
+      : '';
 
     // Completed = silent (Flow's default). Anything else gets a small
     // status chip so operators can read at a glance.
@@ -132,7 +131,7 @@
           ${stateChip}
         </div>
         <div class="tile-overlay">
-          <span class="tile-date">${App.escapeHtml(App.formatDate(job.created_at || job.createdAt))}</span>
+          <span class="tile-date">${App.escapeHtml(App.formatTileDate(job.created_at || job.createdAt))}</span>
         </div>
       </a>
     `;

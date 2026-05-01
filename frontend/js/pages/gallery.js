@@ -178,7 +178,7 @@
           ${stateChip}
         </div>
         <div class="tile-overlay">
-          <span class="tile-date">${App.escapeHtml(App.formatDate(job.created_at || job.createdAt))}</span>
+          <span class="tile-date">${App.escapeHtml(App.formatTileDate(job.created_at || job.createdAt))}</span>
         </div>
       </a>
     `;

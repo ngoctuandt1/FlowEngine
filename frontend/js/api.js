@@ -219,6 +219,34 @@ class APIError extends Error {
 }
 
 const TILE_MEDIA_ERROR_HANDLER = "this.closest('.tile-thumb')?.classList.add('tile-thumb--broken'); this.remove();";
+const TILE_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: true,
+});
+
+function formatTileDate(dateStr) {
+  if (!dateStr) return '-';
+
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return '-';
+
+  const parts = TILE_DATE_FORMATTER.formatToParts(date);
+  const lookup = (type) => parts.find((part) => part.type === type)?.value || '';
+  const month = lookup('month');
+  const day = lookup('day');
+  const hour = lookup('hour');
+  const minute = lookup('minute');
+  const dayPeriod = lookup('dayPeriod');
+
+  if (month && day && hour && minute && dayPeriod) {
+    return `${month} ${day}, ${hour}:${minute} ${dayPeriod}`;
+  }
+
+  return TILE_DATE_FORMATTER.format(date).replace(/\s+/g, ' ').trim();
+}
 
 const MediaTile = {
   imgTag({ src, alt, posterFallback } = {}) {
@@ -229,7 +257,7 @@ const MediaTile = {
   videoTag({ src, poster, alt } = {}) {
     const posterAttr = poster ? ` poster="${App.escapeHtml(poster)}"` : '';
     const ariaAttr = alt ? ` aria-label="${App.escapeHtml(alt)}"` : '';
-    return `<video class="tile-video" src="${App.escapeHtml(src || '')}"${posterAttr}${ariaAttr} muted loop playsinline preload="metadata" onerror="${TILE_MEDIA_ERROR_HANDLER}" onmouseenter="this.play().catch(()=>{})" onmouseleave="this.pause(); this.currentTime=0;"></video>`;
+    return `<video class="tile-video" src="${App.escapeHtml(src || '')}"${posterAttr}${ariaAttr} muted loop playsinline preload="auto" onloadeddata="this.currentTime=0.1" onerror="${TILE_MEDIA_ERROR_HANDLER}" onmouseenter="this.play().catch(()=>{})" onmouseleave="this.pause(); this.currentTime=0;"></video>`;
   },
 };
 
@@ -238,5 +266,6 @@ window.MediaUtil = MediaTile;
 document.addEventListener('DOMContentLoaded', () => {
   if (typeof App !== 'undefined') {
     App.mediaTile = MediaTile;
+    App.formatTileDate = formatTileDate;
   }
 });
