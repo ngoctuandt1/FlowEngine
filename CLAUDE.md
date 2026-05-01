@@ -27,7 +27,7 @@ flow/              FlowClient + 5 operation modules (generate, extend, insert, r
     ↕ Chrome profiles
 ```
 
-**Server** (`run_server.py` → `server/app.py`) — FastAPI, lifespan init, mounts frontend static files.  
+**Server** (`run_server.py` -> `server/app.py`) - FastAPI, lifespan init, mounts frontend static files, and enables the signed-cookie dashboard gate when `DASHBOARD_PASSWORD` is set.<br>
 **Worker** (`run_worker.py` → `worker/main.py`) — polls server, claims jobs, dispatches to `flow/`.  
 Communication is plain HTTP — worker calls `worker/remote_api.py` to claim jobs and post results.
 
@@ -38,6 +38,7 @@ Communication is plain HTTP — worker calls `worker/remote_api.py` to claim job
 | File | Purpose |
 |---|---|
 | `server/app.py` | FastAPI app, lifespan, CORS, static mount |
+| `server/dashboard_auth.py` | Signed-cookie dashboard gate (`/login`, `/api/auth/*`); active when `DASHBOARD_PASSWORD` is set |
 | `server/routes/jobs.py` | Job CRUD: `POST /api/jobs`, `POST /api/chains` |
 | `server/routes/worker.py` | `POST /api/worker/claim`, `PATCH /api/jobs/{id}` |
 | `server/db/job_store.py` | SQLite CRUD (aiosqlite), `_row_to_job` helper |
@@ -185,7 +186,19 @@ Body: "Closes #N"
 | #83 | `b62b878` | Add `flow/diagnostics.py::capture_failure()` forensic capture helper |
 | #85 | `ebb9569` | Wire forensic capture into chrome-time raise sites and append `[cap=<path>]` to surfaced errors |
 
-- Current `master` head for this docs sync: `ebb9569`.
+**2026-05-01 public ai.hassio.io.vn cutover - merged to `master` at `6a6b6a3`**
+
+The public `ai.hassio.io.vn` route was migrated from the archived legacy
+`video-ai-studio` deployment to FlowEngine via the #90-#108 page/auth/hardening
+train: TTS, characters/workflows, media tools, jobs/gallery, engine status,
+batch queue, job detail, chain tree, follow-up FE fixes, dashboard password
+gate, WS keepalive, upload magic-byte validation, POSIX Chrome reap, and
+CORS/ASGI/proxy hardening. Debian kept the existing Cloudflare Tunnel route by
+binding FlowEngine on `0.0.0.0:8899`. Full deploy steps, live verification, and
+rollback tags are captured in
+[2026-05-01_web-ai-hassio-flowengine-cutover.md](docs/session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md).
+
+- Current `master` head for this docs sync: `6a6b6a3`.
 
 For future epics: create `docs/PRD_<EPIC>.md`, open issues on GitHub, branch `claude/bug-N-slug`
 per issue, one PR per issue with `Closes #N`.
@@ -201,8 +214,14 @@ export PATH="/c/Program Files/GitHub CLI:$PATH"
 "/c/Program Files/GitHub CLI/gh.exe" pr create ...
 ```
 
-**Worktrees don't inherit PATH** — if a worktree shell can't find `gh`, `python`, or `pytest`,
+**Worktrees don't inherit PATH** - if a worktree shell can't find `gh`, `python`, or `pytest`,
 set PATH explicitly. Each worktree is under `.claude/worktrees/<name>/`.
+
+**Debian public deploy / Cloudflare Tunnel** - set `TRUST_PROXY_HEADERS=1` in
+`/etc/flowengine/flowengine.env` and launch uvicorn with `--proxy-headers --forwarded-allow-ips=*`
+so `server/dashboard_auth.py` sees HTTPS and marks the signed cookie `Secure`.
+Public cutover keeps FlowEngine on `0.0.0.0:8899` (not `8090`) so the existing
+route for `ai.hassio.io.vn` does not move.
 
 ### Recovery + diagnostics
 
