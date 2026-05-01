@@ -1,9 +1,10 @@
 /**
  * Chain Builder — sequence a chain of Flow ops from an L1 root into L2 edits.
  *
- * Backend contract: POST /api/chains with
- *   { profile: "<name>", jobs: [JobCreate, JobCreate, ...] }
- * See server/models/chain.py :: ChainCreate.
+ * Backend contract:
+ * - New roots use POST /api/chains with { profile, jobs: [JobCreate, ...] }.
+ * - Parent-prefilled continuations submit via existing POST /api/jobs so the
+ *   first step preserves the real upstream parent_job_id / chain_id linkage.
  *
  * Step field names mirror server/models/job.py JobCreate:
  *   type, prompt, model, aspect_ratio, direction, bbox{x,y,w,h},
@@ -31,14 +32,137 @@
     'insert-object',
   ]);
   const MAX_INGREDIENT_IMAGES = 10;
+  const CHAIN_BUILDER_ROUTE_RE = /^(chains|chain-builder)(?:[/?]|$)/i;
 
   let steps = [];
   let profiles = [];
   let pinnedProfile = '';
   let selectedFirstType = FIRST_TYPE;
   let selectedNextType = SUBSEQUENT_TYPES[0]?.id || '';
+  let parentPrefill = null;
+  let prefillError = '';
+  let routerPatched = false;
 
   function isL1Type(type) { return L1_ONLY_TYPES.has(type); }
+
+  function isValidSubsequentType(type) {
+    return SUBSEQUENT_TYPES.some((jobType) => jobType.id === type);
+  }
+
+  function getJobTypeMeta(type) {
+    return JOB_TYPES.find((jobType) => jobType.id === type) || null;
+  }
+
+  function getJobTypeLabel(type) {
+    return getJobTypeMeta(type)?.label || type || 'Unknown';
+  }
+
+  function patchRouter() {
+    if (routerPatched || !window.App || typeof App._onRoute !== 'function') return;
+
+    const originalOnRoute = App._onRoute.bind(App);
+    App._onRoute = function patchedOnRoute() {
+      const hash = String(location.hash || '').replace(/^#/, '') || 'home';
+      if (CHAIN_BUILDER_ROUTE_RE.test(hash)) {
+        if (!this.pages.chains) {
+          location.hash = '#home';
+          return;
+        }
+        this._loadPage('chains');
+        return;
+      }
+      originalOnRoute();
+    };
+
+    routerPatched = true;
+  }
+
+  function getHashQueryParams() {
+    const raw = String(window.location.hash || '').replace(/^#/, '');
+    const [, queryString = ''] = raw.split('?');
+    return new URLSearchParams(queryString);
+  }
+
+  function consumePendingParentStorage() {
+    let raw = '';
+    try {
+      raw = sessionStorage.getItem('pendingChainParent') || '';
+      sessionStorage.removeItem('pendingChainParent');
+    } catch {
+      return null;
+    }
+
+    if (!raw) return null;
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      const parentJobId = String(parsed.parent_job_id || parsed.parent || '').trim();
+      const type = String(parsed.type || '').trim();
+      return parentJobId ? { parentJobId, type, source: 'sessionStorage' } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveLaunchPrefill() {
+    const params = getHashQueryParams();
+    const parentJobId = String(params.get('parent') || '').trim();
+    const type = String(params.get('type') || '').trim();
+    const storagePrefill = consumePendingParentStorage();
+    if (parentJobId) {
+      return { parentJobId, type, source: 'hash' };
+    }
+    return storagePrefill;
+  }
+
+  async function fetchParentPrefill(parentJobId) {
+    const related = await API.fetch(`/api/jobs/${encodeURIComponent(parentJobId)}/related`);
+    const parentJob = related?.self;
+    if (!parentJob?.id) {
+      throw new Error(`Parent job ${parentJobId} not found`);
+    }
+
+    return {
+      parentJobId: parentJob.id,
+      parentType: parentJob.type || '',
+      chainId: related?.chain_id || related?.chain_root_id || parentJob.chain_id || parentJob.id,
+      projectUrl: parentJob.project_url || '',
+      profile: parentJob.profile || '',
+      mediaId: parentJob.media_id || '',
+    };
+  }
+
+  async function initializePrefill() {
+    parentPrefill = null;
+    prefillError = '';
+
+    const launchPrefill = resolveLaunchPrefill();
+    const requestedType = isValidSubsequentType(launchPrefill?.type) ? launchPrefill.type : '';
+    if (requestedType) {
+      selectedNextType = requestedType;
+    }
+
+    if (!launchPrefill?.parentJobId) return;
+
+    try {
+      parentPrefill = await fetchParentPrefill(launchPrefill.parentJobId);
+      if (parentPrefill.profile) {
+        pinnedProfile = parentPrefill.profile;
+      }
+
+      if (steps.length === 0) {
+        const initialType = requestedType || selectedNextType || SUBSEQUENT_TYPES[0]?.id || '';
+        if (initialType) {
+          selectedNextType = initialType;
+          steps = [emptyStep(initialType)];
+        }
+      }
+    } catch (err) {
+      parentPrefill = null;
+      prefillError = `Failed to load parent job ${launchPrefill.parentJobId}: ${err.message}`;
+    }
+  }
 
   function renderOptions(items, { selected } = {}) {
     return items
@@ -135,13 +259,31 @@
   }
 
   function renderProfileSelect() {
-    const opts = profiles
-      .map((p) => `<option value="${App.escapeHtml(p.name)}" ${pinnedProfile === p.name ? 'selected' : ''}>${App.escapeHtml(p.name)}</option>`)
-      .join('');
+    const knownProfiles = Array.isArray(profiles) ? profiles : [];
+    const renderedNames = new Set();
+    const options = [];
+
+    if (pinnedProfile && !knownProfiles.some((profile) => profile?.name === pinnedProfile)) {
+      renderedNames.add(pinnedProfile);
+      options.push(
+        `<option value="${App.escapeHtml(pinnedProfile)}" selected>${App.escapeHtml(pinnedProfile)}</option>`,
+      );
+    }
+
+    knownProfiles.forEach((profile) => {
+      const name = String(profile?.name || '').trim();
+      if (!name || renderedNames.has(name)) return;
+      renderedNames.add(name);
+      options.push(
+        `<option value="${App.escapeHtml(name)}" ${pinnedProfile === name ? 'selected' : ''}>${App.escapeHtml(name)}</option>`,
+      );
+    });
+
+    const disabled = parentPrefill?.profile ? ' disabled' : '';
     return `
-      <select class="form-select" id="chain-profile" required>
+      <select class="form-select" id="chain-profile" required${disabled}>
         <option value="">Select profile...</option>
-        ${opts}
+        ${options.join('')}
       </select>
     `;
   }
@@ -150,30 +292,57 @@
     const el = document.getElementById('chain-add-buttons');
     if (!el) return;
     if (steps.length === 0) {
-      const options = FIRST_TYPES
-        .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedFirstType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
-        .join('');
-      el.innerHTML = `
-        <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">
-          Chains must start with an L1 step that creates a new project.
-        </p>
-        <div class="form-row" style="align-items: end;">
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Root step <span class="required">*</span></label>
-            <select class="form-select" id="chain-root-type">${options}</select>
-            <span class="form-hint">Choose the L1 job that creates the chain's project.</span>
+      if (parentPrefill) {
+        const options = SUBSEQUENT_TYPES
+          .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedNextType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
+          .join('');
+        el.innerHTML = `
+          <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">
+            This builder continues an existing parent job, so the first step must be an L2 edit.
+          </p>
+          <div class="form-row" style="align-items: end;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">First chained step <span class="required">*</span></label>
+              <select class="form-select" id="chain-next-type">${options}</select>
+              <span class="form-hint">Choose the first edit that should run against the inherited parent media.</span>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <button class="btn btn-primary" id="chain-add-next">
+                <span class="material-icons">add_link</span> Add Step
+              </button>
+            </div>
           </div>
-          <div class="form-group" style="margin-bottom: 0;">
-            <button class="btn btn-primary" id="chain-add-root">
-              <span class="material-icons">add_link</span> Add Root Step
-            </button>
+        `;
+        el.querySelector('#chain-next-type')?.addEventListener('change', (event) => {
+          selectedNextType = event.target.value;
+        });
+        el.querySelector('#chain-add-next')?.addEventListener('click', () => addStep(selectedNextType));
+      } else {
+        const options = FIRST_TYPES
+          .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedFirstType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
+          .join('');
+        el.innerHTML = `
+          <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">
+            Chains must start with an L1 step that creates a new project.
+          </p>
+          <div class="form-row" style="align-items: end;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">Root step <span class="required">*</span></label>
+              <select class="form-select" id="chain-root-type">${options}</select>
+              <span class="form-hint">Choose the L1 job that creates the chain's project.</span>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <button class="btn btn-primary" id="chain-add-root">
+                <span class="material-icons">add_link</span> Add Root Step
+              </button>
+            </div>
           </div>
-        </div>
-      `;
-      el.querySelector('#chain-root-type')?.addEventListener('change', (event) => {
-        selectedFirstType = event.target.value;
-      });
-      el.querySelector('#chain-add-root')?.addEventListener('click', () => addStep(selectedFirstType));
+        `;
+        el.querySelector('#chain-root-type')?.addEventListener('change', (event) => {
+          selectedFirstType = event.target.value;
+        });
+        el.querySelector('#chain-add-root')?.addEventListener('click', () => addStep(selectedFirstType));
+      }
     } else {
       const options = SUBSEQUENT_TYPES
         .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedNextType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
@@ -371,7 +540,7 @@
 
   function renderSteps() {
     return steps.map((s, i) => {
-      const meta = JOB_TYPES.find((t) => t.id === s.type) || {};
+      const meta = getJobTypeMeta(s.type) || {};
       return `
         <div class="chain-step">
           <div class="chain-step-card">
@@ -501,10 +670,13 @@
 
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i];
-      const meta = JOB_TYPES.find((t) => t.id === s.type);
+      const meta = getJobTypeMeta(s.type);
       const label = meta?.label || s.type;
 
-      if (i === 0 && !isL1Type(s.type)) {
+      if (i === 0 && parentPrefill && isL1Type(s.type)) {
+        return `Step 1 (${label}) creates a new project and cannot continue an existing parent job.`;
+      }
+      if (i === 0 && !parentPrefill && !isL1Type(s.type)) {
         return `Step 1 must be an L1 root type. ${label} can only be added after a project-creating step.`;
       }
       if (i > 0 && isL1Type(s.type)) {
@@ -537,26 +709,70 @@
     return null;
   }
 
+  function buildJobPayload(step, extra = {}) {
+    const job = { type: step.type };
+    if (step.prompt) job.prompt = step.prompt;
+    if (step.model) job.model = step.model;
+    if (step.aspect_ratio) job.aspect_ratio = step.aspect_ratio;
+    if (step.direction) job.direction = step.direction;
+    if (step.start_image_path) job.start_image_path = step.start_image_path;
+    if (step.end_image_path) job.end_image_path = step.end_image_path;
+    if (step.ref_image_path) job.ref_image_path = step.ref_image_path;
+    if (Array.isArray(step.ingredient_image_paths) && step.ingredient_image_paths.length > 0) {
+      job.ingredient_image_paths = [...step.ingredient_image_paths];
+    }
+    if (step.bbox && ['x', 'y', 'w', 'h'].every((k) => typeof step.bbox[k] === 'number')) {
+      job.bbox = { x: step.bbox.x, y: step.bbox.y, w: step.bbox.w, h: step.bbox.h };
+    }
+
+    if (extra.profile) job.profile = extra.profile;
+    if (extra.parent_job_id) job.parent_job_id = extra.parent_job_id;
+    if (extra.chain_id) job.chain_id = extra.chain_id;
+    if (extra.project_url) job.project_url = extra.project_url;
+    if (extra.media_id) job.media_id = extra.media_id;
+
+    return job;
+  }
+
   function buildPayload() {
     return {
       profile: pinnedProfile,
-      jobs: steps.map((s) => {
-        const job = { type: s.type };
-        if (s.prompt) job.prompt = s.prompt;
-        if (s.model) job.model = s.model;
-        if (s.aspect_ratio) job.aspect_ratio = s.aspect_ratio;
-        if (s.direction) job.direction = s.direction;
-        if (s.start_image_path) job.start_image_path = s.start_image_path;
-        if (s.end_image_path) job.end_image_path = s.end_image_path;
-        if (s.ref_image_path) job.ref_image_path = s.ref_image_path;
-        if (Array.isArray(s.ingredient_image_paths) && s.ingredient_image_paths.length > 0) {
-          job.ingredient_image_paths = [...s.ingredient_image_paths];
+      jobs: steps.map((step) => buildJobPayload(step)),
+    };
+  }
+
+  async function createParentPrefilledChain() {
+    const createdJobs = [];
+    let parentJobId = parentPrefill?.parentJobId || '';
+    const chainId = parentPrefill?.chainId || '';
+
+    try {
+      for (let i = 0; i < steps.length; i++) {
+        const extra = {
+          profile: pinnedProfile,
+          parent_job_id: parentJobId,
+          chain_id: chainId,
+        };
+
+        if (i === 0) {
+          if (parentPrefill?.projectUrl) extra.project_url = parentPrefill.projectUrl;
+          if (parentPrefill?.mediaId) extra.media_id = parentPrefill.mediaId;
         }
-        if (s.bbox && ['x','y','w','h'].every((k) => typeof s.bbox[k] === 'number')) {
-          job.bbox = { x: s.bbox.x, y: s.bbox.y, w: s.bbox.w, h: s.bbox.h };
+
+        const job = await API.jobs.create(buildJobPayload(steps[i], extra));
+        createdJobs.push(job);
+        if (job?.id) {
+          parentJobId = job.id;
         }
-        return job;
-      }),
+      }
+    } catch (err) {
+      err.createdJobs = createdJobs;
+      throw err;
+    }
+
+    return {
+      chain_id: createdJobs[0]?.chain_id || chainId || parentPrefill?.parentJobId || 'unknown',
+      jobs: createdJobs,
     };
   }
 
@@ -588,6 +804,36 @@
     }
   }
 
+  function renderPrefillBanner() {
+    if (prefillError) {
+      return `
+        <div class="card" style="margin-bottom: 16px; border-color: var(--warning, #f39c12); background: rgba(243,156,18,0.05);">
+          <div style="display:flex; align-items:flex-start; gap:10px;">
+            <span class="material-icons" style="color: var(--warning, #f39c12);">warning</span>
+            <div>
+              <strong>Parent prefill unavailable</strong>
+              <div style="font-size:13px; color:var(--text-secondary); margin-top:4px;">${App.escapeHtml(prefillError)}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (!parentPrefill) return '';
+
+    return `
+      <div class="card" style="margin-bottom: 16px;">
+        <div class="form-hint" style="margin-bottom: 6px;">Continue Chain</div>
+        <div style="font-size: 14px; color: var(--text-primary); word-break: break-all;">
+          Chained from: ${App.escapeHtml(getJobTypeLabel(parentPrefill.parentType))} &middot; ${App.escapeHtml(parentPrefill.mediaId || 'unknown media')}
+        </div>
+        <div class="form-hint" style="margin-top: 6px;">
+          Parent job ${App.escapeHtml(parentPrefill.parentJobId)} locks the profile and existing project context for the first chained step.
+        </div>
+      </div>
+    `;
+  }
+
   const ChainBuilderPage = {
     name: 'chains',
     title: 'Chain Builder',
@@ -599,6 +845,7 @@
       selectedFirstType = FIRST_TYPE;
       selectedNextType = SUBSEQUENT_TYPES[0]?.id || '';
       await fetchProfiles();
+      await initializePrefill();
 
       return `
         <div style="max-width: 800px;">
@@ -610,10 +857,14 @@
             </p>
           </div>
 
+          ${renderPrefillBanner()}
+
           <div class="card" style="margin-bottom:16px;">
             <label class="form-label">Profile <span class="required">*</span></label>
             ${renderProfileSelect()}
-            <span class="form-hint">All steps run on this Google account. L2+ inherits it automatically.</span>
+            <span class="form-hint">${parentPrefill?.profile
+              ? 'Inherited from the parent job and locked to the same Google account.'
+              : 'All steps run on this Google account. L2+ inherits it automatically.'}</span>
           </div>
 
           <div class="chain-timeline" id="chain-steps"></div>
@@ -655,7 +906,9 @@
         btn.innerHTML = '<span class="spinner"></span> Submitting...';
 
         try {
-          const result = await API.chains.create(buildPayload());
+          const result = parentPrefill
+            ? await createParentPrefilledChain()
+            : await API.chains.create(buildPayload());
           const cid = result?.chain_id || result?.id || 'unknown';
           showResult(
             'ok',
@@ -664,7 +917,9 @@
           );
           App.toast('Chain submitted', 'success');
         } catch (e) {
-          showResult('err', 'Chain failed', App.escapeHtml(e.message));
+          const createdCount = Array.isArray(e.createdJobs) ? e.createdJobs.length : 0;
+          const suffix = createdCount > 0 ? ` after queuing ${createdCount} step(s)` : '';
+          showResult('err', 'Chain failed', App.escapeHtml(`${e.message}${suffix}`));
           App.toast('Chain failed: ' + e.message, 'error');
         } finally {
           btn.disabled = steps.length === 0;
@@ -680,5 +935,6 @@
     },
   };
 
+  patchRouter();
   App.register(ChainBuilderPage);
 })();
