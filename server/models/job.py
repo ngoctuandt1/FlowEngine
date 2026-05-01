@@ -27,6 +27,18 @@ DEFAULT_MODEL = "veo-3.1-lite-lp"
 # (`nano-banana-pro`). Keep the route contract stable here until that path is
 # migrated separately.
 TEXT_TO_IMAGE_ROUTE_SENTINEL = "veo-3.1-fast-lp"
+CHAIN_CREATE_PROFILE_DESCRIPTION = (
+    "Profile pinning: chain-level `profile` wins; if omitted, all step "
+    "`JobCreate.profile` values must resolve to one consistent profile and "
+    "that value is used for every job in the chain."
+)
+CHAIN_CREATE_PROFILE_REQUIRED_ERROR = (
+    "ChainCreate requires either chain-level `profile` OR per-step `profile` "
+    "on at least the first step (must be consistent across all steps)."
+)
+CHAIN_CREATE_PROFILE_MISMATCH_ERROR = (
+    "ChainCreate step profiles must match when chain-level `profile` is omitted."
+)
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -41,6 +53,29 @@ def _require_non_empty_text(value: str | None, *, job_type: str, field: str) -> 
         if field == "direction":
             raise ValueError(f"{job_type} requires 'direction'")
         raise ValueError(f"{job_type} requires {field}")
+
+
+def resolve_chain_profile(profile: str | None, jobs: list["JobCreate"]) -> str:
+    """Resolve the effective profile for a chain create request."""
+    normalized_profile = _normalize_optional_text(profile)
+    if normalized_profile is not None:
+        return normalized_profile
+
+    resolved_profile: str | None = None
+    for step in jobs:
+        step_profile = _normalize_optional_text(step.profile)
+        if step_profile is None:
+            continue
+        if resolved_profile is None:
+            resolved_profile = step_profile
+            continue
+        if step_profile != resolved_profile:
+            raise ValueError(CHAIN_CREATE_PROFILE_MISMATCH_ERROR)
+
+    if resolved_profile is None:
+        raise ValueError(CHAIN_CREATE_PROFILE_REQUIRED_ERROR)
+
+    return resolved_profile
 
 
 class JobType(str, Enum):
@@ -160,9 +195,25 @@ class JobCreate(BaseModel):
 
 
 class ChainCreate(BaseModel):
-    """Request body for creating a job chain."""
-    jobs: list[JobCreate] = Field(min_length=1)
-    profile: Optional[str] = None  # Pin to specific profile
+    """Request body for creating a job chain with a single effective profile."""
+
+    jobs: list[JobCreate] = Field(
+        min_length=1,
+        description=CHAIN_CREATE_PROFILE_DESCRIPTION,
+    )
+    profile: Optional[str] = Field(
+        default=None,
+        description=CHAIN_CREATE_PROFILE_DESCRIPTION,
+    )
+
+    @model_validator(mode="after")
+    def _normalize_chain_profile(self) -> "ChainCreate":
+        self.profile = _normalize_optional_text(self.profile)
+        return self
+
+    @property
+    def effective_profile(self) -> str:
+        return resolve_chain_profile(self.profile, self.jobs)
 
 
 class Job(BaseModel):
