@@ -168,7 +168,7 @@ const API = {
      */
     async update(id, data) {
       return API.fetch(`/api/profiles/${id}`, {
-        method: 'PATCH',
+        method: 'PUT',
         body: JSON.stringify(data),
       });
     },
