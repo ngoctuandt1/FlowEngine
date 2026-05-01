@@ -1,4 +1,4 @@
-"""Model selector -- pick LP (Lower Priority) models for 0-credit generation."""
+"""Model selector -- pick free Veo models for 0-credit generation."""
 
 import asyncio
 import re
@@ -17,6 +17,76 @@ MODEL_MAP = {
 
 # Default to fast LP (free)
 DEFAULT_MODEL = "veo-3.1-fast-lp"
+_MODEL_VARIANT_TOKENS = frozenset({"fast", "lite", "quality", "lower", "priority"})
+
+
+def _normalize_model_text(text: str) -> str:
+    """Collapse punctuation/whitespace so Veo variant matching is format-stable."""
+    normalized = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _normalize_model_family(text: str) -> str:
+    """Strip variant markers so cross-phase LP -> Lite matching stays version-aware."""
+    tokens = [
+        token
+        for token in _normalize_model_text(text).split()
+        if token not in _MODEL_VARIANT_TOKENS
+    ]
+    return " ".join(tokens)
+
+
+def _raise_ambiguous_free_model_error(
+    base_name: str,
+    candidate_text: str,
+    visible_variants: list[str],
+) -> None:
+    logger.error(
+        "Ambiguous free model variants for '%s' under '%s': %s",
+        base_name,
+        candidate_text,
+        visible_variants,
+    )
+    raise RuntimeError(
+        f"Ambiguous {candidate_text} model variants for requested model "
+        f"'{base_name}' — visible options: {', '.join(visible_variants)}"
+    )
+
+
+async def _pick_free_model_item(items, count: int, base_name: str, candidate_text: str):
+    """Resolve the best free-mode locator match without guessing across variants."""
+    normalized_base = _normalize_model_text(base_name)
+    normalized_family = _normalize_model_family(base_name)
+    exact_matches = []
+    family_matches = []
+    visible_variants = []
+
+    for i in range(count):
+        item = items.nth(i)
+        item_text = (await item.inner_text()).strip()
+        visible_variants.append(item_text)
+        normalized_item = _normalize_model_text(item_text)
+
+        if normalized_base and normalized_base in normalized_item:
+            exact_matches.append((item, item_text))
+            continue
+
+        if normalized_family and normalized_family in normalized_item:
+            family_matches.append((item, item_text))
+
+    if exact_matches:
+        return exact_matches[0]
+
+    if len(family_matches) == 1:
+        return family_matches[0]
+
+    if len(family_matches) > 1 or count > 1:
+        _raise_ambiguous_free_model_error(base_name, candidate_text, visible_variants)
+
+    if visible_variants:
+        return items.first, visible_variants[0]
+
+    return items.first, ""
 
 
 async def select_model(
@@ -31,7 +101,7 @@ async def select_model(
     2. Wait for the dropdown menu to appear
     3. Find the target model menuitem
     4. Click it
-    5. Verify selection via credit footer text (0 credits for LP)
+    5. Verify selection via credit footer text (0 credits for LP/Lite)
 
     Args:
         page: Playwright page
@@ -119,6 +189,13 @@ async def select_model(
             pass
 
     if not opened:
+        if free_mode:
+            logger.warning(
+                "Could not find model selector chip in free mode — aborting to avoid default paid model"
+            )
+            raise RuntimeError(
+                "Could not open model selector chip in free mode — aborting to avoid default paid model"
+            )
         logger.warning("Could not find model selector chip — will proceed with default model")
         return False
 
@@ -145,6 +222,10 @@ async def select_model(
     # the dropdown closed, hiding the LP items.
     is_lp = "Lower Priority" in target_text
     base_name = target_text.split(" [")[0].strip()  # "Veo 3.1 - Fast"
+    free_model_candidates = [
+        ("Lower Priority", re.compile(r"Lower Priority", re.IGNORECASE)),
+        ("Lite", re.compile(r"Lite", re.IGNORECASE)),
+    ]
 
     MODEL_ITEM_SELECTORS = (
         "menuitem, [role='menuitem'], [role='option'], "
@@ -169,47 +250,60 @@ async def select_model(
         dropdown_opened = await _open_model_dropdown(page)
 
     # Step 3: Find and click the target model
+    free_model_candidate_found = False
+    last_free_mode_error: Exception | None = None
     for attempt in range(3):
         if attempt > 0:
             logger.info("Model select retry %d, waiting 1.5s...", attempt + 1)
             await asyncio.sleep(1.5)
 
         try:
-            if is_lp:
-                # Look for any element with "Lower Priority" text
-                items = page.locator(MODEL_ITEM_SELECTORS).filter(
-                    has_text=re.compile(r"Lower Priority", re.IGNORECASE)
-                )
-                count = await items.count()
-                logger.info(
-                    "LP model search (attempt %d): found %d items matching 'Lower Priority'",
-                    attempt + 1, count,
-                )
+            if free_mode:
+                for candidate_text, candidate_pattern in free_model_candidates:
+                    items = page.locator(MODEL_ITEM_SELECTORS).filter(
+                        has_text=candidate_pattern
+                    )
+                    count = await items.count()
+                    logger.info(
+                        "Free model search (attempt %d): found %d items matching '%s'",
+                        attempt + 1,
+                        count,
+                        candidate_text,
+                    )
 
-                if count == 0:
-                    # Debug: log what model options are visible
-                    await _debug_model_options(page)
-                    continue
+                    if count == 0:
+                        continue
 
-                # Pick the one matching our base model name
-                for i in range(count):
-                    item_text = await items.nth(i).inner_text()
-                    if base_name.lower() in item_text.lower():
-                        await items.nth(i).click(timeout=3000, force=True)
-                        logger.info("Selected LP model: %s", item_text.strip()[:80])
-                        await asyncio.sleep(0.5)
-                        ok = await _verify_credits(page, expected=0)
-                        await _close_model_panel(page, dropdown_opened)
-                        return ok
+                    free_model_candidate_found = True
+                    selected_item, selected_text = await _pick_free_model_item(
+                        items,
+                        count,
+                        base_name,
+                        candidate_text,
+                    )
 
-                # Fallback: click first LP model found
-                text = await items.first.inner_text()
-                await items.first.click(timeout=3000, force=True)
-                logger.info("Selected first LP model: %s", text.strip()[:80])
-                await asyncio.sleep(0.5)
-                ok = await _verify_credits(page, expected=0)
-                await _close_model_panel(page, dropdown_opened)
-                return ok
+                    if candidate_text == "Lite":
+                        # 2026-05-10 LP deprecation policy: if the LP option is
+                        # gone, fall back to Veo Lite per
+                        # C:\Users\Tuan\.claude\projects\D--AI-FlowEngine\memory\project_lp_deprecation_2026_10_05.md.
+                        logger.warning(
+                            "LP option not found, falling back to Lite (per 2026-05-10 deprecation policy)"
+                        )
+
+                    await selected_item.click(timeout=3000, force=True)
+                    logger.info("Selected free model: %s", selected_text.strip()[:80])
+                    await asyncio.sleep(0.5)
+                    ok = await _verify_credits(page, expected=0)
+                    await _close_model_panel(page, dropdown_opened)
+                    if not ok:
+                        raise RuntimeError(
+                            "Free model selection did not verify 0 credits — aborting to avoid paid generation"
+                        )
+                    return True
+
+                # Debug: log what model options are visible before retrying.
+                await _debug_model_options(page)
+                continue
 
             else:
                 # Non-LP: match base model name
@@ -225,10 +319,48 @@ async def select_model(
 
         except Exception as e:
             logger.warning("Model select attempt %d failed: %s", attempt + 1, e)
+            if free_mode:
+                last_free_mode_error = e
+
+    if free_mode:
+        logger.warning(
+            "Playwright selectors failed for free model selection — trying JS fallback"
+        )
+        js_ok = await _select_model_js(
+            page,
+            base_name,
+            [candidate_text for candidate_text, _ in free_model_candidates],
+        )
+        if js_ok:
+            ok = await _verify_credits(page, expected=0)
+            await _close_model_panel(page, dropdown_opened)
+            if not ok:
+                raise RuntimeError(
+                    "Free model selection did not verify 0 credits after JS fallback — aborting to avoid paid generation"
+                )
+            return True
+
+        await _close_model_panel(page, dropdown_opened)
+        if not free_model_candidate_found:
+            try:
+                visible_model_count = await page.locator(MODEL_ITEM_SELECTORS).count()
+            except Exception:
+                visible_model_count = 0
+
+            if visible_model_count > 0:
+                raise RuntimeError(
+                    "Neither Lower Priority nor Lite model found — Flow UI changed unexpectedly, manual intervention needed"
+                )
+
+            raise RuntimeError(
+                "Free model search exhausted with no visible model options — manual intervention needed"
+            )
+
+        raise RuntimeError("Failed to select free model after all attempts") from last_free_mode_error
 
     # All attempts exhausted — try JS fallback
     logger.warning("Playwright selectors failed — trying JS fallback for model selection")
-    js_ok = await _select_model_js(page, base_name, is_lp)
+    js_ok = await _select_model_js(page, base_name)
     if js_ok:
         ok = await _verify_credits(page, expected=0) if is_lp else True
         await _close_model_panel(page, dropdown_opened)
@@ -506,52 +638,121 @@ async def _debug_model_options(page) -> None:
         logger.debug("Debug model options failed: %s", e)
 
 
-async def _select_model_js(page, base_name: str, is_lp: bool) -> bool:
+async def _select_model_js(
+    page,
+    base_name: str,
+    candidate_texts: list[str] | None = None,
+) -> bool:
     """JS fallback: click model option by scanning visible text.
 
-    Searches all clickable elements for 'Lower Priority' (LP mode)
-    or the base model name, then clicks the matching one.
+    When ``candidate_texts`` is set, probe those free-mode markers in order
+    (for example ``["Lower Priority", "Lite"]``) before falling back to the
+    requested model family/version match.
     """
+    normalized_base = _normalize_model_text(base_name)
+    normalized_family = _normalize_model_family(base_name)
+
     try:
-        target_lp = "lower priority" if is_lp else ""
-        clicked = await page.evaluate("""(args) => {
-            const baseName = args.baseName.toLowerCase();
-            const targetLP = args.targetLP;
+        result = await page.evaluate("""(args) => {
+            const normalize = (text) => (text || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, ' ')
+                .replace(/\\s+/g, ' ')
+                .trim();
+            const candidateTexts = args.candidateTexts || [];
             const clickable = document.querySelectorAll(
                 'menuitem, [role="menuitem"], [role="option"], button, [role="button"]'
             );
-            let bestMatch = null;
-            for (const el of clickable) {
-                const text = (el.innerText || '').toLowerCase();
-                const rect = el.getBoundingClientRect();
-                if (rect.width < 30 || rect.height < 20) continue;
+            const phases = candidateTexts.length ? candidateTexts : [''];
 
-                if (targetLP && text.includes(targetLP) && text.includes(baseName)) {
-                    // Perfect match: LP + base name
-                    el.click();
-                    return text.trim().substring(0, 80);
+            for (const candidateText of phases) {
+                const normalizedCandidate = normalize(candidateText);
+                const matches = [];
+
+                for (const el of clickable) {
+                    const text = (el.innerText || '').trim();
+                    const normalizedText = normalize(text);
+                    const rect = el.getBoundingClientRect();
+                    if (!normalizedText || rect.width < 30 || rect.height < 20) continue;
+
+                    if (normalizedCandidate) {
+                        if (!normalizedText.includes(normalizedCandidate)) continue;
+                    } else if (!normalizedText.includes(args.normalizedBase)) {
+                        continue;
+                    }
+
+                    matches.push({
+                        el,
+                        text: text.substring(0, 80),
+                        normalizedText,
+                    });
                 }
-                if (targetLP && text.includes(targetLP)) {
-                    bestMatch = el;  // LP match without base name
+
+                const exact = matches.find(
+                    (match) => args.normalizedBase && match.normalizedText.includes(args.normalizedBase)
+                );
+                if (exact) {
+                    exact.el.click();
+                    return {
+                        status: 'clicked',
+                        clickedText: exact.text,
+                        candidateText,
+                    };
                 }
-                if (!targetLP && text.includes(baseName)) {
-                    el.click();
-                    return text.trim().substring(0, 80);
+
+                const familyMatches = matches.filter(
+                    (match) => args.normalizedFamily && match.normalizedText.includes(args.normalizedFamily)
+                );
+                if (familyMatches.length === 1) {
+                    familyMatches[0].el.click();
+                    return {
+                        status: 'clicked',
+                        clickedText: familyMatches[0].text,
+                        candidateText,
+                    };
+                }
+
+                if (familyMatches.length > 1 || matches.length > 1) {
+                    return {
+                        status: 'ambiguous',
+                        candidateText,
+                        visibleTexts: matches.map((match) => match.text),
+                    };
+                }
+
+                if (matches.length === 1) {
+                    matches[0].el.click();
+                    return {
+                        status: 'clicked',
+                        clickedText: matches[0].text,
+                        candidateText,
+                    };
                 }
             }
-            if (bestMatch) {
-                bestMatch.click();
-                return (bestMatch.innerText || '').trim().substring(0, 80);
-            }
-            return null;
-        }""", {"baseName": base_name, "targetLP": target_lp})
 
-        if clicked:
-            logger.info("Selected model via JS fallback: %s", clicked)
-            await asyncio.sleep(0.5)
-            return True
+            return {status: 'none'};
+        }""", {
+            "candidateTexts": candidate_texts or [],
+            "normalizedBase": normalized_base,
+            "normalizedFamily": normalized_family,
+        })
     except Exception as e:
         logger.warning("JS model select failed: %s", e)
+        return False
+
+    if result and result.get("status") == "ambiguous":
+        visible_variants = result.get("visibleTexts") or []
+        candidate_text = result.get("candidateText") or "free model"
+        _raise_ambiguous_free_model_error(base_name, candidate_text, visible_variants)
+
+    if result and result.get("status") == "clicked":
+        if result.get("candidateText") == "Lite":
+            logger.warning(
+                "LP option not found, falling back to Lite (per 2026-05-10 deprecation policy)"
+            )
+        logger.info("Selected model via JS fallback: %s", result.get("clickedText"))
+        await asyncio.sleep(0.5)
+        return True
 
     return False
 

@@ -165,7 +165,11 @@ async def test_lp_precheck_opens_when_items_not_visible(monkeypatch):
 
     page = _make_select_model_page(lp_count=0)
 
-    await select_model(page, model="veo-3.1-fast-lp")
+    with pytest.raises(
+        RuntimeError,
+        match="Free model search exhausted with no visible model options",
+    ):
+        await select_model(page, model="veo-3.1-fast-lp")
 
     open_spy.assert_called_once()
 
