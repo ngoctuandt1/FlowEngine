@@ -6,7 +6,7 @@
  * Mirrors:
  *   server/models/job.py         JobType enum + JobCreate defaults
  *   flow/model_selector.py       MODEL_MAP + DEFAULT_MODEL
- *   flow/camera_move.py (presets are Flow UI labels)
+ *   flow/operations/camera.py    Flow UI camera preset labels
  */
 const CONST = (() => {
   // Keep in sync with JobType enum in server/models/job.py.
@@ -30,7 +30,7 @@ const CONST = (() => {
     { value: 'veo-3.1-fast', label: 'Veo 3.1 - Fast [paid]' },
     { value: 'veo-3.1-quality', label: 'Veo 3.1 - Quality [paid]' },
   ];
-  const DEFAULT_MODEL = 'veo-3.1-fast-lp';
+  const DEFAULT_MODEL = 'veo-3.1-lite-lp';
   const IMAGE_MODELS = [
     { value: 'nano-banana-pro', label: 'Nano Banana Pro' },
     { value: 'nano-banana-2', label: 'Nano Banana 2' },
@@ -54,14 +54,9 @@ const CONST = (() => {
 
   // Camera move presets - Flow UI labels, passed through as `direction`.
   const CAMERA_PRESETS = [
-    'Orbit Left', 'Orbit Right',
-    'Pan Left', 'Pan Right',
-    'Pedestal Up', 'Pedestal Down',
-    'Tilt Up', 'Tilt Down',
-    'Zoom In', 'Zoom Out',
-    'Dolly In', 'Dolly Out',
-    'Crane Up',
-    'Roll CW', 'Roll CCW',
+    'Dolly in', 'Dolly out', 'Orbit left', 'Orbit right',
+    'Orbit up', 'Orbit low', 'Dolly in zoom out', 'Dolly out zoom in',
+    'Center', 'Left', 'Right', 'High', 'Low', 'Closer', 'Further',
   ];
 
   // Which types accept a prompt. `remove-object` is bbox-only,

@@ -16,8 +16,8 @@ MODEL_MAP = {
     "veo-3.1-quality": "Veo 3.1 - Quality",
 }
 
-# Default to fast LP (free)
-DEFAULT_MODEL = "veo-3.1-fast-lp"
+# Default to Lite LP (free)
+DEFAULT_MODEL = "veo-3.1-lite-lp"
 _MODEL_VARIANT_TOKENS = frozenset({"fast", "lite", "quality", "lower", "priority"})
 _MODEL_ITEM_SELECTORS = (
     "menuitem, [role='menuitem'], [role='option'], "
