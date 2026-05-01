@@ -164,6 +164,13 @@ def _make_select_model_page(
 
     model_items_loc = MagicMock()
     model_items_loc.count = AsyncMock(return_value=len(option_texts))
+    model_items_loc.nth = MagicMock(
+        side_effect=lambda index: _make_filtered_locator(
+            [option_texts[index]],
+            clicked_texts,
+            click_errors,
+        ).first
+    )
 
     def _filter(*, has_text):
         if force_playwright_miss:
@@ -268,11 +275,14 @@ async def test_select_model_raises_when_neither_lp_nor_lite_exists(
 
     with pytest.raises(
         RuntimeError,
-        match="Neither Lower Priority nor Lite model found",
-    ):
-        await select_model(page, model="veo-3.1-fast-lp")
+        match="free_model_select_failed: Neither Lower Priority nor Lite model found in dropdown",
+    ) as excinfo:
+        await select_model(page, model="veo-3.1-fast-lp", profile="profile-a")
 
     assert page._clicked_texts == []
+    message = str(excinfo.value)
+    assert "Profile=profile-a" in message
+    assert 'Visible=["Veo Quality", "Veo Imagen"]' in message
     _selector_stubs["open_dropdown"].assert_awaited_once()
     _selector_stubs["verify_credits"].assert_not_called()
 
@@ -341,11 +351,14 @@ async def test_select_model_raises_when_js_fallback_finds_neither_lp_nor_lite(
 
     with pytest.raises(
         RuntimeError,
-        match="Neither Lower Priority nor Lite model found",
-    ):
-        await select_model(page, model="veo-3.1-fast-lp")
+        match="free_model_select_failed: Neither Lower Priority nor Lite model found in dropdown",
+    ) as excinfo:
+        await select_model(page, model="veo-3.1-fast-lp", profile="profile-b")
 
     assert page._clicked_texts == []
+    message = str(excinfo.value)
+    assert "Profile=profile-b" in message
+    assert 'Visible=["Veo Quality", "Veo Imagen"]' in message
     _selector_stubs["verify_credits"].assert_not_called()
 
 
@@ -360,10 +373,13 @@ async def test_select_model_raises_when_free_item_click_keeps_failing(
 
     with pytest.raises(
         RuntimeError,
-        match="Failed to select free model after all attempts",
-    ):
+        match="free_model_select_failed: Failed to select free model after all attempts",
+    ) as excinfo:
         await select_model(page, model="veo-3.1-fast-lp")
 
+    message = str(excinfo.value)
+    assert "Profile=unknown" in message
+    assert 'Visible=["Veo 3.1 - Fast [Lower Priority]"]' in message
     _selector_stubs["verify_credits"].assert_not_called()
 
 
@@ -375,8 +391,11 @@ async def test_select_model_raises_when_credit_verification_never_reaches_zero(
 
     with pytest.raises(
         RuntimeError,
-        match="did not verify 0 credits after JS fallback",
-    ):
-        await select_model(page, model="veo-3.1-fast-lp")
+        match="free_model_select_failed: Free model selection did not verify 0 credits after JS fallback",
+    ) as excinfo:
+        await select_model(page, model="veo-3.1-fast-lp", profile="profile-c")
 
+    message = str(excinfo.value)
+    assert "Profile=profile-c" in message
+    assert 'Visible=["Veo 3.1 - Fast [Lower Priority]"]' in message
     assert _selector_stubs["verify_credits"].await_count == 4

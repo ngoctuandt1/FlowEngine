@@ -115,7 +115,7 @@ async def ingredients_to_video(
 
     await _ensure_uploaded_ingredient_count(page, expected=len(ingredient_image_paths))
     await _type_prompt(page, prompt)
-    await select_model(page, model=model, free_mode=free_mode)
+    await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
     await _set_output_count(page, 1)
     await _set_aspect_ratio(page, aspect_ratio)
 

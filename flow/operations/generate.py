@@ -343,7 +343,7 @@ async def text_to_video(
 
     # === Step 3: Select model ===
     logger.info(f"Step 3: Select model ({model})")
-    await select_model(page, model=model, free_mode=free_mode)
+    await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
 
     # === Step 4: Aspect ratio ===
     # The aspect ratio is typically set in the model options panel
