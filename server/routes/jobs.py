@@ -2,16 +2,36 @@
 
 import uuid
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, status
 
 from server.models.chain import Chain, ChainCreateResponse
-from server.models.job import ChainCreate, Job, JobCreate, JobStatus
+from server.models.job import (
+    ChainCreate,
+    Job,
+    JobCreate,
+    JobRelatedResponse,
+    JobStatus,
+    JobWithThumb,
+)
 from server.db.chain_store import create_chain, get_chain_aggregate
-from server.db.job_store import create_job, get_job, list_jobs, get_children, delete_job, get_job_counts, recover_stale_jobs
+from server.db.job_store import (
+    create_job,
+    delete_job,
+    get_children,
+    get_job,
+    get_job_counts,
+    get_related_jobs,
+    list_jobs,
+    recover_stale_jobs,
+)
 from server.routes.ws import broadcast_job_update
 
 router = APIRouter(prefix="/api", tags=["jobs"])
+
+VIDEO_EXTENSIONS = frozenset({"mp4", "webm", "mov", "m4v"})
+IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "bmp"})
 
 
 def _resolve_model(req: JobCreate) -> str:
@@ -25,6 +45,7 @@ def _resolve_model(req: JobCreate) -> str:
 
 def validate_job_create(req: JobCreate) -> None:
     """Reserved for route-level job validation that Pydantic does not cover."""
+
 
 def _build_job(req: JobCreate, *, profile: Optional[str] = None,
                chain_id: Optional[str] = None, job_level: int = 1) -> Job:
@@ -47,6 +68,64 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
         profile=profile,
         job_level=job_level,
     )
+
+
+def _output_media_url(path: str) -> str:
+    normalized = str(path or "").replace("\\", "/").strip()
+    if not normalized:
+        return ""
+    if normalized.lower().startswith(("http://", "https://")):
+        return normalized
+    if normalized.lower().startswith("/downloads/"):
+        relative = normalized[len("/downloads/"):]
+    elif normalized.lower().startswith("downloads/"):
+        relative = normalized[len("downloads/"):]
+    else:
+        marker = normalized.lower().rfind("/downloads/")
+        relative = normalized[marker + len("/downloads/"):] if marker != -1 else normalized
+    return f"/downloads/{quote(relative, safe='/')}"
+
+
+def _renderable_files(job: Job) -> list[dict[str, str]]:
+    files = []
+    for raw_path in job.output_files:
+        normalized = str(raw_path or "").replace("\\", "/")
+        filename = normalized.split("/")[-1] or normalized
+        extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if extension in VIDEO_EXTENSIONS:
+            kind = "video"
+        elif extension in IMAGE_EXTENSIONS:
+            kind = "image"
+        else:
+            continue
+        files.append({
+            "kind": kind,
+            "url": _output_media_url(raw_path),
+        })
+    return files
+
+
+def _thumb_url(job: Job) -> Optional[str]:
+    media_id = (job.media_id or "").strip()
+    if not media_id:
+        return None
+
+    files = _renderable_files(job)
+    if not files:
+        return None
+
+    primary = files[0]
+    if primary["kind"] == "image":
+        return primary["url"] or None
+
+    poster = next((item["url"] for item in files if item["kind"] == "image"), "")
+    return poster or primary["url"] or None
+
+
+def _job_with_thumb(job: Optional[Job]) -> Optional[JobWithThumb]:
+    if job is None:
+        return None
+    return JobWithThumb(**job.model_dump(mode="json"), thumb_url=_thumb_url(job))
 
 
 # -- Endpoints -----------------------------------------------------------------
@@ -168,6 +247,27 @@ async def list_all_jobs(
     if chain_id:
         filters["chain_id"] = chain_id
     return await list_jobs(**filters)
+
+
+@router.get("/jobs/{job_id}/related", response_model=JobRelatedResponse)
+async def get_job_related(job_id: str) -> JobRelatedResponse:
+    """Return one job plus parent/ancestor/sibling/child context."""
+    related = await get_related_jobs(job_id)
+    if related is None:
+        raise HTTPException(404, f"Job {job_id} not found")
+
+    chain_root_id = related["chain_root_id"]
+    chain_id = related["chain_id"] or chain_root_id
+    return JobRelatedResponse(
+        self=_job_with_thumb(related["self"]),
+        parent=_job_with_thumb(related["parent"]),
+        ancestors=[_job_with_thumb(job) for job in related["ancestors"]],
+        siblings=[_job_with_thumb(job) for job in related["siblings"]],
+        children=[_job_with_thumb(job) for job in related["children"]],
+        chain_id=chain_id,
+        chain_root_id=chain_root_id,
+        stats=related["stats"],
+    )
 
 
 @router.get("/jobs/{job_id}")

@@ -10,6 +10,7 @@ from server.models.job import BBox, Job, JobStatus, JobUpdate
 # Job states that release the profile and stamp completed_at (B5 + B6).
 # Hoisted to module level so claim/update paths share a single source of truth.
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
+RELATED_CHAIN_DEPTH_CAP = 256
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +222,130 @@ async def get_children(parent_job_id: str) -> list[Job]:
         )
         rows = await cursor.fetchall()
         return [_row_to_job(r) for r in rows]
+
+
+async def get_related_jobs(
+    job_id: str,
+    *,
+    depth_cap: int = RELATED_CHAIN_DEPTH_CAP,
+) -> Optional[dict]:
+    """Fetch one job's lineage, adjacent relatives, and root-scoped stats.
+
+    The recursive CTE is capped at 256 hops to guard against corrupted parent
+    cycles while still covering the 100-job chain sanity target from the ticket.
+    """
+    async with get_db() as db:
+        lineage_cursor = await db.execute(
+            """
+            WITH RECURSIVE ancestors(
+                depth,
+                id, type, status, job_level, parent_job_id, chain_id,
+                profile, project_url, media_id, edit_url,
+                prompt, model, aspect_ratio, bbox_json, direction,
+                start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
+                safety_filter, output_files_json, generation_id,
+                worker_id, claimed_at, completed_at, error,
+                created_at, updated_at
+            ) AS (
+                SELECT 0, jobs.*
+                FROM jobs
+                WHERE id = ?
+
+                UNION ALL
+
+                SELECT ancestors.depth + 1, parent.*
+                FROM jobs AS parent
+                JOIN ancestors ON ancestors.parent_job_id = parent.id
+                WHERE ancestors.parent_job_id IS NOT NULL
+                  AND ancestors.depth < ?
+            ),
+            root_job AS (
+                SELECT id
+                FROM ancestors
+                ORDER BY depth DESC
+                LIMIT 1
+            ),
+            chain_tree(depth, id, status) AS (
+                SELECT 0, jobs.id, jobs.status
+                FROM jobs
+                JOIN root_job ON jobs.id = root_job.id
+
+                UNION ALL
+
+                SELECT chain_tree.depth + 1, child.id, child.status
+                FROM jobs AS child
+                JOIN chain_tree ON child.parent_job_id = chain_tree.id
+                WHERE chain_tree.depth < ?
+            )
+            SELECT
+                ancestors.*,
+                (SELECT COUNT(*) FROM chain_tree) AS stat_total,
+                (SELECT COUNT(*) FROM chain_tree WHERE status = 'completed') AS stat_completed,
+                (SELECT COUNT(*) FROM chain_tree WHERE status = 'failed') AS stat_failed
+            FROM ancestors
+            ORDER BY depth ASC
+            """,
+            (job_id, depth_cap, depth_cap),
+        )
+        lineage_rows = await lineage_cursor.fetchall()
+        if not lineage_rows:
+            return None
+
+        related_rows_cursor = await db.execute(
+            """
+            SELECT
+                CASE
+                    WHEN parent_job_id = ? THEN 'child'
+                    ELSE 'sibling'
+                END AS relation,
+                jobs.*
+            FROM jobs
+            WHERE parent_job_id = ?
+               OR (? IS NOT NULL AND parent_job_id = ? AND id <> ?)
+            ORDER BY created_at ASC
+            """,
+            (
+                job_id,
+                job_id,
+                lineage_rows[0]["parent_job_id"],
+                lineage_rows[0]["parent_job_id"],
+                job_id,
+            ),
+        )
+        related_rows = await related_rows_cursor.fetchall()
+
+    lineage_jobs = [_row_to_job(row) for row in lineage_rows]
+    self_job = lineage_jobs[0]
+    parent_job = lineage_jobs[1] if len(lineage_jobs) > 1 else None
+    chain_root_job = lineage_jobs[-1]
+    siblings: list[Job] = []
+    children: list[Job] = []
+
+    for row in related_rows:
+        if row["relation"] == "child":
+            children.append(_row_to_job(row))
+        else:
+            siblings.append(_row_to_job(row))
+
+    total = int(lineage_rows[0]["stat_total"] or 0)
+    completed = int(lineage_rows[0]["stat_completed"] or 0)
+    failed = int(lineage_rows[0]["stat_failed"] or 0)
+
+    return {
+        "self": self_job,
+        "parent": parent_job,
+        "ancestors": list(reversed(lineage_jobs[1:])),
+        "siblings": siblings,
+        "children": children,
+        "chain_id": next((job.chain_id for job in lineage_jobs if job.chain_id), None),
+        "chain_root_id": chain_root_job.id,
+        "stats": {
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "pending": max(total - completed - failed, 0),
+        },
+    }
 
 
 async def claim_next_job(

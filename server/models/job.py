@@ -278,3 +278,31 @@ class JobUpdate(BaseModel):
     generation_id: Optional[str] = None
     error: Optional[str] = None
     completed_at: Optional[datetime] = None
+
+
+class JobWithThumb(Job):
+    """Job payload enriched with a route-local thumbnail URL."""
+
+    thumb_url: Optional[str] = None
+
+
+class JobRelatedStats(BaseModel):
+    """Root-scoped aggregate counts for a related-job response."""
+
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    pending: int = 0
+
+
+class JobRelatedResponse(BaseModel):
+    """Consolidated lineage context for one job detail request."""
+
+    self: JobWithThumb
+    parent: Optional[JobWithThumb] = None
+    ancestors: list[JobWithThumb] = Field(default_factory=list)
+    siblings: list[JobWithThumb] = Field(default_factory=list)
+    children: list[JobWithThumb] = Field(default_factory=list)
+    chain_id: str
+    chain_root_id: str
+    stats: JobRelatedStats
