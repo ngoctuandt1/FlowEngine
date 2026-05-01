@@ -1,5 +1,7 @@
 # Google Flow UI Reference (VI + EN) — VERIFIED on Both Locales
 
+**Selector reference document.** Behavioral notes may be stale; see `docs/SPEC.md` for current invariants. Last reviewed against master `408d598` on 2026-05-01.
+
 > Last updated: 2026-04-17 (v5 — Aspect Ratio UI added via B1a research)
 > Source: hands-on testing on BOTH Vietnamese + English Chrome profiles
 > IMPORTANT: All labels marked ✅ are verified in browser. DOM selectors included for engine use.
@@ -30,7 +32,7 @@ Flow Account (Google login, ULTRA tier)
 - **Project** = canvas/board containing multiple generated media
 - **Media Item** = 1 video or image, has own UUID (`media_id`)
 - `media_id` visible ONLY in URL `/edit/{media_uuid}` — NOT in UI info panel
-- **Operations (extend/insert/remove/camera) update video IN-PLACE — same media_id**
+- **L2 ops mint NEW media_id by default; child still INHERITS direct parent's media_id+edit_url for navigation. See `docs/SPEC.md` INV-5.**
 
 ## Homepage
 
@@ -215,7 +217,7 @@ URL: `/fx/{locale}/tools/flow/project/{project_uuid}/edit/{media_uuid}`
 | **Extend** | extend-video | ✅ Yes | ✅ Yes ("What happens next?") | ❌ No |
 | **Insert** | insert-object | ❌ No | ⚠️ Optional | ✅ Yes (click-drag) |
 | **Remove** | remove-object | ❌ No | ❌ No (bbox only) | ✅ Yes (click-drag) |
-| **Camera** | camera-control | ❌ No | ❌ No (preset only) | ❌ No |
+| **Camera** | camera-move | ❌ No | ❌ No (preset only) | ❌ No |
 
 ## Download UI
 
@@ -294,17 +296,17 @@ thousand_eighty = page.locator('[role="menu"][data-state="open"] [role="menuitem
 
 ### UUID dualism ⚠️
 
-Three different identifiers exist for the same media asset:
+> ⚠️ STALE — do not assume `/edit/{slug}`, `data-tile-id`, and backend download/upscale IDs are a stable 1:1 mapping. See `docs/SPEC.md` INV-5 for chain rules.
 
-| Source | UUID example | Role |
+Flow surfaces multiple identifiers around the same clip, and current code treats routing slugs vs backend media IDs as separate signals:
+
+| Source | UUID example | Current role |
 |---|---|---|
-| `/edit/{slug}` URL path | `0c22a9f0-abe4-...` | **Routing slug** (SPA router) |
-| `[data-tile-id="fe_id_{slug}"]` | `fe_id_0c22a9f0-...` | Matches `/edit/` slug (strip `fe_id_` prefix) |
-| `<video>.src?name={id}` | `f3471304-f9c1-...` | **True API media_id** — DIFFERENT UUID |
+| `/edit/{slug}` URL path | `0c22a9f0-abe4-...` | **Routing slug** used by the SPA |
+| `[data-tile-id="fe_id_{slug}"]` and descendant `/edit/{slug}` links | `fe_id_0c22a9f0-...` | UI tile/history slug when the surface is unambiguous; current code cross-checks these and treats mismatches as ambiguous |
+| Network `mid` / `<video>.src?name={id}` | `f3471304-f9c1-...` | **Backend media_id** used for download/upscale APIs and preferred by current engine code |
 
-Engine MUST extract the `?name=` param value from the tile's `<video>.src` URL —
-the `/edit/` slug and `data-tile-id` are routing-layer identifiers and will
-404 if passed as `?name=` to the API.
+For downloads/upscales, prefer the backend `mid` / `?name=` value. Do not assume the `/edit/` slug or a `data-tile-id` value is the canonical API media ID on every surface.
 
 ## Camera Mode (2 tabs)
 
@@ -907,6 +909,8 @@ page.locator('generic:has-text("Create")')
 
 ## Flow Operations (Step-by-Step)
 
+> ⚠️ STALE — selector flow is still useful, but current engine behavior is: navigate L2+ via stored `edit_url`, activate the target clip when needed, and re-extract final `media_id` after every op. See `docs/SPEC.md` INV-2 and INV-5.
+
 ### text-to-video (Level 1)
 ```
 1. Homepage → Click "+ New project" / "+ Dự án mới"
@@ -915,52 +919,55 @@ page.locator('generic:has-text("Create")')
 4. Select model (Video tab for video prompts)
 5. Click → submit (generic "Create")
 6. Wait for generation (blurry gradient + % progress)
-7. Result: new media_id in the project
+7. Result: engine stores `project_url`, final `media_id`, and `edit_url` for downstream jobs
 ```
 
 ### extend-video (Level 2)
 ```
-1. Navigate to project URL → see grid of media cards
-2. Click target video card → opens edit view (/edit/{media_uuid})
-3. Click "Extend" / "Mở rộng" button
+1. Navigate to stored direct `edit_url` (`/edit/{media_uuid}`)
+2. If URL media ≠ target media, activate the intended clip tile before editing
+3. Click "Extend" / "Mở rộng" button (or verify Extend is already open)
 4. Type prompt in "What happens next?" / "Tiếp theo là gì?" textarea
 5. Select LP model (0 credits)
 6. Click → submit
 7. Wait for generation (blurry gradient + % progress)
-8. Result: SAME media_id — video updated in-place, new version in history
+8. Result: engine re-extracts final `media_id` after completion; do not assume the input `media_id` is preserved. See `docs/SPEC.md` INV-5.
 ```
 
 ### insert-object (Level 2)
 ```
-1. Navigate to /edit/{media_uuid}
-2. Click "Insert" / "Chèn" button
-3. (Optional) Click-drag bbox on video
-4. Type description
-5. Click → submit
-6. Wait for generation
-7. Result: SAME media_id — updated in-place
+1. Navigate to stored direct `edit_url` (`/edit/{media_uuid}`)
+2. If URL media ≠ target media, activate the intended clip tile before editing
+3. Click "Insert" / "Chèn" button
+4. (Optional) Click-drag bbox on video
+5. Type description
+6. Click → submit
+7. Wait for generation
+8. Result: engine re-extracts final `media_id` after completion. See `docs/SPEC.md` INV-5.
 ```
 
 ### remove-object (Level 2)
 ```
-1. Navigate to /edit/{media_uuid}
-2. Click "Remove" / "Xoá" button
-3. Click-drag bbox on video (REQUIRED)
-4. No prompt needed
-5. Click → submit
-6. Wait for generation
-7. Result: SAME media_id — updated in-place
+1. Navigate to stored direct `edit_url` (`/edit/{media_uuid}`)
+2. If URL media ≠ target media, activate the intended clip tile before editing
+3. Click "Remove" / "Xoá" button
+4. Click-drag bbox on video (REQUIRED)
+5. No prompt needed
+6. Click → submit
+7. Wait for generation
+8. Result: engine re-extracts final `media_id` after completion. See `docs/SPEC.md` INV-5.
 ```
 
-### camera-control (Level 2)
+### camera-move (Level 2)
 ```
-1. Navigate to /edit/{media_uuid}
-2. Click "Camera" button
-3. Select tab: "Camera motion" or "Camera position"
-4. Click preset thumbnail (e.g. "Dolly in", "Center")
-5. Click → submit
-6. Wait for generation
-7. Result: SAME media_id — updated in-place
+1. Navigate to stored direct `edit_url` (`/edit/{media_uuid}`)
+2. If URL media ≠ target media, activate the intended clip tile before editing
+3. Click "Camera" button
+4. Select tab: "Camera motion" or "Camera position"
+5. Click preset thumbnail (e.g. "Dolly in", "Center")
+6. Click → submit
+7. Wait for generation
+8. Result: engine re-extracts final `media_id` after completion. See `docs/SPEC.md` INV-5.
 ```
 
 ## Key Observations for Engine
@@ -970,7 +977,7 @@ page.locator('generic:has-text("Create")')
 3. **Extend doesn't create modal/popup** — changes toolbar highlight + composer placeholder
 4. **Model selector disappears** in Insert/Remove/Camera modes
 5. **media_id** is ONLY in URL, not visible in UI info panel
-6. **Operations do NOT create new media_id** — update in-place. URL stays same. Each op adds 1 history entry. VERIFIED: Extend → Insert → Remove all kept same media_id.
+6. **L2 ops mint NEW media_id by default; child still INHERITS direct parent's media_id+edit_url for navigation. See `docs/SPEC.md` INV-5.**
 7. **Camera mode replaces composer entirely** — no textarea, visual preset grid. Use DOM selectors like `generic "Dolly in"` to click.
 8. **History panel** = version timeline. Entry count = operations count. Can verify completion.
 9. **"+" button** = attachment/ingredient picker, NOT file upload. Shows project media + upload option.
