@@ -4,7 +4,7 @@
 > session report under `docs/session-reports/`. Update when adding a new
 > report. The `_TEMPLATE.md` defines the report skeleton (do not list it).
 
-**Last regenerated:** 2026-04-25 (covers 54 reports across `2026-04-17 → 2026-04-25`).
+**Last regenerated:** 2026-05-01 (covers 57 reports across `2026-04-17 -> 2026-05-01`).
 
 ---
 
@@ -48,6 +48,12 @@
 ---
 
 ## 3. Timeline
+
+### Public web cutover + dashboard expansion (2026-05-01)
+
+| Date | Report | Type | Status | Outcome |
+|---|---|---|---|---|
+| 05-01 | [web-ai-hassio-flowengine-cutover](2026-05-01_web-ai-hassio-flowengine-cutover.md) | deploy + live verify | ✅ | Public `ai.hassio.io.vn` moved from legacy `video-ai-studio` to FlowEngine; auth/page/backend PR train merged and 26 categories live-verified |
 
 ### Phase A foundation — bug-fix sweep (2026-04-17)
 
@@ -146,6 +152,7 @@ Single-day landing of B1-B12 + Tier 1 DOM validation. Tag: `v0.2.0-phase-a` at `
 
 | PR | Description | Primary report(s) |
 |---|---|---|
+| #90-#108 (excluding #93) | Public dashboard/pages, auth gate, deploy hardening, public cutover | `2026-05-01_web-ai-hassio-flowengine-cutover` |
 | #2-#8 | flow-bugs epic | `B<n>` reports + Tier 1 r2 |
 | #19 | i2v + t2i gap fill | `2026-04-20_codex_gap_fill_i2v_t2i` |
 | #20 | Ingredients image refs | `2026-04-20_codex_ingredients_image` |
@@ -173,25 +180,29 @@ Single-day landing of B1-B12 + Tier 1 DOM validation. Tag: `v0.2.0-phase-a` at `
 
 | Job type | Implementation | Last live-verify report |
 |---|---|---|
-| `text-to-video` (L1) | ✅ `flow/operations/generate.py` | `2026-04-25_finding3-no-repro` (3 sequential L1) |
-| `text-to-image` | ✅ `flow/operations/generate.py` (image branch) | `2026-04-25_low-items-live-reverify` part 2 (3× 4K) |
-| `extend-video` | ✅ `flow/operations/extend.py` | `2026-04-25_low-items-live-reverify` (multi-gen) |
-| `camera-move` | ✅ `flow/operations/camera.py` | `2026-04-25_low-items-live-reverify` (L2 direct off L1) |
-| `insert-object` | 🟡 `flow/operations/insert.py` | `2026-04-24_live_verify_post_45_44` (J2 ok) |
-| `remove-object` | 🟡 `flow/operations/remove.py` | `2026-04-24_live_verify_post_45_44` (REM fail single-shot) |
-| `frames-to-video` | 🟡 code complete (PR #19) | (no live verify yet) |
-| `ingredients-to-video` | 🟡 code complete (PR #20) | (no live verify yet) |
+| `text-to-video` (L1) | ✅ `flow/operations/generate.py` | `2026-05-01_web-ai-hassio-flowengine-cutover` (public deploy cutover) |
+| `text-to-image` | ✅ `flow/operations/generate.py` (image branch) | `2026-05-01_web-ai-hassio-flowengine-cutover` (public deploy cutover) |
+| `extend-video` | ✅ `flow/operations/extend.py` | `2026-05-01_web-ai-hassio-flowengine-cutover` (public deploy cutover) |
+| `camera-move` | ✅ `flow/operations/camera.py` | `2026-05-01_web-ai-hassio-flowengine-cutover` (public deploy cutover) |
+| `insert-object` | ✅ `flow/operations/insert.py` | `2026-05-01_web-ai-hassio-flowengine-cutover` (public deploy cutover) |
+| `remove-object` | ✅ `flow/operations/remove.py` | `2026-05-01_web-ai-hassio-flowengine-cutover` (public deploy cutover) |
+| `frames-to-video` | ✅ `flow/operations/generate.py` (frames branch) | `2026-05-01_web-ai-hassio-flowengine-cutover` (first live verify) |
+| `ingredients-to-video` | ✅ `flow/operations/generate.py` (ingredients branch) | `2026-05-01_web-ai-hassio-flowengine-cutover` (first live verify) |
 
 ### Engine layers
 
 | Layer | Status | Reports touching it |
 |---|---|---|
-| Server (FastAPI + SQLite) | ✅ | `B7_port-mismatch`, `B5_completed-at`, `B6_profile-current-job`, `B9_test-foundation` |
+| Server (FastAPI + SQLite) | ✅ | `B7_port-mismatch`, `B5_completed-at`, `B6_profile-current-job`, `B9_test-foundation`, `2026-05-01_web-ai-hassio-flowengine-cutover` |
+| Dashboard auth gate | ✅ | PR #95 + `2026-05-01_web-ai-hassio-flowengine-cutover` |
 | Worker claim loop | ✅ | `B6_profile-current-job`, PR #43 |
 | Profile pinning | ✅ | `bug-4-profile-pinning` (epic) + `B6` |
 | Project lock | ✅ | `bug-7-project-lock` (epic) |
 | Browser pool (per-profile) | ✅ | PR #52 + `marketing-landing-hardening` |
 | CDP page selection | ✅ | `cdp-wrong-page-root-cause` |
+| WebSocket keepalive | ✅ | PR #104 + `2026-05-01_web-ai-hassio-flowengine-cutover` |
+| Upload validation + media mounts | ✅ | PR #105 + `2026-05-01_web-ai-hassio-flowengine-cutover` |
+| CORS / proxy guard | ✅ | PR #107 + `2026-05-01_web-ai-hassio-flowengine-cutover` |
 | Login auto-handling | 🟡 | `feedback_warm_profile_manual_gmail` memory + `feedback_flow_service_not_allowed_account_dead` memory |
 | Marketing-landing bypass | 🟡 | `marketing-landing-hardening` + `live_verify_post_45_44` (edge case open) |
 | Aspect ratio | ✅ | `B1a/B1b_aspect-ratio*` + `B19_aspect-chip-multiline` |
@@ -211,7 +222,7 @@ Single-day landing of B1-B12 + Tier 1 DOM validation. Tag: `v0.2.0-phase-a` at `
 | Locale independence | ✅ | `B18_homepage-locale-fix` + `Tier2_Run10_VI_final` |
 | `+ New project` perf | ✅ | (this branch — selector fix `4721912` saves ~16s/job) |
 | Window geometry env | ✅ | `low-items-live-reverify` part 2 |
-| Frontend (vanilla SPA) | 🆕 | PR #56 — phase exit, no engine session report |
+| Frontend (vanilla SPA) | ✅ | PRs #90/#91/#92/#94/#96/#97/#98/#99 + fixes #100-#103; see `2026-05-01_web-ai-hassio-flowengine-cutover` |
 
 ---
 
@@ -235,11 +246,11 @@ Each item lists the reports that touched it, in order. The most recent entry is 
 - 2026-04-24 [live_verify_post_45_44 §"REM failure"](2026-04-24_live_verify_post_45_44.md) — single sample; could be DOM shift post-INS.
 - 2026-04-25 [session-handoff §Gap 3](2026-04-25_session-handoff.md) — LOW priority; file issue only if repro on next run.
 
-### P-04 — frames-to-video / ingredients-to-video live verification 🟡
+### P-04 - frames-to-video / ingredients-to-video live verification ✅
 
-- 2026-04-20 [codex_gap_fill_i2v_t2i](2026-04-20_codex_gap_fill_i2v_t2i.md) — code complete (PR #19).
-- 2026-04-20 [codex_ingredients_image](2026-04-20_codex_ingredients_image.md) — code complete (PR #20).
-- (no live-verify report yet) — needs first live run.
+- 2026-04-20 [codex_gap_fill_i2v_t2i](2026-04-20_codex_gap_fill_i2v_t2i.md) - code complete (PR #19).
+- 2026-04-20 [codex_ingredients_image](2026-04-20_codex_ingredients_image.md) - code complete (PR #20).
+- 2026-05-01 [web-ai-hassio-flowengine-cutover](2026-05-01_web-ai-hassio-flowengine-cutover.md) - both categories live-verified on the public `ai.hassio.io.vn` deploy.
 
 ### P-05 — Defensive image-upscale branches not exercised live 🟢
 
