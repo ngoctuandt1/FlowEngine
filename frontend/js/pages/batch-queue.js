@@ -15,8 +15,8 @@
   } = CONST;
 
   // Keep this page scoped to prompt-only L1 flows.
-  const SUPPORTED_BATCH_TYPES = new Set(['text-to-video', 'frames-to-video', 'text-to-image']);
-  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+  const SUPPORTED_BATCH_TYPES = new Set(['text-to-video', 'text-to-image']);
+  const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'submit_failed']);
   const LOCAL_BADGES = {
     queued: {
       label: 'queued',
@@ -35,6 +35,7 @@
 
   const state = {
     profiles: [],
+    profilesLoadError: '',
     rows: [],
     nextRowNumber: 1,
     isSubmitting: false,
@@ -42,10 +43,14 @@
     wsUnsubs: [],
     socketListener: null,
     socketTarget: null,
+    validation: {
+      formError: '',
+      rowErrors: [],
+    },
     form: {
       inputText: '',
-      inputSource: 'textarea',
       fileName: '',
+      treatAsCsv: false,
       type: 'text-to-video',
       model: DEFAULT_MODEL,
       aspect: DEFAULT_ASPECT,
@@ -135,6 +140,21 @@
     return String(value || '').trim().toLowerCase();
   }
 
+  function canonicalProfileName(value, profileLookup = null) {
+    const token = normalizeToken(value);
+    if (!token) {
+      return '';
+    }
+    if (token === 'auto') {
+      return 'auto';
+    }
+
+    const lookup = profileLookup || new Map(
+      state.profiles.map((name) => [normalizeToken(name), name])
+    );
+    return lookup.get(token) || null;
+  }
+
   function looksLikeHeader(entry) {
     const prompt = normalizeToken(entry.prompt);
     const profile = normalizeToken(entry.profile);
@@ -142,45 +162,40 @@
       && (!profile || ['profile', 'account', 'profile_name'].includes(profile));
   }
 
-  function parseBatchInput(text, source = 'textarea') {
+  function parseBatchInput(text, treatAsCsv = false) {
     const rawLines = String(text || '')
       .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
+      .map((line, index) => ({
+        line: line.trim(),
+        lineNumber: index + 1,
+      }))
+      .filter((entry) => entry.line);
 
     if (!rawLines.length) {
       return { mode: 'lines', rows: [] };
     }
 
-    const parsedLines = rawLines.map((line) => parseCsvLine(line));
-    const csvLikeCount = parsedLines.filter((cols) => cols.length > 1).length;
-    const hasTooManyColumns = parsedLines.some((cols) => cols.length > 2);
-    const firstEntry = {
-      prompt: parsedLines[0]?.[0] || '',
-      profile: parsedLines[0]?.[1] || '',
-    };
-    const knownProfiles = new Set(state.profiles.map((name) => normalizeToken(name)));
-    const csvSecondColumnLooksValid = parsedLines.every((cols) => {
-      if (cols.length <= 1) return true;
-      const second = normalizeToken(cols[1]);
-      return !second || second === 'auto' || knownProfiles.has(second);
-    });
-    const shouldUseCsv = csvLikeCount > 0
-      && !hasTooManyColumns
-      && (
-        source === 'file'
-        || looksLikeHeader(firstEntry)
-        || (csvSecondColumnLooksValid && csvLikeCount >= Math.ceil(parsedLines.length / 2))
-      );
+    const parsedLines = rawLines.map(({ line, lineNumber }) => ({
+      cols: parseCsvLine(line),
+      lineNumber,
+    }));
+    const shouldUseCsv = treatAsCsv && rawLines.some(({ line }) => line.includes(','));
 
     const rows = shouldUseCsv
-      ? parsedLines.map((cols) => ({
+      ? parsedLines.map(({ cols, lineNumber }) => ({
         prompt: cols[0] || '',
         profile: cols[1] || '',
+        columnCount: cols.length,
+        lineNumber,
       }))
-      : rawLines.map((line) => ({ prompt: line, profile: '' }));
+      : rawLines.map(({ line, lineNumber }) => ({
+        prompt: line,
+        profile: '',
+        columnCount: 1,
+        lineNumber,
+      }));
 
-    if (rows.length && looksLikeHeader(rows[0])) {
+    if (shouldUseCsv && rows.length && looksLikeHeader(rows[0])) {
       rows.shift();
     }
 
@@ -190,13 +205,15 @@
         .map((entry) => ({
           prompt: String(entry.prompt || '').trim(),
           profile: String(entry.profile || '').trim(),
+          columnCount: entry.columnCount,
+          lineNumber: entry.lineNumber,
         }))
         .filter((entry) => entry.prompt),
     };
   }
 
   function collectDraft() {
-    const parsed = parseBatchInput(state.form.inputText, state.form.inputSource);
+    const parsed = parseBatchInput(state.form.inputText, state.form.treatAsCsv);
     return {
       mode: parsed.mode,
       rows: parsed.rows,
@@ -215,17 +232,40 @@
   function draftSummaryText() {
     const draft = collectDraft();
     if (!draft.rows.length) {
-      return 'Paste one prompt per line, or upload a CSV where column 1 is prompt and column 2 is profile.';
+      return 'Paste one prompt per line, or enable Treat as CSV for prompt,profile rows.';
     }
 
     const parts = [
       `${draft.rows.length} row${draft.rows.length === 1 ? '' : 's'}`,
-      draft.mode === 'csv' ? 'CSV detected' : 'line mode',
+      draft.mode === 'csv' ? 'CSV mode' : state.form.treatAsCsv ? 'CSV toggle on, line mode' : 'line mode',
     ];
     if (draft.profileOverrides > 0) {
       parts.push(`${draft.profileOverrides} profile override${draft.profileOverrides === 1 ? '' : 's'}`);
     }
     return parts.join(' | ');
+  }
+
+  function renderProfilesWarning() {
+    if (!state.profilesLoadError) {
+      return '';
+    }
+
+    return `
+      <div role="alert" style="margin-bottom:16px; padding:12px 14px; border-radius:12px; border:1px solid rgba(250, 204, 21, 0.35); background: rgba(113, 63, 18, 0.22); color:#fde68a; font-size:13px;">
+        ${App.escapeHtml(state.profilesLoadError)}
+      </div>
+    `;
+  }
+
+  function renderValidationFeedback() {
+    const messages = [];
+    if (state.validation.formError) {
+      messages.push(`<div style="font-weight:600;">${App.escapeHtml(state.validation.formError)}</div>`);
+    }
+    state.validation.rowErrors.forEach((issue) => {
+      messages.push(`<div>Row ${App.escapeHtml(String(issue.lineNumber))}: ${App.escapeHtml(issue.message)}</div>`);
+    });
+    return messages.join('');
   }
 
   function countsSummary() {
@@ -371,23 +411,36 @@
             </div>
           </div>
 
+          ${renderProfilesWarning()}
+
           <div class="form-group">
             <label class="form-label">Prompts or CSV <span class="required">*</span></label>
             <textarea class="form-textarea" id="batch-queue-input" rows="10"
               placeholder="One prompt per line&#10;or CSV rows: prompt,profile">${App.escapeHtml(state.form.inputText)}</textarea>
             <span class="form-hint" id="batch-queue-summary">${App.escapeHtml(draftSummaryText())}</span>
+            <div id="batch-queue-validation" style="margin-top:12px; padding:12px 14px; border-radius:12px; border:1px solid rgba(248, 113, 113, 0.35); background: rgba(127, 29, 29, 0.18); color:#fecaca; font-size:13px; gap:6px; ${state.validation.formError || state.validation.rowErrors.length ? 'display:grid;' : 'display:none;'}">
+              ${renderValidationFeedback()}
+            </div>
           </div>
 
           <div class="form-row">
             <div class="form-group">
               <label class="form-label">CSV Upload</label>
               <input type="file" class="form-input" id="batch-queue-file" accept=".csv,.txt,text/csv">
-              <span class="form-hint" id="batch-queue-file-label">${App.escapeHtml(state.form.fileName || 'Optional. Upload a CSV and it will populate the textarea above.')}</span>
+              <span class="form-hint" id="batch-queue-file-label">${App.escapeHtml(state.form.fileName || 'Optional. Upload a text or CSV file and it will populate the textarea above.')}</span>
             </div>
             <div class="form-group">
               <label class="form-label">Type</label>
               <select class="form-select" id="batch-queue-type">${typeOptions}</select>
             </div>
+          </div>
+
+          <div class="form-group" style="margin-top:-4px;">
+            <label style="display:inline-flex; align-items:center; gap:10px; cursor:pointer;">
+              <input type="checkbox" id="batch-queue-csv-toggle" ${state.form.treatAsCsv ? 'checked' : ''}>
+              <span class="form-label" style="margin:0;">Treat as CSV</span>
+            </label>
+            <span class="form-hint">Off by default. Enable this only for prompt,profile rows.</span>
           </div>
 
           <div class="form-row">
@@ -443,9 +496,11 @@
   async function fetchProfiles() {
     try {
       state.profiles = normalizeProfiles(await API.profiles.list());
+      state.profilesLoadError = '';
     } catch (err) {
       console.warn('[BatchQueue] could not load profiles:', err.message);
       state.profiles = [];
+      state.profilesLoadError = 'Could not load profile list from /api/profiles. Named CSV profile overrides will be rejected until the list is available.';
     }
   }
 
@@ -459,6 +514,23 @@
     if (summary) {
       summary.textContent = draftSummaryText();
     }
+  }
+
+  function syncValidationFeedback() {
+    const validation = document.getElementById('batch-queue-validation');
+    if (!validation) {
+      return;
+    }
+
+    const hasIssues = Boolean(state.validation.formError) || state.validation.rowErrors.length > 0;
+    validation.style.display = hasIssues ? 'grid' : 'none';
+    validation.innerHTML = hasIssues ? renderValidationFeedback() : '';
+  }
+
+  function clearValidationState() {
+    state.validation.formError = '';
+    state.validation.rowErrors = [];
+    syncValidationFeedback();
   }
 
   function syncTypeDependentFields() {
@@ -493,7 +565,7 @@
 
     const fileLabel = document.getElementById('batch-queue-file-label');
     if (fileLabel) {
-      fileLabel.textContent = state.form.fileName || 'Optional. Upload a CSV and it will populate the textarea above.';
+      fileLabel.textContent = state.form.fileName || 'Optional. Upload a text or CSV file and it will populate the textarea above.';
     }
   }
 
@@ -570,10 +642,58 @@
   }
 
   function validateSubmission(draft) {
-    if (!draft.rows.length) {
-      return 'Enter at least one prompt or upload a CSV.';
+    if (!SUPPORTED_BATCH_TYPES.has(state.form.type)) {
+      return {
+        error: 'Batch type must be text-to-video or text-to-image.',
+        rowErrors: [],
+        rows: draft.rows,
+      };
     }
-    return null;
+
+    if (!draft.rows.length) {
+      return {
+        error: 'Enter at least one prompt or upload a CSV.',
+        rowErrors: [],
+        rows: draft.rows,
+      };
+    }
+
+    const profileLookup = new Map(state.profiles.map((name) => [normalizeToken(name), name]));
+    const normalizedRows = draft.rows.map((row) => ({ ...row }));
+    const rowErrors = [];
+
+    if (draft.mode === 'csv') {
+      normalizedRows.forEach((row) => {
+        if (row.columnCount > 2) {
+          rowErrors.push({
+            lineNumber: row.lineNumber,
+            message: 'CSV rows support only prompt,profile columns.',
+          });
+          return;
+        }
+
+        if (!row.profile) {
+          return;
+        }
+
+        const resolvedProfile = canonicalProfileName(row.profile, profileLookup);
+        if (resolvedProfile === null) {
+          rowErrors.push({
+            lineNumber: row.lineNumber,
+            message: `Unknown profile "${row.profile}".`,
+          });
+          return;
+        }
+
+        row.profile = resolvedProfile;
+      });
+    }
+
+    return {
+      error: rowErrors.length ? 'Fix the CSV profile errors before submitting.' : null,
+      rowErrors,
+      rows: normalizedRows,
+    };
   }
 
   function createPendingRows(entries, config) {
@@ -599,11 +719,16 @@
     if (state.isSubmitting) return;
 
     const draft = collectDraft();
-    const error = validateSubmission(draft);
-    if (error) {
-      App.toast(error, 'warning');
+    const validation = validateSubmission(draft);
+    state.validation.formError = validation.error || '';
+    state.validation.rowErrors = validation.rowErrors;
+    syncValidationFeedback();
+
+    if (validation.error) {
+      App.toast(validation.error, 'warning');
       return;
     }
+    draft.rows = validation.rows;
 
     const batchConfig = {
       type: state.form.type,
@@ -691,12 +816,12 @@
   async function loadCsvFile(file) {
     const text = await file.text();
     state.form.inputText = text;
-    state.form.inputSource = 'file';
     state.form.fileName = file.name || '';
     const textarea = document.getElementById('batch-queue-input');
     if (textarea) {
       textarea.value = text;
     }
+    clearValidationState();
     syncDraftSummary();
     syncControls();
   }
@@ -704,8 +829,8 @@
   function mount() {
     document.getElementById('batch-queue-input')?.addEventListener('input', (event) => {
       state.form.inputText = event.target.value;
-      state.form.inputSource = 'textarea';
       state.form.fileName = '';
+      clearValidationState();
       syncDraftSummary();
       syncControls();
     });
@@ -723,8 +848,15 @@
       }
     });
 
+    document.getElementById('batch-queue-csv-toggle')?.addEventListener('change', (event) => {
+      state.form.treatAsCsv = event.target.checked;
+      clearValidationState();
+      syncDraftSummary();
+    });
+
     document.getElementById('batch-queue-type')?.addEventListener('change', (event) => {
       state.form.type = event.target.value;
+      clearValidationState();
 
       const modelValues = new Set(modelOptionsFor(state.form.type).map((item) => item.value));
       if (!modelValues.has(state.form.model)) {
@@ -761,6 +893,7 @@
 
     attachSocketListener();
     state.wsUnsubs.push(WS.on('connected', attachSocketListener));
+    syncValidationFeedback();
     syncControls();
   }
 
