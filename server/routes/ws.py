@@ -1,8 +1,11 @@
 """WebSocket endpoint for real-time job updates."""
 
+import asyncio
 import json
 import logging
-from typing import Any
+from contextlib import suppress
+from datetime import UTC, datetime
+from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -14,6 +17,35 @@ router = APIRouter(tags=["websocket"])
 
 # -- Connected clients ---------------------------------------------------------
 _clients: set[WebSocket] = set()
+KEEPALIVE_INTERVAL_SECONDS = 30.0
+
+
+async def _keepalive(
+    websocket: WebSocket,
+    *,
+    interval_seconds: float | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Send periodic ping frames so upstream tunnels do not idle-drop the WS."""
+    interval = KEEPALIVE_INTERVAL_SECONDS if interval_seconds is None else interval_seconds
+
+    try:
+        while True:
+            # Cloudflare Tunnel appears to silently drop idle WebSockets after
+            # roughly 100s, so a 30s ping keeps enough headroom to avoid it.
+            await sleep(interval)
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "event": "ping",
+                        "ts": datetime.now(UTC).isoformat(),
+                    }
+                )
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
 
 
 @router.websocket("/ws/jobs")
@@ -21,6 +53,7 @@ async def ws_jobs(ws: WebSocket):
     """Accept a WS connection and keep it alive for broadcasting."""
     await ws.accept()
     _clients.add(ws)
+    keepalive_task = asyncio.create_task(_keepalive(ws))
     logger.info("WS client connected (%d total)", len(_clients))
     try:
         # Keep connection open; read loop just absorbs pings / client msgs.
@@ -29,6 +62,9 @@ async def ws_jobs(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        keepalive_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await keepalive_task
         _clients.discard(ws)
         logger.info("WS client disconnected (%d remaining)", len(_clients))
 
