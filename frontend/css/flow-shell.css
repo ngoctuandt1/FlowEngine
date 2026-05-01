@@ -174,11 +174,16 @@ body.route-home #top-bar { display: none; }
   background: transparent;
   border: 0;
   cursor: pointer;
-  transition: transform 120ms ease;
+  box-shadow: none;
+  transition: transform var(--transition), box-shadow var(--transition);
   text-decoration: none;
   color: var(--text-flow);
 }
-.project-tile:hover { transform: translateY(-1px); color: var(--text-flow); }
+.project-tile:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
+  color: var(--text-flow);
+}
 .project-tile:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
@@ -274,12 +279,13 @@ body.route-home #top-bar { display: none; }
    Completed is silent (matches Flow's default state). */
 .tile-status-badge {
   position: absolute;
-  top: 10px; left: 10px;
+  top: 12px; left: 12px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
+  line-height: 1.2;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: 999px;
   color: #fff;
   z-index: 2;
 }

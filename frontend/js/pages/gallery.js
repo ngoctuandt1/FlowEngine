@@ -1,10 +1,11 @@
 /**
  * Gallery Page
- * Browse completed media outputs with filters and preview modal.
+ * Browse completed media outputs with filters and direct job-detail routing.
  */
 (() => {
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
+  const ALLOWED_STATUS = new Set(['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
 
   const state = {
     jobs: [],
@@ -44,6 +45,10 @@
     return list
       .map((profile) => profile?.name || profile?.profile_name || '')
       .filter(Boolean);
+  }
+
+  function safeStatus(status) {
+    return ALLOWED_STATUS.has(status) ? status : 'pending';
   }
 
   function collectProfiles() {
@@ -149,54 +154,33 @@
     });
   }
 
-  function renderMediaBadge(mediaKind) {
-    const style = mediaKind === 'video'
-      ? 'background: rgba(59, 130, 246, 0.24); border-color: rgba(59, 130, 246, 0.42); color: #bfdbfe;'
-      : 'background: rgba(34, 197, 94, 0.22); border-color: rgba(34, 197, 94, 0.38); color: #bbf7d0;';
-    return `<span class="badge" style="${style}">${App.escapeHtml(mediaKind)}</span>`;
-  }
-
   function renderTile(item) {
     const { job, media } = item;
-    const typeLabel = jobTypeLabel(job.type);
+    const status = safeStatus(job.status);
     const title = promptSnippet(job);
     const mediaTile = mediaTileHelper();
     const preview = media.kind === 'video'
       ? mediaTile.videoTag({ src: media.url, poster: media.poster, alt: title })
       : mediaTile.imgTag({ src: media.url, alt: title });
+    const stateChip = status === 'completed'
+      ? ''
+      : `<span class="tile-status-badge state-${status}">${App.escapeHtml(status.toUpperCase())}</span>`;
 
     return `
-      <button type="button" class="project-tile gallery-tile" data-job-id="${App.escapeHtml(job.id || '')}" style="padding:0; text-align:left; border:0; background:transparent;">
+      <a
+        class="project-tile gallery-tile status-${status}"
+        href="#job-detail/${encodeURIComponent(job.id || '')}"
+        data-job-id="${App.escapeHtml(job.id || '')}"
+        title="${App.escapeHtml(title)}"
+      >
         <div class="tile-thumb">
           ${preview}
-          <div style="position:absolute; inset:0; background: linear-gradient(180deg, rgba(0,0,0,0.08) 20%, rgba(0,0,0,0.76) 100%);"></div>
-          <div style="position:absolute; top:12px; left:12px; z-index:2; display:flex; gap:8px; flex-wrap:wrap;">
-            ${renderMediaBadge(media.kind)}
-            <span class="badge" style="background: rgba(12, 12, 14, 0.58); border-color: rgba(255, 255, 255, 0.10); color: #f5f5f7;">
-              ${App.escapeHtml(typeLabel)}
-            </span>
-          </div>
-          <div style="position:absolute; left:0; right:0; bottom:0; z-index:2; padding:14px;">
-            <div style="margin-bottom:6px; color: rgba(255,255,255,0.78); font-size:12px;">
-              ${App.escapeHtml(job.profile || 'Unpinned profile')}
-            </div>
-            <div style="color:#fff; font-size:16px; font-weight:600; line-height:1.35;">
-              ${App.escapeHtml(title)}
-            </div>
-          </div>
+          ${stateChip}
         </div>
-        <div class="tile-overlay" style="height:auto; min-height:56px; padding:10px 12px 12px 16px; align-items:flex-start;">
-          <div style="display:flex; flex-direction:column; gap:2px; min-width:0;">
-            <span style="color: var(--text-primary); font-size: 13px; font-weight: 600;">
-              ${App.escapeHtml(typeLabel)}
-            </span>
-            <span style="color: var(--text-muted); font-size: 12px;">
-              ${App.escapeHtml(App.truncate(job.media_id || job.id || '', 22))}
-            </span>
-          </div>
-          <span class="tile-date" style="font-size:12px;">${App.escapeHtml(App.formatDate(job.created_at || job.createdAt))}</span>
+        <div class="tile-overlay">
+          <span class="tile-date">${App.escapeHtml(App.formatDate(job.created_at || job.createdAt))}</span>
         </div>
-      </button>
+      </a>
     `;
   }
 
@@ -427,80 +411,6 @@
     state.socketTarget = null;
   }
 
-  function renderModal(job) {
-    const media = primaryMedia(job);
-    if (!media) {
-      return `
-        <div class="empty-state" style="padding: 20px;">
-          <span class="material-icons">broken_image</span>
-          <h3>No preview available</h3>
-          <p>This job completed, but it does not expose a renderable image or video file.</p>
-        </div>
-      `;
-    }
-
-    const preview = media.kind === 'video'
-      ? `<video src="${App.escapeHtml(media.url)}" ${media.poster ? `poster="${App.escapeHtml(media.poster)}"` : ''} controls autoplay loop muted playsinline style="width:100%; max-height: 70vh; border-radius: 14px; background:#000; object-fit: contain;"></video>`
-      : `<img src="${App.escapeHtml(media.url)}" alt="${App.escapeHtml(promptSnippet(job, 120))}" style="width:100%; max-height: 70vh; border-radius: 14px; background:#000; object-fit: contain;">`;
-
-    const extraFiles = media.files
-      .map((file) => `
-        <a class="btn btn-sm btn-outline" href="${App.escapeHtml(file.url)}" target="_blank" rel="noopener">
-          <span class="material-icons" style="font-size:16px">open_in_new</span> ${App.escapeHtml(file.name)}
-        </a>
-      `)
-      .join('');
-
-    return `
-      <div style="display:grid; gap:16px;">
-        <div>${preview}</div>
-        <div class="detail-list">
-          <div class="detail-row">
-            <span class="detail-label">Type</span>
-            <span class="detail-value">${App.escapeHtml(jobTypeLabel(job.type))} / ${App.escapeHtml(media.kind)}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Profile</span>
-            <span class="detail-value">${App.escapeHtml(job.profile || '-')}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Created</span>
-            <span class="detail-value">${App.escapeHtml(job.created_at || job.createdAt || '-')}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Prompt</span>
-            <span class="detail-value">${App.escapeHtml(job.prompt || job.direction || '-')}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Chain</span>
-            <span class="detail-value">
-              ${job.chain_id ? `<a href="#jobs/${encodeURIComponent(job.chain_id)}" onclick="App.closeModal()">${App.escapeHtml(job.chain_id)}</a>` : '-'}
-            </span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Flow Link</span>
-            <span class="detail-value">
-              ${job.edit_url ? `<a href="${App.escapeHtml(job.edit_url)}" target="_blank" rel="noopener">${App.escapeHtml(job.edit_url)}</a>` : (job.project_url ? `<a href="${App.escapeHtml(job.project_url)}" target="_blank" rel="noopener">${App.escapeHtml(job.project_url)}</a>` : '-')}
-            </span>
-          </div>
-        </div>
-        <div>
-          <div class="detail-label" style="margin-bottom:8px;">Files</div>
-          <div style="display:flex; flex-wrap:wrap; gap:8px;">${extraFiles}</div>
-        </div>
-      </div>
-    `;
-  }
-
-  async function showMedia(jobId) {
-    try {
-      const job = await API.jobs.get(jobId);
-      App.openModal(promptSnippet(job, 56), renderModal(job));
-    } catch (err) {
-      App.toast('Failed to load media: ' + err.message, 'error');
-    }
-  }
-
   const GalleryPage = {
     name: 'gallery',
     title: 'Gallery',
@@ -540,14 +450,6 @@
       document.getElementById('gallery-refresh')?.addEventListener('click', () => {
         refreshGallery();
       });
-
-      document.getElementById('gallery-results')?.addEventListener('click', (event) => {
-        const tile = event.target.closest('.gallery-tile');
-        if (!tile) return;
-        const jobId = tile.dataset.jobId;
-        if (jobId) showMedia(jobId);
-      });
-
       attachSocketListener();
       state.wsUnsubs.push(WS.on('connected', attachSocketListener));
     },

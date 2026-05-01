@@ -21,6 +21,8 @@
  */
 (() => {
   const RECENT_LIMIT = 12;
+  const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
+  const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
 
   let recentJobs = [];
   let wsUnsubs = [];
@@ -52,15 +54,44 @@
     return Number.isFinite(value) ? value : 0;
   }
 
-  // Pull a renderable media URL from a completed job.
-  // output_files entries are paths like "downloads\\t2v_1080p_*.mp4".
-  // Server mounts /downloads, so we forward-slash and strip the prefix.
-  function mediaUrlFor(job) {
-    const files = job.output_files || [];
-    const mp4 = files.find((f) => /\.mp4$/i.test(f));
-    if (!mp4) return null;
-    const norm = String(mp4).replace(/\\/g, '/').replace(/^downloads\//, '');
-    return `/downloads/${encodeURI(norm)}`;
+  function mediaKindFromFile(file) {
+    const normalized = String(file || '').replace(/\\/g, '/');
+    const filename = normalized.split('/').pop() || normalized;
+    const extension = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+    if (VIDEO_EXTENSIONS.has(extension)) return 'video';
+    if (IMAGE_EXTENSIONS.has(extension)) return 'image';
+    return null;
+  }
+
+  function mediaUrlFor(file) {
+    const normalized = String(file || '').replace(/\\/g, '/').replace(/^downloads\//i, '');
+    return `/downloads/${encodeURI(normalized)}`;
+  }
+
+  function primaryMedia(job) {
+    const files = Array.isArray(job?.output_files) ? job.output_files : [];
+    const renderable = files
+      .map((file) => {
+        const kind = mediaKindFromFile(file);
+        if (!kind) return null;
+        return {
+          kind,
+          url: mediaUrlFor(file),
+        };
+      })
+      .filter(Boolean);
+
+    if (!renderable.length) return null;
+
+    const primary = renderable[0];
+    const poster = primary.kind === 'video'
+      ? renderable.find((file) => file.kind === 'image')?.url || ''
+      : '';
+
+    return {
+      ...primary,
+      poster,
+    };
   }
 
   function mediaTileHelper() {
@@ -73,11 +104,13 @@
     const status = safeStatus(job.status);
     const type = job.type || 'text-to-video';
     const promptText = job.prompt || job.direction || '(no prompt)';
-    const mediaUrl = status === 'completed' ? mediaUrlFor(job) : null;
+    const media = status === 'completed' ? primaryMedia(job) : null;
 
     // Completed tiles stay metadata-only on first paint, then play on hover.
-    const thumb = mediaUrl
-      ? mediaTileHelper().videoTag({ src: mediaUrl, alt: promptText })
+    const thumb = media
+      ? (media.kind === 'video'
+        ? mediaTileHelper().videoTag({ src: media.url, poster: media.poster, alt: promptText })
+        : mediaTileHelper().imgTag({ src: media.url, alt: promptText }))
       : `<span class="material-icons type-icon ${App.jobTypeClass(type)}">${App.jobTypeIcon(type)}</span>`;
 
     // Completed = silent (Flow's default). Anything else gets a small
@@ -86,12 +119,11 @@
       ? ''
       : `<span class="tile-status-badge state-${status}">${App.escapeHtml(status.toUpperCase())}</span>`;
 
-    // <a> for keyboard a11y (Tab → Enter activates). The hash route is
-    // visual-only; the delegated click handler preventDefault's and
-    // opens the existing job-detail modal instead.
+    // <a> keeps keyboard activation native and routes straight to the
+    // full job-detail page.
     return `
       <a class="project-tile status-${status}"
-         href="#home/job/${encodeURIComponent(job.id)}"
+         href="#job-detail/${encodeURIComponent(job.id)}"
          data-job-id="${App.escapeHtml(job.id)}"
          title="${App.escapeHtml(promptText)}">
         <div class="tile-thumb">
@@ -99,7 +131,7 @@
           ${stateChip}
         </div>
         <div class="tile-overlay">
-          <span class="tile-date">${App.escapeHtml(App.formatDate(job.created_at))}</span>
+          <span class="tile-date">${App.escapeHtml(App.formatDate(job.created_at || job.createdAt))}</span>
         </div>
       </a>
     `;
@@ -174,33 +206,6 @@
     wsUnsubs = [];
   }
 
-  // ---- click delegation -----------------------------------------------------
-
-  function bindGrid() {
-    // Delegate on the stable parent — #home-recent never gets innerHTML-
-    // replaced after mount, only its child #home-grid does. Survives
-    // every WS-driven repaintGrid().
-    const wrap = document.getElementById('home-recent');
-    if (!wrap) return;
-    wrap.addEventListener('click', async (e) => {
-      const tile = e.target.closest('.project-tile');
-      if (!tile || tile.classList.contains('new-project-tile')) return;
-      const id = tile.dataset.jobId;
-      if (!id) return;
-      // Suppress the <a> navigation — keep URL clean; modal-only.
-      e.preventDefault();
-      try {
-        const job = await API.jobs.get(id);
-        const body = `
-          <pre style="white-space:pre-wrap; font-size:12px; line-height:1.5;">${App.escapeHtml(JSON.stringify(job, null, 2))}</pre>
-        `;
-        App.openModal(`Job ${id.slice(0, 8)}…`, body);
-      } catch (err) {
-        App.toast(`Load failed: ${err.message}`, 'error');
-      }
-    });
-  }
-
   // ---- page object ----------------------------------------------------------
 
   const HomePage = {
@@ -218,7 +223,6 @@
     },
 
     mount() {
-      bindGrid();
       attachWS();
     },
 
