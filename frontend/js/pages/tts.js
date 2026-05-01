@@ -11,7 +11,8 @@
     'ja-JP': 'Japanese (Japan)',
     'ko-KR': 'Korean (South Korea)',
   };
-  const FALLBACK_VOICES = [
+  // Keep this list aligned with server/routes/tts.py VOICE_PREFIXES.
+  const VOICES = [
     { voice: 'vi-VN-HoaiMyNeural', locale: 'vi-VN', label: 'HoaiMy Neural' },
     { voice: 'en-US-JennyNeural', locale: 'en-US', label: 'Jenny Neural' },
     { voice: 'en-GB-SoniaNeural', locale: 'en-GB', label: 'Sonia Neural' },
@@ -41,63 +42,6 @@
 
   function localeLabel(locale) {
     return LOCALE_LABELS[locale] || locale || 'Unknown';
-  }
-
-  function normalizeVoice(record) {
-    if (typeof record === 'string') {
-      const locale = guessLocale(record);
-      return {
-        voice: record,
-        locale,
-        label: humanizeVoiceName(record),
-      };
-    }
-
-    if (!record || typeof record !== 'object') return null;
-
-    const voice = record.ShortName || record.short_name || record.voice || record.name || record.Name;
-    if (!voice || typeof voice !== 'string') return null;
-
-    const locale = record.Locale || record.locale || guessLocale(voice);
-    const displayName =
-      record.FriendlyName ||
-      record.DisplayName ||
-      record.display_name ||
-      record.label ||
-      humanizeVoiceName(voice);
-    const gender = record.Gender || record.gender || '';
-
-    return {
-      voice,
-      locale,
-      label: gender ? `${displayName} (${gender})` : displayName,
-    };
-  }
-
-  function normalizeVoicesPayload(payload) {
-    const rawVoices = Array.isArray(payload)
-      ? payload
-      : Array.isArray(payload?.voices)
-        ? payload.voices
-        : Array.isArray(payload?.items)
-          ? payload.items
-          : Array.isArray(payload?.data)
-            ? payload.data
-            : [];
-
-    const deduped = new Map();
-    rawVoices.forEach((record) => {
-      const normalized = normalizeVoice(record);
-      if (normalized?.voice) deduped.set(normalized.voice, normalized);
-    });
-
-    return Array.from(deduped.values()).sort((a, b) => {
-      const localeDiff = localeRank(a.locale) - localeRank(b.locale);
-      if (localeDiff !== 0) return localeDiff;
-      const localeNameDiff = String(a.locale).localeCompare(String(b.locale));
-      if (localeNameDiff !== 0) return localeNameDiff;
-      return String(a.label).localeCompare(String(b.label));
-    });
   }
 
   function groupVoices(voices) {
@@ -182,8 +126,8 @@
     return matched?.locale || guessLocale(voiceValue);
   }
 
-  function getVoiceCountLabel(count, source) {
-    return `${count} voice${count === 1 ? '' : 's'} loaded${source ? ` from ${source}` : ''}`;
+  function getVoiceCountLabel(count) {
+    return `${count} voice${count === 1 ? '' : 's'} loaded`;
   }
 
   function setBanner(elementId, message, type) {
@@ -323,35 +267,10 @@
     setVoiceControlsEnabled(voices.length > 0);
   }
 
-  async function loadVoices() {
-    const voiceSelect = document.getElementById('tts-voice');
-    const voiceStatus = document.getElementById('tts-voice-status');
-    if (voiceSelect) {
-      voiceSelect.innerHTML = '<option value="">Loading voices...</option>';
-      voiceSelect.disabled = true;
-    }
-    if (voiceStatus) voiceStatus.textContent = 'Loading voices...';
-    setVoiceControlsEnabled(false);
-
-    try {
-      const response = await API.fetch('/api/voices');
-      const voices = normalizeVoicesPayload(response);
-      if (voices.length === 0) throw new Error('No voices returned from /api/voices');
-
-      populateVoiceControls(voices, 'vi-VN-HoaiMyNeural');
-      const status = document.getElementById('tts-voice-status');
-      if (status) status.textContent = getVoiceCountLabel(voices.length, '/api/voices');
-      setBanner('tts-voice-banner', '', 'info');
-    } catch (err) {
-      populateVoiceControls(FALLBACK_VOICES, 'vi-VN-HoaiMyNeural');
-      const status = document.getElementById('tts-voice-status');
-      if (status) status.textContent = getVoiceCountLabel(FALLBACK_VOICES.length, 'backend allowlist fallback');
-      setBanner(
-        'tts-voice-banner',
-        'GET /api/voices is not available in this branch, so the page is using the current backend allowlist as a fallback.',
-        'warning'
-      );
-    }
+  function loadVoices() {
+    populateVoiceControls(VOICES, 'vi-VN-HoaiMyNeural');
+    const status = document.getElementById('tts-voice-status');
+    if (status) status.textContent = getVoiceCountLabel(VOICES.length);
   }
 
   function syncLanguageSelectToVoice() {
@@ -449,7 +368,6 @@
         <div class="settings-grid">
           <div class="settings-card">
             <h3><span class="material-icons">record_voice_over</span> Text to Speech</h3>
-            <div id="tts-voice-banner" class="card" style="display:none; margin-bottom: 16px; padding: 12px 14px;"></div>
             <div id="tts-error-banner" class="card" style="display:none; margin-bottom: 16px; padding: 12px 14px;"></div>
 
             <form id="tts-form">
