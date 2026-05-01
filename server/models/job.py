@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field, model_validator
 
 # Canonical camera-move presets (duplicated from flow.operations.camera to keep
 # server import surface free of browser/Playwright baggage). A drift-guard test
-# in tests/test_camera_direction_validator.py asserts the two stay in sync.
+# in tests/test_camera_direction_validator.py asserts the runtime sync, and
+# tests/test_camera_preset_consistency.py guards the frontend mirror.
 CAMERA_PRESETS: frozenset[str] = frozenset({
     # Motion
     "Dolly in", "Dolly out", "Orbit left", "Orbit right",
@@ -18,6 +19,28 @@ CAMERA_PRESETS: frozenset[str] = frozenset({
     # Position
     "Center", "Left", "Right", "High", "Low", "Closer", "Further",
 })
+
+DEFAULT_MODEL = "veo-3.1-lite-lp"
+
+# `server/routes/jobs.py` still uses the old fast-LP token as a text-to-image
+# sentinel to map omitted video-model defaults onto the image-model default
+# (`nano-banana-pro`). Keep the route contract stable here until that path is
+# migrated separately.
+TEXT_TO_IMAGE_ROUTE_SENTINEL = "veo-3.1-fast-lp"
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _require_non_empty_text(value: str | None, *, job_type: str, field: str) -> None:
+    if _normalize_optional_text(value) is None:
+        if field == "direction":
+            raise ValueError(f"{job_type} requires 'direction'")
+        raise ValueError(f"{job_type} requires {field}")
 
 
 class JobType(str, Enum):
@@ -52,7 +75,7 @@ class JobCreate(BaseModel):
     """Request body for creating a single job."""
     type: JobType
     prompt: Optional[str] = None
-    model: str = "veo-3.1-fast-lp"
+    model: str = DEFAULT_MODEL
     aspect_ratio: str = "16:9"
 
     # Pin an L1 job to a specific Chrome profile (Google account). For
@@ -77,19 +100,57 @@ class JobCreate(BaseModel):
     ref_image_path: Optional[str] = None
 
     @model_validator(mode="after")
-    def _validate_camera_direction(self) -> "JobCreate":
-        """Reject camera-move jobs with unknown/missing direction (#39).
+    def _validate_create_request(self) -> "JobCreate":
+        """Fail fast on missing operation-specific inputs before queuing work."""
+        self.prompt = _normalize_optional_text(self.prompt)
+        self.profile = _normalize_optional_text(self.profile)
+        self.parent_job_id = _normalize_optional_text(self.parent_job_id)
+        self.chain_id = _normalize_optional_text(self.chain_id)
+        self.project_url = _normalize_optional_text(self.project_url)
+        self.media_id = _normalize_optional_text(self.media_id)
+        self.direction = _normalize_optional_text(self.direction)
+        self.start_image_path = _normalize_optional_text(self.start_image_path)
+        self.end_image_path = _normalize_optional_text(self.end_image_path)
+        self.ref_image_path = _normalize_optional_text(self.ref_image_path)
+        self.ingredient_image_paths = [
+            path.strip()
+            for path in self.ingredient_image_paths
+            if isinstance(path, str) and path.strip()
+        ]
 
-        Flow's UI surfaces 15 named presets; any other string silently
-        no-ops at runtime and wastes a claim cycle. Fail-fast at
-        submission time so invalid directions never reach the worker.
-        """
+        # Preserve the existing text-to-image route default until that path is
+        # migrated off its fast-LP sentinel.
+        if (
+            self.type == JobType.TEXT_TO_IMAGE
+            and "model" not in self.model_fields_set
+            and self.model == DEFAULT_MODEL
+        ):
+            self.model = TEXT_TO_IMAGE_ROUTE_SENTINEL
+
+        if self.type == JobType.FRAMES_TO_VIDEO:
+            _require_non_empty_text(
+                self.start_image_path,
+                job_type=self.type.value,
+                field="start_image_path",
+            )
+            return self
+
+        if self.type == JobType.INGREDIENTS_TO_VIDEO:
+            if not self.ingredient_image_paths:
+                raise ValueError("ingredients-to-video requires ingredient_image_paths")
+            return self
+
+        if self.type in {JobType.INSERT_OBJECT, JobType.REMOVE_OBJECT}:
+            if self.bbox is None:
+                raise ValueError(f"{self.type.value} requires bbox")
+            return self
+
         if self.type == JobType.CAMERA_MOVE:
-            if not self.direction:
-                raise ValueError(
-                    "camera-move job requires 'direction' "
-                    f"(one of: {sorted(CAMERA_PRESETS)})"
-                )
+            _require_non_empty_text(
+                self.direction,
+                job_type=self.type.value,
+                field="direction",
+            )
             if self.direction not in CAMERA_PRESETS:
                 raise ValueError(
                     f"Unknown camera preset {self.direction!r}. "
@@ -123,7 +184,7 @@ class Job(BaseModel):
 
     # Operation params
     prompt: Optional[str] = None
-    model: str = "veo-3.1-fast-lp"
+    model: str = DEFAULT_MODEL
     aspect_ratio: str = "16:9"
     bbox: Optional[BBox] = None
     direction: Optional[str] = None
