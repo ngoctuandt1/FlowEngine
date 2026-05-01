@@ -47,6 +47,11 @@
     ['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
   const safeStatus = (s) => ALLOWED_STATUS.has(s) ? s : 'pending';
 
+  function createdAtMs(job) {
+    const value = Date.parse(job?.created_at || job?.createdAt || '');
+    return Number.isFinite(value) ? value : 0;
+  }
+
   // Pull a renderable media URL from a completed job.
   // output_files entries are paths like "downloads\\t2v_1080p_*.mp4".
   // Server mounts /downloads, so we forward-slash and strip the prefix.
@@ -142,22 +147,27 @@
 
   function attachWS() {
     if (!window.WS || typeof WS.on !== 'function') return;
-    const upsert = (job, allowInsert) => {
+    const upsert = (job) => {
       if (!job?.id) return false;
       const idx = recentJobs.findIndex((j) => j.id === job.id);
       if (idx >= 0) {
         recentJobs[idx] = { ...recentJobs[idx], ...job };
-      } else if (allowInsert) {
-        recentJobs = [job, ...recentJobs].slice(0, RECENT_LIMIT);
       } else {
-        return false;
+        const next = [...recentJobs, job]
+          .sort((a, b) => {
+            const createdDiff = createdAtMs(b) - createdAtMs(a);
+            if (createdDiff !== 0) return createdDiff;
+            return String(b.id || '').localeCompare(String(a.id || ''));
+          })
+          .slice(0, RECENT_LIMIT);
+        if (!next.some((entry) => entry.id === job.id)) return false;
+        recentJobs = next;
       }
       return true;
     };
-    wsUnsubs.push(WS.on('job_created',   (p) => { if (upsert(p, true))  repaintGrid(); }));
-    wsUnsubs.push(WS.on('job_updated',   (p) => { if (upsert(p, false)) repaintGrid(); }));
-    wsUnsubs.push(WS.on('job_completed', (p) => { if (upsert(p, false)) repaintGrid(); }));
-    wsUnsubs.push(WS.on('job_failed',    (p) => { if (upsert(p, false)) repaintGrid(); }));
+    wsUnsubs.push(WS.on('job_update', (job) => {
+      if (upsert(job)) repaintGrid();
+    }));
   }
 
   function detachWS() {
