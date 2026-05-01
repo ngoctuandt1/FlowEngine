@@ -2,7 +2,7 @@
 
 > This is the canonical spine. Read first. Update whenever architecture, code map, or deploy topology changes.
 
-- Scope: repo `master` at `77c16bb155f15f24e29d07e5c02c138f7c934a3a` plus the 2026-05-01 public cutover state.
+- Scope: tracks current `master` plus the 2026-05-01 public cutover state.
 - Purpose: one 5-minute sync doc for future feature work.
 - Not here: deep rationale lives in [docs/DESIGN.md](DESIGN.md), invariants/test contract in [docs/SPEC.md](SPEC.md), and roadmap in [docs/WORKPLAN.md](WORKPLAN.md).
 
@@ -12,40 +12,48 @@ FlowEngine is a browser-automation engine for Google Flow (`https://labs.google/
 
 ## 2. Architecture
 
-FlowEngine is four layers with a strict split: the frontend is a vanilla JS SPA, the server owns HTTP/API/SQLite, the worker owns claim/dispatch/profile state, and the `flow/` package owns Google Flow browser automation. The frontend talks to the server over HTTP plus `WS /ws/jobs`; workers talk to the server over authenticated HTTP poll/update/heartbeat calls.
+FlowEngine is four layers with a strict split: the frontend is a vanilla JS SPA, the server owns HTTP/API/SQLite plus static mounts, the worker owns claim/dispatch/profile state, and the `flow/` package owns Google Flow browser automation.
 
 ```text
 frontend/ (index.html + js/pages/*)
-    |  HTTP GET/POST/DELETE + WebSocket /ws/jobs
+    | HTTP GET/POST/DELETE to /api/*
+    | WS subscribe only to /ws/jobs
     v
-server/ (FastAPI + SQLite)
-    |  HTTP poll/update/heartbeat on /api/worker/*
-    v
+server/ (FastAPI + SQLite + static mounts + WS broadcaster)
+    ^  POST /api/worker/claim
+    |  PUT  /api/worker/jobs/{id}
+    |  POST /api/worker/heartbeat
 worker/ (claim loop + dispatcher + profile/project guards)
-    |  Playwright / FlowClient calls
+    | Playwright / FlowClient calls
     v
 flow/ (login + navigation + submit + wait + download + operations)
-    |  Chrome profile + Google Flow DOM/network
+    | Chrome profile + Google Flow DOM/network
     v
 labs.google/fx/tools/flow
 ```
 
+WS reality that matters before changing live-update code:
+
+- `WS /ws/jobs` is server-push only. The worker never talks WS directly; it reports over `/api/worker/*`, then the server broadcasts to dashboards.
+- Current `server/routes/ws.py` emits only `{event: "job_update", data: ...}` and keepalive `{event: "ping", ts: ...}` frames.
+- Client messages are only absorbed to keep the socket open; worker heartbeat is not rebroadcast over WS.
+
 Component summary:
 
-- `server/`: FastAPI app, route registration, dashboard auth gate, SQLite schema/init, REST + WebSocket surface.
+- `server/`: FastAPI app, route registration, dashboard auth gate, SQLite schema/init, REST surface, static mounts, and WS fan-out.
 - `worker/`: polling worker that claims the next eligible job, acquires profile/project guards, dispatches by job type, and reports completion/failure.
 - `flow/`: browser automation layer around Google Flow, including login recovery, URL/media-id helpers, stable selectors, wait logic, downloads, and operation modules.
-- `frontend/`: static SPA served by the FastAPI app; route state is hash-based and pages mostly consume `frontend/js/api.js` plus `frontend/js/ws.js`.
+- `frontend/`: static SPA served by the FastAPI app; route state is hash-based and pages consume `frontend/js/api.js`, `frontend/js/ws.js`, and some direct raw-socket listeners.
 
 ## 3. Job system invariants
 
 These are the chain rules that future work must preserve. Do not restate or fork them elsewhere; the source of truth is [docs/SPEC.md](SPEC.md), especially [INV-1 at `docs/SPEC.md:52`](SPEC.md#L52), [INV-2 at `docs/SPEC.md:63`](SPEC.md#L63), [INV-3 at `docs/SPEC.md:73`](SPEC.md#L73), [INV-4 at `docs/SPEC.md:83`](SPEC.md#L83), and [INV-5 at `docs/SPEC.md:90`](SPEC.md#L90).
 
-- `INV-1` + `INV-3`: L1 creates the project; every L2+ child inherits the completed parent's `project_url`, `media_id`, `edit_url`, and `profile` at claim time. Main enforcement: [server/db/job_store.py:226](../server/db/job_store.py#L226), [server/models/job.py:81](../server/models/job.py#L81), [docs/SPEC.md:73](SPEC.md#L73).
-- `INV-1`: the same `profile` must hold across the entire chain. Different Google account = different project ownership = Flow 404 / redirect failure. Main enforcement: [server/db/job_store.py:232](../server/db/job_store.py#L232), [docs/SPEC.md:52](SPEC.md#L52).
-- `INV-2`: target a clip only via `edit_url` (`/edit/{media_id}`); never via `video_index`, generic grid-card order, or DOM card counting. Main enforcement: [flow/navigation.py:38](../flow/navigation.py#L38), [flow/operations/_base.py:43](../flow/operations/_base.py#L43), [docs/SPEC.md:63](SPEC.md#L63).
-- `INV-4`: execution is serial per `project_url`. There are two guards: claim-time SQL refuses a second active job on the same project, and the worker still acquires `ProjectLock` before L2+ work. Main enforcement: [server/db/job_store.py:226](../server/db/job_store.py#L226), [worker/project_lock.py:13](../worker/project_lock.py#L13), [docs/SPEC.md:83](SPEC.md#L83).
-- `INV-5`: `media_id` is re-extracted after every operation and stored back; downstream work must consume the final stored value, not assume stability across ops. Main enforcement: [flow/operations/_base.py:619](../flow/operations/_base.py#L619), [flow/operations/_base.py:706](../flow/operations/_base.py#L706), [docs/SPEC.md:90](SPEC.md#L90).
+- `INV-1` + `INV-3`: L1 creates the project; every L2+ child inherits the completed parent's `project_url`, `media_id`, `edit_url`, and `profile` at claim time. Main enforcement: [server/db/job_store.py](../server/db/job_store.py), [server/models/job.py](../server/models/job.py), [docs/SPEC.md:73](SPEC.md#L73).
+- `INV-1`: the same `profile` must hold across the entire chain. Different Google account means different project ownership and produces Flow 404 / redirect failures. Main enforcement: [server/db/job_store.py](../server/db/job_store.py), [docs/SPEC.md:52](SPEC.md#L52).
+- `INV-2`: target a clip only via `edit_url` (`/edit/{media_id}`); never via `video_index`, generic grid-card order, or DOM card counting. Main enforcement: [flow/navigation.py](../flow/navigation.py), [flow/operations/_base.py](../flow/operations/_base.py), [docs/SPEC.md:63](SPEC.md#L63).
+- `INV-4`: execution is serial per `project_url`. There are two guards: claim-time SQL refuses a second active job on the same project, and the worker still acquires `ProjectLock` before L2+ work. Main enforcement: [server/db/job_store.py](../server/db/job_store.py), [worker/project_lock.py](../worker/project_lock.py), [docs/SPEC.md:83](SPEC.md#L83).
+- `INV-5`: `media_id` is re-extracted after every operation and stored back; downstream work must consume the final stored value, not assume stability across ops. Main enforcement: [flow/operations/_base.py](../flow/operations/_base.py), [docs/SPEC.md:90](SPEC.md#L90).
 
 Read before changing chain logic:
 
@@ -53,7 +61,78 @@ Read before changing chain logic:
 - [docs/FLOW_MULTILEVEL_JOBS.md](FLOW_MULTILEVEL_JOBS.md)
 - [docs/FLOW_PIPELINE_KNOWLEDGE.md](FLOW_PIPELINE_KNOWLEDGE.md)
 
-## 4. Production deploy topology
+### Job create matrix
+
+This matrix reflects `server/models/job.py::JobCreate` validation plus the minimum chain-target context expected by runtime code.
+
+| Job type | Level | API-required inputs | Target context / notes |
+|---|---|---|---|
+| `text-to-video` | L1 | none beyond `type` | Commonly carries `prompt`, `model`, `aspect_ratio`, and optional `profile` pin. |
+| `frames-to-video` | L1 | `start_image_path` | `end_image_path` is optional. |
+| `ingredients-to-video` | L1 | `ingredient_image_paths` with at least 1 item | Usually also carries `prompt`. |
+| `text-to-image` | L1 | none beyond `type` | Route keeps a text-to-image sentinel default and maps it to the image model path. |
+| `extend-video` | L2+ | none at model layer | Needs a completed parent or explicit target context (`project_url` plus resolved/inherited `media_id`). |
+| `insert-object` | L2+ | `bbox` | Usually also carries `prompt`; must target an existing clip via parent or explicit target context. |
+| `remove-object` | L2+ | `bbox` | BBox-only op; must target an existing clip via parent or explicit target context. |
+| `camera-move` | L2+ | `direction` from `CAMERA_PRESETS` | Must target an existing clip via parent or explicit target context. |
+
+## 4. Local quickstart
+
+### Minimal boot sequence
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Edit `.env` or export the same vars in your shell, then start the server:
+
+```powershell
+python run_server.py
+```
+
+Verify the app is up at `http://localhost:8080/` or `http://localhost:8080/health`, then start the worker in a second shell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:SERVER_URL = "http://localhost:8080"
+$env:API_KEY = "dev-key"
+$env:WORKER_PROFILES = "ngoctuandt20"
+$env:CHROME_USER_DATA_DIR = "D:\AI\FlowEngine\chrome-profiles"
+python run_worker.py
+```
+
+### Worker prerequisites
+
+- `CHROME_USER_DATA_DIR` should be an absolute path to the real Chrome user-data root, not a fresh worktree-local directory.
+- Warm at least one profile before starting the worker: `python scripts/warm_profile.py <profile>`.
+- `WORKER_PROFILES` must list warmed subdirectory names under `CHROME_USER_DATA_DIR`; the worker preflight will exit if the profile dir is missing or has no cookies.
+
+Example warm-up:
+
+```powershell
+$env:CHROME_USER_DATA_DIR = "D:\AI\FlowEngine\chrome-profiles"
+python scripts/warm_profile.py ngoctuandt20
+```
+
+### Core env vars
+
+| Component | Var | Why it matters | Typical local value |
+|---|---|---|---|
+| server | `SERVER_PORT` | `run_server.py` binds here. | `8080` |
+| server | `API_KEY` | Bearer token for `/api/worker/*`. | `dev-key` |
+| server | `DATABASE_PATH` | SQLite file path. | `./data/flowengine.db` |
+| server | `FLOW_DOWNLOAD_DIR` | Mounted at `/downloads`. | `./downloads` |
+| server | `FLOW_UPLOAD_DIR` | Mounted at `/uploads`. | `./uploads` |
+| worker | `SERVER_URL` | Base URL for claim/update/heartbeat requests. | `http://localhost:8080` |
+| worker | `WORKER_PROFILES` | Comma-separated warmed profile names. | `ngoctuandt20` |
+| worker | `CHROME_USER_DATA_DIR` | Absolute Chrome user-data root. | `D:\AI\FlowEngine\chrome-profiles` |
+| worker | `MAX_CONCURRENT_JOBS` | Caps concurrent claims per worker process. | `1` |
+| worker | `POLL_INTERVAL_SEC` | Claim-loop poll interval. | `5` |
+
+## 5. Production deploy topology
 
 This section is the current runtime topology, not just the repo template. The repo tracks the server service template; the public cutover details come from the 2026-05-01 session report plus operator state.
 
@@ -63,12 +142,13 @@ This section is the current runtime topology, not just the repo template. The re
 | Dashboard password | `1` | Operator-stated current runtime |
 | Edge routing | Cloudflare Tunnel, token-mode, dashboard-managed | Operator-stated current runtime; cutover kept the existing tunnel route on port `8899` per [session report:10-12](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L10) |
 | Tunnel target | `192.168.86.42:8899` | Operator-stated current runtime |
-| Server bind used for public cutover | FlowEngine bound on `0.0.0.0:8899` to avoid moving the tunnel route | [session report:53-56](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L53), [CLAUDE.md:191-199](../CLAUDE.md#L191) |
-| systemd units | `flowengine-server`, `flowengine-worker`, `flowengine-xvfb` on Debian | Operator-stated current runtime; repo only ships the server unit template at [deploy/debian/flowengine-server.service:1](../deploy/debian/flowengine-server.service#L1) |
-| Install path | `/opt/flowengine` | [deploy/debian/flowengine-server.service:11](../deploy/debian/flowengine-server.service#L11), [deploy/debian/README.md:43](../deploy/debian/README.md#L43) |
-| Env file | `/etc/flowengine/flowengine.env` | [deploy/debian/flowengine-server.service:12](../deploy/debian/flowengine-server.service#L12), [deploy/debian/README.md:46](../deploy/debian/README.md#L46) |
-| Dashboard auth switch | `DASHBOARD_PASSWORD` enables signed-cookie auth and middleware | [server/dashboard_auth.py:36](../server/dashboard_auth.py#L36), [server/app.py:98](../server/app.py#L98) |
-| Proxy handling | `TRUST_PROXY_HEADERS=1` plus uvicorn proxy-header support are required so auth sees HTTPS correctly | [server/dashboard_auth.py:38](../server/dashboard_auth.py#L38), [deploy/debian/flowengine-server.service:15](../deploy/debian/flowengine-server.service#L15), [CLAUDE.md:220-223](../CLAUDE.md#L220) |
+| Server bind used for public cutover | FlowEngine bound on `0.0.0.0:8899` to avoid moving the tunnel route | [session report:53-56](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L53), [CLAUDE.md](../CLAUDE.md) |
+| systemd units | `flowengine-server`, `flowengine-worker`, `flowengine-xvfb` on Debian | Operator-stated current runtime; repo only ships the server unit template at [deploy/debian/flowengine-server.service](../deploy/debian/flowengine-server.service) |
+| Install path | `/opt/flowengine` | [deploy/debian/flowengine-server.service](../deploy/debian/flowengine-server.service), [deploy/debian/README.md](../deploy/debian/README.md) |
+| Env file | `/etc/flowengine/flowengine.env` | [deploy/debian/flowengine-server.service](../deploy/debian/flowengine-server.service), [deploy/debian/README.md](../deploy/debian/README.md) |
+| Dashboard auth switch | `DASHBOARD_PASSWORD` enables signed-cookie auth and middleware | [server/dashboard_auth.py](../server/dashboard_auth.py), [server/app.py](../server/app.py) |
+| Proxy handling | `TRUST_PROXY_HEADERS=1` plus uvicorn proxy-header support are required so auth sees HTTPS correctly | [server/dashboard_auth.py](../server/dashboard_auth.py), [deploy/debian/flowengine-server.service](../deploy/debian/flowengine-server.service), [CLAUDE.md](../CLAUDE.md) |
+| Downloads/uploads sharing | The server mounts its own `FLOW_DOWNLOAD_DIR` at `/downloads` and its own `FLOW_UPLOAD_DIR` at `/uploads`. In the split Debian-server plus Windows-worker deploy, those paths must be shared or synced across hosts or dashboard media links and worker input-asset paths will break. | [server/app.py](../server/app.py), [server/routes/uploads.py](../server/routes/uploads.py), [deploy/debian/README.md](../deploy/debian/README.md) |
 | Archived old engine | `/opt/_archive/video-ai-studio.20260501` (and `/opt/_archive/video-ai.20260501`) | [session report:61-65](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L61) |
 
 Important distinction:
@@ -76,19 +156,67 @@ Important distinction:
 - Repo template: [deploy/debian/flowengine-server.service](../deploy/debian/flowengine-server.service) still shows `127.0.0.1:8080` behind nginx/Caddy.
 - Public runtime cutover: moved FlowEngine onto `0.0.0.0:8899` to preserve the existing Cloudflare Tunnel route for `ai.hassio.io.vn`.
 
-## 5. Data model
+## 6. Data model
 
 Top fields only. For any schema change, read both the Pydantic model and the backing store/DDL before editing API, worker, or UI logic.
 
-| Entity | Key model fields | Key DB fields | Full schema |
-|---|---|---|---|
-| Job | `JobCreate`/`Job`/`JobUpdate` carry `type: JobType`, `status: JobStatus`, `job_level: int`, `parent_job_id: str?`, `chain_id: str?`, `profile: str?`, `project_url: str?`, `media_id: str?`, `edit_url: str?`, `prompt: str?`, `model: str`, `aspect_ratio: str`, `bbox: BBox?`, `direction: str?`, `start_image_path: str?`, `end_image_path: str?`, `ingredient_image_paths: list[str]`, `ref_image_path: str?`, `output_files: list[str]`, `generation_id: str?`, `worker_id: str?`, `claimed_at/completed_at: datetime?`, `error: str?`, `created_at/updated_at: datetime` | `jobs` stores the same shape in SQLite-friendly form: `id/type/status TEXT`, `job_level INTEGER`, `parent_job_id/chain_id/profile/project_url/media_id/edit_url TEXT`, `bbox_json/ingredient_image_paths_json/output_files_json TEXT`, `generation_id/worker_id/error TEXT`, `claimed_at/completed_at/created_at/updated_at TEXT`, plus `safety_filter TEXT` for template/media compatibility | Model: [server/models/job.py:74](../server/models/job.py#L74), [server/models/job.py:168](../server/models/job.py#L168), [server/models/job.py:219](../server/models/job.py#L219). DB: [server/db/database.py:22](../server/db/database.py#L22). Store logic: [server/db/job_store.py:1](../server/db/job_store.py#L1) |
-| Chain | API uses `Chain`, `ChainAggregate`, and `ChainCreateResponse`: `id`, `profile`, `created_at`, aggregate `status`, aggregate `progress`, and ordered `jobs` ids | `chains` table still has `id/profile/project_url/media_id/status/created_at/updated_at`; current chain store treats the row as immutable metadata and computes status/progress from `jobs` on read | Model: [server/models/chain.py:18](../server/models/chain.py#L18), [server/models/chain.py:36](../server/models/chain.py#L36), [server/models/chain.py:50](../server/models/chain.py#L50). DB: [server/db/database.py:12](../server/db/database.py#L12). Aggregate rules: [server/db/chain_store.py:1](../server/db/chain_store.py#L1) |
-| Profile | `Profile` and `ProfileUpdate` carry `name`, `google_account`, `locale`, `tier`, `status`, `current_job_id`, `worker_id`, `last_used_at`, `created_at` | `profiles` table mirrors `name/google_account/locale/tier/status/current_job_id/worker_id/last_used_at/created_at` | Model: [server/models/profile.py:15](../server/models/profile.py#L15), [server/models/profile.py:28](../server/models/profile.py#L28). DB: [server/db/database.py:69](../server/db/database.py#L69). Store logic: [server/db/profile_store.py:1](../server/db/profile_store.py#L1) |
-| Character | `CharacterCreate`, `CharacterUpdate`, and `Character` center on `id`, `name`, `description`, `image_paths: list[str]`, `created_at`, `updated_at` | `characters` stores `id/name/description/image_paths/created_at/updated_at`, with `image_paths` JSON-serialized in SQLite | Model: [server/models/character.py:10](../server/models/character.py#L10), [server/models/character.py:18](../server/models/character.py#L18), [server/models/character.py:26](../server/models/character.py#L26). DB: [server/db/database.py:81](../server/db/database.py#L81). Store logic: [server/db/character_store.py:1](../server/db/character_store.py#L1) |
-| Template | `TemplateStep` describes placeholder-friendly job-step fields (`type`, `prompt`, `model`, `aspect_ratio`, `bbox`, `direction`, image refs, `safety_filter`); `Template` adds `id/name/description/steps/created_at/updated_at`; `TemplateInstantiate` adds `template_id` + `vars` | `templates` stores `id/name/description/steps_json/created_at/updated_at` | Model: [server/models/template.py:14](../server/models/template.py#L14), [server/models/template.py:41](../server/models/template.py#L41), [server/models/template.py:52](../server/models/template.py#L52). DB: [server/db/database.py:139](../server/db/database.py#L139). Store logic: [server/db/template_store.py:1](../server/db/template_store.py#L1) |
+### Job models
 
-## 6. Code map
+| Model | Fields / notes |
+|---|---|
+| `BBox` | Normalized `x`, `y`, `w`, `h` floats in the 0-1 range. |
+| `JobCreate` | Request body: `type`, optional `prompt`, `model`, `aspect_ratio`, `profile`, `parent_job_id`, `chain_id`, `project_url`, `media_id`, `bbox`, `direction`, `start_image_path`, `end_image_path`, `ingredient_image_paths`, `ref_image_path`. |
+| `Job` | Full record: `id`, `type`, `status`, `job_level`, `parent_job_id`, `chain_id`, `profile`, `project_url`, `media_id`, `edit_url`, all create-time operation fields, `output_files`, `generation_id`, `worker_id`, `claimed_at`, `completed_at`, `error`, `created_at`, `updated_at`. |
+| `JobUpdate` | Worker update payload only: `status`, `project_url`, `media_id`, `edit_url`, `profile`, `output_files`, `generation_id`, `error`, `completed_at`. |
+
+DB notes:
+
+- `jobs` stores the same shape in SQLite-friendly form: `id/type/status TEXT`, `job_level INTEGER`, `parent_job_id/chain_id/profile/project_url/media_id/edit_url TEXT`, `bbox_json/ingredient_image_paths_json/output_files_json TEXT`, `generation_id/worker_id/error TEXT`, and timestamp text columns.
+- Legacy SQLite schemas may still contain `safety_filter TEXT`, but the current job API does not wire or persist that field. See [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md).
+
+### Chain models
+
+| Model | Fields / notes |
+|---|---|
+| `ChainCreate` | Request body: `jobs: list[JobCreate]`, optional `profile`. |
+| `Chain` | Immutable metadata row: `id`, optional `profile`, `created_at`, `updated_at`. |
+| `ChainProgress` | Aggregate counts: `completed`, `total`. |
+| `ChainAggregate` | `GET /api/chains/{id}` response: `id`, optional `profile`, `created_at`, derived `status`, derived `progress`, and ordered `jobs: list[str]`. |
+| `ChainCreateResponse` | `POST /api/chains` and template instantiate response: `chain_id`, `jobs: list[Job]`. |
+
+DB notes:
+
+- The `chains` table still has legacy `project_url`, `media_id`, and `status` columns, but current store logic treats the row as immutable metadata and computes status/progress from `jobs` on read.
+
+### Profile models
+
+| Model | Fields / notes |
+|---|---|
+| `Profile` | `name`, optional `google_account`, `locale`, `tier`, `status`, optional `current_job_id`, optional `worker_id`, optional `last_used_at`, `created_at`. |
+| `ProfileUpdate` | Mutable fields only: optional `status`, `current_job_id`, `worker_id`, `google_account`, `locale`, `tier`. |
+
+### Character models
+
+| Model | Fields / notes |
+|---|---|
+| `CharacterCreate` | `name`, optional `description`, `image_paths`. |
+| `CharacterUpdate` | Optional `name`, optional `description`, optional `image_paths`. |
+| `Character` | Full record: `id`, `name`, optional `description`, `image_paths`, `created_at`, `updated_at`. |
+
+### Template models
+
+| Model | Fields / notes |
+|---|---|
+| `TemplateStep` | Placeholder-friendly step fields: `type`, `prompt`, `model`, `aspect_ratio`, `parent_job_id`, `bbox`, `direction`, `start_image_path`, `end_image_path`, `ref_image_path`, `ingredient_image_paths`, optional `safety_filter` legacy enum. |
+| `TemplateCreate` | Request body for create/update: `name`, optional `description`, `steps`. |
+| `Template` | Stored template: `id`, `name`, optional `description`, `steps`, `created_at`, `updated_at`. |
+| `TemplateInstantiate` | Instantiate request: `template_id`, `vars`. |
+
+Template note:
+
+- `TemplateStep.safety_filter` is legacy/template-only baggage. Current guidance is still "do not wire or persist" a 3-level safety filter through the live job API. See [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md).
+
+## 7. Code map
 
 Every file below was read directly when this spine was written.
 
@@ -96,7 +224,7 @@ Every file below was read directly when this spine was written.
 
 | File | Responsibility |
 |---|---|
-| [server/app.py](../server/app.py) | Builds the FastAPI app, initializes DB, mounts static frontend assets, wires dashboard auth, and registers routers. |
+| [server/app.py](../server/app.py) | Builds the FastAPI app, initializes DB, mounts static frontend assets plus `/downloads` and `/uploads`, wires dashboard auth, and registers routers. |
 | [server/dashboard_auth.py](../server/dashboard_auth.py) | Implements the optional signed-cookie dashboard password gate plus `/login`, `/api/auth/login`, and `/api/auth/logout`. |
 | [server/auth.py](../server/auth.py) | Enforces bearer-token auth for privileged `/api/worker/*` endpoints. |
 | [server/config.py](../server/config.py) | Loads env/config defaults, data paths, database path, and logging setup. |
@@ -105,8 +233,8 @@ Every file below was read directly when this spine was written.
 
 | File | Responsibility |
 |---|---|
-| [server/routes/jobs.py](../server/routes/jobs.py) | Public job and chain CRUD surface plus queue counts/recovery and broadcast hooks. |
-| [server/routes/worker.py](../server/routes/worker.py) | Worker claim/update/heartbeat endpoints behind `require_worker_token`. |
+| [server/routes/jobs.py](../server/routes/jobs.py) | Public job and chain CRUD surface plus queue counts/recovery and WS broadcast hooks. |
+| [server/routes/worker.py](../server/routes/worker.py) | Worker claim/update/heartbeat endpoints behind bearer auth. |
 | [server/routes/profiles.py](../server/routes/profiles.py) | Profile registration, update, fetch, list, and per-profile job listing. |
 | [server/routes/characters.py](../server/routes/characters.py) | Character-library CRUD with upload-path normalization and existence checks. |
 | [server/routes/templates.py](../server/routes/templates.py) | Workflow-template CRUD plus instantiate-to-chain bridge. |
@@ -117,15 +245,19 @@ Every file below was read directly when this spine was written.
 | [server/routes/retarget.py](../server/routes/retarget.py) | Extracts a representative frame from a source video and queues a `frames-to-video` retarget job. |
 | [server/routes/llm.py](../server/routes/llm.py) | LLM-backed prompt helper endpoints for auto-prompt, expansion, and shot lists. |
 | [server/routes/prompt_builder.py](../server/routes/prompt_builder.py) | Deterministic prompt-assembly endpoint from structured prompt parts. |
-| [server/routes/product_pipeline.py](../server/routes/product_pipeline.py) | Converts a product image + brief into a fixed multi-step chain request. |
+| [server/routes/product_pipeline.py](../server/routes/product_pipeline.py) | Converts a product image plus brief into a fixed multi-step chain request. |
 | [server/routes/uploads.py](../server/routes/uploads.py) | Validates image uploads by magic bytes and stores them under `FLOW_UPLOAD_DIR`. |
-| [server/routes/ws.py](../server/routes/ws.py) | WebSocket job-update channel with keepalive pings and broadcast fan-out. |
+| [server/routes/ws.py](../server/routes/ws.py) | `/ws/jobs` broadcaster; pushes `job_update` and `ping` only. |
 
 ### Server model and DB layer
 
 | File | Responsibility |
 |---|---|
 | [server/models/job.py](../server/models/job.py) | Defines job enums, validators, request/response shapes, and camera preset constants mirrored by the frontend. |
+| [server/models/chain.py](../server/models/chain.py) | Defines chain request, metadata, aggregate, and creation-response models. |
+| [server/models/profile.py](../server/models/profile.py) | Defines profile record and profile-update models. |
+| [server/models/character.py](../server/models/character.py) | Defines character create/update/record models. |
+| [server/models/template.py](../server/models/template.py) | Defines template step/create/store/instantiate models. |
 | [server/db/database.py](../server/db/database.py) | Creates SQLite tables/columns on startup and exposes the shared async DB context manager. |
 | [server/db/chain_store.py](../server/db/chain_store.py) | Persists immutable chain rows and derives chain status/progress from jobs on read. |
 | [server/db/job_store.py](../server/db/job_store.py) | Owns job CRUD, stale-job recovery, claim ordering, child inheritance, and terminal-state release behavior. |
@@ -137,7 +269,7 @@ Every file below was read directly when this spine was written.
 
 | File | Responsibility |
 |---|---|
-| [worker/main.py](../worker/main.py) | Worker process entrypoint: claim loop, heartbeat, concurrency bookkeeping, and shutdown flow. |
+| [worker/main.py](../worker/main.py) | Worker process entrypoint: preflight profile checks, claim loop, heartbeat, concurrency bookkeeping, and shutdown flow. |
 | [worker/dispatcher.py](../worker/dispatcher.py) | Maps `job.type` to handler, acquires/releases project/profile guards, and translates handler results to update payloads. |
 | [worker/profile_manager.py](../worker/profile_manager.py) | Tracks which worker-owned Chrome profiles are available versus busy. |
 | [worker/project_lock.py](../worker/project_lock.py) | Prevents concurrent L2+ work on the same `project_url` inside one worker process. |
@@ -180,20 +312,28 @@ Every file below was read directly when this spine was written.
 | File | Responsibility |
 |---|---|
 | [frontend/index.html](../frontend/index.html) | Declares route anchors, sidebar nav, shared app shell, and script load order for every page module. |
-| [frontend/js/app.js](../frontend/js/app.js) | Hash router, page registry, modal/toast helpers, and shared UI utilities. |
+| [frontend/js/app.js](../frontend/js/app.js) | Base hash router, page registry, modal/toast helpers, shared route loading, and generic job-type icon helpers. |
 | [frontend/js/api.js](../frontend/js/api.js) | Browser-side REST client wrappers for jobs, chains, profiles, and uploads. |
-| [frontend/js/ws.js](../frontend/js/ws.js) | Browser-side WebSocket client with reconnect and event fan-out. |
+| [frontend/js/ws.js](../frontend/js/ws.js) | Reconnect helper around the raw WebSocket, but not yet a canonical protocol abstraction: the server emits `{event,data}` while this helper still parses `{type,payload}`. |
 | [frontend/js/constants.js](../frontend/js/constants.js) | Mirrors job types, models, aspect ratios, and camera presets from backend/Flow code. |
+
+### Known frontend/API drift
+
+- `frontend/js/ws.js` still expects `{type,payload}`. Several pages now attach raw `message` listeners because the server actually emits `{event,data}`; `home.js` still subscribes to non-existent `job_created` / `job_updated` helper events.
+- `frontend/js/api.js::API.profiles.update()` still sends `PATCH /api/profiles/{name}`, but the backend route is `PUT`.
+- `dashboard.js` and `home.js` still pass `GET /api/jobs?limit=...`, but current `server/routes/jobs.py` accepts only `status`, `type`, `profile`, and `chain_id`; `limit` is ignored.
+- `profiles.js` still calls `POST /api/profiles/{name}/quarantine` and `POST /api/profiles/{name}/activate`, but current `master` exposes no matching backend routes.
+- `frontend/js/api.js::API.chains.list()` still points at `GET /api/chains`, but current backend exposes only `POST /api/chains` and `GET /api/chains/{chain_id}`. `chain-tree.js` works around this with job lists plus per-chain fetches.
 
 ### Frontend pages
 
 | File | Responsibility |
 |---|---|
-| [frontend/js/pages/home.js](../frontend/js/pages/home.js) | Flow-style recent-output landing page with WS-driven refresh. |
+| [frontend/js/pages/home.js](../frontend/js/pages/home.js) | Flow-style recent-output landing page with recent jobs and live-refresh intent. |
 | [frontend/js/pages/dashboard.js](../frontend/js/pages/dashboard.js) | High-level counts and recent jobs dashboard with recover/delete actions. |
 | [frontend/js/pages/create-job.js](../frontend/js/pages/create-job.js) | Single-job creator plus prompt-batch creator for supported L1 types. |
 | [frontend/js/pages/chain-builder.js](../frontend/js/pages/chain-builder.js) | Visual builder for ordered chain steps posted to `/api/chains`. |
-| [frontend/js/pages/profiles.js](../frontend/js/pages/profiles.js) | Profile list/add UI, still carrying some stale quarantine/activate client calls. |
+| [frontend/js/pages/profiles.js](../frontend/js/pages/profiles.js) | Profile list/add UI, still carrying stale quarantine/activate client calls. |
 | [frontend/js/pages/settings.js](../frontend/js/pages/settings.js) | Health/config snapshot and admin recovery/job-control page. |
 | [frontend/js/pages/characters.js](../frontend/js/pages/characters.js) | Character library CRUD/editor with upload support. |
 | [frontend/js/pages/workflows.js](../frontend/js/pages/workflows.js) | Template runner plus LLM prompt-helper UI. |
@@ -202,7 +342,7 @@ Every file below was read directly when this spine was written.
 | [frontend/js/pages/jobs.js](../frontend/js/pages/jobs.js) | Full job history with filters, live refresh, retry, and delete flows. |
 | [frontend/js/pages/gallery.js](../frontend/js/pages/gallery.js) | Completed-media browser with filters and preview modal. |
 | [frontend/js/pages/batch-queue.js](../frontend/js/pages/batch-queue.js) | Bulk queue UI for many prompt-driven L1 jobs with live local/server state. |
-| [frontend/js/pages/job-detail.js](../frontend/js/pages/job-detail.js) | Single-job detail view with parent/children context and retry/delete actions. |
+| [frontend/js/pages/job-detail.js](../frontend/js/pages/job-detail.js) | Single-job detail view with parent/children context, router patching for dynamic job hashes, and retry/delete actions. |
 | [frontend/js/pages/chain-tree.js](../frontend/js/pages/chain-tree.js) | Top-down visualization of chain dependencies and chain/job drill-down. |
 | [frontend/js/pages/engine-status.js](../frontend/js/pages/engine-status.js) | Live ops dashboard for workers, profiles, queue health, and recent failures. |
 
@@ -215,200 +355,228 @@ Every file below was read directly when this spine was written.
 | [scripts/warm_profile.py](../scripts/warm_profile.py) | Opens a visible Chrome session and warms/logs in a named profile. |
 | [scripts/check_profiles_ultra.py](../scripts/check_profiles_ultra.py) | Lints `profiles_ultra.txt` and reports profile readiness/health. |
 
-## 7. API surface
+## 8. API surface
 
-Request/response details live in the model files and route modules; this section is the handler index only.
+Request/response details live in the model files and route modules; this section is the handler index plus the route-family dependencies that are easy to forget.
+
+### Route-family dependency notes
+
+| Route family | Extra dependency / env | Behavior when unavailable |
+|---|---|---|
+| `/api/llm/*` | `httpx`, `LLM_DISABLED`, `LLM_BASE_URL`, `LLM_API_KEY` or `NINEROUTER_API_KEY`, optional `LLM_MODEL` | Returns `503` when disabled or client library is missing; `502` on upstream failures / invalid responses. |
+| `/api/tts` | `edge-tts`, `FLOW_DOWNLOAD_DIR` | Returns `503` if `edge-tts` is not installed; writes output under `downloads/tts`. |
+| `/api/media/cut` | `ffmpeg`, `FLOW_DOWNLOAD_DIR`, `FLOW_UPLOAD_DIR` | Returns `500` if `ffmpeg` is missing and `504` on timeout. |
+| `/api/media/merge` | `ffmpeg`, optional `ffprobe`, `FLOW_DOWNLOAD_DIR`, `FLOW_UPLOAD_DIR` | Returns `500` if `ffmpeg` is missing; skips duration enforcement when `ffprobe` is absent. |
+| `/api/media/fetch-url` | `yt-dlp`, outbound network access, `FLOW_DOWNLOAD_DIR` | Returns `502` on fetch/download failure; rejects loopback/private/internal targets. |
+| `/api/retarget` | `ffmpeg`, `FLOW_DOWNLOAD_DIR`, `FLOW_UPLOAD_DIR` | Returns `500` if frame extraction fails, then queues a `frames-to-video` job. |
+| `/api/uploads` | `Pillow`, `FLOW_UPLOAD_DIR` | Rejects unsupported types with `415` and files over 10 MB with `413`. |
 
 ### App-level auth and health
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `GET` | `/login` | Serve the dashboard login page when auth is enabled. | [server/dashboard_auth.py:281](../server/dashboard_auth.py#L281) |
-| `POST` | `/api/auth/login` | Verify password and mint the signed dashboard cookie. | [server/dashboard_auth.py:285](../server/dashboard_auth.py#L285) |
-| `POST` | `/api/auth/logout` | Clear the dashboard session cookie. | [server/dashboard_auth.py:300](../server/dashboard_auth.py#L300) |
-| `GET` | `/health` | Return health JSON used by ops/settings pages. | [server/app.py:159](../server/app.py#L159) |
+| `GET` | `/login` | Serve the dashboard login page when auth is enabled. | [server/dashboard_auth.py](../server/dashboard_auth.py) |
+| `POST` | `/api/auth/login` | Verify password and mint the signed dashboard cookie. | [server/dashboard_auth.py](../server/dashboard_auth.py) |
+| `POST` | `/api/auth/logout` | Clear the dashboard session cookie. | [server/dashboard_auth.py](../server/dashboard_auth.py) |
+| `GET` | `/health` | Return health JSON used by ops/settings pages. | [server/app.py](../server/app.py) |
 
 ### `server/routes/jobs.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/jobs` | Queue one job. | [server/routes/jobs.py:55](../server/routes/jobs.py#L55) |
-| `POST` | `/api/chains` | Create a chain and materialize its jobs. | [server/routes/jobs.py:87](../server/routes/jobs.py#L87) |
-| `GET` | `/api/chains/{chain_id}` | Return aggregate chain status/progress plus job ids. | [server/routes/jobs.py:124](../server/routes/jobs.py#L124) |
-| `GET` | `/api/jobs/counts` | Return queue counts grouped by status. | [server/routes/jobs.py:133](../server/routes/jobs.py#L133) |
-| `POST` | `/api/jobs/recover` | Requeue stale claimed/running jobs. | [server/routes/jobs.py:139](../server/routes/jobs.py#L139) |
-| `GET` | `/api/jobs` | List jobs with filters/pagination. | [server/routes/jobs.py:154](../server/routes/jobs.py#L154) |
-| `GET` | `/api/jobs/{job_id}` | Fetch one job by id. | [server/routes/jobs.py:174](../server/routes/jobs.py#L174) |
-| `GET` | `/api/jobs/{job_id}/children` | Fetch direct child jobs of one parent job. | [server/routes/jobs.py:183](../server/routes/jobs.py#L183) |
-| `DELETE` | `/api/jobs/{job_id}` | Cancel/delete one job. | [server/routes/jobs.py:192](../server/routes/jobs.py#L192) |
+| `POST` | `/api/jobs` | Queue one job. | [server/routes/jobs.py](../server/routes/jobs.py) |
+| `POST` | `/api/chains` | Create a chain and materialize its jobs. | [server/routes/jobs.py](../server/routes/jobs.py) |
+| `GET` | `/api/chains/{chain_id}` | Return aggregate chain status/progress plus job ids. | [server/routes/jobs.py](../server/routes/jobs.py) |
+| `GET` | `/api/jobs/counts` | Return queue counts grouped by status. | [server/routes/jobs.py](../server/routes/jobs.py) |
+| `POST` | `/api/jobs/recover` | Requeue stale claimed/running jobs. | [server/routes/jobs.py](../server/routes/jobs.py) |
+| `GET` | `/api/jobs` | List jobs with optional `status`, `type`, `profile`, and `chain_id` filters. | [server/routes/jobs.py](../server/routes/jobs.py) |
+| `GET` | `/api/jobs/{job_id}` | Fetch one job by id. | [server/routes/jobs.py](../server/routes/jobs.py) |
+| `GET` | `/api/jobs/{job_id}/children` | Fetch direct child jobs of one parent job. | [server/routes/jobs.py](../server/routes/jobs.py) |
+| `DELETE` | `/api/jobs/{job_id}` | Cancel/delete one job. | [server/routes/jobs.py](../server/routes/jobs.py) |
 
 ### `server/routes/worker.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/worker/claim` | Claim the next eligible job for a worker/profile set. | [server/routes/worker.py:44](../server/routes/worker.py#L44) |
-| `PUT` | `/api/worker/jobs/{job_id}` | Report worker-side status/result updates for one job. | [server/routes/worker.py:59](../server/routes/worker.py#L59) |
-| `POST` | `/api/worker/heartbeat` | Refresh worker liveness in the in-memory tracker. | [server/routes/worker.py:71](../server/routes/worker.py#L71) |
-| `GET` | `/api/worker/workers` | List current workers from the in-memory tracker. | [server/routes/worker.py:78](../server/routes/worker.py#L78) |
+| `POST` | `/api/worker/claim` | Claim the next eligible job for a worker/profile set. | [server/routes/worker.py](../server/routes/worker.py) |
+| `PUT` | `/api/worker/jobs/{job_id}` | Report worker-side status/result updates for one job. | [server/routes/worker.py](../server/routes/worker.py) |
+| `POST` | `/api/worker/heartbeat` | Refresh worker liveness in the in-memory tracker. | [server/routes/worker.py](../server/routes/worker.py) |
+| `GET` | `/api/worker/workers` | List current workers from the in-memory tracker. | [server/routes/worker.py](../server/routes/worker.py) |
 
 ### `server/routes/profiles.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `GET` | `/api/profiles` | List registered profiles. | [server/routes/profiles.py:15](../server/routes/profiles.py#L15) |
-| `POST` | `/api/profiles` | Register a new profile. | [server/routes/profiles.py:21](../server/routes/profiles.py#L21) |
-| `PUT` | `/api/profiles/{name}` | Update mutable profile fields. | [server/routes/profiles.py:31](../server/routes/profiles.py#L31) |
-| `GET` | `/api/profiles/{name}` | Fetch one profile by name. | [server/routes/profiles.py:41](../server/routes/profiles.py#L41) |
-| `GET` | `/api/profiles/{name}/jobs` | List jobs associated with one profile. | [server/routes/profiles.py:50](../server/routes/profiles.py#L50) |
+| `GET` | `/api/profiles` | List registered profiles. | [server/routes/profiles.py](../server/routes/profiles.py) |
+| `POST` | `/api/profiles` | Register a new profile. | [server/routes/profiles.py](../server/routes/profiles.py) |
+| `PUT` | `/api/profiles/{name}` | Update mutable profile fields. | [server/routes/profiles.py](../server/routes/profiles.py) |
+| `GET` | `/api/profiles/{name}` | Fetch one profile by name. | [server/routes/profiles.py](../server/routes/profiles.py) |
+| `GET` | `/api/profiles/{name}/jobs` | List jobs associated with one profile. | [server/routes/profiles.py](../server/routes/profiles.py) |
 
 ### `server/routes/characters.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/characters` | Create a reusable character record. | [server/routes/characters.py:58](../server/routes/characters.py#L58) |
-| `GET` | `/api/characters` | List all characters. | [server/routes/characters.py:73](../server/routes/characters.py#L73) |
-| `GET` | `/api/characters/{character_id}` | Fetch one character. | [server/routes/characters.py:79](../server/routes/characters.py#L79) |
-| `PUT` | `/api/characters/{character_id}` | Update one character. | [server/routes/characters.py:88](../server/routes/characters.py#L88) |
-| `DELETE` | `/api/characters/{character_id}` | Delete one character. | [server/routes/characters.py:110](../server/routes/characters.py#L110) |
+| `POST` | `/api/characters` | Create a reusable character record. | [server/routes/characters.py](../server/routes/characters.py) |
+| `GET` | `/api/characters` | List all characters. | [server/routes/characters.py](../server/routes/characters.py) |
+| `GET` | `/api/characters/{character_id}` | Fetch one character. | [server/routes/characters.py](../server/routes/characters.py) |
+| `PUT` | `/api/characters/{character_id}` | Update one character. | [server/routes/characters.py](../server/routes/characters.py) |
+| `DELETE` | `/api/characters/{character_id}` | Delete one character. | [server/routes/characters.py](../server/routes/characters.py) |
 
 ### `server/routes/templates.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/templates` | Create a workflow template. | [server/routes/templates.py:27](../server/routes/templates.py#L27) |
-| `GET` | `/api/templates` | List workflow templates. | [server/routes/templates.py:39](../server/routes/templates.py#L39) |
-| `GET` | `/api/templates/{template_id}` | Fetch one workflow template. | [server/routes/templates.py:44](../server/routes/templates.py#L44) |
-| `PUT` | `/api/templates/{template_id}` | Replace one workflow template. | [server/routes/templates.py:52](../server/routes/templates.py#L52) |
-| `DELETE` | `/api/templates/{template_id}` | Delete one workflow template. | [server/routes/templates.py:70](../server/routes/templates.py#L70) |
-| `POST` | `/api/templates/{template_id}/instantiate` | Materialize template vars into a concrete chain. | [server/routes/templates.py:78](../server/routes/templates.py#L78) |
+| `POST` | `/api/templates` | Create a workflow template. | [server/routes/templates.py](../server/routes/templates.py) |
+| `GET` | `/api/templates` | List workflow templates. | [server/routes/templates.py](../server/routes/templates.py) |
+| `GET` | `/api/templates/{template_id}` | Fetch one workflow template. | [server/routes/templates.py](../server/routes/templates.py) |
+| `PUT` | `/api/templates/{template_id}` | Replace one workflow template. | [server/routes/templates.py](../server/routes/templates.py) |
+| `DELETE` | `/api/templates/{template_id}` | Delete one workflow template. | [server/routes/templates.py](../server/routes/templates.py) |
+| `POST` | `/api/templates/{template_id}/instantiate` | Materialize template vars into a concrete chain. | [server/routes/templates.py](../server/routes/templates.py) |
 
 ### `server/routes/tts.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/tts` | Synthesize one audio file from text. | [server/routes/tts.py:56](../server/routes/tts.py#L56) |
+| `POST` | `/api/tts` | Synthesize one audio file from text. | [server/routes/tts.py](../server/routes/tts.py) |
 
 ### Media routers
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/media/cut` | Cut one local video clip by start/end time. | [server/routes/media_cut.py:87](../server/routes/media_cut.py#L87) |
-| `POST` | `/api/media/merge` | Merge multiple local video clips into one output. | [server/routes/media_merge.py:150](../server/routes/media_merge.py#L150) |
-| `POST` | `/api/media/fetch-url` | Download remote media into local storage. | [server/routes/media_fetch.py:170](../server/routes/media_fetch.py#L170) |
+| `POST` | `/api/media/cut` | Cut one local video clip by start/end time. | [server/routes/media_cut.py](../server/routes/media_cut.py) |
+| `POST` | `/api/media/merge` | Merge multiple local video clips into one output. | [server/routes/media_merge.py](../server/routes/media_merge.py) |
+| `POST` | `/api/media/fetch-url` | Download remote media into local storage. | [server/routes/media_fetch.py](../server/routes/media_fetch.py) |
 
 ### `server/routes/retarget.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/retarget` | Extract a reference frame from a video and queue a retarget job. | [server/routes/retarget.py:82](../server/routes/retarget.py#L82) |
+| `POST` | `/api/retarget` | Extract a reference frame from a video and queue a retarget job. | [server/routes/retarget.py](../server/routes/retarget.py) |
 
 ### `server/routes/llm.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/llm/auto-prompt` | Generate a first-pass prompt from a topic/style pair. | [server/routes/llm.py:82](../server/routes/llm.py#L82) |
-| `POST` | `/api/llm/expand-prompt` | Expand a short idea into a fuller prompt. | [server/routes/llm.py:95](../server/routes/llm.py#L95) |
-| `POST` | `/api/llm/shot-list` | Generate a structured shot list for a scene. | [server/routes/llm.py:108](../server/routes/llm.py#L108) |
+| `POST` | `/api/llm/auto-prompt` | Generate a first-pass prompt from a topic/style pair. | [server/routes/llm.py](../server/routes/llm.py) |
+| `POST` | `/api/llm/expand-prompt` | Expand a short idea into a fuller prompt. | [server/routes/llm.py](../server/routes/llm.py) |
+| `POST` | `/api/llm/shot-list` | Generate a structured shot list for a scene. | [server/routes/llm.py](../server/routes/llm.py) |
 
 ### `server/routes/prompt_builder.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/prompt-builder/assemble` | Assemble a deterministic prompt string from structured fields. | [server/routes/prompt_builder.py:92](../server/routes/prompt_builder.py#L92) |
+| `POST` | `/api/prompt-builder/assemble` | Assemble a deterministic prompt string from structured fields. | [server/routes/prompt_builder.py](../server/routes/prompt_builder.py) |
 
 ### `server/routes/product_pipeline.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/product-pipeline/` | Queue the fixed product-ad workflow chain. | [server/routes/product_pipeline.py:59](../server/routes/product_pipeline.py#L59) |
+| `POST` | `/api/product-pipeline/` | Queue the fixed product-ad workflow chain. | [server/routes/product_pipeline.py](../server/routes/product_pipeline.py) |
 
 ### `server/routes/uploads.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `POST` | `/api/uploads` | Validate and persist one uploaded image asset. | [server/routes/uploads.py:57](../server/routes/uploads.py#L57) |
+| `POST` | `/api/uploads` | Validate and persist one uploaded image asset. | [server/routes/uploads.py](../server/routes/uploads.py) |
 
 ### `server/routes/ws.py`
 
 | Method | Path | Brief | Handler |
 |---|---|---|---|
-| `WS` | `/ws/jobs` | Stream `job_update` events and periodic keepalive `ping` events. | [server/routes/ws.py:52](../server/routes/ws.py#L52) |
+| `WS` | `/ws/jobs` | Stream `job_update` events and periodic keepalive `ping` events. | [server/routes/ws.py](../server/routes/ws.py) |
 
-## 8. UI map
+## 9. UI map
 
-Hash-route anchors live in [frontend/index.html:15-31](../frontend/index.html#L15), and page scripts are loaded in [frontend/index.html:113-132](../frontend/index.html#L113).
+Base route anchors and nav links live in [frontend/index.html](../frontend/index.html). Dynamic hashes such as `#jobs/{chain_id}`, `#job-detail/{job_id}`, and alias `#job/{job_id}` are parsed in page code and are not standalone nav anchors.
 
-| File | Page | Hash route | Backend endpoints consumed |
-|---|---|---|---|
-| [frontend/js/pages/home.js](../frontend/js/pages/home.js) | Home | `#home` | `GET /api/jobs`, `GET /api/jobs/{id}`, `WS /ws/jobs` |
-| [frontend/js/pages/dashboard.js](../frontend/js/pages/dashboard.js) | Dashboard | `#dashboard` | `GET /api/jobs/counts`, `GET /api/jobs?limit=20`, `POST /api/jobs/recover`, `GET /api/jobs/{id}`, `DELETE /api/jobs/{id}`, `WS /ws/jobs` |
-| [frontend/js/pages/create-job.js](../frontend/js/pages/create-job.js) | Create Job | `#create` | `GET /api/profiles`, `POST /api/jobs`, `POST /api/uploads` |
-| [frontend/js/pages/chain-builder.js](../frontend/js/pages/chain-builder.js) | Chain Builder | `#chains` | `GET /api/profiles`, `POST /api/chains` |
-| [frontend/js/pages/profiles.js](../frontend/js/pages/profiles.js) | Profiles | `#profiles` | `GET /api/profiles`, `POST /api/profiles`, client also calls `POST /api/profiles/{name}/quarantine` and `POST /api/profiles/{name}/activate` |
-| [frontend/js/pages/settings.js](../frontend/js/pages/settings.js) | Settings | `#settings` | `GET /health`, `GET /api/jobs/counts`, `POST /api/jobs/recover`, `GET /api/jobs`, `DELETE /api/jobs/{id}` |
-| [frontend/js/pages/characters.js](../frontend/js/pages/characters.js) | Characters | `#characters` | `GET/POST /api/characters`, `GET/PUT/DELETE /api/characters/{id}`, `POST /api/uploads` |
-| [frontend/js/pages/workflows.js](../frontend/js/pages/workflows.js) | Workflows | `#workflows` | `GET /api/templates`, `POST /api/templates/{id}/instantiate`, `POST /api/llm/auto-prompt`, `POST /api/llm/expand-prompt`, `POST /api/prompt-builder/assemble` |
-| [frontend/js/pages/media-tools.js](../frontend/js/pages/media-tools.js) | Media Tools | `#media-tools` | `GET /api/profiles`, `POST /api/media/cut`, `POST /api/media/merge`, `POST /api/media/fetch-url`, `POST /api/retarget` |
-| [frontend/js/pages/tts.js](../frontend/js/pages/tts.js) | Text to Speech | `#tts` | `POST /api/tts` |
-| [frontend/js/pages/jobs.js](../frontend/js/pages/jobs.js) | Jobs | `#jobs` and `#jobs/{chain_id}` | `GET /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs`, `DELETE /api/jobs/{id}`, `POST /api/jobs/recover`, `GET /api/profiles`, `WS /ws/jobs` |
-| [frontend/js/pages/gallery.js](../frontend/js/pages/gallery.js) | Gallery | `#gallery` | `GET /api/jobs?status=completed`, `GET /api/profiles`, `GET /api/jobs/{id}`, `WS /ws/jobs` |
-| [frontend/js/pages/batch-queue.js](../frontend/js/pages/batch-queue.js) | Batch Queue | `#batch-queue` | `GET /api/profiles`, `POST /api/jobs`, `WS /ws/jobs` |
-| [frontend/js/pages/job-detail.js](../frontend/js/pages/job-detail.js) | Job Detail | `#job-detail/{job_id}` and alias `#job/{job_id}` | `GET /api/jobs/{id}`, `GET /api/jobs/{id}/children`, `POST /api/jobs`, `DELETE /api/jobs/{id}`, `WS /ws/jobs` |
-| [frontend/js/pages/chain-tree.js](../frontend/js/pages/chain-tree.js) | Chain Tree | `#chain-tree` | `GET /api/jobs`, `GET /api/chains/{id}`, `GET /api/jobs?chain_id=...` |
-| [frontend/js/pages/engine-status.js](../frontend/js/pages/engine-status.js) | Engine Status | `#engine-status` | `GET /health`, `GET /api/jobs/counts`, `GET /api/profiles`, `GET /api/jobs?status=pending`, `GET /api/jobs?status=failed`, `GET /api/jobs/{id}`, `WS /ws/jobs` |
+| File | Page | Hash route | Backend endpoints consumed | Notes |
+|---|---|---|---|---|
+| [frontend/js/pages/home.js](../frontend/js/pages/home.js) | Home | `#home` | `GET /api/jobs`, `GET /api/jobs/{id}`, `WS /ws/jobs` | Page still requests `?limit=` through `API.jobs.list()`, which backend ignores on current `master`. |
+| [frontend/js/pages/dashboard.js](../frontend/js/pages/dashboard.js) | Dashboard | `#dashboard` | `GET /api/jobs/counts`, `GET /api/jobs`, `POST /api/jobs/recover`, `GET /api/jobs/{id}`, `DELETE /api/jobs/{id}`, `WS /ws/jobs` | Recent-job widget still passes `?limit=20`; backend ignores it. |
+| [frontend/js/pages/create-job.js](../frontend/js/pages/create-job.js) | Create Job | `#create` | `GET /api/profiles`, `POST /api/jobs`, `POST /api/uploads` | Top-level nav route. |
+| [frontend/js/pages/chain-builder.js](../frontend/js/pages/chain-builder.js) | Chain Builder | `#chains` | `GET /api/profiles`, `POST /api/chains` | Top-level nav route. |
+| [frontend/js/pages/profiles.js](../frontend/js/pages/profiles.js) | Profiles | `#profiles` | `GET /api/profiles`, `POST /api/profiles` | Frontend still also calls stale `POST /api/profiles/{name}/quarantine` and `POST /api/profiles/{name}/activate` endpoints that do not exist on current `master`. |
+| [frontend/js/pages/settings.js](../frontend/js/pages/settings.js) | Settings | `#settings` | `GET /health`, `GET /api/jobs/counts`, `POST /api/jobs/recover`, `GET /api/jobs`, `DELETE /api/jobs/{id}` | Top-level nav route. |
+| [frontend/js/pages/characters.js](../frontend/js/pages/characters.js) | Characters | `#characters` | `GET/POST /api/characters`, `GET/PUT/DELETE /api/characters/{id}`, `POST /api/uploads` | Top-level nav route. |
+| [frontend/js/pages/workflows.js](../frontend/js/pages/workflows.js) | Workflows | `#workflows` | `GET /api/templates`, `POST /api/templates/{id}/instantiate`, `POST /api/llm/auto-prompt`, `POST /api/llm/expand-prompt`, `POST /api/prompt-builder/assemble` | Top-level nav route. |
+| [frontend/js/pages/media-tools.js](../frontend/js/pages/media-tools.js) | Media Tools | `#media-tools` | `GET /api/profiles`, `POST /api/media/cut`, `POST /api/media/merge`, `POST /api/media/fetch-url`, `POST /api/retarget` | Top-level nav route. |
+| [frontend/js/pages/tts.js](../frontend/js/pages/tts.js) | Text to Speech | `#tts` | `POST /api/tts` | Top-level nav route. |
+| [frontend/js/pages/jobs.js](../frontend/js/pages/jobs.js) | Jobs | `#jobs` plus dynamic `#jobs/{chain_id}` | `GET /api/jobs`, `GET /api/jobs/{id}`, `POST /api/jobs`, `DELETE /api/jobs/{id}`, `POST /api/jobs/recover`, `GET /api/profiles`, `WS /ws/jobs` | `#jobs/{chain_id}` is page-parsed, not a standalone nav anchor. |
+| [frontend/js/pages/gallery.js](../frontend/js/pages/gallery.js) | Gallery | `#gallery` | `GET /api/jobs?status=completed`, `GET /api/profiles`, `GET /api/jobs/{id}`, `WS /ws/jobs` | Top-level nav route. |
+| [frontend/js/pages/batch-queue.js](../frontend/js/pages/batch-queue.js) | Batch Queue | `#batch-queue` | `GET /api/profiles`, `POST /api/jobs`, `WS /ws/jobs` | Top-level nav route. |
+| [frontend/js/pages/job-detail.js](../frontend/js/pages/job-detail.js) | Job Detail | Dynamic `#job-detail/{job_id}` plus off-nav alias `#job/{job_id}` | `GET /api/jobs/{id}`, `GET /api/jobs/{id}/children`, `POST /api/jobs`, `DELETE /api/jobs/{id}`, `WS /ws/jobs` | Route works by patching `App._onRoute()` in page code; it is not a base anchor/nav route. |
+| [frontend/js/pages/chain-tree.js](../frontend/js/pages/chain-tree.js) | Chain Tree | `#chain-tree` | `GET /api/jobs`, `GET /api/chains/{id}`, `GET /api/jobs?chain_id=...` | Top-level nav route. |
+| [frontend/js/pages/engine-status.js](../frontend/js/pages/engine-status.js) | Engine Status | `#engine-status` | `GET /health`, `GET /api/jobs/counts`, `GET /api/profiles`, `GET /api/jobs?status=pending`, `GET /api/jobs?status=failed`, `GET /api/jobs/{id}`, `WS /ws/jobs` | Top-level nav route. |
 
-Current frontend/backend drift to know before editing:
-
-- `profiles.js` still calls quarantine/activate endpoints, but current `master` exposes only `GET/POST/PUT /api/profiles` plus `GET /api/profiles/{name}/jobs`; there is no matching backend route today. See [frontend/js/pages/profiles.js:117](../frontend/js/pages/profiles.js#L117) versus [server/routes/profiles.py:14](../server/routes/profiles.py#L14).
-- `frontend/js/api.js` still defines `API.chains.list()` as `GET /api/chains`, but current backend exposes only `POST /api/chains` and `GET /api/chains/{chain_id}`. `chain-tree.js` works around this by using jobs plus per-chain fetches. See [frontend/js/api.js:118](../frontend/js/api.js#L118) versus [server/routes/jobs.py:86](../server/routes/jobs.py#L86).
-
-## 9. Deferred / archived scope
+## 10. Deferred / archived scope
 
 | Scope | State | Reason | Source |
 |---|---|---|---|
-| `audio-to-video` | Archived; removed from FlowEngine | Deliberately removed in commit `cfead65` on 2026-04-28 and not re-added during the public cutover. Current `JobType` enum does not expose it. | [cutover report:117](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L117), [server/models/job.py:46](../server/models/job.py#L46) |
-| `remix-video` | Archived legacy scope only | Legacy engine had only a stub / `ImportError` fallback; there is no real implementation to port on current `master`. | [cutover report:118](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L118) |
-| `shorten-video` | Archived legacy scope only | Same as `remix-video`: stub-only in legacy engine, no real FlowEngine implementation. | [cutover report:119](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L119) |
-| Legacy `image-to-video` bundle | Replaced, do not resurrect as one merged op | Current engine matches the real Flow UI split: `frames-to-video` and `ingredients-to-video` are separate L1 operations and are the intended replacement. | [cutover report:73-74](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L73), [server/models/job.py:46-50](../server/models/job.py#L46) |
+| `audio-to-video` | Archived; removed from FlowEngine | Deliberately removed in commit `cfead65` on 2026-04-28 and not re-added during the public cutover. Current `JobType` enum does not expose it. | [cutover report:117](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L117), [server/models/job.py](../server/models/job.py) |
+| `remix-video` | Archived legacy scope only | Never added to FlowEngine repo history as a real implementation; treat it as legacy `video-ai-studio` carry-over only, not a dormant FlowEngine feature. | [cutover report:118](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L118) |
+| `shorten-video` | Archived legacy scope only | Never added to FlowEngine repo history as a real implementation; treat it as legacy `video-ai-studio` carry-over only, not a dormant FlowEngine feature. | [cutover report:119](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L119) |
+| Legacy `image-to-video` bundle | Replaced; do not resurrect as one merged op | Current engine matches the real Flow UI split: `frames-to-video` and `ingredients-to-video` are separate L1 operations and are the intended replacement. | [cutover report:73-74](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L73), [server/models/job.py](../server/models/job.py) |
+| `safety_filter` | Archived / legacy only | Commit `1dd0e80` on 2026-04-28 removed the 3-level job API field. Legacy SQLite columns and `TemplateStep` mentions may remain, but current guidance is "do not wire or persist". | [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md), [server/db/database.py](../server/db/database.py) |
 
-## 10. How to add a new feature
+## 11. How to add a new feature
 
-1. Branch from `master` using `claude/<descriptive-slug>`; keep PR base explicit as `master`.
-2. If the feature adds a new Flow operation, update `JobType` and validation in [server/models/job.py](../server/models/job.py), add `flow/operations/<name>.py`, wire it into `HANDLER_MAP` in [worker/dispatcher.py:430](../worker/dispatcher.py#L430), and add focused tests following the current flat `tests/test_<name>.py` pattern on `master` (there is no `tests/operations/` package today).
-3. If the feature adds a new API route, create `server/routes/<name>.py`, register it in [server/app.py:117-131](../server/app.py#L117), add/update a model under `server/models/` if needed, and add tests.
-4. If the feature adds a new UI page, follow the existing page-module IIFE pattern in `frontend/js/pages/<name>.js`, add the nav `<li>` in [frontend/index.html:67-81](../frontend/index.html#L67), add the `<script>` tag in [frontend/index.html:113-132](../frontend/index.html#L113), and add a route-anchor `<span id="...">` in [frontend/index.html:15-31](../frontend/index.html#L15).
-5. If the feature touches job chains, re-read [docs/SPEC.md](SPEC.md) first and preserve `INV-1` through `INV-5`; do not trust stale frontend inputs for L2 context.
-6. Run `python -m pytest -q` before push.
-7. Use `gh pr create --base master` explicitly; do not rely on repo defaults.
-8. For non-trivial PRs, get 2 independent Codex reviews before merge, per project convention.
-9. If the change affects live Flow behavior, do a real browser/live verification pass before calling it done; this gate is captured in memory `feedback_live_verify_gates_done`.
-10. Update this spine if the feature changed architecture, deploy topology, route surface, data model, code map, or UI map.
+1. Branch from `master` using `claude/<descriptive-slug>` and keep the PR base explicit as `master`.
+2. If the feature adds a new Flow operation, update `JobType` and `JobCreate` validation in [server/models/job.py](../server/models/job.py), add `flow/operations/<name>.py`, wire it into `HANDLER_MAP` in [worker/dispatcher.py](../worker/dispatcher.py), update per-type timeout/no-signal handling in [flow/wait.py](../flow/wait.py), and thread any new fields through `Job`, store serialization, SQLite DDL, and tests.
+3. Mirror every new job type in the frontend: update [frontend/js/constants.js](../frontend/js/constants.js), the L1/L2/input gating sets and icons in [frontend/js/pages/create-job.js](../frontend/js/pages/create-job.js), any matching step/config UI in [frontend/js/pages/chain-builder.js](../frontend/js/pages/chain-builder.js), and shared icon helpers in [frontend/js/app.js](../frontend/js/app.js).
+4. If the feature adds an API route, extend an existing domain router when possible. If you truly need a new router module, create `server/routes/<name>.py`, export it from [server/routes/__init__.py](../server/routes/__init__.py), then import/include it in [server/app.py](../server/app.py); add/update the matching model under `server/models/` and add tests.
+5. If the feature adds a new UI page, copy an existing module such as [frontend/js/pages/create-job.js](../frontend/js/pages/create-job.js) or [frontend/js/pages/batch-queue.js](../frontend/js/pages/batch-queue.js) and keep the page-module IIFE shape:
 
-## 11. Glossary
+```js
+(() => {
+  const ExamplePage = {
+    name: 'example',
+    title: 'Example',
+    async render() { return '<div>...</div>'; },
+    mount() {},
+    destroy() {},
+  };
+
+  App.register(ExamplePage);
+})();
+```
+
+6. For a new UI page, `App.register({ name, title, render, mount?, destroy? })` is required; `name` must match the hash route segment. Then add the route anchor in [frontend/index.html](../frontend/index.html), add the nav `<li>` only for top-level pages, and add the `<script>` tag in load order.
+7. If the feature touches job chains, re-read [docs/SPEC.md](SPEC.md) first and preserve `INV-1` through `INV-5`; do not trust stale frontend inputs for L2 context.
+8. Run `python -m pytest -q` before push.
+9. Use `gh pr create --base master` explicitly; do not rely on repo defaults.
+10. For non-trivial PRs, get 2 independent Codex reviews before merge, per project convention.
+11. If the change affects live Flow behavior, do a real browser verification pass before calling it done: confirm the route/page loads, one end-to-end action succeeds, persisted outputs (`project_url`, `media_id`, `profile`, `output_files` or equivalent artifact path) are correct, dashboard/WS surfaces reflect the change, and capture a repo session report if the live Flow/UI behavior changed.
+12. Update this spine if the feature changed architecture, deploy topology, route surface, data model, code map, or UI map.
+
+## 12. Glossary
 
 | Term | Meaning |
 |---|---|
 | `L1` | A level-1 job that starts a new Flow project (`text-to-video`, `frames-to-video`, `ingredients-to-video`, or `text-to-image`). |
 | `L2+` | Any descendant job that operates on an existing project/clip context inherited from an upstream job. |
 | `Profile` | One Chrome profile directory, which in practice means one Google account identity. |
-| `project_url` | Flow project grid URL, e.g. `/tools/flow/project/{project_id}`. |
+| `project_url` | Flow project grid URL, for example `/tools/flow/project/{project_id}`. |
 | `media_id` | Flow clip/image UUID used to target one specific asset inside a project. |
 | `edit_url` | The direct `/edit/{media_id}` URL for one target clip; this is the only supported targeting path. |
+| `video_index` | Legacy 0-based grid-card selector from the old chain implementation. Deprecated and forbidden by `INV-2`; never use it for targeting. |
 | `chain` | An ordered set of jobs connected by `parent_job_id` and grouped by `chain_id`. |
 | `parent_job_id` | Direct upstream job id for one child job. |
 | `chain_id` | Shared chain identifier across all jobs in the same chain. |
 | `generation_id` | Flow generation identifier captured after completion and stored on the job row. |
-| `bbox` | Normalized bounding box `{x,y,w,h}` in the 0-1 range, used by insert/remove operations. |
+| `BBox` | The Pydantic model type for a normalized bounding box with `x`, `y`, `w`, and `h`. |
+| `bbox` | A concrete `BBox` value attached to insert/remove operations. |
 | `direction` | Camera preset label for `camera-move`, such as `Dolly in` or `Center`. |
-| `composer chip` | The Flow UI chip/menu used to switch composer mode or sub-mode (`Video`, `Frames`, `Ingredients`, image mode, aspect chips, etc.). |
+| `safety_filter` | Legacy 3-level enum (`block_most`, `block_some`, `block_few`). Current guidance: do not wire or persist it through the job API; it lingers only in `TemplateStep` and some older DB columns. |
+| `composer chip` | The Flow UI chip/menu used to switch composer mode or sub-mode (`Video`, `Frames`, `Ingredients`, image mode, aspect chips, and similar controls). |
 | `Veo Lite LP` | `veo-3.1-lite-lp`, the current default video model; `LP` means lower priority. |
 | `Veo Fast LP` | `veo-3.1-fast-lp`, another lower-priority/free-tier Veo variant still used as a route sentinel on the text-to-image path. |
 | `ProjectLock` | The worker-side in-memory mutex keyed by `project_url` that prevents parallel edits to one Flow project. |
 | `ProfileSwapper` | Worker helper that archives a burned profile and replaces it with the next fresh credential. |
-| `capture_failure` | Diagnostic bundle capture path used on browser failures; surfaced to users as `[cap=...]` when available. |
+| `capture_failure` | Best-effort async diagnostic-bundle helper that writes screenshot/HTML/network artifacts and may return the screenshot path later surfaced as `[cap=...]`. |
 | `Flow landing` | The marketing/CTA page at `labs.google/fx/...` that sometimes appears instead of the real Flow app and must be recovered from. |
 
-## 12. Pointers
+## 13. Pointers
 
 - [CLAUDE.md](../CLAUDE.md) - session canon for Claude/Codex work in this repo.
 - [docs/DESIGN.md](DESIGN.md) - full architecture, design decisions, and historical rationale.
@@ -418,6 +586,6 @@ Current frontend/backend drift to know before editing:
 - [docs/FLOW_PIPELINE_KNOWLEDGE.md](FLOW_PIPELINE_KNOWLEDGE.md) - pipeline/domain knowledge gathered from live probing.
 - [docs/FLOW_UI_REFERENCE.md](FLOW_UI_REFERENCE.md) - selector and UI-structure evidence from Google Flow.
 - [docs/CHROME_LAUNCH_SECURITY.md](CHROME_LAUNCH_SECURITY.md) - Chrome anti-detection and launch-security notes.
+- [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md) - why the 3-level safety filter is legacy only.
 - [docs/session-reports/INDEX.md](session-reports/INDEX.md) - chronological session report index.
 - Latest public-cutover report: [docs/session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md).
-- Private user memory: `~/.claude/projects/D--AI-FlowEngine/memory/MEMORY.md` (not in repo).
