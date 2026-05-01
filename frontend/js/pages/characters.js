@@ -91,6 +91,10 @@
     });
   }
 
+  function mediaTileHelper() {
+    return App.mediaTile || window.MediaUtil;
+  }
+
   function renderCharacterItem(character) {
     const selected = character.id === state.selectedId;
     const count = Array.isArray(character.image_paths) ? character.image_paths.length : 0;
@@ -189,11 +193,12 @@
         >
           <span class="material-icons" style="font-size: 18px;">close</span>
         </button>
-        <img
-          src="/${App.escapeHtml(path)}"
-          alt="Character reference ${index + 1}"
-          style="width: 100%; height: 144px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border);"
-        >
+        <div class="tile-thumb" style="height: 144px; border-radius: 10px; border: 1px solid var(--border);">
+          ${mediaTileHelper().imgTag({
+            src: `/${path}`,
+            alt: `Character reference ${index + 1}`,
+          })}
+        </div>
         <div class="form-hint" style="margin-top: 8px; word-break: break-all;">${App.escapeHtml(path)}</div>
       </div>
     `;
