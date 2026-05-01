@@ -13,7 +13,6 @@
     { value: 'cancelled', label: 'Cancelled' },
   ];
 
-  const ACTIVE_STATUSES = new Set(['pending', 'claimed', 'running']);
   const GREY_BADGE_STYLE = 'background: rgba(107, 114, 128, 0.22); border-color: rgba(107, 114, 128, 0.38); color: #e5e7eb;';
 
   const state = {
@@ -105,19 +104,11 @@
       `);
     }
 
-    if (ACTIVE_STATUSES.has(job.status)) {
-      buttons.push(`
-        <button class="btn btn-sm btn-danger" data-action="cancel" data-job-id="${id}">
-          <span class="material-icons" style="font-size:16px">cancel</span> Cancel
-        </button>
-      `);
-    } else {
-      buttons.push(`
-        <button class="btn btn-sm btn-danger" data-action="delete" data-job-id="${id}">
-          <span class="material-icons" style="font-size:16px">delete</span> Delete
-        </button>
-      `);
-    }
+    buttons.push(`
+      <button class="btn btn-sm btn-danger" data-action="delete" data-job-id="${id}">
+        <span class="material-icons" style="font-size:16px">delete</span> Delete
+      </button>
+    `);
 
     return buttons.join('');
   }
@@ -221,7 +212,7 @@
           <div>
             <h3 class="section-title">Job History</h3>
             <p style="margin-top:4px; color: var(--text-muted); font-size: 13px;">
-              Full queue history with retry, cancel, delete, and live status refresh.
+              Full queue history with retry, delete, and live status refresh.
             </p>
           </div>
           <div class="section-actions">
@@ -436,20 +427,18 @@
     }
   }
 
-  async function removeJob(jobId, button, mode) {
-    const prompt = mode === 'cancel'
-      ? 'Cancel this job? Pending jobs will be removed, claimed/running jobs will be marked cancelled.'
-      : 'Delete this job? This cannot be undone.';
+  async function removeJob(jobId, button) {
+    const prompt = 'Delete this job? This cannot be undone.';
     if (!confirm(prompt)) return;
 
     setActionBusy(button, true);
     try {
       await API.jobs.delete(jobId);
-      App.toast(mode === 'cancel' ? 'Job cancelled' : 'Job deleted', 'success');
+      App.toast('Job deleted', 'success');
       App.closeModal();
       await refreshJobs({ silent: true });
     } catch (err) {
-      App.toast(`Failed to ${mode}: ` + err.message, 'error');
+      App.toast('Failed to delete: ' + err.message, 'error');
     } finally {
       setActionBusy(button, false);
     }
@@ -572,8 +561,8 @@
           retryJob(jobId, button);
           return;
         }
-        if (action === 'cancel' || action === 'delete') {
-          removeJob(jobId, button, action);
+        if (action === 'delete') {
+          removeJob(jobId, button);
         }
       });
 
