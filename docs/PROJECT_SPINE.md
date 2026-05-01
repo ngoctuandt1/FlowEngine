@@ -5,7 +5,7 @@
 - Last synced: `cf991e0` (`origin/master`) on 2026-05-02.
 - Scope: tracks current `master` through the 2026-05-02 SPINE canon-sync state.
 - Purpose: one 5-minute sync doc for future feature work.
-- Recent epics: SPINE workstream 2026-05-01 -> 2026-05-02: 15 PRs (#109-#125), 4 review rounds (25 reviewer codex), 6 real bugs surfaced from doc review, all linked canon docs (SPEC/DESIGN/FLOW_UI/WORKPLAN) synced.
+- Recent epics: SPINE workstream 2026-05-01 -> 2026-05-02: 14 PRs (#109-#125 span; #117, #118, #124 unrelated), 4 review rounds (25 reviewer codex), 6 real bugs surfaced from doc review, all linked canon docs (SPEC/DESIGN/FLOW_UI/WORKPLAN) synced.
 - Not here: deep rationale lives in [docs/DESIGN.md](DESIGN.md), invariants/test contract in [docs/SPEC.md](SPEC.md), and roadmap in [docs/WORKPLAN.md](WORKPLAN.md).
 
 ## 1. What is FlowEngine

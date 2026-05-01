@@ -81,6 +81,8 @@ Note: the handoff text described this as a "15 PR" workstream across the
 
 | Tag | Purpose |
 |---|---|
+| `pre-spine-r2-20260501-2241` | Checkpoint before the round-2 review/fix pass |
+| `pre-spine-r3-20260501-2310` | Checkpoint before the round-3 final-review pass |
 | `pre-r4-spine-final-20260501-2335` | Checkpoint before the last round of final SPINE/doc fixes |
 | `spine-final-20260501-2323` | SPINE workstream final-state checkpoint before the last canon sync pass |
 | `docs-canon-final-20260501-2352` | Final all-canon-doc sync point pushed for the workstream |
@@ -90,6 +92,8 @@ Note: the handoff text described this as a "15 PR" workstream across the
 | Type | Item | Status | Notes |
 |---|---|---|---|
 | Capacity | Single-profile pool | open | Only `ngoctuandt20` is currently confirmed healthy; add more Flow-eligible accounts before depending on multi-profile throughput or re-running parked multi-profile verification |
+| Model migration | LP -> Lite fallback deadline | open | `DEFAULT_MODEL` already flipped to `veo-3.1-lite-lp` in `#108`, but `veo-3.1-fast-lp` still intentionally appears in route-sentinel/fallback paths and older docs; audit remaining refs before the 2026-05-10 cutoff |
+| Schema cleanup | Legacy `safety_filter` DDL column | open | Fresh `jobs` DDL still carries an unused `safety_filter TEXT` column even though the live job API guidance is "do not wire or persist"; remove or formally archive the schema remnant in a later cleanup pass |
 
 ## Lessons
 
