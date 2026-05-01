@@ -1,47 +1,127 @@
 /**
- * Chain Builder — sequence a chain of Flow ops starting with T2V.
+ * Chain Builder — sequence a chain of Flow ops from an L1 root into L2 edits.
  *
  * Backend contract: POST /api/chains with
  *   { profile: "<name>", jobs: [JobCreate, JobCreate, ...] }
  * See server/models/chain.py :: ChainCreate.
  *
  * Step field names mirror server/models/job.py JobCreate:
- *   type, prompt, model, aspect_ratio, direction, bbox{x,y,w,h}.
+ *   type, prompt, model, aspect_ratio, direction, bbox{x,y,w,h},
+ *   start_image_path, end_image_path, ref_image_path, ingredient_image_paths.
  */
 (() => {
   const {
-    JOB_TYPES, MODELS, DEFAULT_MODEL, ASPECT_RATIOS, DEFAULT_ASPECT,
+    JOB_TYPES, MODELS, DEFAULT_MODEL, IMAGE_MODELS, DEFAULT_IMAGE_MODEL,
+    ASPECT_RATIOS, ASPECT_RATIOS_IMAGE, DEFAULT_ASPECT,
     CAMERA_PRESETS,
     TYPES_WITH_PROMPT, TYPES_WITH_BBOX, TYPES_WITH_MODEL, TYPES_WITH_ASPECT,
+    TYPES_WITH_IMAGES, TYPES_WITH_INGREDIENTS,
   } = CONST;
 
-  // First step must be t2v. Subsequent steps exclude t2v.
+  // L1 types create a new project; chained follow-up steps must be L2 edits.
   const FIRST_TYPE = 'text-to-video';
-  const L1_ONLY_TYPES = new Set(['text-to-video', 'frames-to-video', 'text-to-image']);
+  const L1_ONLY_TYPES = new Set(['text-to-video', 'text-to-image', 'frames-to-video', 'ingredients-to-video']);
+  const FIRST_TYPES = JOB_TYPES.filter((t) => L1_ONLY_TYPES.has(t.id));
   const SUBSEQUENT_TYPES = JOB_TYPES.filter((t) => !L1_ONLY_TYPES.has(t.id));
+  const REQUIRED_PROMPT_TYPES = new Set([
+    'text-to-video',
+    'frames-to-video',
+    'ingredients-to-video',
+    'text-to-image',
+    'insert-object',
+  ]);
+  const MAX_INGREDIENT_IMAGES = 10;
 
   let steps = [];
   let profiles = [];
   let pinnedProfile = '';
+  let selectedFirstType = FIRST_TYPE;
+  let selectedNextType = SUBSEQUENT_TYPES[0]?.id || '';
+
+  function isL1Type(type) { return L1_ONLY_TYPES.has(type); }
+
+  function renderOptions(items, { selected } = {}) {
+    return items
+      .map((o) => {
+        const value = typeof o === 'string' ? o : o.value;
+        const label = typeof o === 'string' ? o : o.label;
+        const isSelected = value === selected ? ' selected' : '';
+        return `<option value="${App.escapeHtml(value)}"${isSelected}>${App.escapeHtml(label)}</option>`;
+      })
+      .join('');
+  }
+
+  function getModelOptions(type) {
+    return type === 'text-to-image' ? IMAGE_MODELS : MODELS;
+  }
+
+  function getDefaultModel(type) {
+    return type === 'text-to-image' ? DEFAULT_IMAGE_MODEL : DEFAULT_MODEL;
+  }
+
+  function getAspectOptions(type) {
+    return type === 'text-to-image' ? ASPECT_RATIOS_IMAGE : ASPECT_RATIOS;
+  }
+
+  function clearResult() {
+    const el = document.getElementById('chain-result');
+    if (el) el.innerHTML = '';
+  }
+
+  function showResult(kind, title, bodyHtml) {
+    const box = document.getElementById('chain-result');
+    if (!box) return;
+    const color =
+      kind === 'ok' ? 'var(--success)' :
+      kind === 'err' ? 'var(--error)' :
+      'var(--warning, #f39c12)';
+    const icon =
+      kind === 'ok' ? 'check_circle' :
+      kind === 'err' ? 'error' :
+      'warning';
+    const bg =
+      kind === 'ok' ? 'rgba(46,204,113,0.05)' :
+      kind === 'err' ? 'rgba(231,76,60,0.05)' :
+      'rgba(243,156,18,0.05)';
+    box.innerHTML = `
+      <div class="card" style="border-color:${color}; background:${bg};">
+        <div style="display:flex; align-items:flex-start; gap:10px;">
+          <span class="material-icons" style="color:${color};">${icon}</span>
+          <div><strong>${App.escapeHtml(title)}</strong>
+            <div style="font-size:13px; color:var(--text-secondary); margin-top:4px;">${bodyHtml}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
   function emptyStep(type) {
     return {
       type,
       prompt: '',
-      model: type === FIRST_TYPE ? DEFAULT_MODEL : '',
-      aspect_ratio: type === FIRST_TYPE ? DEFAULT_ASPECT : '',
+      model: TYPES_WITH_MODEL.has(type) ? getDefaultModel(type) : '',
+      aspect_ratio: TYPES_WITH_ASPECT.has(type) ? DEFAULT_ASPECT : '',
       direction: '',
       bbox: null,
+      start_image_path: '',
+      end_image_path: '',
+      ref_image_path: '',
+      ingredient_image_paths: [],
     };
   }
 
-  function addStep(type) { steps.push(emptyStep(type)); refreshSteps(); }
+  function addStep(type) {
+    steps.push(emptyStep(type));
+    clearResult();
+    refreshSteps();
+  }
   function removeStep(i) {
     if (i === 0 && steps.length > 1) {
       App.toast('Cannot remove the first step while later steps exist.', 'warning');
       return;
     }
     steps.splice(i, 1);
+    clearResult();
     refreshSteps();
   }
 
@@ -70,28 +150,56 @@
     const el = document.getElementById('chain-add-buttons');
     if (!el) return;
     if (steps.length === 0) {
+      const options = FIRST_TYPES
+        .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedFirstType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
+        .join('');
       el.innerHTML = `
         <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">
-          Chains must start with a Text-to-Video step.
+          Chains must start with an L1 step that creates a new project.
         </p>
-        <button class="btn btn-primary" data-add-type="${FIRST_TYPE}">
-          <span class="material-icons">videocam</span> Add Text to Video
-        </button>
+        <div class="form-row" style="align-items: end;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Root step <span class="required">*</span></label>
+            <select class="form-select" id="chain-root-type">${options}</select>
+            <span class="form-hint">Choose the L1 job that creates the chain's project.</span>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <button class="btn btn-primary" id="chain-add-root">
+              <span class="material-icons">add_link</span> Add Root Step
+            </button>
+          </div>
+        </div>
       `;
+      el.querySelector('#chain-root-type')?.addEventListener('change', (event) => {
+        selectedFirstType = event.target.value;
+      });
+      el.querySelector('#chain-add-root')?.addEventListener('click', () => addStep(selectedFirstType));
     } else {
-      const buttons = SUBSEQUENT_TYPES.map((t) => `
-        <button class="btn btn-outline btn-sm" data-add-type="${t.id}">
-          <span class="material-icons" style="font-size:16px">${t.icon}</span> ${t.label}
-        </button>
-      `).join('');
+      const options = SUBSEQUENT_TYPES
+        .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedNextType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
+        .join('');
       el.innerHTML = `
-        <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">Add next step:</p>
-        <div style="display: flex; flex-wrap: wrap; gap: 8px;">${buttons}</div>
+        <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">
+          Add the next chained edit. Only L2 job types are allowed after the root step.
+        </p>
+        <div class="form-row" style="align-items: end;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label">Next step <span class="required">*</span></label>
+            <select class="form-select" id="chain-next-type">${options}</select>
+            <span class="form-hint">Extend, insert, remove, and camera all chain off the parent media.</span>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <button class="btn btn-outline" id="chain-add-next">
+              <span class="material-icons">add</span> Add Step
+            </button>
+          </div>
+        </div>
       `;
+      el.querySelector('#chain-next-type')?.addEventListener('change', (event) => {
+        selectedNextType = event.target.value;
+      });
+      el.querySelector('#chain-add-next')?.addEventListener('click', () => addStep(selectedNextType));
     }
-    el.querySelectorAll('[data-add-type]').forEach((btn) => {
-      btn.addEventListener('click', () => addStep(btn.dataset.addType));
-    });
   }
 
   function renderStepConfig(step, i) {
@@ -99,7 +207,7 @@
     const tag = (field, html) => parts.push(html);
 
     if (TYPES_WITH_PROMPT.has(step.type)) {
-      const req = step.type === 'text-to-video' || step.type === 'insert-object';
+      const req = REQUIRED_PROMPT_TYPES.has(step.type);
       tag('prompt', `
         <div class="form-group" style="margin-bottom:12px">
           <label class="form-label">Prompt ${req ? '<span class="required">*</span>' : '(optional)'}</label>
@@ -110,9 +218,7 @@
     }
 
     if (TYPES_WITH_MODEL.has(step.type)) {
-      const opts = MODELS
-        .map((m) => `<option value="${m.value}" ${step.model === m.value ? 'selected' : ''}>${App.escapeHtml(m.label)}</option>`)
-        .join('');
+      const opts = renderOptions(getModelOptions(step.type), { selected: step.model });
       tag('model', `
         <div class="form-group" style="margin-bottom:12px">
           <label class="form-label">Model</label>
@@ -122,15 +228,21 @@
     }
 
     if (TYPES_WITH_ASPECT.has(step.type)) {
-      const opts = ASPECT_RATIOS
-        .map((r) => `<option value="${r.value}" ${step.aspect_ratio === r.value ? 'selected' : ''}>${App.escapeHtml(r.label)}</option>`)
-        .join('');
+      const opts = renderOptions(getAspectOptions(step.type), { selected: step.aspect_ratio });
       tag('aspect_ratio', `
         <div class="form-group" style="margin-bottom:12px">
           <label class="form-label">Aspect Ratio</label>
           <select class="form-select step-field" data-step="${i}" data-field="aspect_ratio">${opts}</select>
         </div>
       `);
+    }
+
+    if (TYPES_WITH_IMAGES.has(step.type)) {
+      tag('images', renderImageUploads(step, i));
+    }
+
+    if (TYPES_WITH_INGREDIENTS.has(step.type)) {
+      tag('ingredients', renderIngredientsUploads(step, i));
     }
 
     if (step.type === 'camera-move') {
@@ -167,6 +279,96 @@
     return parts.join('');
   }
 
+  function renderImageUploads(step, i) {
+    if (step.type === 'text-to-image') {
+      return `
+        <div class="form-row" style="margin-bottom: 12px;">
+          ${renderImageUploadField({
+            stepIndex: i,
+            field: 'ref_image_path',
+            label: 'Reference',
+            required: false,
+            path: step.ref_image_path,
+          })}
+        </div>
+      `;
+    }
+
+    return `
+      <div class="form-row" style="margin-bottom: 12px;">
+        ${renderImageUploadField({
+          stepIndex: i,
+          field: 'start_image_path',
+          label: 'Start',
+          required: true,
+          path: step.start_image_path,
+        })}
+        ${renderImageUploadField({
+          stepIndex: i,
+          field: 'end_image_path',
+          label: 'End',
+          required: false,
+          path: step.end_image_path,
+        })}
+      </div>
+    `;
+  }
+
+  function renderIngredientsUploads(step, i) {
+    const images = Array.isArray(step.ingredient_image_paths) ? step.ingredient_image_paths : [];
+    const cards = images.length > 0
+      ? images.map((path, index) => `
+        <div class="card" style="padding:12px; position:relative;">
+          <button type="button" class="icon-btn step-ingredient-remove" data-step="${i}" data-index="${index}"
+                  title="Remove reference"
+                  style="position:absolute; top:8px; right:8px; width:28px; height:28px;">
+            <span class="material-icons" style="font-size:18px;">close</span>
+          </button>
+          <img src="/${App.escapeHtml(path)}" alt="Reference ${index + 1}"
+               style="width:100%; height:120px; object-fit:cover; border-radius:10px; border:1px solid var(--border-color);">
+          <div class="form-hint" style="margin-top:8px; word-break:break-all;">${App.escapeHtml(path)}</div>
+        </div>
+      `).join('')
+      : '<div class="form-hint">No reference images uploaded yet.</div>';
+
+    return `
+      <div class="form-group" style="margin-bottom:12px">
+        <label class="form-label">Reference Images <span class="required">*</span></label>
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+          <button type="button" class="btn btn-outline btn-sm step-ingredient-add" data-step="${i}">
+            <span class="material-icons">add_photo_alternate</span> Add reference image
+          </button>
+          <span class="form-hint">${images.length}/${MAX_INGREDIENT_IMAGES} uploaded</span>
+        </div>
+        <input type="file" class="step-ingredient-input" id="step-ingredient-images-${i}"
+               data-step="${i}" accept="image/png,image/jpeg,image/webp" multiple hidden>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px;">
+          ${cards}
+        </div>
+        <span class="form-hint" style="margin-top:8px; display:block;">Upload 1-10 reference images before submit.</span>
+      </div>
+    `;
+  }
+
+  function renderImageUploadField({ stepIndex, field, label, required, path }) {
+    const preview = path ? `
+      <div style="margin-top:8px;">
+        <img src="/${App.escapeHtml(path)}" alt="${App.escapeHtml(label)} preview"
+             style="width:100%; max-height:180px; object-fit:cover; border-radius:10px; border:1px solid var(--border-color);">
+      </div>
+      <div class="form-hint" style="margin-top:6px;">${App.escapeHtml(path)}</div>
+    ` : '<div class="form-hint" style="margin-top:6px;">No image uploaded.</div>';
+    return `
+      <div class="form-group">
+        <label class="form-label">${label} Image ${required ? '<span class="required">*</span>' : '(optional)'}</label>
+        <input type="file" class="form-input step-upload-input"
+               data-step="${stepIndex}" data-field="${field}" data-label="${App.escapeHtml(label)} image"
+               accept="image/png,image/jpeg,image/webp">
+        ${preview}
+      </div>
+    `;
+  }
+
   function renderSteps() {
     return steps.map((s, i) => {
       const meta = JOB_TYPES.find((t) => t.id === s.type) || {};
@@ -194,7 +396,10 @@
       const handler = () => {
         const i = parseInt(el.dataset.step);
         const f = el.dataset.field;
-        if (steps[i]) steps[i][f] = el.value;
+        if (steps[i]) {
+          steps[i][f] = el.value;
+          clearResult();
+        }
       };
       el.addEventListener('input', handler);
       el.addEventListener('change', handler);
@@ -214,9 +419,75 @@
         }
         // Drop bbox entirely if no keys remain
         if (steps[i].bbox && Object.keys(steps[i].bbox).length === 0) steps[i].bbox = null;
+        clearResult();
       };
       el.addEventListener('input', handler);
       el.addEventListener('change', handler);
+    });
+
+    document.querySelectorAll('.step-upload-input').forEach((input) => {
+      input.addEventListener('change', async (event) => {
+        const i = Number.parseInt(input.dataset.step, 10);
+        const field = input.dataset.field;
+        if (Number.isNaN(i) || !field || !steps[i]) return;
+        const file = event.target.files?.[0];
+        if (!file) return;
+        try {
+          steps[i][field] = await uploadImage(file, input, input.dataset.label || 'Image');
+          clearResult();
+          refreshSteps();
+        } catch {}
+      });
+    });
+
+    document.querySelectorAll('.step-ingredient-add').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const i = Number.parseInt(btn.dataset.step, 10);
+        if (Number.isNaN(i) || !steps[i]) return;
+        if (steps[i].ingredient_image_paths.length >= MAX_INGREDIENT_IMAGES) {
+          App.toast(`You can upload up to ${MAX_INGREDIENT_IMAGES} reference images.`, 'warning');
+          return;
+        }
+        document.getElementById(`step-ingredient-images-${i}`)?.click();
+      });
+    });
+
+    document.querySelectorAll('.step-ingredient-input').forEach((input) => {
+      input.addEventListener('change', async (event) => {
+        const i = Number.parseInt(input.dataset.step, 10);
+        if (Number.isNaN(i) || !steps[i]) return;
+        const files = Array.from(event.target.files || []);
+        if (files.length === 0) return;
+
+        const remaining = MAX_INGREDIENT_IMAGES - steps[i].ingredient_image_paths.length;
+        if (files.length > remaining) {
+          App.toast(`Only ${remaining} more reference image${remaining === 1 ? '' : 's'} can be added.`, 'warning');
+        }
+
+        for (const file of files.slice(0, remaining)) {
+          try {
+            const path = await uploadImage(file, input, 'Reference image');
+            steps[i].ingredient_image_paths.push(path);
+          } catch {
+            break;
+          }
+        }
+
+        event.target.value = '';
+        clearResult();
+        refreshSteps();
+      });
+    });
+
+    document.querySelectorAll('.step-ingredient-remove').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const i = Number.parseInt(btn.dataset.step, 10);
+        const index = Number.parseInt(btn.dataset.index, 10);
+        if (Number.isNaN(i) || Number.isNaN(index) || !steps[i]) return;
+        steps[i].ingredient_image_paths.splice(index, 1);
+        clearResult();
+        refreshSteps();
+      });
     });
 
     document.querySelectorAll('.step-remove').forEach((btn) => {
@@ -227,12 +498,27 @@
   function validateChain() {
     if (!pinnedProfile) return 'Select a profile to pin the chain.';
     if (steps.length === 0) return 'Add at least one step.';
-    if (steps[0].type !== FIRST_TYPE) return 'First step must be Text-to-Video.';
-    if (!steps[0].prompt.trim()) return 'Step 1 requires a prompt.';
 
     for (let i = 0; i < steps.length; i++) {
       const s = steps[i];
-      if (s.type === 'insert-object' && !s.prompt.trim()) return `Step ${i + 1} (Insert) requires a prompt.`;
+      const meta = JOB_TYPES.find((t) => t.id === s.type);
+      const label = meta?.label || s.type;
+
+      if (i === 0 && !isL1Type(s.type)) {
+        return `Step 1 must be an L1 root type. ${label} can only be added after a project-creating step.`;
+      }
+      if (i > 0 && isL1Type(s.type)) {
+        return `Step ${i + 1} (${label}) creates a new project and cannot appear after the root step.`;
+      }
+
+      if (REQUIRED_PROMPT_TYPES.has(s.type) && !s.prompt.trim()) return `Step ${i + 1} (${label}) requires a prompt.`;
+      if (s.type === 'frames-to-video' && !s.start_image_path) return `Step ${i + 1} (Frames to Video) requires a start image.`;
+      if (s.type === 'ingredients-to-video' && (!Array.isArray(s.ingredient_image_paths) || s.ingredient_image_paths.length === 0)) {
+        return `Step ${i + 1} (Ingredients to Video) requires at least one reference image.`;
+      }
+      if (s.type === 'ingredients-to-video' && s.ingredient_image_paths.length > MAX_INGREDIENT_IMAGES) {
+        return `Step ${i + 1} (Ingredients to Video) supports at most ${MAX_INGREDIENT_IMAGES} reference images.`;
+      }
       if (s.type === 'camera-move' && !s.direction) return `Step ${i + 1} (Camera) requires a direction.`;
 
       if (s.bbox) {
@@ -260,6 +546,12 @@
         if (s.model) job.model = s.model;
         if (s.aspect_ratio) job.aspect_ratio = s.aspect_ratio;
         if (s.direction) job.direction = s.direction;
+        if (s.start_image_path) job.start_image_path = s.start_image_path;
+        if (s.end_image_path) job.end_image_path = s.end_image_path;
+        if (s.ref_image_path) job.ref_image_path = s.ref_image_path;
+        if (Array.isArray(s.ingredient_image_paths) && s.ingredient_image_paths.length > 0) {
+          job.ingredient_image_paths = [...s.ingredient_image_paths];
+        }
         if (s.bbox && ['x','y','w','h'].every((k) => typeof s.bbox[k] === 'number')) {
           job.bbox = { x: s.bbox.x, y: s.bbox.y, w: s.bbox.w, h: s.bbox.h };
         }
@@ -277,6 +569,25 @@
     }
   }
 
+  async function uploadImage(file, input, label) {
+    const previousTitle = input.title;
+    input.disabled = true;
+    input.title = 'Uploading...';
+    try {
+      const result = await API.uploads.create(file);
+      const path = result?.path || '';
+      if (!path) throw new Error('Upload completed without a path');
+      App.toast(`${label} uploaded`, 'success');
+      return path;
+    } catch (err) {
+      App.toast(`${label} failed: ${err.message}`, 'error');
+      throw err;
+    } finally {
+      input.disabled = false;
+      input.title = previousTitle;
+    }
+  }
+
   const ChainBuilderPage = {
     name: 'chains',
     title: 'Chain Builder',
@@ -285,6 +596,8 @@
     async render() {
       steps = [];
       pinnedProfile = '';
+      selectedFirstType = FIRST_TYPE;
+      selectedNextType = SUBSEQUENT_TYPES[0]?.id || '';
       await fetchProfiles();
 
       return `
@@ -292,8 +605,8 @@
           <div class="card" style="margin-bottom: 16px;">
             <h3 style="margin-bottom: 8px; font-size: 16px; font-weight: 600;">Build a Job Chain</h3>
             <p style="color: var(--text-muted); font-size: 13px;">
-              Chains run sequentially on a single profile. Start with Text-to-Video,
-              then extend / insert / remove / camera.
+              Chains run sequentially on a single profile. Start with an L1 project-creating step,
+              then add only L2 edits that chain off the parent media.
             </p>
           </div>
 
@@ -326,11 +639,16 @@
 
       document.getElementById('chain-profile')?.addEventListener('change', (e) => {
         pinnedProfile = e.target.value;
+        clearResult();
       });
 
       document.getElementById('submit-chain')?.addEventListener('click', async () => {
         const err = validateChain();
-        if (err) { App.toast(err, 'warning'); return; }
+        if (err) {
+          showResult('warn', 'Validation failed', App.escapeHtml(err));
+          App.toast(err, 'warning');
+          return;
+        }
 
         const btn = document.getElementById('submit-chain');
         btn.disabled = true;
@@ -339,32 +657,14 @@
         try {
           const result = await API.chains.create(buildPayload());
           const cid = result?.chain_id || result?.id || 'unknown';
-          document.getElementById('chain-result').innerHTML = `
-            <div class="card" style="border-color: var(--success); background: rgba(46,204,113,0.05);">
-              <div style="display:flex; align-items:center; gap:10px;">
-                <span class="material-icons" style="color:var(--success);">check_circle</span>
-                <div><strong>Chain submitted</strong>
-                  <div style="font-size:13px; color:var(--text-secondary); margin-top:4px;">
-                    Chain ID: <code>${App.escapeHtml(String(cid))}</code> — ${steps.length} step(s)
-                  </div>
-                </div>
-              </div>
-            </div>
-          `;
+          showResult(
+            'ok',
+            'Chain submitted',
+            `Chain ID: <code>${App.escapeHtml(String(cid))}</code> — ${steps.length} step(s)`,
+          );
           App.toast('Chain submitted', 'success');
         } catch (e) {
-          document.getElementById('chain-result').innerHTML = `
-            <div class="card" style="border-color: var(--error); background: rgba(231,76,60,0.05);">
-              <div style="display:flex; align-items:center; gap:10px;">
-                <span class="material-icons" style="color:var(--error);">error</span>
-                <div><strong>Chain failed</strong>
-                  <div style="font-size:13px; color:var(--text-secondary); margin-top:4px;">
-                    ${App.escapeHtml(e.message)}
-                  </div>
-                </div>
-              </div>
-            </div>
-          `;
+          showResult('err', 'Chain failed', App.escapeHtml(e.message));
           App.toast('Chain failed: ' + e.message, 'error');
         } finally {
           btn.disabled = steps.length === 0;
