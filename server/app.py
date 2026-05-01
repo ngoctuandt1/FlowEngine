@@ -9,6 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from server.dashboard_auth import (
+    DASHBOARD_AUTH_ENABLED,
+    DashboardAuthMiddleware,
+    api_login,
+    api_logout,
+    serve_login_page,
+)
 from server.routes import (
     characters_router,
     jobs_router,
@@ -90,6 +97,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# -- Dashboard password gate --------------------------------------------------
+# Active only when DASHBOARD_PASSWORD is set. Browser navigations land on
+# /login, API calls return JSON 401. Worker traffic (/api/worker/*) is gated
+# separately by Bearer token in server/auth.py and is allowed past this
+# middleware.
+if DASHBOARD_AUTH_ENABLED:
+    app.add_middleware(DashboardAuthMiddleware)
+
+# -- Auth endpoints (registered regardless so the SPA login page works) -------
+app.add_api_route("/login", serve_login_page, methods=["GET"], include_in_schema=False)
+app.add_api_route("/api/auth/login", api_login, methods=["POST"])
+app.add_api_route("/api/auth/logout", api_logout, methods=["POST"])
 
 # -- API routes ----------------------------------------------------------------
 app.include_router(jobs_router)
