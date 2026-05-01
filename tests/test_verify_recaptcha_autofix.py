@@ -31,3 +31,13 @@ async def test_simulated_recaptcha_autofix_scenarios(
     )
 
     verify_module.assert_outcome(outcome)
+
+
+def test_verify_recaptcha_autofix_dry_run_executes_all_scenarios(capsys):
+    exit_code = verify_module.main(["--dry-run"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    for scenario_key in ("A", "B", "C", "D", "E"):
+        assert f"[PASS] {scenario_key}:" in captured.out
+    assert "PASS [dry-run]" in captured.out

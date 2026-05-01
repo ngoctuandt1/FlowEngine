@@ -20,7 +20,7 @@ import time
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,7 +31,6 @@ import flow.recaptcha as recaptcha_module
 import flow.wait as wait_module
 import worker.dispatcher as dispatcher_module
 import worker.profile_manager as profile_manager_module
-import worker.profile_swapper as profile_swapper_module
 from worker.project_lock import ProjectLock
 
 OLD_PROFILE = "oldprofile"
@@ -348,6 +347,9 @@ async def simulate_scenario(
                 swap_calls.append(old_name)
                 return spec.swap_return
 
+        fake_profile_swapper_module = ModuleType("worker.profile_swapper")
+        fake_profile_swapper_module.ProfileSwapper = FakeProfileSwapper
+
         profile_manager = profile_manager_module.ProfileManager(
             chrome_user_data_dir=str(profile_base_dir),
             profile_names=[job_payload["profile"]],
@@ -370,10 +372,10 @@ async def simulate_scenario(
                 patch.dict(dispatcher_module.HANDLER_MAP, {JOB_TYPE: handler}, clear=False)
             )
             stack.enter_context(
-                patch.object(
-                    profile_swapper_module,
-                    "ProfileSwapper",
-                    new=FakeProfileSwapper,
+                patch.dict(
+                    sys.modules,
+                    {"worker.profile_swapper": fake_profile_swapper_module},
+                    clear=False,
                 )
             )
             stack.enter_context(
@@ -527,17 +529,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 async def _main_async(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    spec = scenario_specs()["A"]
+    specs = tuple(scenario_specs().values())
     logging.disable(logging.CRITICAL)
     try:
-        outcome = await simulate_scenario(spec, dry_run=args.dry_run)
+        outcomes = [
+            await simulate_scenario(spec, dry_run=args.dry_run)
+            for spec in specs
+        ]
     finally:
         logging.disable(logging.NOTSET)
-    assertions = evaluate_outcome(outcome)
 
-    for result in assertions:
-        status = "PASS" if result.passed else "FAIL"
-        print(f"[{status}] {result.name} :: {result.detail}")
+    assertions: list[AssertionResult] = []
+    for outcome in outcomes:
+        scenario_assertions = evaluate_outcome(outcome)
+        assertions.extend(scenario_assertions)
+        for result in scenario_assertions:
+            status = "PASS" if result.passed else "FAIL"
+            print(f"[{status}] {result.name} :: {result.detail}")
 
     failed = [result for result in assertions if not result.passed]
     mode = "dry-run" if args.dry_run else "simulated"
