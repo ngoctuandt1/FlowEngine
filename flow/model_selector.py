@@ -1,6 +1,7 @@
 """Model selector -- pick free Veo models for 0-credit generation."""
 
 import asyncio
+import json
 import re
 import logging
 
@@ -18,6 +19,10 @@ MODEL_MAP = {
 # Default to fast LP (free)
 DEFAULT_MODEL = "veo-3.1-fast-lp"
 _MODEL_VARIANT_TOKENS = frozenset({"fast", "lite", "quality", "lower", "priority"})
+_MODEL_ITEM_SELECTORS = (
+    "menuitem, [role='menuitem'], [role='option'], "
+    "button, [role='button'], [role='listbox'] button"
+)
 
 
 def _normalize_model_text(text: str) -> str:
@@ -36,10 +41,79 @@ def _normalize_model_family(text: str) -> str:
     return " ".join(tokens)
 
 
+def _normalize_profile_name(profile: str | None) -> str:
+    if profile is None:
+        return "unknown"
+    profile_name = profile.strip()
+    return profile_name or "unknown"
+
+
+def _dedupe_texts(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        cleaned = re.sub(r"\s+", " ", value).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        deduped.append(cleaned)
+    return deduped
+
+
+def _extract_model_label(raw_text: str) -> str | None:
+    for line in raw_text.splitlines():
+        cleaned = re.sub(r"\s+", " ", line).strip()
+        if not cleaned:
+            continue
+        normalized = _normalize_model_text(cleaned)
+        if normalized.startswith("veo") or normalized.startswith("imagen") or normalized.startswith("nano"):
+            return cleaned
+    return None
+
+
+def _build_free_model_failure_message(
+    reason: str,
+    *,
+    visible_models: list[str] | None = None,
+    profile: str | None = None,
+) -> str:
+    return (
+        f"free_model_select_failed: {reason}. "
+        f"Profile={_normalize_profile_name(profile)} "
+        f"Visible={json.dumps(_dedupe_texts(visible_models or []), ensure_ascii=False)}. "
+        "Manual intervention needed."
+    )
+
+
+async def _collect_visible_model_labels(page) -> list[str]:
+    try:
+        items = page.locator(_MODEL_ITEM_SELECTORS)
+        count = await items.count()
+    except Exception:
+        return []
+
+    labels: list[str] = []
+    for index in range(count):
+        try:
+            item = items.nth(index)
+            if not await item.is_visible(timeout=0):
+                continue
+            text = (await item.inner_text()).strip()
+        except Exception:
+            continue
+
+        label = _extract_model_label(text)
+        if label:
+            labels.append(label)
+
+    return _dedupe_texts(labels)
+
+
 def _raise_ambiguous_free_model_error(
     base_name: str,
     candidate_text: str,
     visible_variants: list[str],
+    profile: str | None = None,
 ) -> None:
     logger.error(
         "Ambiguous free model variants for '%s' under '%s': %s",
@@ -48,12 +122,21 @@ def _raise_ambiguous_free_model_error(
         visible_variants,
     )
     raise RuntimeError(
-        f"Ambiguous {candidate_text} model variants for requested model "
-        f"'{base_name}' — visible options: {', '.join(visible_variants)}"
+        _build_free_model_failure_message(
+            f"Ambiguous {candidate_text} model variants for requested model '{base_name}'",
+            visible_models=visible_variants,
+            profile=profile,
+        )
     )
 
 
-async def _pick_free_model_item(items, count: int, base_name: str, candidate_text: str):
+async def _pick_free_model_item(
+    items,
+    count: int,
+    base_name: str,
+    candidate_text: str,
+    profile: str | None = None,
+):
     """Resolve the best free-mode locator match without guessing across variants."""
     normalized_base = _normalize_model_text(base_name)
     normalized_family = _normalize_model_family(base_name)
@@ -81,7 +164,12 @@ async def _pick_free_model_item(items, count: int, base_name: str, candidate_tex
         return family_matches[0]
 
     if len(family_matches) > 1 or count > 1:
-        _raise_ambiguous_free_model_error(base_name, candidate_text, visible_variants)
+        _raise_ambiguous_free_model_error(
+            base_name,
+            candidate_text,
+            visible_variants,
+            profile=profile,
+        )
 
     if visible_variants:
         return items.first, visible_variants[0]
@@ -93,6 +181,8 @@ async def select_model(
     page,
     model: str = DEFAULT_MODEL,
     free_mode: bool = True,
+    *,
+    profile: str | None = None,
 ) -> bool:
     """Select the specified model in the Flow UI.
 
@@ -107,6 +197,7 @@ async def select_model(
         page: Playwright page
         model: Model key from MODEL_MAP
         free_mode: If True, force LP model regardless of model param
+        profile: Chrome profile name for surfaced operator alerts
 
     Returns True if model was selected successfully.
     """
@@ -119,6 +210,7 @@ async def select_model(
 
     target_text = MODEL_MAP.get(model, MODEL_MAP[DEFAULT_MODEL])
     logger.info("Selecting model: %s", target_text)
+    last_visible_model_labels: list[str] = []
 
     # Step 1: Open model dropdown
     #
@@ -194,7 +286,11 @@ async def select_model(
                 "Could not find model selector chip in free mode — aborting to avoid default paid model"
             )
             raise RuntimeError(
-                "Could not open model selector chip in free mode — aborting to avoid default paid model"
+                _build_free_model_failure_message(
+                    "Could not open model selector chip in free mode - aborting to avoid default paid model",
+                    visible_models=last_visible_model_labels,
+                    profile=profile,
+                )
             )
         logger.warning("Could not find model selector chip — will proceed with default model")
         return False
@@ -227,16 +323,11 @@ async def select_model(
         ("Lite", re.compile(r"Lite", re.IGNORECASE)),
     ]
 
-    MODEL_ITEM_SELECTORS = (
-        "menuitem, [role='menuitem'], [role='option'], "
-        "button, [role='button'], [role='listbox'] button"
-    )
-
     # Pre-check: are LP items already visible?
     dropdown_opened = False
     if is_lp:
         try:
-            lp_items = page.locator(MODEL_ITEM_SELECTORS).filter(
+            lp_items = page.locator(_MODEL_ITEM_SELECTORS).filter(
                 has_text=re.compile(r"Lower Priority", re.IGNORECASE)
             )
             lp_count = await lp_items.count()
@@ -260,7 +351,7 @@ async def select_model(
         try:
             if free_mode:
                 for candidate_text, candidate_pattern in free_model_candidates:
-                    items = page.locator(MODEL_ITEM_SELECTORS).filter(
+                    items = page.locator(_MODEL_ITEM_SELECTORS).filter(
                         has_text=candidate_pattern
                     )
                     count = await items.count()
@@ -280,7 +371,11 @@ async def select_model(
                         count,
                         base_name,
                         candidate_text,
+                        profile=profile,
                     )
+                    last_visible_model_labels = await _collect_visible_model_labels(page)
+                    if not last_visible_model_labels and selected_text:
+                        last_visible_model_labels = [selected_text]
 
                     if candidate_text == "Lite":
                         # 2026-05-10 LP deprecation policy: if the LP option is
@@ -297,17 +392,24 @@ async def select_model(
                     await _close_model_panel(page, dropdown_opened)
                     if not ok:
                         raise RuntimeError(
-                            "Free model selection did not verify 0 credits — aborting to avoid paid generation"
+                            _build_free_model_failure_message(
+                                "Free model selection did not verify 0 credits - aborting to avoid paid generation",
+                                visible_models=last_visible_model_labels,
+                                profile=profile,
+                            )
                         )
                     return True
 
                 # Debug: log what model options are visible before retrying.
                 await _debug_model_options(page)
+                visible_model_labels = await _collect_visible_model_labels(page)
+                if visible_model_labels:
+                    last_visible_model_labels = visible_model_labels
                 continue
 
             else:
                 # Non-LP: match base model name
-                items = page.locator(MODEL_ITEM_SELECTORS).filter(
+                items = page.locator(_MODEL_ITEM_SELECTORS).filter(
                     has_text=re.compile(re.escape(base_name), re.IGNORECASE)
                 )
                 if await items.first.is_visible(timeout=2000):
@@ -320,6 +422,9 @@ async def select_model(
         except Exception as e:
             logger.warning("Model select attempt %d failed: %s", attempt + 1, e)
             if free_mode:
+                visible_model_labels = await _collect_visible_model_labels(page)
+                if visible_model_labels:
+                    last_visible_model_labels = visible_model_labels
                 last_free_mode_error = e
 
     if free_mode:
@@ -330,33 +435,53 @@ async def select_model(
             page,
             base_name,
             [candidate_text for candidate_text, _ in free_model_candidates],
+            profile=profile,
         )
         if js_ok:
+            visible_model_labels = await _collect_visible_model_labels(page)
+            if visible_model_labels:
+                last_visible_model_labels = visible_model_labels
             ok = await _verify_credits(page, expected=0)
             await _close_model_panel(page, dropdown_opened)
             if not ok:
                 raise RuntimeError(
-                    "Free model selection did not verify 0 credits after JS fallback — aborting to avoid paid generation"
+                    _build_free_model_failure_message(
+                        "Free model selection did not verify 0 credits after JS fallback - aborting to avoid paid generation",
+                        visible_models=last_visible_model_labels,
+                        profile=profile,
+                    )
                 )
             return True
 
+        visible_model_labels = await _collect_visible_model_labels(page)
+        if visible_model_labels:
+            last_visible_model_labels = visible_model_labels
         await _close_model_panel(page, dropdown_opened)
         if not free_model_candidate_found:
-            try:
-                visible_model_count = await page.locator(MODEL_ITEM_SELECTORS).count()
-            except Exception:
-                visible_model_count = 0
-
-            if visible_model_count > 0:
+            if last_visible_model_labels:
                 raise RuntimeError(
-                    "Neither Lower Priority nor Lite model found — Flow UI changed unexpectedly, manual intervention needed"
+                    _build_free_model_failure_message(
+                        "Neither Lower Priority nor Lite model found in dropdown - Flow UI changed unexpectedly",
+                        visible_models=last_visible_model_labels,
+                        profile=profile,
+                    )
                 )
 
             raise RuntimeError(
-                "Free model search exhausted with no visible model options — manual intervention needed"
+                _build_free_model_failure_message(
+                    "Free model search exhausted with no visible model options",
+                    visible_models=last_visible_model_labels,
+                    profile=profile,
+                )
             )
 
-        raise RuntimeError("Failed to select free model after all attempts") from last_free_mode_error
+        raise RuntimeError(
+            _build_free_model_failure_message(
+                "Failed to select free model after all attempts",
+                visible_models=last_visible_model_labels,
+                profile=profile,
+            )
+        ) from last_free_mode_error
 
     # All attempts exhausted — try JS fallback
     logger.warning("Playwright selectors failed — trying JS fallback for model selection")
@@ -642,6 +767,7 @@ async def _select_model_js(
     page,
     base_name: str,
     candidate_texts: list[str] | None = None,
+    profile: str | None = None,
 ) -> bool:
     """JS fallback: click model option by scanning visible text.
 
@@ -743,7 +869,12 @@ async def _select_model_js(
     if result and result.get("status") == "ambiguous":
         visible_variants = result.get("visibleTexts") or []
         candidate_text = result.get("candidateText") or "free model"
-        _raise_ambiguous_free_model_error(base_name, candidate_text, visible_variants)
+        _raise_ambiguous_free_model_error(
+            base_name,
+            candidate_text,
+            visible_variants,
+            profile=profile,
+        )
 
     if result and result.get("status") == "clicked":
         if result.get("candidateText") == "Lite":

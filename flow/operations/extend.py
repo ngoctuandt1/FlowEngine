@@ -159,7 +159,7 @@ async def extend_video(
         await _type_extend_prompt(page, prompt)
 
     # Step 5: Select model
-    await select_model(page, model=model, free_mode=free_mode)
+    await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
 
     # Step 6: Submit
     before_cards = await count_visible_cards(page)
