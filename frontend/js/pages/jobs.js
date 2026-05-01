@@ -336,33 +336,6 @@
     button.innerHTML = labelHtml || button.dataset.originalHtml || button.innerHTML;
   }
 
-  function renderJsonModal(job) {
-    const outputLinks = (Array.isArray(job.output_files) ? job.output_files : [])
-      .map((file) => {
-        const normalized = String(file).replace(/\\/g, '/').replace(/^downloads\//i, '');
-        const url = `/downloads/${encodeURI(normalized)}`;
-        const name = normalized.split('/').pop() || normalized;
-        return `
-          <a class="btn btn-sm btn-outline" href="${App.escapeHtml(url)}" target="_blank" rel="noopener">
-            <span class="material-icons" style="font-size:16px">open_in_new</span> ${App.escapeHtml(name)}
-          </a>
-        `;
-      })
-      .join('');
-
-    return `
-      <div style="display:grid; gap:16px;">
-        ${outputLinks ? `
-          <div>
-            <div class="detail-label" style="margin-bottom:8px;">Outputs</div>
-            <div style="display:flex; flex-wrap:wrap; gap:8px;">${outputLinks}</div>
-          </div>
-        ` : ''}
-        <pre style="margin:0; padding:16px; border-radius: 12px; background: #0a0a0c; border: 1px solid var(--border); color: var(--text-secondary); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;">${App.escapeHtml(JSON.stringify(job, null, 2))}</pre>
-      </div>
-    `;
-  }
-
   function buildRetryPayload(job) {
     const payload = { type: job.type };
     [
@@ -403,20 +376,8 @@
     return payload;
   }
 
-  async function showJob(jobId) {
-    try {
-      const job = await API.jobs.get(jobId);
-      App.openModal(`Job ${App.truncate(jobId, 12)}`, renderJsonModal(job));
-    } catch (err) {
-      App.toast('Failed to load job: ' + err.message, 'error');
-    }
-  }
-
   function openJobDetail(jobId) {
-    window.location.hash = `job-detail/${encodeURIComponent(jobId)}`;
-    setTimeout(() => {
-      if (App.currentPage !== 'job-detail') showJob(jobId);
-    }, 0);
+    window.location.hash = `#job-detail/${encodeURIComponent(jobId)}`;
   }
 
   async function retryJob(jobId, button) {
