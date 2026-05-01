@@ -1,6 +1,7 @@
 # FlowEngine — Bản Thiết Kế Hoàn Chỉnh
 
 > Created: 2026-04-17
+> Last synced: Synced with master `408d598` on 2026-05-01.
 > Purpose: Master design document. Dùng làm kim chỉ nam cho mọi công việc tiếp theo (test, fix, feature mới).
 > Phương pháp: 1 (Mục đích) + 2 (Có gì) + 3 (Làm được gì) → Thiết kế → 4 (Test + Fix).
 
@@ -39,7 +40,7 @@ Google Flow (`labs.google/fx/tools/flow`) là công cụ tạo video AI (Veo 3.1
 2. **Navigate by `/edit/{media_id}`** — không bao giờ target video bằng vị trí DOM card
 3. **Store everything** — sau mỗi operation phải lưu: `project_url`, `media_id`, `profile`, `generation_id`, `output_files`
 4. **Serial per project** — 2 job trên cùng `project_url` KHÔNG chạy song song
-5. **`media_id` re-extract per op** — extend/insert/remove preserve media_id (Flow in-place); camera-move mints NEW uuid (Tier 2 Run 10 2026-04-19). Engine re-extract post-op via `finalize_operation`; chain propagates parent's FINAL media_id qua B22 claim-time inherit. Mỗi op vẫn thêm 1 history entry. Xem SPEC §A.1 INV-5.
+5. **`media_id` re-extract per op** — child claim-time inherit phải lấy **DIRECT parent's `media_id` + `edit_url` cùng nhau**. `extend-video` luôn mint **NEW** `media_id`; `camera-move` mint **NEW** ở early-chain (L2 direct-off-L1) nhưng **preserve** ở deep-chain; insert/remove tiếp tục trên direct parent result. Engine re-extract post-op qua `finalize_operation` và lưu final value sau mỗi step. Xem `CLAUDE.md` §4 và SPEC §A.1 INV-5.
 
 ### 1.4 Non-Goals
 
@@ -56,11 +57,11 @@ Google Flow (`labs.google/fx/tools/flow`) là công cụ tạo video AI (Veo 3.1
 
 ```
 ┌─────────────────────────────────────────────────┐
-│ frontend/   — Vanilla JS SPA (5 pages hoạt động)│
+│ frontend/   — Vanilla JS SPA (home/gallery + ops/admin pages)│
 └──────────────────┬──────────────────────────────┘
                    │ REST + WS
 ┌──────────────────┴──────────────────────────────┐
-│ server/     — FastAPI + SQLite (18 endpoints)   │
+│ server/     — FastAPI + SQLite + auth + WS      │
 └──────────────────┬──────────────────────────────┘
                    │ HTTP claim/update
 ┌──────────────────┴──────────────────────────────┐
@@ -75,16 +76,22 @@ Google Flow (`labs.google/fx/tools/flow`) là công cụ tạo video AI (Veo 3.1
 ### 2.2 Server Layer — **~90% hoàn chỉnh**
 
 **File chính:**
-- `server/app.py` — FastAPI app, lifespan, CORS, mount frontend static
+- `server/app.py` — FastAPI app, lifespan, CORS, dashboard-auth wiring, mount frontend/static/media
 - `server/config.py` — env vars loading
+- `server/dashboard_auth.py` — HMAC-signed cookie dashboard gate (`/login`, `/api/auth/*`); active khi `DASHBOARD_PASSWORD` được set
 - `server/routes/jobs.py` — 8 endpoints (create, list, get, children, delete, counts, recover, chains)
 - `server/routes/worker.py` — 4 endpoints (claim, update, heartbeat, list workers)
 - `server/routes/profiles.py` — 5 endpoints (list, create, get, update, jobs)
-- `server/routes/ws.py` — WebSocket hub `/ws/jobs`
+- `server/routes/ws.py` — WebSocket hub `/ws/jobs`, broadcast frame `{event, data}`, keepalive `ping`
 - `server/db/database.py` — SQLite schema init
 - `server/db/job_store.py` — CRUD + `claim_next_job()` atomic với `BEGIN IMMEDIATE`
 - `server/db/profile_store.py` — Profile CRUD
 - `server/models/job.py`, `server/models/profile.py` — Pydantic models
+
+**Auth gate (public UI):**
+- `server/app.py` register `DashboardAuthMiddleware` từ `server/dashboard_auth.py` khi `DASHBOARD_PASSWORD` có giá trị.
+- `CORSMiddleware` phải outermost; cookie gate chạy bên trong nên browser preflight vẫn qua CORS trước khi auth xử lý.
+- Worker routes (`/api/worker/*`) bypass cookie gate; chúng vẫn dùng Bearer-token auth riêng.
 
 **Database schema:**
 - `jobs` (60+ columns) — ✅ dùng đầy đủ
@@ -142,14 +149,14 @@ Google Flow (`labs.google/fx/tools/flow`) là công cụ tạo video AI (Veo 3.1
 ### 2.5 Frontend Layer — **~85% hoàn chỉnh**
 
 **Pages (tất cả hoạt động):**
-- `dashboard.js` — job counts + recent jobs + WS realtime + "Recover Stale" button
-- `create-job.js` — form động cho 5 job types
-- `chain-builder.js` — visual step sequencer (step 1 phải là t2v)
-- `profiles.js` — CRUD profiles + quarantine/activate
-- `settings.js` — server health + admin actions
+- `home.js` — Flow-style recent gallery; live repaint khi WS `job_update` đến
+- `jobs.js`, `job-detail.js` — queue view + detail/related-chain drill-down
+- `create-job.js`, `chain-builder.js` — single-job form + visual step sequencer
+- `batch-queue.js`, `gallery.js`, `engine-status.js` — public dashboard surfaces
+- `profiles.js`, `settings.js`, `media-tools.js`, `tts.js`, `characters.js`, `workflows.js` — admin/support pages
 
 **API client (`api.js`):** tất cả endpoints match server routes.
-**WebSocket (`ws.js`):** subscribe `job_created/updated/completed/failed/deleted`, auto-reconnect exponential backoff.
+**WebSocket (`ws.js`):** parse server frame `{event, data}`, auto-reconnect exponential backoff, emit by event name; `home.js` subscribe `job_update` để refresh gallery.
 
 **Missing:**
 - `components/` folder tồn tại nhưng **trống** — pages dùng inline templates
@@ -166,6 +173,8 @@ PLAN.md §4 liệt kê 4 test files cần có: `test_job_store.py`, `test_chain_
 - `Dockerfile.server`, `Dockerfile.worker` — Python 3.11-slim
 - `scripts/setup.cmd`, `start_all.cmd`, `start_server.cmd`, `start_worker.cmd` — hoạt động
 - `.env.example`, `requirements.txt` — có
+- Public web `https://ai.hassio.io.vn` hiện phục vụ **FlowEngine** (không còn là legacy `video-ai-studio`), giữ nguyên Cloudflare Tunnel target bằng cách bind backend trên `0.0.0.0:8899`
+- Public deploy dùng dashboard password gate qua `DASHBOARD_PASSWORD`; chi tiết cutover/rollback xem `docs/session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md`
 - Worker logs (`worker_out.log`, `worker_err.log`) cho thấy đã chạy được end-to-end (generate job thành công sau khi AIgglog login)
 
 ### 2.8 7 Bugs đã fix và merged to master
@@ -199,7 +208,7 @@ Worker A (profile=alpha) và Worker B (profile=beta). Chain bắt đầu trên a
 2 L2 jobs cùng `project_url` → chỉ 1 claim được tại 1 thời điểm.
 
 ✅ **F5 — Real-time dashboard:**
-WebSocket push mọi job state change lên tất cả client đang mở.
+Server broadcast frame `{event, data}` trên `/ws/jobs`; frontend pages (bao gồm `home.js`) listen event `job_update` để refresh UI real-time.
 
 ✅ **F6 — Stale recovery:**
 Job stuck claimed/running > 30 phút → Settings → Recover Stale → reset về pending.
@@ -381,7 +390,7 @@ Sau khi Phase A + B xong, chạy thử:
 2. Tạo chain: t2v "golden sunset" → extend "zoom out" → insert "seagulls" bbox → camera "dolly in"
 3. Verify 4 video files trong `downloads/`
 4. Verify history panel trên Flow UI có 4 entries
-5. Verify tất cả cùng media_id trong URL
+5. Verify `media_id` transition đúng theo INV-5: `extend-video` luôn mint NEW; `camera-move` có thể mint NEW ở early-chain nhưng preserve ở deep-chain; child luôn dùng direct parent's stored `media_id` + `edit_url`
 6. Verify tất cả jobs completed trong dashboard
 
 ### 5.4 Success Criteria
@@ -439,6 +448,8 @@ FLOW_AUTO_REPLACE_PROFILES=1
 FLOW_PROFILE_LIST_FILE=./profiles_ultra.txt
 FLOW_ERROR_CAPTURE_DIR=./error-captures
 FLOW_ALLOW_ROOT_NO_SANDBOX=1
+DASHBOARD_PASSWORD=change-me
+TRUST_PROXY_HEADERS=1
 ```
 
 ### 7.3 Key files để debug
