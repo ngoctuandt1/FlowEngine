@@ -1,15 +1,14 @@
 /**
  * Chain Tree Page
- * Visualize chain job dependencies as a top-down tree.
+ * Friendlier multi-level chain visualization with collapsible subtrees.
  */
 (() => {
   const PAGE_ROOT_ID = 'chain-tree-page';
   const PAGE_STYLE_ID = 'chain-tree-page-styles';
-  const NODE_WIDTH = 248;
-  const NODE_HEIGHT = 124;
-  const LEVEL_GAP = 178;
-  const LEAF_STEP = NODE_WIDTH + 80;
-  const CANVAS_PADDING = 36;
+  const COLLAPSE_STORAGE_PREFIX = 'flowengine:chain-tree:collapsed:';
+  const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
+  const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
+  const ACTIVE_STATUSES = new Set(['pending', 'claimed', 'running']);
 
   let root = null;
   let handlers = null;
@@ -19,6 +18,8 @@
     selectedChainId: null,
     selectedSummary: null,
     selectedJobs: [],
+    collapsedByChain: {},
+    errorOpenByChain: {},
     loadingList: false,
     loadingDetail: false,
     listError: '',
@@ -43,7 +44,7 @@
     style.textContent = `
       .chain-tree-shell {
         display: grid;
-        grid-template-columns: minmax(280px, 30%) minmax(0, 1fr);
+        grid-template-columns: minmax(300px, 31%) minmax(0, 1fr);
         gap: 24px;
         align-items: start;
       }
@@ -64,12 +65,12 @@
         width: 100%;
         padding: 16px;
         color: var(--text-primary);
-        background: rgba(255, 255, 255, 0.01);
+        background: rgba(255, 255, 255, 0.015);
         border: 1px solid var(--border);
-        border-radius: 12px;
+        border-radius: 14px;
         cursor: pointer;
         text-align: left;
-        transition: background var(--transition), border-color var(--transition), transform var(--transition);
+        transition: background var(--transition), border-color var(--transition), transform var(--transition), box-shadow var(--transition);
       }
 
       .chain-tree-list-item:hover {
@@ -79,24 +80,21 @@
       }
 
       .chain-tree-list-item.selected {
-        background: var(--accent-muted);
+        background:
+          radial-gradient(circle at top right, rgba(124, 92, 255, 0.12), transparent 16rem),
+          rgba(124, 92, 255, 0.06);
         border-color: var(--accent-border);
-        box-shadow: inset 0 0 0 1px var(--accent-border);
+        box-shadow: inset 0 0 0 1px rgba(124, 92, 255, 0.18);
       }
 
-      .chain-tree-list-top,
-      .chain-tree-node-top {
+      .chain-tree-list-top {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 12px;
       }
 
-      .chain-tree-list-type,
-      .chain-tree-node-type {
-        display: flex;
-        align-items: center;
-        gap: 10px;
+      .chain-tree-list-title-wrap {
         min-width: 0;
       }
 
@@ -113,33 +111,58 @@
         font-size: 12px;
       }
 
-      .chain-tree-prompt {
-        margin: 12px 0;
+      .chain-tree-list-prompt {
+        margin: 12px 0 10px;
         color: var(--text-secondary);
         font-size: 13px;
         line-height: 1.5;
         overflow-wrap: anywhere;
       }
 
-      .chain-tree-list-meta {
+      .chain-tree-list-chip-row,
+      .chain-tree-summary-chip-row,
+      .chain-tree-node-chip-row {
         display: flex;
         flex-wrap: wrap;
-        gap: 8px 12px;
-        margin-top: 12px;
-        padding-top: 12px;
-        border-top: 1px solid var(--border);
-        color: var(--text-muted);
-        font-size: 12px;
+        gap: 8px;
       }
 
-      .chain-tree-meta-item {
+      .chain-tree-stat-chip,
+      .chain-tree-mini-chip,
+      .chain-tree-chain-chip {
         display: inline-flex;
         align-items: center;
         gap: 6px;
+        min-height: 24px;
+        padding: 0 9px;
+        color: var(--text-secondary);
+        background: rgba(10, 10, 12, 0.58);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1;
       }
 
-      .chain-tree-meta-item .material-icons {
-        font-size: 15px;
+      .chain-tree-stat-chip.ok {
+        color: #bbf7d0;
+        border-color: rgba(34, 197, 94, 0.32);
+      }
+
+      .chain-tree-stat-chip.fail {
+        color: #fecaca;
+        border-color: rgba(239, 68, 68, 0.32);
+      }
+
+      .chain-tree-stat-chip.active {
+        color: #fde68a;
+        border-color: rgba(234, 179, 8, 0.32);
+      }
+
+      .chain-tree-stat-chip.mono,
+      .chain-tree-mini-chip.mono,
+      .chain-tree-chain-chip {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
 
       .chain-tree-main {
@@ -148,26 +171,51 @@
         min-width: 0;
       }
 
-      .chain-tree-summary-card {
-        padding: 20px;
+      .chain-tree-summary-card,
+      .chain-tree-tree-card {
+        min-width: 0;
+      }
+
+      .chain-tree-summary-hero {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .chain-tree-summary-eyebrow {
+        color: var(--text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .chain-tree-summary-copy {
+        margin-top: 8px;
+        color: var(--text-secondary);
+        font-size: 14px;
+        line-height: 1.55;
       }
 
       .chain-tree-summary-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
         gap: 12px;
         margin-top: 16px;
       }
 
-      .chain-tree-kv {
-        padding: 12px 14px;
+      .chain-tree-summary-stat {
+        display: grid;
+        gap: 6px;
+        padding: 14px;
         background: rgba(255, 255, 255, 0.02);
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: 12px;
       }
 
-      .chain-tree-kv-label {
-        margin-bottom: 6px;
+      .chain-tree-summary-label {
         color: var(--text-muted);
         font-size: 11px;
         font-weight: 700;
@@ -175,9 +223,16 @@
         text-transform: uppercase;
       }
 
-      .chain-tree-kv-value {
+      .chain-tree-summary-value {
         color: var(--text-primary);
-        font-size: 13px;
+        font-size: 16px;
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+
+      .chain-tree-summary-subvalue {
+        color: var(--text-secondary);
+        font-size: 12px;
         overflow-wrap: anywhere;
       }
 
@@ -187,7 +242,7 @@
         gap: 10px;
         padding: 12px 14px;
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: 12px;
         font-size: 13px;
       }
 
@@ -208,135 +263,236 @@
         font-size: 18px;
       }
 
-      .chain-tree-canvas-card {
-        padding: 20px;
-        min-width: 0;
+      .chain-tree-tree-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
       }
 
-      .chain-tree-canvas-scroll {
+      .chain-tree-help {
+        margin-top: 6px;
+        color: var(--text-secondary);
+        font-size: 13px;
+      }
+
+      .chain-tree-tree-scroll {
         overflow: auto;
-        padding-bottom: 4px;
+        padding-bottom: 6px;
+        border-radius: 16px;
       }
 
-      .chain-tree-canvas {
-        position: relative;
+      .chain-tree-tree-stage {
         min-width: 100%;
-        min-height: 240px;
+        padding: 4px 4px 8px;
+        background:
+          radial-gradient(circle at top left, rgba(124, 92, 255, 0.12), transparent 24rem),
+          linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0)),
+          rgba(6, 6, 8, 0.42);
+        border: 1px solid rgba(255, 255, 255, 0.04);
+        border-radius: 16px;
       }
 
-      .chain-tree-svg {
+      .chain-tree-root-forest {
+        display: inline-flex;
+        align-items: flex-start;
+        gap: 44px;
+        min-width: 100%;
+        padding: 12px 8px 16px;
+      }
+
+      .chain-tree-root-group {
+        min-width: fit-content;
+      }
+
+      .chain-tree-tree,
+      .chain-tree-tree ul {
+        display: flex;
+        justify-content: center;
+        gap: 18px;
+        margin: 0;
+        padding-left: 0;
+        list-style: none;
+      }
+
+      .chain-tree-tree {
+        align-items: flex-start;
+      }
+
+      .chain-tree-tree ul {
+        position: relative;
+        padding-top: 28px;
+      }
+
+      .chain-tree-tree ul::before {
+        content: '';
         position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        pointer-events: none;
-        overflow: visible;
+        top: 0;
+        left: 50%;
+        width: 2px;
+        height: 28px;
+        background: rgba(161, 161, 170, 0.32);
+        transform: translateX(-50%);
       }
 
-      .chain-tree-edge {
-        fill: none;
-        stroke: rgba(161, 161, 170, 0.38);
-        stroke-width: 2;
-        stroke-linecap: round;
-        stroke-linejoin: round;
+      .chain-tree-branch {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 28px 12px 0;
+        list-style: none;
+      }
+
+      .chain-tree-branch::before,
+      .chain-tree-branch::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        width: 50%;
+        height: 28px;
+        border-top: 2px solid rgba(161, 161, 170, 0.32);
+      }
+
+      .chain-tree-branch::before {
+        right: 50%;
+      }
+
+      .chain-tree-branch::after {
+        left: 50%;
+        border-left: 2px solid rgba(161, 161, 170, 0.32);
+      }
+
+      .chain-tree-branch:only-child {
+        padding-top: 0;
+      }
+
+      .chain-tree-branch:only-child::before,
+      .chain-tree-branch:only-child::after {
+        display: none;
+      }
+
+      .chain-tree-branch:first-child::before,
+      .chain-tree-branch:last-child::after {
+        border: 0;
+      }
+
+      .chain-tree-branch:last-child::before {
+        border-right: 2px solid rgba(161, 161, 170, 0.32);
+        border-radius: 0 16px 0 0;
+      }
+
+      .chain-tree-branch:first-child::after {
+        border-radius: 16px 0 0 0;
       }
 
       .chain-tree-node {
-        position: absolute;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        width: ${NODE_WIDTH}px;
-        min-height: ${NODE_HEIGHT}px;
-        padding: 14px;
+        position: relative;
+        width: 292px;
         color: var(--text-primary);
         background:
-          linear-gradient(180deg, rgba(var(--node-accent-rgb), 0.12), rgba(24, 24, 27, 0.92) 28%),
+          linear-gradient(180deg, rgba(var(--node-accent-rgb), 0.14), rgba(15, 15, 18, 0.96) 24%),
           var(--bg-card);
-        border: 1px solid rgba(var(--node-accent-rgb), 0.28);
+        border: 1px solid rgba(var(--node-accent-rgb), 0.26);
         border-left: 4px solid var(--node-accent);
-        border-radius: 16px;
-        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
-        cursor: pointer;
-        text-align: left;
+        border-radius: 18px;
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.26);
         transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
       }
 
       .chain-tree-node:hover {
         transform: translateY(-2px);
-        border-color: rgba(var(--node-accent-rgb), 0.48);
-        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
+        border-color: rgba(var(--node-accent-rgb), 0.42);
+        box-shadow: 0 24px 48px rgba(0, 0, 0, 0.34);
+      }
+
+      .chain-tree-node.root {
+        width: 344px;
+        border-left-width: 5px;
+        box-shadow: 0 22px 44px rgba(0, 0, 0, 0.32);
+      }
+
+      .chain-tree-node.root .chain-tree-node-link {
+        min-height: 244px;
+      }
+
+      .chain-tree-node.failed {
+        border-color: rgba(239, 68, 68, 0.44);
+        border-left-color: #ef4444;
       }
 
       .chain-tree-node.cycle {
-        border-color: rgba(239, 68, 68, 0.72);
-        border-left-color: #ef4444;
-        box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.28), 0 12px 32px rgba(0, 0, 0, 0.24);
+        box-shadow:
+          0 0 0 1px rgba(239, 68, 68, 0.22),
+          0 18px 36px rgba(0, 0, 0, 0.26);
       }
 
-      .chain-tree-node.cycle:hover {
-        border-color: rgba(248, 113, 113, 0.88);
-        box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.34), 0 18px 42px rgba(0, 0, 0, 0.32);
+      .chain-tree-node.is-active::after {
+        content: '';
+        position: absolute;
+        inset: -1px;
+        border-radius: inherit;
+        border: 1px solid rgba(var(--node-accent-rgb), 0.18);
+        animation: chain-tree-node-pulse 2.4s ease-in-out infinite;
+        pointer-events: none;
       }
 
-      .chain-tree-node-icon {
-        flex: 0 0 34px;
-        width: 34px;
-        height: 34px;
+      @keyframes chain-tree-node-pulse {
+        0%, 100% {
+          opacity: 0.38;
+          transform: scale(0.992);
+        }
+        50% {
+          opacity: 0.82;
+          transform: scale(1);
+        }
       }
 
-      .chain-tree-node-title {
-        color: var(--text-primary);
-        font-size: 14px;
-        font-weight: 700;
-        line-height: 1.3;
-      }
-
-      .chain-tree-node-subtitle {
-        margin-top: 2px;
-        color: var(--text-muted);
-        font-size: 12px;
+      .chain-tree-node-topbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 12px 0;
       }
 
       .chain-tree-node-badges {
         display: flex;
-        align-items: center;
-        gap: 8px;
         flex-wrap: wrap;
+        gap: 8px;
       }
 
-      .chain-tree-node-footer {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 10px;
-        margin-top: auto;
-      }
-
-      .chain-tree-id-badge,
+      .chain-tree-root-badge,
       .chain-tree-level-badge {
         display: inline-flex;
         align-items: center;
         height: 24px;
-        padding: 0 8px;
-        border: 1px solid var(--border-light);
+        padding: 0 9px;
         border-radius: 999px;
-        color: var(--text-secondary);
-        background: rgba(10, 10, 12, 0.46);
         font-size: 11px;
         font-weight: 700;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .chain-tree-root-badge {
+        color: #fef3c7;
+        background: rgba(245, 158, 11, 0.16);
+        border: 1px solid rgba(245, 158, 11, 0.36);
       }
 
       .chain-tree-level-badge {
         color: var(--text-muted);
+        background: rgba(10, 10, 12, 0.52);
+        border: 1px solid var(--border);
       }
 
       .chain-tree-status {
         display: inline-flex;
         align-items: center;
-        height: 22px;
-        padding: 0 8px;
+        height: 24px;
+        padding: 0 9px;
         border: 1px solid transparent;
         border-radius: 999px;
         font-size: 11px;
@@ -371,13 +527,197 @@
         border-color: rgba(239, 68, 68, 0.38);
       }
 
-      .chain-tree-help {
-        margin-bottom: 16px;
-        color: var(--text-muted);
-        font-size: 13px;
+      .chain-tree-icon-btn,
+      .chain-tree-inline-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        color: var(--text-secondary);
+        background: rgba(10, 10, 12, 0.58);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        cursor: pointer;
+        transition: background var(--transition), border-color var(--transition), color var(--transition);
       }
 
-      @media (max-width: 1100px) {
+      .chain-tree-icon-btn:hover,
+      .chain-tree-inline-link:hover {
+        color: var(--text-primary);
+        background: rgba(255, 255, 255, 0.06);
+        border-color: var(--border-light);
+      }
+
+      .chain-tree-icon-btn {
+        width: 32px;
+        height: 32px;
+        padding: 0;
+      }
+
+      .chain-tree-inline-link {
+        min-height: 28px;
+        padding: 0 10px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .chain-tree-node-link {
+        display: grid;
+        gap: 12px;
+        width: 100%;
+        min-height: 218px;
+        padding: 12px;
+        color: inherit;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .chain-tree-node-main {
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr);
+        gap: 12px;
+        align-items: start;
+      }
+
+      .chain-tree-node.root .chain-tree-node-main {
+        grid-template-columns: 134px minmax(0, 1fr);
+      }
+
+      .chain-tree-node-thumb-media {
+        width: 112px;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+      }
+
+      .chain-tree-node.root .chain-tree-node-thumb-media {
+        width: 134px;
+      }
+
+      .chain-tree-node-thumb-media img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        background: #000;
+      }
+
+      .chain-tree-node-thumb-placeholder {
+        display: grid;
+        place-items: center;
+      }
+
+      .chain-tree-node-thumb-placeholder .material-icons {
+        color: rgba(255, 255, 255, 0.48);
+        font-size: 30px;
+      }
+
+      .chain-tree-node-thumb-media.tile-thumb--broken {
+        display: grid;
+        place-items: center;
+        background:
+          linear-gradient(135deg, rgba(239, 68, 68, 0.16), rgba(12, 12, 14, 1)),
+          #0a0a0c;
+      }
+
+      .chain-tree-node-thumb-media.tile-thumb--broken::after {
+        content: 'broken_image';
+        font-family: 'Material Icons';
+        font-size: 28px;
+        color: rgba(255, 255, 255, 0.5);
+      }
+
+      .chain-tree-node-copy {
+        min-width: 0;
+        display: grid;
+        gap: 10px;
+      }
+
+      .chain-tree-node-title-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .chain-tree-node-type-icon {
+        flex: 0 0 34px;
+        width: 34px;
+        height: 34px;
+      }
+
+      .chain-tree-node-title-block {
+        min-width: 0;
+      }
+
+      .chain-tree-node-title {
+        color: var(--text-primary);
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 1.28;
+      }
+
+      .chain-tree-node-timestamp {
+        margin-top: 3px;
+        color: var(--text-muted);
+        font-size: 12px;
+      }
+
+      .chain-tree-node-snippet {
+        color: var(--text-secondary);
+        font-size: 13px;
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+
+      .chain-tree-node-id {
+        color: var(--text-muted);
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .chain-tree-node-bottom {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 0 12px 12px;
+      }
+
+      .chain-tree-node-hint {
+        color: var(--text-muted);
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      .chain-tree-node-error,
+      .chain-tree-node-warning {
+        margin: 0 12px 12px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .chain-tree-node-error {
+        color: #fecaca;
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid rgba(239, 68, 68, 0.28);
+      }
+
+      .chain-tree-node-warning {
+        color: #fde68a;
+        background: rgba(234, 179, 8, 0.10);
+        border: 1px solid rgba(234, 179, 8, 0.26);
+      }
+
+      @media (max-width: 1160px) {
         .chain-tree-shell {
           grid-template-columns: 1fr;
         }
@@ -387,15 +727,75 @@
           max-height: none;
         }
       }
+
+      @media (max-width: 760px) {
+        .chain-tree-summary-hero,
+        .chain-tree-tree-header {
+          flex-direction: column;
+        }
+
+        .chain-tree-root-forest {
+          gap: 24px;
+        }
+
+        .chain-tree-node {
+          width: 272px;
+        }
+
+        .chain-tree-node.root {
+          width: 304px;
+        }
+
+        .chain-tree-node-main {
+          grid-template-columns: 96px minmax(0, 1fr);
+        }
+
+        .chain-tree-node.root .chain-tree-node-main {
+          grid-template-columns: 114px minmax(0, 1fr);
+        }
+
+        .chain-tree-node-thumb-media {
+          width: 96px;
+        }
+
+        .chain-tree-node.root .chain-tree-node-thumb-media {
+          width: 114px;
+        }
+      }
     `;
     document.head.appendChild(style);
   }
 
+  function safeDateValue(value) {
+    if (!value) return 0;
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) ? time : 0;
+  }
+
+  function exactDateLabel(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return date.toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  }
+
+  function relativeDateLabel(value) {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return App.formatDate(value);
+  }
+
   function getJobTypeLabel(type) {
-    const item = Array.isArray(CONST?.JOB_TYPES)
-      ? CONST.JOB_TYPES.find((entry) => entry.id === type)
-      : null;
-    return item?.label || String(type || 'Unknown').replace(/-/g, ' ');
+    const meta = typeof CONST?.typeMeta === 'function' ? CONST.typeMeta(type) : null;
+    return meta?.label || String(type || 'Unknown').replace(/-/g, ' ');
   }
 
   function typeTheme(type) {
@@ -432,9 +832,8 @@
     return { label: 'Pending', className: 'pending' };
   }
 
-  function safeDateValue(value) {
-    const time = new Date(value || 0).getTime();
-    return Number.isFinite(time) ? time : 0;
+  function isActiveStatus(status) {
+    return ACTIVE_STATUSES.has(String(status || 'pending'));
   }
 
   function compareJobs(a, b) {
@@ -465,33 +864,19 @@
     return String(job?.prompt || job?.direction || '').trim();
   }
 
-  function rootPromptSnippet(job, maxLen = 40) {
-    return App.truncate(promptText(job) || 'No prompt provided', maxLen);
+  function shortId(value, maxLen = 14) {
+    return App.truncate(String(value || ''), maxLen);
   }
 
-  function exactDateLabel(value) {
-    if (!value) return '-';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return date.toLocaleString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+  function rootPromptSnippet(job, maxLen = 64) {
+    return App.truncate(promptText(job) || 'No prompt provided', maxLen);
   }
 
   function computeChainStatus(statuses) {
     if (!statuses.length) return 'pending';
     if (statuses.includes('failed')) return 'failed';
     if (statuses.some((status) => status === 'running' || status === 'claimed')) return 'running';
-    if (statuses.includes('pending')) {
-      if (statuses.some((status) => status === 'completed' || status === 'cancelled')) {
-        return 'running';
-      }
-      return 'pending';
-    }
+    if (statuses.includes('pending')) return 'pending';
     if (statuses.every((status) => status === 'cancelled')) return 'cancelled';
     return 'completed';
   }
@@ -510,12 +895,49 @@
     return [...jobs].sort(compareJobsByCreatedAt)[0] || null;
   }
 
+  function latestTimestampValue(jobs) {
+    return jobs.reduce((latest, job) => {
+      const candidate = job?.updated_at || job?.completed_at || job?.claimed_at || job?.created_at || '';
+      return safeDateValue(candidate) > safeDateValue(latest) ? candidate : latest;
+    }, '');
+  }
+
+  function computeSummaryStats(jobs) {
+    const stats = {
+      total: jobs.length,
+      completed: 0,
+      failed: 0,
+      pending: 0,
+      cancelled: 0,
+    };
+
+    jobs.forEach((job) => {
+      const status = String(job?.status || 'pending');
+      if (status === 'completed') {
+        stats.completed += 1;
+        return;
+      }
+      if (status === 'failed') {
+        stats.failed += 1;
+        return;
+      }
+      if (status === 'cancelled') {
+        stats.cancelled += 1;
+        return;
+      }
+      stats.pending += 1;
+    });
+
+    return stats;
+  }
+
   function buildChainSummary(chainId, jobs, detail = {}) {
     const sortedJobs = [...jobs].sort(compareJobs);
     const rootJob = pickRootJob(sortedJobs);
     const earliestJob = pickEarliestJob(sortedJobs) || rootJob;
     const statuses = sortedJobs.map((job) => String(job.status || 'pending'));
     const detailProgress = detail?.progress || null;
+    const stats = computeSummaryStats(sortedJobs);
 
     return {
       id: String(detail?.id || detail?.chain_id || chainId || ''),
@@ -531,6 +953,11 @@
         rootJob?.created_at ||
         sortedJobs[0]?.created_at ||
         '',
+      updated_at:
+        detail?.updated_at ||
+        latestTimestampValue(sortedJobs) ||
+        detail?.created_at ||
+        '',
       status: detail?.status || computeChainStatus(statuses),
       progress: {
         completed:
@@ -538,8 +965,9 @@
           statuses.filter((status) => status === 'completed').length,
         total: detailProgress?.total ?? sortedJobs.length,
       },
-      root_prompt: detail?.root_prompt || rootPromptSnippet(earliestJob || rootJob, 40),
+      root_prompt: detail?.root_prompt || rootPromptSnippet(earliestJob || rootJob, 64),
       total_jobs: detailProgress?.total ?? sortedJobs.length,
+      stats,
       jobs: sortedJobs,
     };
   }
@@ -557,10 +985,12 @@
       ...extra,
       profile: extra.profile || base.profile || '',
       created_at: extra.created_at || base.created_at || '',
+      updated_at: extra.updated_at || base.updated_at || '',
       status: extra.status || base.status || 'pending',
       progress: extra.progress || base.progress || { completed: 0, total: mergedJobs.length },
       root_prompt: extra.root_prompt || base.root_prompt || 'No root prompt',
       total_jobs: extra.total_jobs || base.total_jobs || mergedJobs.length,
+      stats: extra.stats || base.stats || computeSummaryStats(mergedJobs),
       jobs: mergedJobs,
     };
   }
@@ -580,16 +1010,139 @@
 
   function sortChains(chains) {
     return [...chains].sort((a, b) => {
-      const createdDiff = safeDateValue(b.created_at) - safeDateValue(a.created_at);
-      if (createdDiff !== 0) return createdDiff;
+      const updatedDiff = safeDateValue(b.updated_at || b.created_at) - safeDateValue(a.updated_at || a.created_at);
+      if (updatedDiff !== 0) return updatedDiff;
       return String(a.id || '').localeCompare(String(b.id || ''));
     });
+  }
+
+  function mediaTypeFromFile(file) {
+    const normalized = String(file || '').replace(/\\/g, '/');
+    const filename = normalized.split('/').pop() || normalized;
+    const extension = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+    if (VIDEO_EXTENSIONS.has(extension)) return 'video';
+    if (IMAGE_EXTENSIONS.has(extension)) return 'image';
+    return null;
+  }
+
+  function mediaUrl(file) {
+    const normalized = String(file || '').replace(/\\/g, '/').trim();
+    if (!normalized) return '';
+    if (/^https?:\/\//i.test(normalized)) return normalized;
+
+    if (/^\/?downloads\//i.test(normalized)) {
+      const relative = normalized.replace(/^\/?downloads\//i, '');
+      return `/downloads/${encodeURI(relative)}`;
+    }
+
+    const markerIndex = normalized.toLowerCase().lastIndexOf('/downloads/');
+    if (markerIndex !== -1) {
+      const relative = normalized.slice(markerIndex + '/downloads/'.length);
+      return `/downloads/${encodeURI(relative)}`;
+    }
+
+    return `/downloads/${encodeURI(normalized)}`;
+  }
+
+  function renderableFiles(job) {
+    const files = Array.isArray(job?.output_files) ? job.output_files : [];
+    return files
+      .map((file) => {
+        const kind = mediaTypeFromFile(file);
+        if (!kind) return null;
+        const normalized = String(file).replace(/\\/g, '/').replace(/^\/?downloads\//i, '');
+        return {
+          file,
+          kind,
+          name: normalized.split('/').pop() || normalized,
+          url: mediaUrl(file),
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function thumbnailMedia(job) {
+    const files = renderableFiles(job);
+    const image = files.find((file) => file.kind === 'image');
+    if (image) return image;
+    return null;
+  }
+
+  function collapseStorageKey(chainId) {
+    return `${COLLAPSE_STORAGE_PREFIX}${chainId}`;
+  }
+
+  function readCollapsedState(chainId) {
+    try {
+      const raw = sessionStorage.getItem(collapseStorageKey(chainId));
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      return new Set(Array.isArray(parsed) ? parsed.map((item) => String(item || '').trim()).filter(Boolean) : []);
+    } catch (_) {
+      return new Set();
+    }
+  }
+
+  function persistCollapsedState(chainId) {
+    if (!chainId) return;
+    try {
+      const ids = [...(state.collapsedByChain[chainId] || new Set())];
+      sessionStorage.setItem(collapseStorageKey(chainId), JSON.stringify(ids));
+    } catch (_) {
+      // Ignore session storage failures.
+    }
+  }
+
+  function ensureChainUiState(chainId) {
+    if (!chainId) return;
+    if (!(state.collapsedByChain[chainId] instanceof Set)) {
+      state.collapsedByChain[chainId] = readCollapsedState(chainId);
+    }
+    if (!(state.errorOpenByChain[chainId] instanceof Set)) {
+      state.errorOpenByChain[chainId] = new Set();
+    }
+  }
+
+  function pruneChainUiState(chainId, jobs) {
+    if (!chainId) return;
+    ensureChainUiState(chainId);
+
+    const validIds = new Set(jobs.map((job) => String(job.id || '')));
+    state.collapsedByChain[chainId] = new Set(
+      [...state.collapsedByChain[chainId]].filter((id) => validIds.has(id))
+    );
+    state.errorOpenByChain[chainId] = new Set(
+      [...state.errorOpenByChain[chainId]].filter((id) => validIds.has(id))
+    );
+    persistCollapsedState(chainId);
+  }
+
+  function getCollapsedSet(chainId) {
+    ensureChainUiState(chainId);
+    return state.collapsedByChain[chainId] || new Set();
+  }
+
+  function getErrorOpenSet(chainId) {
+    ensureChainUiState(chainId);
+    return state.errorOpenByChain[chainId] || new Set();
+  }
+
+  function isNodeCollapsed(chainId, nodeId) {
+    return getCollapsedSet(chainId).has(String(nodeId || ''));
+  }
+
+  function isErrorOpen(chainId, nodeId) {
+    return getErrorOpenSet(chainId).has(String(nodeId || ''));
   }
 
   function syncSelectedSummary() {
     const summary = state.chains.find((chain) => chain.id === state.selectedChainId) || null;
     state.selectedSummary = summary;
     state.selectedJobs = Array.isArray(summary?.jobs) ? [...summary.jobs] : [];
+    if (state.selectedChainId) {
+      ensureChainUiState(state.selectedChainId);
+      pruneChainUiState(state.selectedChainId, state.selectedJobs);
+    }
   }
 
   async function loadChainList() {
@@ -642,6 +1195,8 @@
       return;
     }
 
+    ensureChainUiState(chainId);
+
     const requestId = ++state.detailRequestId;
     state.loadingDetail = true;
     state.detailError = '';
@@ -674,6 +1229,7 @@
       const summary = buildChainSummary(chainId, jobs, detail);
       state.selectedSummary = summary;
       state.selectedJobs = summary.jobs;
+      pruneChainUiState(chainId, summary.jobs);
       state.chains = state.chains.map((chain) => (
         chain.id === chainId ? mergeChainSummary(chain, summary) : chain
       ));
@@ -697,14 +1253,28 @@
       `Status: ${statusMeta(job.status).label}`,
       `Prompt: ${promptText(job) || 'No prompt provided'}`,
       `Created: ${exactDateLabel(job.created_at)}`,
-      `Updated: ${exactDateLabel(job.updated_at)}`,
+      `Updated: ${exactDateLabel(job.updated_at || job.created_at)}`,
     ];
 
     if (job.completed_at) {
       lines.push(`Completed: ${exactDateLabel(job.completed_at)}`);
     }
 
+    if (job.profile) {
+      lines.push(`Profile: ${job.profile}`);
+    }
+
+    if (job.media_id) {
+      lines.push(`Media: ${job.media_id}`);
+    }
+
     return lines.join('\n');
+  }
+
+  function errorExcerpt(error, maxLen = 220) {
+    const text = String(error || '').trim().replace(/\s+/g, ' ');
+    if (!text) return 'Unknown failure.';
+    return App.truncate(text, maxLen);
   }
 
   function detectCycleNodeIds(nodesById) {
@@ -715,17 +1285,18 @@
 
     function visit(node) {
       const nodeId = node.job.id;
-      const state = visitState.get(nodeId) || 0;
+      const nodeState = visitState.get(nodeId) || 0;
 
-      if (state === 1) {
+      if (nodeState === 1) {
         const startIndex = stackIndexes.get(nodeId) ?? 0;
         for (let index = startIndex; index < visitStack.length; index += 1) {
           cycleNodeIds.add(visitStack[index].job.id);
         }
+        cycleNodeIds.add(nodeId);
         return;
       }
 
-      if (state === 2) return;
+      if (nodeState === 2) return;
 
       visitState.set(nodeId, 1);
       stackIndexes.set(nodeId, visitStack.length);
@@ -744,22 +1315,7 @@
     return cycleNodeIds;
   }
 
-  function findLayoutAnchor(node, laidOutIds) {
-    const seen = new Set();
-    let current = node;
-
-    while (current) {
-      const currentId = current.job.id;
-      if (seen.has(currentId)) return current;
-      if (!current.parent || laidOutIds.has(current.parent.job.id)) return current;
-      seen.add(currentId);
-      current = current.parent;
-    }
-
-    return node;
-  }
-
-  function buildTreeLayout(jobs) {
+  function buildTreeModel(jobs) {
     if (!jobs.length) return null;
 
     const nodesById = new Map();
@@ -768,101 +1324,217 @@
         job,
         children: [],
         parent: null,
-        depth: 0,
-        centerX: 0,
-        left: 0,
-        top: 0,
+        descendantCount: 0,
       });
     });
 
-    const roots = [];
+    let missingParentCount = 0;
     nodesById.forEach((node) => {
-      const parent = node.job.parent_job_id ? nodesById.get(node.job.parent_job_id) : null;
-      if (parent) {
-        node.parent = parent;
-        parent.children.push(node);
-      } else {
-        roots.push(node);
+      const parentId = String(node.job.parent_job_id || '').trim();
+      if (!parentId) return;
+      const parent = nodesById.get(parentId);
+      if (!parent) {
+        missingParentCount += 1;
+        return;
       }
+      node.parent = parent;
+      parent.children.push(node);
     });
 
-    const sortNodes = (items) => items.sort((a, b) => compareJobs(a.job, b.job));
-    sortNodes(roots);
-    nodesById.forEach((node) => sortNodes(node.children));
+    const orderedNodes = Array.from(nodesById.values()).sort((a, b) => compareJobs(a.job, b.job));
+    orderedNodes.forEach((node) => node.children.sort((a, b) => compareJobs(a.job, b.job)));
 
     const cycleNodeIds = detectCycleNodeIds(nodesById);
-    let leafIndex = 0;
-    let maxDepth = 0;
-
-    function assign(node, depth, laidOutIds, visitingIds) {
-      const nodeId = node.job.id;
-      if (visitingIds.has(nodeId)) return null;
-      if (laidOutIds.has(nodeId)) return node.centerX;
-
-      visitingIds.add(nodeId);
-      node.depth = depth;
-      maxDepth = Math.max(maxDepth, depth);
-
-      const childCenters = node.children
-        .map((child) => assign(child, depth + 1, laidOutIds, visitingIds))
-        .filter((center) => Number.isFinite(center));
-
-      if (!childCenters.length) {
-        node.centerX = (leafIndex * LEAF_STEP) + NODE_WIDTH / 2;
-        leafIndex += 1;
-      } else {
-        node.centerX = childCenters.reduce((sum, center) => sum + center, 0) / childCenters.length;
-      }
-
-      laidOutIds.add(nodeId);
-      visitingIds.delete(nodeId);
-      return node.centerX;
+    const roots = orderedNodes.filter((node) => !node.parent);
+    if (!roots.length && orderedNodes.length) {
+      roots.push(orderedNodes[0]);
     }
 
-    const laidOutIds = new Set();
-    roots.forEach((rootNode, index) => {
-      if (index > 0 && leafIndex > 0) leafIndex += 1;
-      assign(rootNode, 0, laidOutIds, new Set());
+    const covered = new Set();
+    function markReachable(node, trail = new Set()) {
+      const nodeId = node.job.id;
+      if (covered.has(nodeId) || trail.has(nodeId)) return;
+      covered.add(nodeId);
+      const nextTrail = new Set(trail);
+      nextTrail.add(nodeId);
+      node.children.forEach((child) => markReachable(child, nextTrail));
+    }
+
+    roots.forEach((rootNode) => markReachable(rootNode));
+    orderedNodes.forEach((node) => {
+      if (!covered.has(node.job.id)) {
+        roots.push(node);
+        markReachable(node);
+      }
     });
 
-    sortNodes(Array.from(nodesById.values())).forEach((node) => {
-      if (laidOutIds.has(node.job.id)) return;
-      const anchor = findLayoutAnchor(node, laidOutIds);
-      if (laidOutIds.has(anchor.job.id)) return;
-      if (leafIndex > 0) leafIndex += 1;
-      assign(anchor, 0, laidOutIds, new Set());
-    });
+    function assignDescendantCount(node, trail = new Set()) {
+      const nodeId = node.job.id;
+      if (trail.has(nodeId)) return 0;
+      const nextTrail = new Set(trail);
+      nextTrail.add(nodeId);
 
-    const nodes = Array.from(nodesById.values());
-    const minCenter = Math.min(...nodes.map((node) => node.centerX));
-    const maxCenter = Math.max(...nodes.map((node) => node.centerX));
-
-    nodes.forEach((node) => {
-      node.left = CANVAS_PADDING + (node.centerX - minCenter) - (NODE_WIDTH / 2);
-      node.top = CANVAS_PADDING + (node.depth * LEVEL_GAP);
-    });
-
-    const edges = [];
-    nodes.forEach((node) => {
+      let total = 0;
       node.children.forEach((child) => {
-        const startX = node.left + (NODE_WIDTH / 2);
-        const startY = node.top + NODE_HEIGHT;
-        const endX = child.left + (NODE_WIDTH / 2);
-        const endY = child.top;
-        const midY = startY + ((endY - startY) / 2);
-        edges.push(`M ${startX} ${startY} V ${midY} H ${endX} V ${endY}`);
+        total += 1;
+        total += assignDescendantCount(child, nextTrail);
       });
-    });
+      node.descendantCount = total;
+      return total;
+    }
+
+    roots.forEach((rootNode) => assignDescendantCount(rootNode));
 
     return {
-      width: Math.max((maxCenter - minCenter) + NODE_WIDTH + (CANVAS_PADDING * 2), NODE_WIDTH + (CANVAS_PADDING * 2)),
-      height: (maxDepth * LEVEL_GAP) + NODE_HEIGHT + (CANVAS_PADDING * 2),
-      nodes,
-      edges,
-      roots: roots.length,
+      roots,
+      nodesById,
       cycleNodeIds,
       hasCycles: cycleNodeIds.size > 0,
+      missingParentCount,
+      hasMissingParents: missingParentCount > 0,
+      rootCount: roots.length,
     };
+  }
+
+  function renderNodeThumbnail(job, label) {
+    const thumb = thumbnailMedia(job);
+    if (thumb?.url) {
+      return `
+        <div class="tile-thumb chain-tree-node-thumb-media">
+          <img
+            src="${escapeAttr(thumb.url)}"
+            alt="${escapeAttr(label)}"
+            loading="lazy"
+            decoding="async"
+            onerror="this.parentElement.classList.add('tile-thumb--broken'); this.remove();"
+          >
+        </div>
+      `;
+    }
+
+    return `
+      <div class="tile-thumb chain-tree-node-thumb-media chain-tree-node-thumb-placeholder">
+        <span class="material-icons">${App.escapeHtml(App.jobTypeIcon(job.type))}</span>
+      </div>
+    `;
+  }
+
+  function renderNodeBranch(node, model, chainId, trail = new Set(), isRoot = false) {
+    const job = node.job;
+    const nodeId = String(job.id || '');
+    const cycleInTrail = trail.has(nodeId);
+    const nextTrail = new Set(trail);
+    nextTrail.add(nodeId);
+
+    const status = statusMeta(job.status);
+    const theme = typeTheme(job.type);
+    const label = getJobTypeLabel(job.type);
+    const snippet = rootPromptSnippet(job, isRoot ? 92 : 72);
+    const collapsed = isNodeCollapsed(chainId, nodeId);
+    const errorOpen = isErrorOpen(chainId, nodeId);
+    const hasChildren = node.children.length > 0;
+    const showChildren = hasChildren && !collapsed && !cycleInTrail;
+    const cycleNode = cycleInTrail || model.cycleNodeIds.has(nodeId);
+    const childCount = node.children.length;
+    const descendantCopy = childCount === 1 ? '1 child' : `${childCount} children`;
+    const descendantHint = node.descendantCount > childCount
+      ? `${descendantCopy} / ${node.descendantCount} descendants`
+      : descendantCopy;
+    const profileLabel = job.profile ? App.truncate(job.profile, 18) : 'Unpinned';
+    const mediaLabel = job.media_id ? App.truncate(job.media_id, 18) : 'No media';
+    const nodeHint = hasChildren ? (collapsed ? `${node.descendantCount} hidden` : descendantHint) : 'Leaf node';
+
+    return `
+      <li class="chain-tree-branch">
+        <article
+          class="chain-tree-node ${isRoot ? 'root' : ''} ${job.status === 'failed' ? 'failed' : ''} ${cycleNode ? 'cycle' : ''} ${isActiveStatus(job.status) ? 'is-active' : ''}"
+          style="--node-accent:${theme.color}; --node-accent-rgb:${theme.rgb};"
+        >
+          <div class="chain-tree-node-topbar">
+            <div class="chain-tree-node-badges">
+              ${isRoot ? '<span class="chain-tree-root-badge">Root</span>' : ''}
+              <span class="chain-tree-level-badge">L${App.escapeHtml(String(job.job_level || '?'))}</span>
+              <span class="chain-tree-status ${status.className}">${App.escapeHtml(status.label)}</span>
+            </div>
+            <div>
+              ${hasChildren ? `
+                <button
+                  type="button"
+                  class="chain-tree-icon-btn"
+                  data-toggle-node="${escapeAttr(nodeId)}"
+                  aria-expanded="${showChildren ? 'true' : 'false'}"
+                  title="${collapsed ? 'Expand subtree' : 'Collapse subtree'}"
+                >
+                  <span class="material-icons">${collapsed ? 'chevron_right' : 'expand_more'}</span>
+                </button>
+              ` : ''}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            class="chain-tree-node-link"
+            data-job-id="${escapeAttr(nodeId)}"
+            title="${escapeAttr(buildNodeTooltip(job))}"
+          >
+            <div class="chain-tree-node-main">
+              ${renderNodeThumbnail(job, snippet || label)}
+              <div class="chain-tree-node-copy">
+                <div class="chain-tree-node-title-row">
+                  <div class="job-type-icon ${theme.className} chain-tree-node-type-icon" aria-hidden="true">
+                    <span class="material-icons">${App.escapeHtml(App.jobTypeIcon(job.type))}</span>
+                  </div>
+                  <div class="chain-tree-node-title-block">
+                    <div class="chain-tree-node-title">${App.escapeHtml(label)}</div>
+                    <div class="chain-tree-node-timestamp" title="${escapeAttr(exactDateLabel(job.updated_at || job.created_at))}">
+                      ${App.escapeHtml(relativeDateLabel(job.updated_at || job.created_at))}
+                    </div>
+                  </div>
+                </div>
+
+                <div class="chain-tree-node-snippet">${App.escapeHtml(snippet)}</div>
+
+                <div class="chain-tree-node-chip-row">
+                  <span class="chain-tree-mini-chip">${App.escapeHtml(profileLabel)}</span>
+                  <span class="chain-tree-mini-chip mono">${App.escapeHtml(mediaLabel)}</span>
+                </div>
+
+                <div class="chain-tree-node-id">job/${App.escapeHtml(shortId(nodeId, 14))}</div>
+              </div>
+            </div>
+          </button>
+
+          <div class="chain-tree-node-bottom">
+            <div class="chain-tree-node-hint">${App.escapeHtml(nodeHint)}</div>
+            ${job.error ? `
+              <button
+                type="button"
+                class="chain-tree-inline-link"
+                data-toggle-error="${escapeAttr(nodeId)}"
+              >
+                ${errorOpen ? 'Hide error' : 'Show error'}
+              </button>
+            ` : ''}
+          </div>
+
+          ${job.error && errorOpen ? `
+            <div class="chain-tree-node-error">${App.escapeHtml(errorExcerpt(job.error))}</div>
+          ` : ''}
+
+          ${cycleNode ? `
+            <div class="chain-tree-node-warning">
+              Cycle detected on parent linkage. Descendants are clipped for a safe best-effort render.
+            </div>
+          ` : ''}
+        </article>
+
+        ${showChildren ? `
+          <ul>
+            ${node.children.map((child) => renderNodeBranch(child, model, chainId, nextTrail, false)).join('')}
+          </ul>
+        ` : ''}
+      </li>
+    `;
   }
 
   function renderChainList() {
@@ -895,6 +1567,7 @@
         ${state.chains.map((chain) => {
           const selected = chain.id === state.selectedChainId;
           const status = statusMeta(chain.status);
+          const stats = chain.stats || computeSummaryStats(chain.jobs || []);
           return `
             <button
               type="button"
@@ -902,27 +1575,21 @@
               data-chain-id="${escapeAttr(chain.id)}"
             >
               <div class="chain-tree-list-top">
-                <div class="chain-tree-list-type">
-                  <div class="job-type-icon t2v" aria-hidden="true">
-                    <span class="material-icons">account_tree</span>
-                  </div>
-                  <div style="min-width: 0;">
-                    <div class="chain-tree-list-title">Chain ${App.escapeHtml(App.truncate(chain.id, 18))}</div>
-                    <div class="chain-tree-list-id">${App.escapeHtml(App.formatDate(chain.created_at))}</div>
-                  </div>
+                <div class="chain-tree-list-title-wrap">
+                  <div class="chain-tree-list-title">Chain ${App.escapeHtml(App.truncate(chain.id, 22))}</div>
+                  <div class="chain-tree-list-id" title="${escapeAttr(chain.id)}">${App.escapeHtml(exactDateLabel(chain.updated_at || chain.created_at))}</div>
                 </div>
                 <span class="chain-tree-status ${status.className}">${App.escapeHtml(status.label)}</span>
               </div>
-              <div class="chain-tree-prompt">${App.escapeHtml(chain.root_prompt || 'No root prompt')}</div>
-              <div class="chain-tree-list-meta">
-                <span class="chain-tree-meta-item">
-                  <span class="material-icons">schedule</span>
-                  ${App.escapeHtml(exactDateLabel(chain.created_at))}
-                </span>
-                <span class="chain-tree-meta-item">
-                  <span class="material-icons">task_alt</span>
-                  ${App.escapeHtml(String(chain.progress?.completed ?? 0))}/${App.escapeHtml(String(chain.progress?.total ?? chain.total_jobs ?? 0))}
-                </span>
+
+              <div class="chain-tree-list-prompt">${App.escapeHtml(chain.root_prompt || 'No root prompt')}</div>
+
+              <div class="chain-tree-list-chip-row">
+                <span class="chain-tree-stat-chip">${App.escapeHtml(String(stats.total))} nodes</span>
+                <span class="chain-tree-stat-chip ok">${App.escapeHtml(String(stats.completed))} done</span>
+                <span class="chain-tree-stat-chip fail">${App.escapeHtml(String(stats.failed))} failed</span>
+                <span class="chain-tree-stat-chip active">${App.escapeHtml(String(stats.pending))} active</span>
+                ${chain.profile ? `<span class="chain-tree-stat-chip">${App.escapeHtml(App.truncate(chain.profile, 18))}</span>` : ''}
               </div>
             </button>
           `;
@@ -946,15 +1613,21 @@
     }
 
     const status = statusMeta(summary.status);
+    const stats = summary.stats || computeSummaryStats(summary.jobs || []);
 
     return `
-      <div class="card chain-tree-summary-card">
-        <div class="section-header">
+      <div class="card chain-tree-summary-card" style="padding: 20px;">
+        <div class="chain-tree-summary-hero">
           <div>
-            <h3 class="section-title">Chain ${App.escapeHtml(App.truncate(summary.id, 24))}</h3>
-            <p class="form-hint">Interactive dependency view for the selected chain.</p>
+            <div class="chain-tree-summary-eyebrow">Chain Explorer</div>
+            <h3 class="section-title" style="margin-top: 6px;">Chain ${App.escapeHtml(App.truncate(summary.id, 30))}</h3>
+            <p class="chain-tree-summary-copy">${App.escapeHtml(summary.root_prompt || 'No root prompt')}</p>
           </div>
+
           <div class="section-actions">
+            <a href="#jobs/${encodeURIComponent(summary.id)}" class="btn btn-sm btn-outline">
+              <span class="material-icons" style="font-size:16px">list</span> Open jobs
+            </a>
             <button
               type="button"
               class="btn btn-sm btn-outline"
@@ -977,27 +1650,37 @@
           </div>
         ` : ''}
 
-        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div class="chain-tree-summary-chip-row">
           <span class="chain-tree-status ${status.className}">${App.escapeHtml(status.label)}</span>
-          <code>${App.escapeHtml(summary.id)}</code>
+          <span class="chain-tree-chain-chip">${App.escapeHtml(summary.id)}</span>
+          ${summary.profile ? `<span class="chain-tree-chain-chip">${App.escapeHtml(summary.profile)}</span>` : ''}
         </div>
 
         <div class="chain-tree-summary-grid">
-          <div class="chain-tree-kv">
-            <div class="chain-tree-kv-label">Created</div>
-            <div class="chain-tree-kv-value">${App.escapeHtml(exactDateLabel(summary.created_at))}</div>
+          <div class="chain-tree-summary-stat">
+            <div class="chain-tree-summary-label">Total Nodes</div>
+            <div class="chain-tree-summary-value">${App.escapeHtml(String(stats.total))}</div>
+            <div class="chain-tree-summary-subvalue">${App.escapeHtml(String(summary.progress?.completed ?? 0))}/${App.escapeHtml(String(summary.progress?.total ?? stats.total))} completed</div>
           </div>
-          <div class="chain-tree-kv">
-            <div class="chain-tree-kv-label">Profile</div>
-            <div class="chain-tree-kv-value">${App.escapeHtml(summary.profile || '-')}</div>
+          <div class="chain-tree-summary-stat">
+            <div class="chain-tree-summary-label">Completed</div>
+            <div class="chain-tree-summary-value">${App.escapeHtml(String(stats.completed))}</div>
+            <div class="chain-tree-summary-subvalue">Successful terminal jobs</div>
           </div>
-          <div class="chain-tree-kv">
-            <div class="chain-tree-kv-label">Progress</div>
-            <div class="chain-tree-kv-value">${App.escapeHtml(String(summary.progress?.completed ?? 0))}/${App.escapeHtml(String(summary.progress?.total ?? summary.total_jobs ?? 0))} completed</div>
+          <div class="chain-tree-summary-stat">
+            <div class="chain-tree-summary-label">Failed</div>
+            <div class="chain-tree-summary-value">${App.escapeHtml(String(stats.failed))}</div>
+            <div class="chain-tree-summary-subvalue">Inline error excerpts available</div>
           </div>
-          <div class="chain-tree-kv">
-            <div class="chain-tree-kv-label">Root Prompt</div>
-            <div class="chain-tree-kv-value">${App.escapeHtml(summary.root_prompt || 'No root prompt')}</div>
+          <div class="chain-tree-summary-stat">
+            <div class="chain-tree-summary-label">Pending / Active</div>
+            <div class="chain-tree-summary-value">${App.escapeHtml(String(stats.pending))}</div>
+            <div class="chain-tree-summary-subvalue">Pending, claimed, and running jobs</div>
+          </div>
+          <div class="chain-tree-summary-stat">
+            <div class="chain-tree-summary-label">Last Updated</div>
+            <div class="chain-tree-summary-value">${App.escapeHtml(relativeDateLabel(summary.updated_at || summary.created_at))}</div>
+            <div class="chain-tree-summary-subvalue">${App.escapeHtml(exactDateLabel(summary.updated_at || summary.created_at))}</div>
           </div>
         </div>
       </div>
@@ -1007,7 +1690,7 @@
   function renderTreeCanvas() {
     if (state.loadingDetail && !state.selectedJobs.length) {
       return `
-        <div class="card chain-tree-canvas-card">
+        <div class="card chain-tree-tree-card" style="padding: 20px;">
           <div class="loading-center"><div class="spinner spinner-lg"></div></div>
         </div>
       `;
@@ -1019,7 +1702,7 @@
 
     if (!state.selectedJobs.length) {
       return `
-        <div class="card chain-tree-canvas-card">
+        <div class="card chain-tree-tree-card" style="padding: 20px;">
           <div class="empty-state" style="padding: 48px 20px;">
             <span class="material-icons">device_hub</span>
             <h3>No jobs on this chain</h3>
@@ -1029,10 +1712,11 @@
       `;
     }
 
-    const layout = buildTreeLayout(state.selectedJobs);
-    if (!layout) {
+    const chainId = state.selectedSummary.id;
+    const model = buildTreeModel(state.selectedJobs);
+    if (!model) {
       return `
-        <div class="card chain-tree-canvas-card">
+        <div class="card chain-tree-tree-card" style="padding: 20px;">
           <div class="empty-state" style="padding: 48px 20px;">
             <span class="material-icons">device_hub</span>
             <h3>Tree unavailable</h3>
@@ -1042,68 +1726,70 @@
       `;
     }
 
+    const hasExpandableNodes = Array.from(model.nodesById.values()).some((node) => node.children.length > 0);
+
     return `
-      <div class="card chain-tree-canvas-card">
-        <div class="section-header">
+      <div class="card chain-tree-tree-card" style="padding: 20px;">
+        <div class="chain-tree-tree-header">
           <div>
-            <h3 class="section-title">Tree View</h3>
-            <p class="chain-tree-help">Click a node to open <code>#job-detail/&lt;id&gt;</code>. Hover for full prompt and timestamps.</p>
+            <h3 class="section-title">Multi-Level Tree</h3>
+            <p class="chain-tree-help">
+              Use the chevrons to collapse branches. Click a node card to open <code>#job-detail/&lt;id&gt;</code>.
+            </p>
           </div>
-          <div class="form-hint">${layout.roots > 1 ? `${layout.roots} root nodes detected` : `${state.selectedJobs.length} jobs`}</div>
+
+          <div class="section-actions">
+            <button
+              type="button"
+              class="btn btn-sm btn-outline"
+              data-tree-action="expand-all"
+              ${hasExpandableNodes ? '' : 'disabled'}
+            >
+              <span class="material-icons" style="font-size:16px">unfold_more</span> Expand all
+            </button>
+            <button
+              type="button"
+              class="btn btn-sm btn-outline"
+              data-tree-action="collapse-all"
+              ${hasExpandableNodes ? '' : 'disabled'}
+            >
+              <span class="material-icons" style="font-size:16px">unfold_less</span> Collapse all
+            </button>
+          </div>
         </div>
 
-        ${layout.hasCycles ? `
-          <div class="chain-tree-banner warn" style="margin-bottom: 16px;">
+        ${model.hasMissingParents ? `
+          <div class="chain-tree-banner warn" style="margin-bottom: 12px;">
             <span class="material-icons">warning</span>
-            <div>Cycle detected in this chain&apos;s <code>parent_job_id</code> graph. The tree is rendered best-effort and cycle nodes are outlined in red.</div>
+            <div>Server backfill pending - partial tree. ${App.escapeHtml(String(model.missingParentCount))} job(s) reference a parent that was not returned.</div>
           </div>
         ` : ''}
 
-        <div class="chain-tree-canvas-scroll">
-          <div class="chain-tree-canvas" style="width:${layout.width}px; height:${layout.height}px;">
-            <svg class="chain-tree-svg" viewBox="0 0 ${layout.width} ${layout.height}" preserveAspectRatio="xMinYMin meet" aria-hidden="true">
-              ${layout.edges.map((path) => `<path class="chain-tree-edge" d="${path}"></path>`).join('')}
-            </svg>
+        ${model.hasCycles ? `
+          <div class="chain-tree-banner warn" style="margin-bottom: 12px;">
+            <span class="material-icons">warning</span>
+            <div>Cycle detected in <code>parent_job_id</code>. Rendering is clipped to keep the tree readable.</div>
+          </div>
+        ` : ''}
 
-            ${layout.nodes.map((node) => {
-              const job = node.job;
-              const theme = typeTheme(job.type);
-              const status = statusMeta(job.status);
-              const label = getJobTypeLabel(job.type);
-              const tooltip = buildNodeTooltip(job);
-              const isCycleNode = layout.cycleNodeIds.has(job.id);
-              return `
-                <button
-                  type="button"
-                  class="chain-tree-node ${isCycleNode ? 'cycle' : ''}"
-                  data-job-id="${escapeAttr(job.id)}"
-                  title="${escapeAttr(tooltip)}"
-                  style="left:${node.left}px; top:${node.top}px; --node-accent:${theme.color}; --node-accent-rgb:${theme.rgb};"
-                >
-                  <div class="chain-tree-node-top">
-                    <div class="chain-tree-node-type">
-                      <div class="job-type-icon ${theme.className} chain-tree-node-icon" aria-hidden="true">
-                        <span class="material-icons">${App.escapeHtml(App.jobTypeIcon(job.type))}</span>
-                      </div>
-                      <div style="min-width: 0;">
-                        <div class="chain-tree-node-title">${App.escapeHtml(label)}</div>
-                        <div class="chain-tree-node-subtitle">${App.escapeHtml(App.formatDate(job.created_at))}</div>
-                      </div>
-                    </div>
-                    <span class="chain-tree-status ${status.className}">${App.escapeHtml(status.label)}</span>
-                  </div>
+        ${model.rootCount > 1 ? `
+          <div class="chain-tree-banner warn" style="margin-bottom: 16px;">
+            <span class="material-icons">call_split</span>
+            <div>${App.escapeHtml(String(model.rootCount))} root groups are being rendered side-by-side.</div>
+          </div>
+        ` : ''}
 
-                  <div class="chain-tree-prompt" style="margin:0;">${App.escapeHtml(rootPromptSnippet(job, 40))}</div>
-
-                  <div class="chain-tree-node-footer">
-                    <div class="chain-tree-node-badges">
-                      <span class="chain-tree-id-badge">${App.escapeHtml(App.truncate(job.id, 10))}</span>
-                      <span class="chain-tree-level-badge">L${App.escapeHtml(String(job.job_level || '?'))}</span>
-                    </div>
-                  </div>
-                </button>
-              `;
-            }).join('')}
+        <div class="chain-tree-tree-scroll">
+          <div class="chain-tree-tree-stage">
+            <div class="chain-tree-root-forest">
+              ${model.roots.map((rootNode) => `
+                <div class="chain-tree-root-group">
+                  <ul class="chain-tree-tree">
+                    ${renderNodeBranch(rootNode, model, chainId, new Set(), true)}
+                  </ul>
+                </div>
+              `).join('')}
+            </div>
           </div>
         </div>
       </div>
@@ -1115,7 +1801,7 @@
 
     root.innerHTML = `
       <div class="chain-tree-shell">
-        <aside class="card chain-tree-rail">
+        <aside class="card chain-tree-rail" style="padding: 18px;">
           <div class="section-header">
             <div>
               <h3 class="section-title">Chains</h3>
@@ -1136,7 +1822,7 @@
           </div>
 
           ${state.listError && state.chains.length ? `
-            <div class="chain-tree-banner warn" style="margin-bottom: 16px;">
+            <div class="chain-tree-banner warn" style="margin: 16px 0;">
               <span class="material-icons">warning</span>
               <div>${App.escapeHtml(state.listError)}</div>
             </div>
@@ -1156,15 +1842,91 @@
   function selectChain(chainId) {
     if (!chainId || chainId === state.selectedChainId) return;
     state.selectedChainId = chainId;
+    ensureChainUiState(chainId);
     syncSelectedSummary();
     renderPage();
     void loadSelectedChain();
+  }
+
+  function toggleNodeCollapsed(nodeId) {
+    const chainId = state.selectedChainId;
+    if (!chainId || !nodeId) return;
+    ensureChainUiState(chainId);
+
+    const collapsed = new Set(getCollapsedSet(chainId));
+    if (collapsed.has(nodeId)) {
+      collapsed.delete(nodeId);
+    } else {
+      collapsed.add(nodeId);
+    }
+
+    state.collapsedByChain[chainId] = collapsed;
+    persistCollapsedState(chainId);
+    renderPage();
+  }
+
+  function toggleErrorOpen(nodeId) {
+    const chainId = state.selectedChainId;
+    if (!chainId || !nodeId) return;
+    ensureChainUiState(chainId);
+
+    const opened = new Set(getErrorOpenSet(chainId));
+    if (opened.has(nodeId)) {
+      opened.delete(nodeId);
+    } else {
+      opened.add(nodeId);
+    }
+    state.errorOpenByChain[chainId] = opened;
+    renderPage();
+  }
+
+  function setAllCollapsed(shouldCollapse) {
+    const chainId = state.selectedChainId;
+    if (!chainId || !state.selectedJobs.length) return;
+    ensureChainUiState(chainId);
+
+    const model = buildTreeModel(state.selectedJobs);
+    if (!model) return;
+
+    const rootIds = new Set(model.roots.map((node) => node.job.id));
+    const next = shouldCollapse
+      ? Array.from(model.nodesById.values())
+        .filter((node) => node.children.length > 0 && !rootIds.has(node.job.id))
+        .map((node) => node.job.id)
+      : [];
+
+    state.collapsedByChain[chainId] = new Set(next);
+    persistCollapsedState(chainId);
+    renderPage();
   }
 
   async function handleClick(event) {
     const chainButton = event.target.closest('[data-chain-id]');
     if (chainButton) {
       selectChain(chainButton.dataset.chainId);
+      return;
+    }
+
+    const treeAction = event.target.closest('[data-tree-action]');
+    if (treeAction) {
+      if (treeAction.dataset.treeAction === 'expand-all') {
+        setAllCollapsed(false);
+      }
+      if (treeAction.dataset.treeAction === 'collapse-all') {
+        setAllCollapsed(true);
+      }
+      return;
+    }
+
+    const toggleButton = event.target.closest('[data-toggle-node]');
+    if (toggleButton) {
+      toggleNodeCollapsed(toggleButton.dataset.toggleNode);
+      return;
+    }
+
+    const errorButton = event.target.closest('[data-toggle-error]');
+    if (errorButton) {
+      toggleErrorOpen(errorButton.dataset.toggleError);
       return;
     }
 
