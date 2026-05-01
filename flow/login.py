@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 
 from flow.failure_capture import capture_failure_nonblocking
+from profile_list import DEFAULT_PROFILE_LIST_FILE, resolve_profile_list_file
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +39,7 @@ _GMAIL_INBOX_URL_TOKEN = "mail.google.com/mail/u/"
 LOGIN_TIMEOUT = 90
 
 # Path to profiles_ultra.txt for credentials
-PROFILE_LIST_FILE = os.environ.get(
-    "FLOW_PROFILE_LIST_FILE",
-    str(Path("D:/AI/AI-Engine3-Project/profiles_ultra.txt")),
-)
+PROFILE_LIST_FILE = DEFAULT_PROFILE_LIST_FILE
 
 # AIgglog.py fallback
 AIGGLOG_PATH = os.environ.get(
@@ -91,10 +89,7 @@ def _load_credentials(profile_name: str) -> dict | None:
 
     Returns dict with keys: email, password, totp_secret, recovery
     """
-    profile_list = Path(PROFILE_LIST_FILE)
-    if not profile_list.exists():
-        logger.error("profiles_ultra.txt not found: %s", profile_list)
-        return None
+    profile_list = resolve_profile_list_file(default=PROFILE_LIST_FILE)
 
     try:
         for line in profile_list.read_text(encoding="utf-8").splitlines():
@@ -473,10 +468,7 @@ def run_aigglog_sync(profile_name: str) -> bool:
         logger.error("AIgglog.py not found: %s", aigglog)
         return False
 
-    profile_list = Path(PROFILE_LIST_FILE)
-    if not profile_list.exists():
-        logger.error("profiles_ultra.txt not found: %s", profile_list)
-        return False
+    profile_list = resolve_profile_list_file(default=PROFILE_LIST_FILE)
 
     env = os.environ.copy()
     env["GGLOG_PROFILE_HINT"] = profile_name

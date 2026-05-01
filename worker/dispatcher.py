@@ -9,6 +9,7 @@ from typing import Callable, Coroutine
 
 from flow.recaptcha import RecaptchaError
 from flow.retry import with_retry
+from profile_list import configured_profile_list_file
 from worker.browser_pool import get_pool
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
@@ -65,9 +66,7 @@ def _profile_base_dir() -> Path:
 
 
 def _credentials_file_path() -> Path:
-    return Path(
-        os.environ.get("FLOW_PROFILE_LIST_FILE", "profiles_ultra.txt")
-    ).expanduser().resolve()
+    return configured_profile_list_file()
 
 
 # ======================================================================

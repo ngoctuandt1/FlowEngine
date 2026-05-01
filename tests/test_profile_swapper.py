@@ -57,6 +57,7 @@ def test_derive_profile_name_matches_login_lookup(
         "C:/profiles/fallback|foo.bar+test@x.sbs|pw|totp|recovery",
         encoding="utf-8",
     )
+    monkeypatch.delenv("FLOW_PROFILE_LIST_FILE", raising=False)
     monkeypatch.setattr(login_mod, "PROFILE_LIST_FILE", str(credentials_file))
     swapper = _make_swapper(tmp_path, credentials_file)
 

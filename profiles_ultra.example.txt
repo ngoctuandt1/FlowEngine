@@ -1,0 +1,4 @@
+# FLOW_PROFILE_LIST_FILE example template
+# Format: profile|email|password|2fa_secret|recovery
+# Example:
+# profile-name|user@example.com|your-password|BASE32_TOTP_SECRET|recovery@example.com
