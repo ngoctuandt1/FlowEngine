@@ -144,7 +144,7 @@
           </td>
           <td title="${App.escapeHtml(profile)}">${App.escapeHtml(App.truncate(profile, 24) || '-')}</td>
           <td>${renderStatusBadge(job.status)}</td>
-          <td title="${App.escapeHtml(createdAt)}">${App.escapeHtml(App.formatDate(createdAt))}</td>
+          <td title="${App.escapeHtml(createdAt)}">${App.escapeHtml(App.formatTileDate(createdAt))}</td>
           <td>
             <div style="display:flex; flex-wrap:wrap; gap:8px;">
               ${renderActionButtons(job)}

@@ -229,7 +229,7 @@ body.route-home #top-bar { display: none; }
   image-rendering: auto;
 }
 .tile-video {
-  background: #000;
+  background: transparent;
 }
 .tile-thumb--broken {
   background:
@@ -252,18 +252,8 @@ body.route-home #top-bar { display: none; }
   background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
 }
 .tile-thumb--broken::after {
-  content: 'broken_image';
+  content: '';
   z-index: 1;
-  display: grid;
-  place-items: center;
-  color: rgba(241, 243, 244, 0.46);
-  font-family: 'Material Icons';
-  font-size: 42px;
-  font-style: normal;
-  font-weight: 400;
-  letter-spacing: normal;
-  line-height: 1;
-  text-transform: none;
 }
 .tile-thumb--broken .type-icon {
   opacity: 0;
@@ -316,6 +306,13 @@ body.route-home #top-bar { display: none; }
   text-overflow: ellipsis;
   font-size: 16px;
   font-weight: 400;
+}
+.project-tile {
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+.project-tile:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
 }
 
 /* "+ New project" tile — a slot in the gallery, not a FAB. */
