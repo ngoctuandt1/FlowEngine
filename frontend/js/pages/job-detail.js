@@ -10,8 +10,25 @@
   const DELETE_CANCELLED_STATUSES = new Set(['running', 'claimed', 'pending']);
   const JOB_ROUTE_RE = /^(job(?:-detail)?)(?:[/?]|$)/i;
   const HOME_JOB_ROUTE_RE = /^home\/job(?:[/?]|$)/i;
+  const CHAIN_BUILDER_ROUTE_RE = /^chain-builder(?:[/?]|\?|$)/i;
   const CHAIN_TREE_ROUTE_RE = /^chain-tree(?:[/?]|$)/i;
   const MAX_CHAIN_TREE_SELECT_ATTEMPTS = 24;
+  const VIDEO_PARENT_JOB_TYPES = new Set([
+    'text-to-video',
+    'frames-to-video',
+    'ingredients-to-video',
+    'extend-video',
+    'insert-object',
+    'remove-object',
+    'camera-move',
+  ]);
+  const IMAGE_PARENT_JOB_TYPES = new Set(['text-to-image']);
+  const CONTINUE_CHAIN_ACTIONS = [
+    { type: 'extend-video', label: 'Extend', icon: 'add_to_queue' },
+    { type: 'insert-object', label: 'Insert object', icon: 'add_box' },
+    { type: 'remove-object', label: 'Remove object', icon: 'delete_sweep' },
+    { type: 'camera-move', label: 'Camera move', icon: 'videocam_off' },
+  ];
 
   const state = {
     jobId: '',
@@ -57,6 +74,10 @@
     return JOB_ROUTE_RE.test(hash) || HOME_JOB_ROUTE_RE.test(hash);
   }
 
+  function isChainBuilderRouteHash(hash) {
+    return CHAIN_BUILDER_ROUTE_RE.test(hash);
+  }
+
   function patchRouter() {
     if (routerPatched || !window.App || typeof App._onRoute !== 'function') return;
 
@@ -69,6 +90,15 @@
           return;
         }
         this._loadPage('job-detail');
+        return;
+      }
+      // Keep `#chain-builder` as a semantic alias while the registered page name remains `chains`.
+      if (isChainBuilderRouteHash(hash)) {
+        if (!this.pages.chains) {
+          location.hash = '#home';
+          return;
+        }
+        this._loadPage('chains');
         return;
       }
       originalOnRoute();
@@ -240,6 +270,20 @@
 
   function jobDisplayText(job) {
     return job?.prompt || job?.direction || jobTypeLabel(job?.type);
+  }
+
+  function getContinueChainAvailability(job) {
+    const type = String(job?.type || '').trim();
+    if (IMAGE_PARENT_JOB_TYPES.has(type)) {
+      return { enabled: false, reason: 'Image jobs have no chain operations' };
+    }
+    if (!VIDEO_PARENT_JOB_TYPES.has(type)) {
+      return { enabled: false, reason: 'This job type does not support chain operations' };
+    }
+    if (String(job?.status || '').trim() !== 'completed') {
+      return { enabled: false, reason: 'Job must complete before chaining' };
+    }
+    return { enabled: true, reason: '' };
   }
 
   function updatePageTitle(title) {
@@ -972,6 +1016,55 @@
     `;
   }
 
+  function renderContinueChainPanel(job) {
+    const availability = getContinueChainAvailability(job);
+    const statusIcon = availability.reason === 'Job must complete before chaining' ? 'schedule' : 'info';
+
+    return `
+      <section class="card job-detail-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">Continue chain</h3>
+            <p class="job-detail-section-copy">Start the next L2+ edit from this job without rebuilding the parent context.</p>
+          </div>
+        </div>
+        ${availability.reason ? `
+          <div class="job-detail-continue-status" role="note">
+            <span class="material-icons" aria-hidden="true">${App.escapeHtml(statusIcon)}</span>
+            <span>${App.escapeHtml(availability.reason)}</span>
+          </div>
+        ` : ''}
+        <div
+          class="job-detail-continue-actions"
+          role="group"
+          aria-label="Continue chain operations"
+          ${availability.enabled ? '' : `title="${escapeAttr(availability.reason)}"`}
+        >
+          ${CONTINUE_CHAIN_ACTIONS.map((action) => {
+            const buttonTitle = availability.enabled
+              ? `Open chain builder for ${action.label}`
+              : availability.reason;
+            return `
+              <button
+                class="job-detail-continue-btn"
+                type="button"
+                data-job-detail-action="continue-chain"
+                data-chain-type="${escapeAttr(action.type)}"
+                title="${escapeAttr(buttonTitle)}"
+                aria-label="${escapeAttr(buttonTitle)}"
+                ${availability.enabled ? '' : 'disabled'}
+              >
+                <span class="material-icons" aria-hidden="true">${App.escapeHtml(action.icon)}</span>
+                <span>${App.escapeHtml(action.label)}</span>
+              </button>
+            `;
+          }).join('')}
+        </div>
+        <div class="job-detail-continue-hint">These actions inherit project, profile, and media from this job.</div>
+      </section>
+    `;
+  }
+
   function renderRawCard(job) {
     return `
       <details class="card job-detail-card">
@@ -1111,6 +1204,7 @@
             ${renderContextPanel(job)}
             ${renderInvariantCard(job)}
             ${renderMetadataCard(job)}
+            ${renderContinueChainPanel(job)}
           </div>
         </div>
         ${renderRawCard(job)}
@@ -1328,6 +1422,18 @@
     return payload;
   }
 
+  function stashPendingChainParent(jobId, type) {
+    if (!jobId || !type) return;
+    try {
+      sessionStorage.setItem('pendingChainParent', JSON.stringify({
+        parent_job_id: String(jobId),
+        type: String(type),
+      }));
+    } catch (_) {
+      // Ignore storage failures and still route to the builder page.
+    }
+  }
+
   async function loadJobDetail(options = {}) {
     const jobId = state.jobId;
     if (!jobId) {
@@ -1493,6 +1599,19 @@
     }
   }
 
+  function continueChainFromCurrentJob(button) {
+    const chainType = String(button?.dataset.chainType || '').trim();
+    const jobId = String(state.job?.id || '').trim();
+    const availability = getContinueChainAvailability(state.job);
+    if (!chainType || !jobId) return;
+    if (!availability.enabled) {
+      App.toast(availability.reason, 'warning');
+      return;
+    }
+    stashPendingChainParent(jobId, chainType);
+    window.location.hash = '#chain-builder';
+  }
+
   function handlePageClick(event) {
     const button = event.target.closest('[data-job-detail-action]');
     if (!button) return;
@@ -1508,6 +1627,10 @@
     }
     if (action === 'delete') {
       deleteCurrentJob(button);
+      return;
+    }
+    if (action === 'continue-chain') {
+      continueChainFromCurrentJob(button);
       return;
     }
     if (action === 'back-to-jobs') {
@@ -1716,6 +1839,85 @@
               color: var(--text-muted) !important;
               text-transform: uppercase;
               letter-spacing: 0.06em;
+            }
+
+            .job-detail-continue-status {
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              padding: 12px 14px;
+              margin-bottom: 14px;
+              color: var(--text-secondary);
+              background: rgba(255, 255, 255, 0.03);
+              border: 1px solid var(--border);
+              border-radius: 14px;
+              font-size: 13px;
+            }
+
+            .job-detail-continue-status .material-icons {
+              color: var(--text-muted);
+              font-size: 16px;
+            }
+
+            .job-detail-continue-actions {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 10px;
+            }
+
+            .job-detail-continue-btn {
+              display: inline-flex;
+              align-items: center;
+              gap: 10px;
+              flex: 1 1 180px;
+              min-height: 48px;
+              padding: 0 16px;
+              color: var(--text-primary);
+              background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.03));
+              border: 1px solid rgba(255, 255, 255, 0.10);
+              border-radius: 999px;
+              box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+              transition:
+                transform var(--transition),
+                border-color var(--transition),
+                background var(--transition),
+                box-shadow var(--transition),
+                opacity var(--transition);
+            }
+
+            .job-detail-continue-btn .material-icons {
+              font-size: 18px;
+              color: #c4b5fd;
+            }
+
+            .job-detail-continue-btn:hover:not(:disabled),
+            .job-detail-continue-btn:focus-visible:not(:disabled) {
+              color: var(--text-primary);
+              background: linear-gradient(180deg, rgba(124, 92, 255, 0.18), rgba(255, 255, 255, 0.06));
+              border-color: var(--accent-border);
+              transform: translateY(-2px);
+              box-shadow: 0 16px 32px rgba(0, 0, 0, 0.28);
+            }
+
+            .job-detail-continue-btn:focus-visible {
+              outline: none;
+            }
+
+            .job-detail-continue-btn:disabled {
+              opacity: 0.58;
+              cursor: not-allowed;
+              box-shadow: none;
+              pointer-events: none;
+            }
+
+            .job-detail-continue-btn:disabled .material-icons {
+              color: var(--text-muted);
+            }
+
+            .job-detail-continue-hint {
+              margin-top: 12px;
+              color: var(--text-secondary);
+              font-size: 13px;
             }
 
             .job-detail-error-banner,
@@ -2198,6 +2400,10 @@
 
               .job-detail-title {
                 font-size: 20px;
+              }
+
+              .job-detail-continue-btn {
+                flex-basis: 100%;
               }
 
               .job-detail-chain-segment {
