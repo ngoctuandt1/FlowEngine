@@ -1,4 +1,4 @@
-"""Model selector -- pick LP (Lower Priority) models for 0-credit generation."""
+"""Model selector -- pick free Veo models for 0-credit generation."""
 
 import asyncio
 import re
@@ -31,7 +31,7 @@ async def select_model(
     2. Wait for the dropdown menu to appear
     3. Find the target model menuitem
     4. Click it
-    5. Verify selection via credit footer text (0 credits for LP)
+    5. Verify selection via credit footer text (0 credits for LP/Lite)
 
     Args:
         page: Playwright page
@@ -145,6 +145,10 @@ async def select_model(
     # the dropdown closed, hiding the LP items.
     is_lp = "Lower Priority" in target_text
     base_name = target_text.split(" [")[0].strip()  # "Veo 3.1 - Fast"
+    free_model_candidates = [
+        ("Lower Priority", re.compile(r"Lower Priority", re.IGNORECASE)),
+        ("Lite", re.compile(r"Lite", re.IGNORECASE)),
+    ]
 
     MODEL_ITEM_SELECTORS = (
         "menuitem, [role='menuitem'], [role='option'], "
@@ -169,47 +173,61 @@ async def select_model(
         dropdown_opened = await _open_model_dropdown(page)
 
     # Step 3: Find and click the target model
+    free_model_candidate_found = False
     for attempt in range(3):
         if attempt > 0:
             logger.info("Model select retry %d, waiting 1.5s...", attempt + 1)
             await asyncio.sleep(1.5)
 
         try:
-            if is_lp:
-                # Look for any element with "Lower Priority" text
-                items = page.locator(MODEL_ITEM_SELECTORS).filter(
-                    has_text=re.compile(r"Lower Priority", re.IGNORECASE)
-                )
-                count = await items.count()
-                logger.info(
-                    "LP model search (attempt %d): found %d items matching 'Lower Priority'",
-                    attempt + 1, count,
-                )
+            if free_mode:
+                for candidate_text, candidate_pattern in free_model_candidates:
+                    items = page.locator(MODEL_ITEM_SELECTORS).filter(
+                        has_text=candidate_pattern
+                    )
+                    count = await items.count()
+                    logger.info(
+                        "Free model search (attempt %d): found %d items matching '%s'",
+                        attempt + 1,
+                        count,
+                        candidate_text,
+                    )
 
-                if count == 0:
-                    # Debug: log what model options are visible
-                    await _debug_model_options(page)
-                    continue
+                    if count == 0:
+                        continue
 
-                # Pick the one matching our base model name
-                for i in range(count):
-                    item_text = await items.nth(i).inner_text()
-                    if base_name.lower() in item_text.lower():
-                        await items.nth(i).click(timeout=3000, force=True)
-                        logger.info("Selected LP model: %s", item_text.strip()[:80])
-                        await asyncio.sleep(0.5)
-                        ok = await _verify_credits(page, expected=0)
-                        await _close_model_panel(page, dropdown_opened)
-                        return ok
+                    free_model_candidate_found = True
+                    selected_item = items.first
+                    selected_text = await items.first.inner_text()
 
-                # Fallback: click first LP model found
-                text = await items.first.inner_text()
-                await items.first.click(timeout=3000, force=True)
-                logger.info("Selected first LP model: %s", text.strip()[:80])
-                await asyncio.sleep(0.5)
-                ok = await _verify_credits(page, expected=0)
-                await _close_model_panel(page, dropdown_opened)
-                return ok
+                    # Prefer the requested Veo variant when multiple free options
+                    # share the same marker (for example Fast/ Lite LP entries).
+                    for i in range(count):
+                        item = items.nth(i)
+                        item_text = await item.inner_text()
+                        if base_name.lower() in item_text.lower():
+                            selected_item = item
+                            selected_text = item_text
+                            break
+
+                    if candidate_text == "Lite":
+                        # 2026-05-10 LP deprecation policy: if the LP option is
+                        # gone, fall back to Veo Lite per
+                        # C:\Users\Tuan\.claude\projects\D--AI-FlowEngine\memory\project_lp_deprecation_2026_10_05.md.
+                        logger.warning(
+                            "LP option not found, falling back to Lite (per 2026-05-10 deprecation policy)"
+                        )
+
+                    await selected_item.click(timeout=3000, force=True)
+                    logger.info("Selected free model: %s", selected_text.strip()[:80])
+                    await asyncio.sleep(0.5)
+                    ok = await _verify_credits(page, expected=0)
+                    await _close_model_panel(page, dropdown_opened)
+                    return ok
+
+                # Debug: log what model options are visible before retrying.
+                await _debug_model_options(page)
+                continue
 
             else:
                 # Non-LP: match base model name
@@ -225,6 +243,24 @@ async def select_model(
 
         except Exception as e:
             logger.warning("Model select attempt %d failed: %s", attempt + 1, e)
+
+    if free_mode:
+        await _close_model_panel(page, dropdown_opened)
+        if not free_model_candidate_found:
+            try:
+                visible_model_count = await page.locator(MODEL_ITEM_SELECTORS).count()
+            except Exception:
+                visible_model_count = 0
+
+            if visible_model_count > 0:
+                raise RuntimeError(
+                    "Neither Lower Priority nor Lite model found — Flow UI changed unexpectedly, manual intervention needed"
+                )
+
+            logger.error("Free model search exhausted with no visible model options")
+            return False
+        logger.error("Failed to select free model after all attempts")
+        return False
 
     # All attempts exhausted — try JS fallback
     logger.warning("Playwright selectors failed — trying JS fallback for model selection")
