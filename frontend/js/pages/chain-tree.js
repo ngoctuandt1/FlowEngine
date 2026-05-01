@@ -13,7 +13,6 @@
 
   let root = null;
   let handlers = null;
-  let lastNonDetailHash = location.hash || '#home';
 
   const state = {
     chains: [],
@@ -269,6 +268,17 @@
         box-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
       }
 
+      .chain-tree-node.cycle {
+        border-color: rgba(239, 68, 68, 0.72);
+        border-left-color: #ef4444;
+        box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.28), 0 12px 32px rgba(0, 0, 0, 0.24);
+      }
+
+      .chain-tree-node.cycle:hover {
+        border-color: rgba(248, 113, 113, 0.88);
+        box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.34), 0 18px 42px rgba(0, 0, 0, 0.32);
+      }
+
       .chain-tree-node-icon {
         flex: 0 0 34px;
         width: 34px;
@@ -437,6 +447,12 @@
     return String(a?.id || '').localeCompare(String(b?.id || ''));
   }
 
+  function compareJobsByCreatedAt(a, b) {
+    const createdDiff = safeDateValue(a?.created_at) - safeDateValue(b?.created_at);
+    if (createdDiff !== 0) return createdDiff;
+    return compareJobs(a, b);
+  }
+
   function normalizeJobList(result) {
     const items = Array.isArray(result) ? result : result?.jobs || [];
     return items
@@ -490,9 +506,14 @@
     );
   }
 
+  function pickEarliestJob(jobs) {
+    return [...jobs].sort(compareJobsByCreatedAt)[0] || null;
+  }
+
   function buildChainSummary(chainId, jobs, detail = {}) {
     const sortedJobs = [...jobs].sort(compareJobs);
     const rootJob = pickRootJob(sortedJobs);
+    const earliestJob = pickEarliestJob(sortedJobs) || rootJob;
     const statuses = sortedJobs.map((job) => String(job.status || 'pending'));
     const detailProgress = detail?.progress || null;
 
@@ -501,10 +522,12 @@
       profile:
         detail?.profile ||
         rootJob?.profile ||
+        earliestJob?.profile ||
         sortedJobs.find((job) => job.profile)?.profile ||
         '',
       created_at:
         detail?.created_at ||
+        earliestJob?.created_at ||
         rootJob?.created_at ||
         sortedJobs[0]?.created_at ||
         '',
@@ -515,7 +538,7 @@
           statuses.filter((status) => status === 'completed').length,
         total: detailProgress?.total ?? sortedJobs.length,
       },
-      root_prompt: rootJob ? rootPromptSnippet(rootJob, 40) : 'No root prompt',
+      root_prompt: detail?.root_prompt || rootPromptSnippet(earliestJob || rootJob, 40),
       total_jobs: detailProgress?.total ?? sortedJobs.length,
       jobs: sortedJobs,
     };
@@ -540,34 +563,6 @@
       total_jobs: extra.total_jobs || base.total_jobs || mergedJobs.length,
       jobs: mergedJobs,
     };
-  }
-
-  function normalizeChainList(result) {
-    const items = Array.isArray(result) ? result : result?.chains || [];
-    return items
-      .map((item) => {
-        if (typeof item === 'string') {
-          return { id: item, status: 'pending', progress: { completed: 0, total: 0 }, jobs: [] };
-        }
-
-        if (!item || typeof item !== 'object') return null;
-        const id = item.id || item.chain_id;
-        if (!id) return null;
-
-        return {
-          id: String(id),
-          profile: item.profile || '',
-          created_at: item.created_at || item.createdAt || '',
-          status: item.status || 'pending',
-          progress: item.progress || { completed: 0, total: Array.isArray(item.jobs) ? item.jobs.length : 0 },
-          root_prompt: item.root_prompt || item.prompt || '',
-          total_jobs: item.total_jobs || item.progress?.total || (Array.isArray(item.jobs) ? item.jobs.length : 0),
-          jobs: Array.isArray(item.jobs) && item.jobs.every((job) => job && typeof job === 'object')
-            ? item.jobs
-            : [],
-        };
-      })
-      .filter(Boolean);
   }
 
   function groupJobsByChain(jobs) {
@@ -604,30 +599,8 @@
     renderPage();
 
     try {
-      const [chainsResult, jobsResult] = await Promise.allSettled([
-        API.chains.list(),
-        API.jobs.list(),
-      ]);
-
-      let summaries = [];
-
-      if (chainsResult.status === 'fulfilled') {
-        summaries = normalizeChainList(chainsResult.value);
-      }
-
-      if (jobsResult.status === 'fulfilled') {
-        const groupedSummaries = groupJobsByChain(normalizeJobList(jobsResult.value));
-        const merged = new Map(groupedSummaries.map((summary) => [summary.id, summary]));
-
-        summaries.forEach((summary) => {
-          merged.set(summary.id, mergeChainSummary(merged.get(summary.id), summary));
-        });
-        summaries = Array.from(merged.values());
-      }
-
-      if (!summaries.length && chainsResult.status === 'rejected' && jobsResult.status === 'rejected') {
-        throw jobsResult.reason || chainsResult.reason;
-      }
+      const jobsResult = await API.jobs.list();
+      const summaries = groupJobsByChain(normalizeJobList(jobsResult));
 
       if (requestId !== state.listRequestId) return;
 
@@ -734,6 +707,58 @@
     return lines.join('\n');
   }
 
+  function detectCycleNodeIds(nodesById) {
+    const visitState = new Map();
+    const visitStack = [];
+    const stackIndexes = new Map();
+    const cycleNodeIds = new Set();
+
+    function visit(node) {
+      const nodeId = node.job.id;
+      const state = visitState.get(nodeId) || 0;
+
+      if (state === 1) {
+        const startIndex = stackIndexes.get(nodeId) ?? 0;
+        for (let index = startIndex; index < visitStack.length; index += 1) {
+          cycleNodeIds.add(visitStack[index].job.id);
+        }
+        return;
+      }
+
+      if (state === 2) return;
+
+      visitState.set(nodeId, 1);
+      stackIndexes.set(nodeId, visitStack.length);
+      visitStack.push(node);
+
+      if (node.parent) {
+        visit(node.parent);
+      }
+
+      visitStack.pop();
+      stackIndexes.delete(nodeId);
+      visitState.set(nodeId, 2);
+    }
+
+    nodesById.forEach((node) => visit(node));
+    return cycleNodeIds;
+  }
+
+  function findLayoutAnchor(node, laidOutIds) {
+    const seen = new Set();
+    let current = node;
+
+    while (current) {
+      const currentId = current.job.id;
+      if (seen.has(currentId)) return current;
+      if (!current.parent || laidOutIds.has(current.parent.job.id)) return current;
+      seen.add(currentId);
+      current = current.parent;
+    }
+
+    return node;
+  }
+
   function buildTreeLayout(jobs) {
     if (!jobs.length) return null;
 
@@ -742,6 +767,7 @@
       nodesById.set(job.id, {
         job,
         children: [],
+        parent: null,
         depth: 0,
         centerX: 0,
         left: 0,
@@ -753,6 +779,7 @@
     nodesById.forEach((node) => {
       const parent = node.job.parent_job_id ? nodesById.get(node.job.parent_job_id) : null;
       if (parent) {
+        node.parent = parent;
         parent.children.push(node);
       } else {
         roots.push(node);
@@ -763,26 +790,47 @@
     sortNodes(roots);
     nodesById.forEach((node) => sortNodes(node.children));
 
+    const cycleNodeIds = detectCycleNodeIds(nodesById);
     let leafIndex = 0;
     let maxDepth = 0;
 
-    function assign(node, depth) {
+    function assign(node, depth, laidOutIds, visitingIds) {
+      const nodeId = node.job.id;
+      if (visitingIds.has(nodeId)) return null;
+      if (laidOutIds.has(nodeId)) return node.centerX;
+
+      visitingIds.add(nodeId);
       node.depth = depth;
       maxDepth = Math.max(maxDepth, depth);
 
-      if (!node.children.length) {
+      const childCenters = node.children
+        .map((child) => assign(child, depth + 1, laidOutIds, visitingIds))
+        .filter((center) => Number.isFinite(center));
+
+      if (!childCenters.length) {
         node.centerX = (leafIndex * LEAF_STEP) + NODE_WIDTH / 2;
         leafIndex += 1;
-        return;
+      } else {
+        node.centerX = childCenters.reduce((sum, center) => sum + center, 0) / childCenters.length;
       }
 
-      node.children.forEach((child) => assign(child, depth + 1));
-      node.centerX = node.children.reduce((sum, child) => sum + child.centerX, 0) / node.children.length;
+      laidOutIds.add(nodeId);
+      visitingIds.delete(nodeId);
+      return node.centerX;
     }
 
+    const laidOutIds = new Set();
     roots.forEach((rootNode, index) => {
       if (index > 0 && leafIndex > 0) leafIndex += 1;
-      assign(rootNode, 0);
+      assign(rootNode, 0, laidOutIds, new Set());
+    });
+
+    sortNodes(Array.from(nodesById.values())).forEach((node) => {
+      if (laidOutIds.has(node.job.id)) return;
+      const anchor = findLayoutAnchor(node, laidOutIds);
+      if (laidOutIds.has(anchor.job.id)) return;
+      if (leafIndex > 0) leafIndex += 1;
+      assign(anchor, 0, laidOutIds, new Set());
     });
 
     const nodes = Array.from(nodesById.values());
@@ -812,6 +860,8 @@
       nodes,
       edges,
       roots: roots.length,
+      cycleNodeIds,
+      hasCycles: cycleNodeIds.size > 0,
     };
   }
 
@@ -1002,6 +1052,13 @@
           <div class="form-hint">${layout.roots > 1 ? `${layout.roots} root nodes detected` : `${state.selectedJobs.length} jobs`}</div>
         </div>
 
+        ${layout.hasCycles ? `
+          <div class="chain-tree-banner warn" style="margin-bottom: 16px;">
+            <span class="material-icons">warning</span>
+            <div>Cycle detected in this chain&apos;s <code>parent_job_id</code> graph. The tree is rendered best-effort and cycle nodes are outlined in red.</div>
+          </div>
+        ` : ''}
+
         <div class="chain-tree-canvas-scroll">
           <div class="chain-tree-canvas" style="width:${layout.width}px; height:${layout.height}px;">
             <svg class="chain-tree-svg" viewBox="0 0 ${layout.width} ${layout.height}" preserveAspectRatio="xMinYMin meet" aria-hidden="true">
@@ -1014,10 +1071,11 @@
               const status = statusMeta(job.status);
               const label = getJobTypeLabel(job.type);
               const tooltip = buildNodeTooltip(job);
+              const isCycleNode = layout.cycleNodeIds.has(job.id);
               return `
                 <button
                   type="button"
-                  class="chain-tree-node"
+                  class="chain-tree-node ${isCycleNode ? 'cycle' : ''}"
                   data-job-id="${escapeAttr(job.id)}"
                   title="${escapeAttr(tooltip)}"
                   style="left:${node.left}px; top:${node.top}px; --node-accent:${theme.color}; --node-accent-rgb:${theme.rgb};"
@@ -1095,65 +1153,6 @@
     `;
   }
 
-  async function openJobDetailModal(jobId) {
-    try {
-      const job = await API.jobs.get(jobId);
-      const outputLinks = (Array.isArray(job.output_files) ? job.output_files : [])
-        .map((file) => {
-          const normalized = String(file).replace(/\\/g, '/').replace(/^downloads\//i, '');
-          const url = `/downloads/${encodeURI(normalized)}`;
-          const name = normalized.split('/').pop() || normalized;
-          return `
-            <a class="btn btn-sm btn-outline" href="${escapeAttr(url)}" target="_blank" rel="noopener">
-              <span class="material-icons" style="font-size:16px">open_in_new</span> ${App.escapeHtml(name)}
-            </a>
-          `;
-        })
-        .join('');
-
-      App.openModal(
-        `Job ${App.truncate(jobId, 12)}`,
-        `
-          <div style="display:grid; gap:16px;">
-            ${outputLinks ? `
-              <div>
-                <div class="detail-label" style="margin-bottom:8px;">Outputs</div>
-                <div style="display:flex; flex-wrap:wrap; gap:8px;">${outputLinks}</div>
-              </div>
-            ` : ''}
-            <pre style="margin:0; padding:16px; border-radius:12px; background:#0a0a0c; border:1px solid var(--border); color:var(--text-secondary); font-size:12px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere;">${App.escapeHtml(JSON.stringify(job, null, 2))}</pre>
-          </div>
-        `
-      );
-    } catch (error) {
-      App.toast(`Failed to load job: ${error.message}`, 'error');
-    }
-  }
-
-  function installJobDetailBridge() {
-    if (window.__chainTreeJobDetailBridgeInstalled) return;
-    window.__chainTreeJobDetailBridgeInstalled = true;
-
-    window.addEventListener('hashchange', () => {
-      const hash = location.hash || '#home';
-      if (!hash.startsWith('#job-detail/')) {
-        lastNonDetailHash = hash;
-        return;
-      }
-
-      const fallbackHash =
-        lastNonDetailHash && !lastNonDetailHash.startsWith('#job-detail/')
-          ? lastNonDetailHash
-          : '#chain-tree';
-      const jobId = decodeURIComponent(hash.slice('#job-detail/'.length));
-
-      history.replaceState(null, '', fallbackHash);
-      if (jobId) {
-        void openJobDetailModal(jobId);
-      }
-    });
-  }
-
   function selectChain(chainId) {
     if (!chainId || chainId === state.selectedChainId) return;
     state.selectedChainId = chainId;
@@ -1188,8 +1187,6 @@
     }
   }
 
-  installJobDetailBridge();
-
   const ChainTreePage = {
     name: 'chain-tree',
     title: 'Chain Tree',
@@ -1201,7 +1198,6 @@
 
     mount() {
       ensureStyles();
-      installJobDetailBridge();
 
       root = document.getElementById(PAGE_ROOT_ID);
       if (!root) return;
