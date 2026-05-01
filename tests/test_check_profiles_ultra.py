@@ -11,7 +11,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_PATH = REPO_ROOT / "scripts" / "check_profiles_ultra.py"
 
 
-def _write_profiles_file(path: Path, include_malformed: bool = True) -> Path:
+def _write_profiles_file(
+    path: Path,
+    include_malformed: bool = True,
+    extra_rows: list[str] | None = None,
+) -> Path:
     rows = [
         "C:/profiles/warmed-profile|warm.alias@example.com|pw1|JBSWY3DPEHPK3PXP|recover1@example.com",
         "C:/profiles/unwarmed-profile|unwarmed@example.com|pw2|bad-totp|recover2@example.com",
@@ -20,6 +24,8 @@ def _write_profiles_file(path: Path, include_malformed: bool = True) -> Path:
     ]
     if include_malformed:
         rows.append("C:/profiles/bad-profile|not-an-email||JBSWY3DPEHPK3PXP|recover5@example.com")
+    if extra_rows:
+        rows.extend(extra_rows)
     path.write_text("\n".join(rows), encoding="utf-8")
     return path
 
@@ -41,12 +47,14 @@ def _run_script(
     tmp_path: Path,
     *,
     include_malformed: bool = True,
+    extra_rows: list[str] | None = None,
     args: list[str] | None = None,
     use_env_defaults: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     profiles_file = _write_profiles_file(
         tmp_path / "profiles_ultra.txt",
         include_malformed=include_malformed,
+        extra_rows=extra_rows,
     )
     profile_base_dir = _make_profile_base_dir(tmp_path / "chrome-profiles")
 
@@ -139,3 +147,26 @@ def test_exit_code_is_zero_when_all_entries_are_parseable(tmp_path: Path) -> Non
 
     assert result.returncode == 0
     assert "malformed=0" in result.stdout
+
+
+def test_four_field_row_is_malformed_and_exits_non_zero(tmp_path: Path) -> None:
+    result = _run_script(
+        tmp_path,
+        include_malformed=False,
+        extra_rows=[
+            "C:/profiles/missing-recovery|user@example.com|pw|JBSWY3DPEHPK3PXP",
+        ],
+        args=["--json"],
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+
+    assert payload["summary"]["malformed"] == 1
+    assert payload["parse_error_count"] == 1
+    assert any(
+        entry["profile_name"] == "missing-recovery"
+        and entry["status"] == "malformed"
+        and "expected exactly 5 pipe-delimited fields" in entry["notes"]
+        for entry in payload["entries"]
+    )

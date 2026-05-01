@@ -172,8 +172,15 @@ def _parse_line(
     profile_name = candidates[0]
     issues: list[str] = []
 
-    if len(parts) < 3:
-        issues.append("expected at least 3 pipe-delimited fields")
+    # flow.login._load_credentials currently tolerates missing trailing fields
+    # by filling them with "", but its documented contract is the canonical
+    # 5-field row below. Enforce that schema here so incomplete credentials fail
+    # lint/CI instead of being misreported as merely "unwarmed".
+    if len(parts) != 5:
+        issues.append(
+            "expected exactly 5 pipe-delimited fields "
+            "(path|email|password|2fa_secret|recovery_email)"
+        )
     if not email or not EMAIL_RE.match(email):
         issues.append("invalid email")
     if not password:
