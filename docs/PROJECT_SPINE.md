@@ -4,7 +4,7 @@
 
 - Scope: tracks current `master` plus the 2026-05-01 public cutover state.
 - Purpose: one 5-minute sync doc for future feature work.
-- Not here: deep rationale lives in [docs/DESIGN.md](DESIGN.md), invariants/test contract in [docs/SPEC.md](SPEC.md), and roadmap in [docs/WORKPLAN.md](WORKPLAN.md).
+- Not here: deep design rationale/history lives in [docs/DESIGN.md](DESIGN.md), invariants/test contract in [docs/SPEC.md](SPEC.md), and the closed Phase A ledger in [docs/WORKPLAN.md](WORKPLAN.md).
 
 ## 1. What is FlowEngine
 
@@ -47,7 +47,7 @@ Component summary:
 
 ## 3. Job system invariants
 
-These are the chain rules that future work must preserve. Do not restate or fork them elsewhere; the source of truth is [docs/SPEC.md](SPEC.md), especially [INV-1 at `docs/SPEC.md:52`](SPEC.md#L52), [INV-2 at `docs/SPEC.md:63`](SPEC.md#L63), [INV-3 at `docs/SPEC.md:73`](SPEC.md#L73), [INV-4 at `docs/SPEC.md:83`](SPEC.md#L83), and [INV-5 at `docs/SPEC.md:90`](SPEC.md#L90).
+These are the chain rules that future work must preserve. [docs/SPEC.md](SPEC.md) is the source of truth for `INV-N` numbering, but if `SPEC.md` and live code disagree, treat `SPEC.md` as stale pending sync. Current live contract: claim inherits the direct parent's `profile`, `project_url`, `media_id`, and `edit_url` together. See especially [INV-1 at `docs/SPEC.md:52`](SPEC.md#L52), [INV-2 at `docs/SPEC.md:63`](SPEC.md#L63), [INV-3 at `docs/SPEC.md:73`](SPEC.md#L73), [INV-4 at `docs/SPEC.md:83`](SPEC.md#L83), and [INV-5 at `docs/SPEC.md:90`](SPEC.md#L90).
 
 - `INV-1` + `INV-3`: L1 creates the project; every L2+ child inherits the completed parent's `project_url`, `media_id`, `edit_url`, and `profile` at claim time. Main enforcement: [server/db/job_store.py](../server/db/job_store.py), [server/models/job.py](../server/models/job.py), [docs/SPEC.md:73](SPEC.md#L73).
 - `INV-1`: the same `profile` must hold across the entire chain. Different Google account means different project ownership and produces Flow 404 / redirect failures. Main enforcement: [server/db/job_store.py](../server/db/job_store.py), [docs/SPEC.md:52](SPEC.md#L52).
@@ -105,17 +105,24 @@ $env:WORKER_PROFILES = "ngoctuandt20"
 $env:FLOW_DOWNLOAD_DIR = "D:\AI\FlowEngine\downloads"
 $env:FLOW_UPLOAD_DIR = "D:\AI\FlowEngine\uploads"
 $env:CHROME_USER_DATA_DIR = "D:\AI\FlowEngine\chrome-profiles"
+$env:FLOW_PROFILE_LIST_FILE = "D:\external-secrets\profiles_ultra.txt"
 $env:FLOW_USE_BASE_PROFILE = "1"
 python run_worker.py
 ```
 
+### First job smoke test
+
+Open `http://localhost:8080/#create`, leave the page in single-job mode, pick `text-to-video`, enter a prompt, and click `Create Job`. Then verify the new job appears under `http://localhost:8080/#dashboard` or `http://localhost:8080/#jobs`.
+
 ### Worker prerequisites
 
 - `CHROME_USER_DATA_DIR` should be an absolute path to the real Chrome user-data root, not a fresh worktree-local directory.
+- Use `chrome-profiles` as the canonical profile root name in this repo/docs. Older bootstrap references that still say `profiles` (notably `.env.example` and `scripts/setup.cmd`) are stale.
 - For local/same-host runs, set the same absolute `FLOW_UPLOAD_DIR` and `FLOW_DOWNLOAD_DIR` in both the server and worker shells. On split-host deploys, both processes still need those vars pointed at the same shared or synced media roots from their own OS view, or `uploads/...` inputs and dashboard media links will break.
 - `FLOW_USE_BASE_PROFILE=1` reuses the warmed profile directory verbatim and avoids temp-clone auth drift.
 - Warm at least one profile before starting the worker: `python scripts/warm_profile.py <profile>`.
-- Warming requires a matching credential entry in `FLOW_PROFILE_LIST_FILE` (default `profiles_ultra.txt`); use `python scripts/check_profiles_ultra.py` to verify the file/profile inventory.
+- Set `FLOW_PROFILE_LIST_FILE` explicitly to your external credentials file path before warming or auto-replacement. The repo does not ship this file. Each non-comment row must be `profile|email|password|2fa_secret|recovery`.
+- Warming requires a matching credential entry in `FLOW_PROFILE_LIST_FILE`; use `python scripts/check_profiles_ultra.py --profiles-file <path>` to verify the file/profile inventory.
 - If Chrome is not installed in a default location, set `CHROME_PATH` for worker runs and `FLOW_WARM_CHROME_PATH` (or `CHROME_PATH`) for `scripts/warm_profile.py`.
 - `WORKER_PROFILES` must list warmed subdirectory names under `CHROME_USER_DATA_DIR`; the worker preflight will exit if the profile dir is missing or has no cookies.
 
@@ -123,6 +130,7 @@ Example warm-up:
 
 ```powershell
 $env:CHROME_USER_DATA_DIR = "D:\AI\FlowEngine\chrome-profiles"
+$env:FLOW_PROFILE_LIST_FILE = "D:\external-secrets\profiles_ultra.txt"
 python scripts/warm_profile.py ngoctuandt20
 ```
 
@@ -139,7 +147,7 @@ python scripts/warm_profile.py ngoctuandt20
 | worker | `WORKER_PROFILES` | Comma-separated warmed profile names. | `ngoctuandt20` |
 | worker | `CHROME_USER_DATA_DIR` | Absolute Chrome user-data root. | `D:\AI\FlowEngine\chrome-profiles` |
 | worker | `FLOW_USE_BASE_PROFILE` | Reuse the warmed profile dir verbatim; avoids temp-clone auth drift. | `1` |
-| worker / warm tooling | `FLOW_PROFILE_LIST_FILE` | Credential source for warming and profile replacement; defaults to `profiles_ultra.txt` when unset. | `D:\AI\FlowEngine\profiles_ultra.txt` |
+| worker / warm tooling | `FLOW_PROFILE_LIST_FILE` | Credential source for warming and profile replacement. Set this explicitly to the external creds file path; row format is `profile|email|password|2fa_secret|recovery`. | `D:\external-secrets\profiles_ultra.txt` |
 | worker | `MAX_CONCURRENT_JOBS` | Caps concurrent claims per worker process. | `1` |
 | worker | `POLL_INTERVAL_SEC` | Claim-loop poll interval. | `5` |
 
@@ -163,6 +171,7 @@ This section is the current runtime topology, not just the repo template. The re
 | Dashboard auth switch | `DASHBOARD_PASSWORD` enables signed-cookie auth and middleware | [server/dashboard_auth.py](../server/dashboard_auth.py), [server/app.py](../server/app.py) |
 | Proxy handling | `TRUST_PROXY_HEADERS=1` plus uvicorn proxy-header support are required so auth sees HTTPS correctly | [server/dashboard_auth.py](../server/dashboard_auth.py), [deploy/debian/flowengine-server.service](../deploy/debian/flowengine-server.service), [CLAUDE.md](../CLAUDE.md) |
 | Downloads/uploads sharing | The server mounts `FLOW_DOWNLOAD_DIR` at `/downloads` and `FLOW_UPLOAD_DIR` at `/uploads`. In split-host deploys, the worker must resolve the same shared media roots (or equivalent synced storage) or dashboard media links and worker input-asset paths will break. | [server/app.py](../server/app.py), [server/routes/uploads.py](../server/routes/uploads.py), [deploy/debian/README.md](../deploy/debian/README.md) |
+| Public profile pool caveat | Current public runtime is effectively single-profile as of 2026-05-01: only `ngoctuandt20` is fully working; `jefmon_vhnu100` is stuck on a login challenge and `s1324h1450` is `ServiceNotAllowed`. | [session report:122-127](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L122) |
 | Archived old engine | `/opt/_archive/video-ai-studio.20260501` (and `/opt/_archive/video-ai.20260501`) | [session report:61-65](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md#L61) |
 
 Important distinction:
@@ -179,7 +188,7 @@ Top fields only. For any schema change, read both the Pydantic model and the bac
 | Model | Fields / notes |
 |---|---|
 | `BBox` | Normalized `x`, `y`, `w`, `h` floats in the 0-1 range. |
-| `JobCreate` | Request body: `type`, optional `prompt`, `model`, `aspect_ratio`, `profile`, `parent_job_id`, `chain_id`, `project_url`, `media_id`, `bbox`, `direction`, `start_image_path`, `end_image_path`, `ingredient_image_paths`, `ref_image_path`. Image-input path fields are usually `uploads/...` paths rooted at `FLOW_UPLOAD_DIR`. |
+| `JobCreate` | Request body: `type`, optional `prompt`, `model`, `aspect_ratio`, `profile`, `parent_job_id`, `chain_id`, `project_url`, `media_id`, `bbox`, `direction`, `start_image_path`, `end_image_path`, `ingredient_image_paths`, `ref_image_path`. Image-input path fields are usually `uploads/...` paths rooted at `FLOW_UPLOAD_DIR`. Defaults/normalizers: `model=veo-3.1-lite-lp`, `aspect_ratio=16:9`, `ingredient_image_paths=[]`, empty strings are stripped to `None`, and omitted `text-to-image` model selection is route-mapped onto the image default path. |
 | `Job` | Full record: `id`, `type`, `status`, `job_level`, `parent_job_id`, `chain_id`, `profile`, `project_url`, `media_id`, `edit_url`, all create-time operation fields, `output_files`, `generation_id`, `worker_id`, `claimed_at`, `completed_at`, `error`, `created_at`, `updated_at`. |
 | `JobUpdate` | Worker update payload only: `status`, `project_url`, `media_id`, `edit_url`, `profile`, `output_files`, `generation_id`, `error`, `completed_at`. |
 
@@ -192,7 +201,7 @@ DB notes:
 
 | Model | Fields / notes |
 |---|---|
-| `ChainCreate` | Request body: `jobs: list[JobCreate]`, optional `profile`. Current `POST /api/chains` is linear-chain only: each step becomes a child of the previous step, explicit per-step `parent_job_id` values are overwritten, and chain-level `profile` wins over any per-step `JobCreate.profile`. |
+| `ChainCreate` | Request body: `jobs: list[JobCreate]`, optional `profile`. Current `POST /api/chains` is linear-chain only: each step becomes a child of the previous step, explicit per-step `parent_job_id` values are overwritten, and per-step `JobCreate.profile` is ignored unconditionally by both `POST /api/chains` and `POST /api/templates/{id}/instantiate`. Only the top-level chain `profile` is used; if it is omitted, every created job is unpinned. |
 | `Chain` | Immutable metadata row: `id`, optional `profile`, `created_at`, `updated_at`. |
 | `ChainProgress` | Aggregate counts: `completed`, `total`. |
 | `ChainAggregate` | `GET /api/chains/{id}` response: `id`, optional `profile`, `created_at`, derived `status`, derived `progress`, and ordered `jobs: list[str]`. |
@@ -206,7 +215,7 @@ DB notes:
 
 | Model | Fields / notes |
 |---|---|
-| `Profile` | `name`, optional `google_account`, `locale`, `tier`, `status`, optional `current_job_id`, optional `worker_id`, optional `last_used_at`, `created_at`. |
+| `Profile` | `name`, optional `google_account`, `locale`, `tier`, `status`, optional `current_job_id`, optional `worker_id`, optional `last_used_at`, `created_at`. Defaults: `locale=en`, `tier=ultra`, `status=available`. |
 | `ProfileUpdate` | Mutable fields only: optional `status`, `current_job_id`, `worker_id`, `google_account`, `locale`, `tier`. |
 
 ### Character models
@@ -221,13 +230,14 @@ DB notes:
 
 | Model | Fields / notes |
 |---|---|
-| `TemplateStep` | Placeholder-friendly step fields: `type`, `prompt`, `model`, `aspect_ratio`, `parent_job_id`, `bbox`, `direction`, `start_image_path`, `end_image_path`, `ref_image_path`, `ingredient_image_paths`, optional `safety_filter` legacy enum. Explicit `parent_job_id` values are accepted in stored templates but ignored at instantiate time because steps are rewritten into the same linear-chain shape. |
+| `TemplateStep` | Placeholder-friendly step fields: `type`, `prompt`, `model`, `aspect_ratio`, `parent_job_id`, `bbox`, `direction`, `start_image_path`, `end_image_path`, `ref_image_path`, `ingredient_image_paths`, optional `safety_filter` legacy enum. `TemplateStep` uses `extra="allow"` for stored placeholder-friendly extras. Explicit `parent_job_id` values are accepted in stored templates but ignored at instantiate time because steps are rewritten into the same linear-chain shape. |
 | `TemplateCreate` | Request body for create/update: `name`, optional `description`, `steps`. |
 | `Template` | Stored template: `id`, `name`, optional `description`, `steps`, `created_at`, `updated_at`. |
 | `TemplateInstantiate` | Instantiate request: `template_id`, `vars`. |
 
 Template note:
 
+- Create/update validates placeholder syntax and variable names only; instantiate then enforces path/body `template_id` match, variable-name validity, required-variable presence, and finally `JobCreate` validators when concrete steps are materialized.
 - `TemplateStep.safety_filter` is a live model remnant, not a live job-API contract. Current runtime guidance is still "do not wire or persist" a 3-level safety filter through the live job API. See [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md).
 
 ## 7. Code map
@@ -328,7 +338,7 @@ Every file below was read directly when this spine was written.
 | [frontend/index.html](../frontend/index.html) | Declares route anchors, sidebar nav, shared app shell, and script load order for every page module. |
 | [frontend/js/app.js](../frontend/js/app.js) | Base hash router, page registry, modal/toast helpers, shared route loading, and generic job-type icon helpers. |
 | [frontend/js/api.js](../frontend/js/api.js) | Browser-side REST client wrappers for jobs, chains, profiles, and uploads. |
-| [frontend/js/ws.js](../frontend/js/ws.js) | Reconnect helper around the raw WebSocket; parses `{event,data}` frames, emits named callbacks such as `WS.on('job_update', handler)`, and also exposes a generic `message` event. |
+| [frontend/js/ws.js](../frontend/js/ws.js) | Reconnect helper around the raw WebSocket; emits named callbacks such as `WS.on('job_update', handler)` with only the frame `data`, and also exposes a generic `message` event for raw-frame access. Keepalive `ping` frames carry `ts` on the raw frame, so callers that need `ping.ts` must inspect `message`, not `WS.on('ping')`. |
 | [frontend/js/constants.js](../frontend/js/constants.js) | Mirrors job types, models, aspect ratios, and camera presets from backend/Flow code. |
 
 ### Known frontend/API drift
@@ -509,7 +519,7 @@ Base route anchors live in [frontend/index.html](../frontend/index.html). Dynami
 | [frontend/js/pages/home.js](../frontend/js/pages/home.js) | Home | `#home` | `GET /api/jobs`, `GET /api/jobs/{id}`, `WS /ws/jobs` | Page still requests `?limit=` through `API.jobs.list()`, which backend ignores on current `master`. |
 | [frontend/js/pages/dashboard.js](../frontend/js/pages/dashboard.js) | Dashboard | `#dashboard` | `GET /api/jobs/counts`, `GET /api/jobs`, `POST /api/jobs/recover`, `GET /api/jobs/{id}`, `DELETE /api/jobs/{id}`, `WS /ws/jobs` | Recent-job widget still passes `?limit=20`; backend ignores it. |
 | [frontend/js/pages/create-job.js](../frontend/js/pages/create-job.js) | Create Job | `#create` | `GET /api/profiles`, `POST /api/jobs`, `POST /api/uploads` | Top-level nav route. |
-| [frontend/js/pages/chain-builder.js](../frontend/js/pages/chain-builder.js) | Chain Builder | `#chains` | `GET /api/profiles`, `POST /api/chains` | Top-level nav route. |
+| [frontend/js/pages/chain-builder.js](../frontend/js/pages/chain-builder.js) | Chain Builder | `#chains` | `GET /api/profiles`, `POST /api/uploads`, `POST /api/chains` | Top-level nav route. Image-backed steps upload assets first, then submit the final chain payload. |
 | [frontend/js/pages/profiles.js](../frontend/js/pages/profiles.js) | Profiles | `#profiles` | `GET /api/profiles`, `POST /api/profiles`, `POST /api/profiles/{name}/quarantine`, `POST /api/profiles/{name}/activate` | Top-level nav route. |
 | [frontend/js/pages/settings.js](../frontend/js/pages/settings.js) | Settings | `#settings` | `GET /health`, `GET /api/jobs/counts`, `POST /api/jobs/recover`, `GET /api/jobs`, `DELETE /api/jobs/{id}` | Top-level nav route. |
 | [frontend/js/pages/characters.js](../frontend/js/pages/characters.js) | Characters | `#characters` | `GET/POST /api/characters`, `GET/PUT/DELETE /api/characters/{id}`, `POST /api/uploads` | Top-level nav route. |
@@ -536,8 +546,8 @@ Base route anchors live in [frontend/index.html](../frontend/index.html). Dynami
 ## 11. How to add a new feature
 
 1. Branch from `master` using `claude/<descriptive-slug>` and keep the PR base explicit as `master`.
-2. If the feature adds a new Flow operation, update `JobType` and `JobCreate` validation in [server/models/job.py](../server/models/job.py), add `flow/operations/<name>.py`, wire it into `HANDLER_MAP` in [worker/dispatcher.py](../worker/dispatcher.py), update per-type timeout/no-signal handling in [flow/wait.py](../flow/wait.py), plumb the literal type through the operation wait call (`wait_for_completion(..., job_type="<new-type>")`) following the pattern in [flow/operations/_base.py](../flow/operations/_base.py), and thread any new fields through `Job`, store serialization, SQLite DDL, and tests.
-3. Mirror every new job type in the frontend: update [frontend/js/constants.js](../frontend/js/constants.js), the Create Job selector plus L1/L2/input gating sets and icons in [frontend/js/pages/create-job.js](../frontend/js/pages/create-job.js), the Chain Builder gating lists (`FIRST_TYPE`, `L1_ONLY_TYPES`, `SUBSEQUENT_TYPES`), add-button copy, and validation in [frontend/js/pages/chain-builder.js](../frontend/js/pages/chain-builder.js), and shared icon helpers in [frontend/js/app.js](../frontend/js/app.js). If you add a type without updating those lists, it will appear in the wrong chain position.
+2. If the feature adds a new Flow operation, update `JobType` and `JobCreate` validation in [server/models/job.py](../server/models/job.py), add `flow/operations/<name>.py`, wire it into `HANDLER_MAP` in [worker/dispatcher.py](../worker/dispatcher.py), update per-type timeout/no-signal handling in [flow/wait.py](../flow/wait.py), plumb the literal type through the operation wait call (`wait_for_completion(..., job_type="<new-type>")`) following the pattern in [flow/operations/_base.py](../flow/operations/_base.py), and thread any new fields/defaults through `Job`, [server/routes/jobs.py](../server/routes/jobs.py) helpers `_build_job()` and `_resolve_model()`, store serialization, and SQLite DDL. Minimum test set: [tests/test_jobcreate_validators.py](../tests/test_jobcreate_validators.py), [tests/test_jobs_api.py](../tests/test_jobs_api.py), [tests/test_dispatcher.py](../tests/test_dispatcher.py), and [tests/test_dispatcher_jobid_stamps.py](../tests/test_dispatcher_jobid_stamps.py); if model defaults change, also update [tests/test_default_model.py](../tests/test_default_model.py).
+3. Mirror every new job type in the frontend: update [frontend/js/constants.js](../frontend/js/constants.js), the Create Job selector plus L1/L2/input gating sets, single-submit UI, and batch-mode gating in [frontend/js/pages/create-job.js](../frontend/js/pages/create-job.js), the Batch Queue type gating in [frontend/js/pages/batch-queue.js](../frontend/js/pages/batch-queue.js), the Chain Builder gating lists (`FIRST_TYPE`, `L1_ONLY_TYPES`, `SUBSEQUENT_TYPES`), add-button copy, image-upload assumptions, and validation in [frontend/js/pages/chain-builder.js](../frontend/js/pages/chain-builder.js), the Chain Tree type-theme map in [frontend/js/pages/chain-tree.js](../frontend/js/pages/chain-tree.js), and shared icon helpers in [frontend/js/app.js](../frontend/js/app.js). If you add a type without updating those maps/lists, it will render in the wrong place or fall back to generic styling.
 4. If the feature adds an API route, extend an existing domain router when possible. If you truly need a new router module, create `server/routes/<name>.py`, export it from [server/routes/__init__.py](../server/routes/__init__.py), then import/include it in [server/app.py](../server/app.py); add/update the matching model under `server/models/` and add tests.
 5. If the feature adds a new UI page, copy an existing module such as [frontend/js/pages/create-job.js](../frontend/js/pages/create-job.js) or [frontend/js/pages/batch-queue.js](../frontend/js/pages/batch-queue.js) and keep the page-module IIFE shape:
 
@@ -597,10 +607,10 @@ Frontend pages are plain global scripts, not bundled modules: wrap page-local st
 - [CLAUDE.md](../CLAUDE.md) - session canon for Claude/Codex work in this repo.
 - [docs/DESIGN.md](DESIGN.md) - full architecture, design decisions, and historical rationale.
 - [docs/SPEC.md](SPEC.md) - invariants (`INV-N`), code rules, and test contract.
-- [docs/WORKPLAN.md](WORKPLAN.md) - roadmap and active work plan.
+- [docs/WORKPLAN.md](WORKPLAN.md) - Phase A historical ledger (closed 2026-04-17); active planning lives in session reports plus ad-hoc PRs.
 - [docs/FLOW_MULTILEVEL_JOBS.md](FLOW_MULTILEVEL_JOBS.md) - chain behavior history and multilevel Flow specifics; historical / pre-INV-2 for `video_index` targeting.
 - [docs/FLOW_PIPELINE_KNOWLEDGE.md](FLOW_PIPELINE_KNOWLEDGE.md) - pipeline/domain knowledge gathered from live probing; historical / pre-INV-2 where it still describes `video_index` targeting.
-- [docs/FLOW_UI_REFERENCE.md](FLOW_UI_REFERENCE.md) - selector and UI-structure evidence from Google Flow.
+- [docs/FLOW_UI_REFERENCE.md](FLOW_UI_REFERENCE.md) - historical selector reference; behavioral notes may be stale (for example legacy `camera-control` naming).
 - [docs/CHROME_LAUNCH_SECURITY.md](CHROME_LAUNCH_SECURITY.md) - Chrome anti-detection and launch-security notes.
 - [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md) - why the 3-level safety filter is legacy only.
 - [docs/session-reports/INDEX.md](session-reports/INDEX.md) - chronological session report index.
