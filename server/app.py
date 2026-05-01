@@ -90,14 +90,6 @@ else:
     _allow_origins = ["*"]
     _allow_credentials = False
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_allow_origins,
-    allow_credentials=_allow_credentials,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # -- Dashboard password gate --------------------------------------------------
 # Active only when DASHBOARD_PASSWORD is set. Browser navigations land on
 # /login, API calls return JSON 401. Worker traffic (/api/worker/*) is gated
@@ -105,6 +97,16 @@ app.add_middleware(
 # middleware.
 if DASHBOARD_AUTH_ENABLED:
     app.add_middleware(DashboardAuthMiddleware)
+
+# CORSMiddleware must stay outermost so browser preflight OPTIONS requests
+# are answered with Access-Control-Allow-* headers before auth runs.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allow_origins,
+    allow_credentials=_allow_credentials,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # -- Auth endpoints (registered regardless so the SPA login page works) -------
 app.add_api_route("/login", serve_login_page, methods=["GET"], include_in_schema=False)

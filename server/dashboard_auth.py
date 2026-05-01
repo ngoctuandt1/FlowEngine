@@ -1,9 +1,9 @@
 """Dashboard password gate.
 
-Wraps the FastAPI app with a Starlette ``BaseHTTPMiddleware`` that
-requires either a valid signed-cookie session or a worker API key on
-every request, and exposes ``POST /api/auth/login`` + ``POST /api/auth/logout``
-plus a ``GET /login`` HTML page.
+Wraps the FastAPI app with a pure ASGI middleware that requires either
+a valid signed-cookie session or a worker API key on every request, and
+exposes ``POST /api/auth/login`` + ``POST /api/auth/logout`` plus a
+``GET /login`` HTML page.
 
 Activated only when ``DASHBOARD_PASSWORD`` is set in the environment.
 Worker traffic (``/api/worker/*``) is left to ``server/auth.py`` which
@@ -28,13 +28,14 @@ from urllib.parse import quote
 
 from fastapi import Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
 
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
 DASHBOARD_AUTH_ENABLED = bool(DASHBOARD_PASSWORD)
+TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "0").strip() == "1"
 
 AUTH_COOKIE = "flowengine_session"
 AUTH_MAX_AGE = 30 * 24 * 3600  # 30 days
@@ -101,20 +102,37 @@ PUBLIC_PATHS = {
 # Path prefixes the gate ignores entirely.
 # Static assets are public; login.html ships its own form. Worker endpoints
 # are gated by Bearer-token auth in server/auth.py — they must NOT require
-# a dashboard cookie or workers would 401 on every claim.
+# a dashboard cookie or workers would 401 on every claim. Generated and
+# uploaded media mounts are intentionally public; gate them at nginx or
+# another proxy layer if that ever needs to change.
 PUBLIC_PATH_PREFIXES = (
     "/css/",
     "/js/",
     "/assets/",
+    "/downloads/",
+    "/uploads/",
     "/api/worker/",
 )
 
 
 def _request_is_https(request: Request) -> bool:
-    forwarded = (request.headers.get("x-forwarded-proto") or "").strip().lower()
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip() == "https"
+    # Production behind Cloudflare Tunnel should set TRUST_PROXY_HEADERS=1
+    # and run uvicorn with --proxy-headers --forwarded-allow-ips="*".
+    if TRUST_PROXY_HEADERS:
+        forwarded = (request.headers.get("x-forwarded-proto") or "").strip().lower()
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip() == "https"
     return (request.url.scheme or "").lower() == "https"
+
+
+def _is_public_path(path: str) -> bool:
+    if path in PUBLIC_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in PUBLIC_PATH_PREFIXES)
+
+
+def _is_cors_preflight(request: Request) -> bool:
+    return request.method == "OPTIONS" and "access-control-request-method" in request.headers
 
 
 def _sign_token(ts: int) -> str:
@@ -207,40 +225,57 @@ async function doLogin() {
 """
 
 
-class DashboardAuthMiddleware(BaseHTTPMiddleware):
+class DashboardAuthMiddleware:
     """Gate every non-public request behind a signed-cookie session."""
 
-    async def dispatch(self, request: Request, call_next):
-        if not DASHBOARD_AUTH_ENABLED:
-            return await call_next(request)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        if not DASHBOARD_AUTH_ENABLED:
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         path = request.url.path
 
-        if path in PUBLIC_PATHS:
-            return await call_next(request)
-        for prefix in PUBLIC_PATH_PREFIXES:
-            if path.startswith(prefix):
-                return await call_next(request)
+        # Let browser preflight requests reach CORSMiddleware even if
+        # middleware order regresses later.
+        if _is_cors_preflight(request):
+            await self.app(scope, receive, send)
+            return
+
+        if _is_public_path(path):
+            await self.app(scope, receive, send)
+            return
 
         token = request.cookies.get(AUTH_COOKIE)
         if _verify_token(token or ""):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         # API requests get a JSON 401; browser navigations get a redirect
         # to the login page so the SPA shell does not load unauthenticated.
         if path.startswith("/api/") or path.startswith("/ws/"):
-            return JSONResponse(
+            response = JSONResponse(
                 status_code=401,
                 content={"error": "Unauthorized"},
             )
+            await response(scope, receive, send)
+            return
 
         next_path = path
         if request.url.query:
             next_path = f"{next_path}?{request.url.query}"
-        return RedirectResponse(
+        response = RedirectResponse(
             url=f"/login?next={quote(next_path, safe='')}",
             status_code=307,
         )
+        await response(scope, receive, send)
 
 
 async def serve_login_page() -> HTMLResponse:
