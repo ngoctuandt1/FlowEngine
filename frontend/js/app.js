@@ -71,7 +71,15 @@ const App = {
    */
   _onRoute() {
     const hash = location.hash.slice(1) || 'home';
-    const pageName = hash.split('/')[0];
+    // Strip query string before splitting (`#chain-builder?parent=…`).
+    const hashPath = hash.split('?')[0];
+    let pageName = hashPath.split('/')[0];
+
+    // Aliases: semantic hashes that map to a registered page under a different key.
+    const ROUTE_ALIASES = { 'chain-builder': 'chains', 'job-detail': 'job-detail' };
+    if (ROUTE_ALIASES[pageName] && this.pages[ROUTE_ALIASES[pageName]]) {
+      pageName = ROUTE_ALIASES[pageName];
+    }
 
     if (!this.pages[pageName]) {
       location.hash = '#home';
