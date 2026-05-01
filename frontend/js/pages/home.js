@@ -63,6 +63,10 @@
     return `/downloads/${encodeURI(norm)}`;
   }
 
+  function mediaTileHelper() {
+    return App.mediaTile || window.MediaUtil;
+  }
+
   // ---- render ---------------------------------------------------------------
 
   function renderTile(job) {
@@ -71,14 +75,9 @@
     const promptText = job.prompt || job.direction || '(no prompt)';
     const mediaUrl = status === 'completed' ? mediaUrlFor(job) : null;
 
-    // <video preload="none"> — don't pre-fetch network for 12 tiles.
-    // Hover bumps preload to auto + plays. Adds richer UX than Flow's
-    // static <img> while staying network-cheap on first paint.
+    // Completed tiles stay metadata-only on first paint, then play on hover.
     const thumb = mediaUrl
-      ? `<video class="tile-video" src="${App.escapeHtml(mediaUrl)}"
-                muted loop playsinline preload="none"
-                onmouseenter="this.preload='auto'; this.play().catch(()=>{})"
-                onmouseleave="this.pause(); this.currentTime=0;"></video>`
+      ? mediaTileHelper().videoTag({ src: mediaUrl, alt: promptText })
       : `<span class="material-icons type-icon ${App.jobTypeClass(type)}">${App.jobTypeIcon(type)}</span>`;
 
     // Completed = silent (Flow's default). Anything else gets a small

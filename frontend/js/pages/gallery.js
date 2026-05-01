@@ -113,6 +113,10 @@
     return App.truncate(text, length);
   }
 
+  function mediaTileHelper() {
+    return App.mediaTile || window.MediaUtil;
+  }
+
   function galleryItems() {
     return state.jobs
       .map((job) => {
@@ -156,9 +160,10 @@
     const { job, media } = item;
     const typeLabel = jobTypeLabel(job.type);
     const title = promptSnippet(job);
+    const mediaTile = mediaTileHelper();
     const preview = media.kind === 'video'
-      ? `<video class="tile-video" src="${App.escapeHtml(media.url)}" ${media.poster ? `poster="${App.escapeHtml(media.poster)}"` : ''} muted loop playsinline preload="metadata" onmouseenter="this.play().catch(()=>{})" onmouseleave="this.pause(); this.currentTime=0;"></video>`
-      : `<img src="${App.escapeHtml(media.url)}" alt="${App.escapeHtml(title)}" style="position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#000;">`;
+      ? mediaTile.videoTag({ src: media.url, poster: media.poster, alt: title })
+      : mediaTile.imgTag({ src: media.url, alt: title });
 
     return `
       <button type="button" class="project-tile gallery-tile" data-job-id="${App.escapeHtml(job.id || '')}" style="padding:0; text-align:left; border:0; background:transparent;">

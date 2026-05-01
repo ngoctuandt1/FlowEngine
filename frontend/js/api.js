@@ -217,3 +217,26 @@ class APIError extends Error {
     this.status = status;
   }
 }
+
+const TILE_MEDIA_ERROR_HANDLER = "this.closest('.tile-thumb')?.classList.add('tile-thumb--broken'); this.remove();";
+
+const MediaTile = {
+  imgTag({ src, alt, posterFallback } = {}) {
+    const imageSrc = src || posterFallback || '';
+    return `<img src="${App.escapeHtml(imageSrc)}" alt="${App.escapeHtml(alt || '')}" loading="lazy" decoding="async" onerror="${TILE_MEDIA_ERROR_HANDLER}" style="width:100%; height:100%; object-fit:cover; display:block;">`;
+  },
+
+  videoTag({ src, poster, alt } = {}) {
+    const posterAttr = poster ? ` poster="${App.escapeHtml(poster)}"` : '';
+    const ariaAttr = alt ? ` aria-label="${App.escapeHtml(alt)}"` : '';
+    return `<video class="tile-video" src="${App.escapeHtml(src || '')}"${posterAttr}${ariaAttr} muted loop playsinline preload="metadata" onerror="${TILE_MEDIA_ERROR_HANDLER}" onmouseenter="this.play().catch(()=>{})" onmouseleave="this.pause(); this.currentTime=0;"></video>`;
+  },
+};
+
+window.MediaUtil = MediaTile;
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (typeof App !== 'undefined') {
+    App.mediaTile = MediaTile;
+  }
+});
