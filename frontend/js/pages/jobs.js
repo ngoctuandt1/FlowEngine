@@ -130,7 +130,7 @@
       const profile = job.profile || '-';
 
       return `
-        <tr data-job-id="${App.escapeHtml(jobId)}">
+        <tr data-job-id="${App.escapeHtml(jobId)}" style="cursor:pointer;">
           <td title="${App.escapeHtml(jobId)}">
             <code>${App.escapeHtml(App.truncate(jobId, 12))}</code>
           </td>
@@ -412,6 +412,13 @@
     }
   }
 
+  function openJobDetail(jobId) {
+    window.location.hash = `job-detail/${encodeURIComponent(jobId)}`;
+    setTimeout(() => {
+      if (App.currentPage !== 'job-detail') showJob(jobId);
+    }, 0);
+  }
+
   async function retryJob(jobId, button) {
     setActionBusy(button, true);
     try {
@@ -547,14 +554,18 @@
 
       document.getElementById('jobs-results')?.addEventListener('click', async (event) => {
         const button = event.target.closest('[data-action]');
-        if (!button) return;
+        if (!button) {
+          const row = event.target.closest('tr[data-job-id]');
+          if (row?.dataset.jobId) openJobDetail(row.dataset.jobId);
+          return;
+        }
 
         const action = button.dataset.action;
         const jobId = button.dataset.jobId;
         if (!action || !jobId) return;
 
         if (action === 'view') {
-          showJob(jobId);
+          openJobDetail(jobId);
           return;
         }
         if (action === 'retry') {
