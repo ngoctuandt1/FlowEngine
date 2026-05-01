@@ -261,12 +261,9 @@
         }
       };
 
-      const unsub1 = WS.on('job_created', refresh);
-      const unsub2 = WS.on('job_updated', refresh);
-      const unsub3 = WS.on('job_completed', refresh);
-      const unsub4 = WS.on('job_failed', refresh);
-      const unsub5 = WS.on('job_deleted', refresh);
-      wsCleanup = [unsub1, unsub2, unsub3, unsub4, unsub5];
+      const unsub1 = WS.on('job_update', refresh);
+      const unsub2 = WS.on('connected', refresh);
+      wsCleanup = [unsub1, unsub2];
     },
 
     destroy() {

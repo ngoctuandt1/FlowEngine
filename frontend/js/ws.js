@@ -1,6 +1,9 @@
 /**
  * FlowEngine WebSocket Client
  * Real-time job status updates with auto-reconnect.
+ *
+ * Server emits `{event, data}`. Subscribe via `ws.on(event, handler)`.
+ * Each handler receives the `data` field directly.
  */
 const WS = {
   socket: null,
@@ -83,8 +86,8 @@ const WS = {
 
   /**
    * Register an event listener.
-   * Events: connected, disconnected, job_created, job_updated,
-   *         job_completed, job_failed, job_deleted, status_change
+   * Client lifecycle events: connected, disconnected
+   * Server events are emitted by name, e.g. job_update, ping.
    */
   on(event, callback) {
     if (!this.listeners.has(event)) {
@@ -113,15 +116,15 @@ const WS = {
 
   // ---- Private ----
 
-  _handleMessage(data) {
-    const { type, payload } = data;
-    if (!type) return;
+  _handleMessage(frame) {
+    const { event, data } = frame;
+    if (!event) return;
 
-    // Emit specific event type
-    this._emit(type, payload);
+    // Emit the server event name and pass the payload directly.
+    this._emit(event, data);
 
     // Also emit generic 'message' for any listener
-    this._emit('message', data);
+    this._emit('message', frame);
   },
 
   _emit(event, data) {
