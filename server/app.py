@@ -4,7 +4,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +36,8 @@ from server.routes import (
 
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+STATIC_CACHEABLE_PREFIXES = ("/js/", "/css/", "/assets/")
+STATIC_CACHE_CONTROL = "public, max-age=60, must-revalidate"
 
 
 def _resolve_data_dir(env_var: str, default: str) -> Path:
@@ -144,6 +146,15 @@ DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/downloads", StaticFiles(directory=str(DOWNLOAD_DIR)), name="downloads")
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+
+@app.middleware("http")
+async def set_static_cache_headers(request: Request, call_next):
+    """Keep frontend bundles revalidating quickly after deploys."""
+    response = await call_next(request)
+    if request.url.path.startswith(STATIC_CACHEABLE_PREFIXES):
+        response.headers["Cache-Control"] = STATIC_CACHE_CONTROL
+    return response
 
 
 @app.get("/")
