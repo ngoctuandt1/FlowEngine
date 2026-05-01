@@ -32,7 +32,12 @@
     },
   };
 
-  const DOWNLOAD_HEIGHTS = [1080, 720, 480, 360];
+  const DOWNLOAD_HEIGHTS = [
+    { value: 1080, label: '1080p' },
+    { value: 720, label: '720p' },
+    { value: 480, label: '480p' },
+    { value: 360, label: '360p' },
+  ];
 
   let activeTab = 'cut';
   let profiles = [];
@@ -55,7 +60,7 @@
       },
       download: {
         url: '',
-        max_height: '1080',
+        max_height: 1080,
         error: '',
         result: null,
       },
@@ -573,7 +578,9 @@
 
   function updateStateField(tabKey, field, value) {
     if (!state[tabKey] || !(field in state[tabKey])) return;
-    state[tabKey][field] = value;
+    state[tabKey][field] = tabKey === 'download' && field === 'max_height'
+      ? Number(value)
+      : value;
   }
 
   function listFromTextarea(text) {
