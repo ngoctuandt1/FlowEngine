@@ -8,8 +8,8 @@ def _template_payload() -> dict:
         "name": "Starter chain",
         "description": "Reusable workflow",
         "steps": [
-            {"type": "text-to-video", "prompt": "Intro {{subject}}"},
-            {"type": "extend-video", "prompt": "Continue {{subject}}"},
+            {"type": "text-to-video", "prompt": "Intro {{subject}}", "profile": "template-profile"},
+            {"type": "extend-video", "prompt": "Continue {{subject}}", "profile": "template-profile"},
         ],
     }
 
@@ -125,6 +125,10 @@ async def test_instantiate_template_happy_path(api_client):
     assert [job["prompt"] for job in body["jobs"]] == [
         "Intro dragons",
         "Continue dragons",
+    ]
+    assert [job["profile"] for job in body["jobs"]] == [
+        "template-profile",
+        "template-profile",
     ]
     assert body["jobs"][0]["chain_id"] == body["chain_id"]
     assert body["jobs"][1]["parent_job_id"] == body["jobs"][0]["id"]

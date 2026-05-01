@@ -93,13 +93,12 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
     B4: also INSERT a row into the `chains` table (immutable metadata).
     Aggregated status is computed on read — never synced from job updates.
     """
-    if not req.jobs:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="jobs must contain at least 1 item",
-        )
+    try:
+        effective_profile = req.effective_profile
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    chain = Chain(id=str(uuid.uuid4()), profile=req.profile)
+    chain = Chain(id=str(uuid.uuid4()), profile=effective_profile)
     await create_chain(chain)
 
     jobs: list[Job] = []
@@ -110,7 +109,8 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
         validate_job_create(step)
         step.parent_job_id = prev_id
         step.chain_id = chain.id
-        job = _build_job(step, profile=req.profile, chain_id=chain.id, job_level=level)
+        step.profile = effective_profile
+        job = _build_job(step, profile=effective_profile, chain_id=chain.id, job_level=level)
         await create_job(job)
         jobs.append(job)
         prev_id = job.id
