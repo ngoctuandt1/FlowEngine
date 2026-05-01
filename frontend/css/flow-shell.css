@@ -190,10 +190,10 @@ body.route-home #top-bar { display: none; }
   .project-tile { flex-basis: 100%; max-width: 100%; }
 }
 
-/* Tile thumb — full-bleed 16:9 (453.328 / 254.984 ≈ 1.778). */
+/* Tile thumb — full-bleed 16:9 to avoid subpixel rounding artifacts. */
 .tile-thumb {
   position: relative;
-  aspect-ratio: 453 / 255;
+  aspect-ratio: 16 / 9;
   background:
     radial-gradient(circle at 30% 30%, rgba(124, 92, 255, 0.14), transparent 60%),
     linear-gradient(135deg, #1c1d22 0%, #0e0f12 100%);
@@ -203,13 +203,70 @@ body.route-home #top-bar { display: none; }
   border-radius: var(--radius);
   overflow: hidden;
 }
-.tile-video {
+.tile-video,
+.tile-thumb > img,
+.tile-thumb > video {
   position: absolute;
   inset: 0;
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.tile-thumb > img,
+.tile-thumb > video {
+  z-index: 0;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  will-change: transform;
+}
+.tile-thumb > img {
+  image-rendering: auto;
+}
+.tile-video {
   background: #000;
+}
+.tile-thumb--broken {
+  background:
+    radial-gradient(circle at 24% 24%, var(--accent-soft), transparent 58%),
+    linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+}
+.tile-thumb--broken > img,
+.tile-thumb--broken > video {
+  opacity: 0;
+}
+.tile-thumb--broken::before,
+.tile-thumb--broken::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.tile-thumb--broken::before {
+  content: '';
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+}
+.tile-thumb--broken::after {
+  content: 'broken_image';
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  color: rgba(241, 243, 244, 0.46);
+  font-family: 'Material Icons';
+  font-size: 42px;
+  font-style: normal;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1;
+  text-transform: none;
+}
+.tile-thumb--broken .type-icon {
+  opacity: 0;
+}
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 2dppx) {
+  .tile-thumb > img {
+    image-rendering: -webkit-optimize-contrast;
+  }
 }
 .type-icon { font-size: 44px; color: rgba(255, 255, 255, 0.5); }
 
