@@ -6,6 +6,8 @@
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
   const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+  const RETRYABLE_STATUSES = new Set(['failed', 'cancelled']);
+  const DELETE_CANCELLED_STATUSES = new Set(['running', 'claimed', 'pending']);
   const JOB_ROUTE_RE = /^(job(?:-detail)?)(?:[/?]|$)/i;
 
   const state = {
@@ -13,6 +15,7 @@
     job: null,
     parent: null,
     children: [],
+    childrenError: '',
     requestId: 0,
     refreshTimer: null,
     wsUnsubs: [],
@@ -187,16 +190,14 @@
   }
 
   async function fetchJobChildren(jobId) {
-    try {
-      const children = await API.fetch(`/api/jobs/${encodeURIComponent(jobId)}/children`);
-      return normalizeJobList(children);
-    } catch (err) {
-      if (err instanceof APIError && err.status === 404) {
-        const fallback = await API.fetch(`/api/jobs?parent_job_id=${encodeURIComponent(jobId)}`);
-        return normalizeJobList(fallback).filter((job) => job?.parent_job_id === jobId);
-      }
-      throw err;
-    }
+    const children = await API.fetch(`/api/jobs/${encodeURIComponent(jobId)}/children`);
+    return normalizeJobList(children);
+  }
+
+  function errorMessage(err) {
+    if (typeof err?.message === 'string' && err.message.trim()) return err.message;
+    if (typeof err === 'string' && err.trim()) return err;
+    return 'Unknown error';
   }
 
   function renderPromptCard(job) {
@@ -296,6 +297,15 @@
   }
 
   function renderChildren(job) {
+    if (state.childrenError) {
+      return `
+        <div class="job-detail-error-banner">
+          <span class="material-icons" style="font-size:18px">error_outline</span>
+          <div>${App.escapeHtml(`Failed to load children: ${state.childrenError}`)}</div>
+        </div>
+      `;
+    }
+
     if (!state.children.length) {
       return `
         <div class="job-detail-empty-note">
@@ -436,6 +446,7 @@
   function renderStatusHeader(job) {
     const flowUrl = flowLink(job);
     const isTerminal = TERMINAL_STATUSES.has(job.status);
+    const canRetry = RETRYABLE_STATUSES.has(job.status);
     const statusCopy = isTerminal
       ? `Final state updated ${App.escapeHtml(formatRelativeDate(job.updated_at) || 'recently')}.`
       : 'Live updates active. This page will re-fetch automatically when the worker pushes job updates.';
@@ -468,9 +479,11 @@
             <button class="btn btn-outline" type="button" data-job-detail-action="refresh">
               <span class="material-icons" style="font-size:16px">refresh</span> Refresh
             </button>
-            <button class="btn btn-primary" type="button" data-job-detail-action="retry">
-              <span class="material-icons" style="font-size:16px">restart_alt</span> Retry
-            </button>
+            ${canRetry ? `
+              <button class="btn btn-primary" type="button" data-job-detail-action="retry">
+                <span class="material-icons" style="font-size:16px">restart_alt</span> Retry
+              </button>
+            ` : ''}
             <button class="btn btn-danger" type="button" data-job-detail-action="delete">
               <span class="material-icons" style="font-size:16px">delete</span> Delete
             </button>
@@ -612,6 +625,7 @@
       state.job = null;
       state.parent = null;
       state.children = [];
+      state.childrenError = '';
       updatePageTitle('Job Detail');
       repaint(renderMessageState('link_off', 'Missing job id', 'Open a job from the Jobs page or navigate to #job-detail/<id>.'));
       return;
@@ -636,6 +650,7 @@
       state.job = job;
       state.parent = parentResult.status === 'fulfilled' ? parentResult.value : null;
       state.children = childrenResult.status === 'fulfilled' ? childrenResult.value : [];
+      state.childrenError = childrenResult.status === 'rejected' ? errorMessage(childrenResult.reason) : '';
 
       repaint(renderLoadedState(job));
       updatePageTitle(`Job ${shortId(job.id, 10)}`);
@@ -644,10 +659,11 @@
       state.job = null;
       state.parent = null;
       state.children = [];
+      state.childrenError = '';
       updatePageTitle('Job Detail');
-      repaint(renderMessageState('error_outline', 'Failed to load job', err.message || 'Unknown error'));
+      repaint(renderMessageState('error_outline', 'Failed to load job', errorMessage(err)));
       if (!options.silent) {
-        App.toast('Failed to load job: ' + err.message, 'error');
+        App.toast('Failed to load job: ' + errorMessage(err), 'error');
       }
     }
   }
@@ -706,7 +722,7 @@
   }
 
   async function retryCurrentJob(button) {
-    if (!state.job) return;
+    if (!state.job || !RETRYABLE_STATUSES.has(state.job.status)) return;
     setActionBusy(button, true, 'Retrying...');
     try {
       const retried = await API.jobs.create(buildRetryPayload(state.job));
@@ -726,13 +742,14 @@
     if (!state.jobId) return;
     if (!confirm('Delete this job? This cannot be undone.')) return;
 
+    const toastCopy = DELETE_CANCELLED_STATUSES.has(state.job?.status) ? 'Job cancelled' : 'Job deleted';
     setActionBusy(button, true, 'Deleting...');
     try {
       await API.jobs.delete(state.jobId);
-      App.toast('Job deleted', 'success');
+      App.toast(toastCopy, 'success');
       window.location.hash = '#jobs';
     } catch (err) {
-      App.toast('Failed to delete job: ' + err.message, 'error');
+      App.toast('Failed to delete job: ' + errorMessage(err), 'error');
       setActionBusy(button, false);
     }
   }
@@ -1127,6 +1144,7 @@
       state.job = null;
       state.parent = null;
       state.children = [];
+      state.childrenError = '';
     },
   };
 
