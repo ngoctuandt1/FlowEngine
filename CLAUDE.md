@@ -200,7 +200,11 @@ binding FlowEngine on `0.0.0.0:8899`. Full deploy steps, live verification, and
 rollback tags are captured in
 [2026-05-01_web-ai-hassio-flowengine-cutover.md](docs/session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md).
 
-- Current `master` head for this docs sync: `6a6b6a3`.
+**2026-05-01 -> 2026-05-02 SPINE canon sync - merged to `master` at `cf991e0`**
+
+Docs-only `#109-#125` canon-sync sweep: `PROJECT_SPINE.md` established as the repo spine, linked canon docs were synced, and doc review surfaced 6 real bugs fixed on `master`. See [2026-05-02_spine-doc-canon-sync.md](docs/session-reports/2026-05-02_spine-doc-canon-sync.md).
+
+- Current `master` head for this docs sync: `cf991e0`.
 
 For future epics: create `docs/PRD_<EPIC>.md`, open issues on GitHub, branch `claude/bug-N-slug`
 per issue, one PR per issue with `Closes #N`.

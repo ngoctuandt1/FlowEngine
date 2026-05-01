@@ -2,8 +2,10 @@
 
 > This is the canonical spine. Read first. Update whenever architecture, code map, or deploy topology changes.
 
-- Scope: tracks current `master` plus the 2026-05-01 public cutover state.
+- Last synced: `cf991e0` (`origin/master`) on 2026-05-02.
+- Scope: tracks current `master` through the 2026-05-02 SPINE canon-sync state.
 - Purpose: one 5-minute sync doc for future feature work.
+- Recent epics: SPINE workstream 2026-05-01 -> 2026-05-02: 15 PRs (#109-#125), 4 review rounds (25 reviewer codex), 6 real bugs surfaced from doc review, all linked canon docs (SPEC/DESIGN/FLOW_UI/WORKPLAN) synced.
 - Not here: deep rationale lives in [docs/DESIGN.md](DESIGN.md), invariants/test contract in [docs/SPEC.md](SPEC.md), and roadmap in [docs/WORKPLAN.md](WORKPLAN.md).
 
 ## 1. What is FlowEngine
@@ -604,4 +606,5 @@ Frontend pages are plain global scripts, not bundled modules: wrap page-local st
 - [docs/CHROME_LAUNCH_SECURITY.md](CHROME_LAUNCH_SECURITY.md) - Chrome anti-detection and launch-security notes.
 - [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md) - why the 3-level safety filter is legacy only.
 - [docs/session-reports/INDEX.md](session-reports/INDEX.md) - chronological session report index.
+- Latest SPINE canon-sync report: [docs/session-reports/2026-05-02_spine-doc-canon-sync.md](session-reports/2026-05-02_spine-doc-canon-sync.md).
 - Latest public-cutover report: [docs/session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md).
