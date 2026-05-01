@@ -102,6 +102,7 @@ Google Flow (`labs.google/fx/tools/flow`) là công cụ tạo video AI (Veo 3.1
 - `worker/main.py` — poll loop (POLL_INTERVAL_SEC=5), claim loop
 - `worker/dispatcher.py` — routes job.type → `run_generate/extend/insert/remove/camera`
 - `worker/profile_manager.py` — tracks available/busy profiles
+- `worker/profile_swapper.py` — archive burned profiles + warm the next fresh credential
 - `worker/project_lock.py` — in-memory lock per project_url
 - `worker/remote_api.py` — HTTP client → server
 
@@ -124,9 +125,11 @@ Google Flow (`labs.google/fx/tools/flow`) là công cụ tạo video AI (Veo 3.1
 - `flow/submit.py` — 6 selector patterns + Ctrl+Enter fallback; 4 confirmation signals
 - `flow/wait.py` — 3 parallel detection methods (reverse API + network + DOM observer)
 - `flow/download.py` — 4-tier fallback (API 1080p → API 720p → UI right-click → blob)
+- `flow/diagnostics.py` — forensic `.png` + `.network.json` + `.html` capture helper
+- `flow/failure_capture.py` — non-blocking capture wrapper + `[cap=...]` error suffix
 - `flow/model_selector.py` (24KB) — LP model pick, click-to-close (bug #8)
 - `flow/media_id.py` — extract từ URL / network / DOM
-- `flow/recaptcha.py` — detect iframe/text/network; 120s manual-solve wait
+- `flow/recaptcha.py` — v2/v3 detection helpers; network-first invisible reCAPTCHA detection
 - `flow/login.py` — AIgglog integration cho auto-login
 - `flow/account.py`, `flow/navigation.py`, `flow/retry.py`
 
@@ -287,6 +290,35 @@ Port unified         |      ✅     |   ✅   |     ✅     |
 
 Mục đích: **tập trung vào correctness, không chạy theo code hygiene.**
 
+### 4.5 Recovery flow
+
+Recovery + diagnostics hardening landed in PRs **#79 / #80 / #82 / #83 / #85**.
+
+```text
+Flow API returns 403/429 with a reCAPTCHA signal
+    ↓  (#79 flow/wait.py detects invisible v3 from network)
+raise RecaptchaError(kind="v3_invisible")
+    ↓  (#82 worker/dispatcher.py catches it)
+ProfileSwapper.swap_burned(old_profile)
+    ↓  (#80 archive old profile + warm next fresh credential)
+active job = failed (recaptcha_<kind>_burned_<profile>)
+    ↓
+worker pool resumes on the next claim cycle with the replacement profile
+
+Any chrome-time raise
+    ↓  (#83 capture_failure helper, #85 raise-site wiring)
+attempt to write <ts>_<job>_<kind>.png
+                 <ts>_<job>_<kind>.network.json
+                 <ts>_<job>_<kind>.html
+under FLOW_ERROR_CAPTURE_DIR
+    ↓
+surface error text with [cap=<path>] when screenshot capture succeeds
+```
+
+- "Resume" here means the worker keeps operating with a fresh profile pool; the burned job itself still ends `failed` and must be retried or requeued explicitly.
+- Ops playbooks live in memory `feedback_recaptcha_wipe_rewarm.md` and memory `feedback_flow_error_screenshot_required.md`; reference them instead of re-copying the procedures here.
+- On Linux, prefer a non-root worker. `FLOW_ALLOW_ROOT_NO_SANDBOX=1` is the explicit escape hatch, not the default launch mode.
+
 ---
 
 ## PHẦN 5 — TEST + FIX PLAN
@@ -400,9 +432,13 @@ Server: `http://localhost:8080` — UI + API
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8080
 DATABASE_PATH=./data/flowengine.db
-CHROME_USER_DATA_DIR=./profiles
+CHROME_USER_DATA_DIR=./chrome-profiles
 SERVER_URL=http://localhost:8080
 WORKER_PROFILES=profile1,profile2
+FLOW_AUTO_REPLACE_PROFILES=1
+FLOW_PROFILE_LIST_FILE=./profiles_ultra.txt
+FLOW_ERROR_CAPTURE_DIR=./error-captures
+FLOW_ALLOW_ROOT_NO_SANDBOX=1
 ```
 
 ### 7.3 Key files để debug
@@ -415,7 +451,8 @@ WORKER_PROFILES=profile1,profile2
 | Wait timeout | `flow/wait.py` (3 detection methods) |
 | Download fail | `flow/download.py` (4-tier fallback) |
 | Model chọn sai | `flow/model_selector.py` |
-| reCAPTCHA | `flow/recaptcha.py` (120s manual wait) |
+| reCAPTCHA / burned profile | `flow/recaptcha.py` + `worker/dispatcher.py` + `worker/profile_swapper.py` |
+| Missing forensic bundle / `[cap=...]` | `flow/diagnostics.py` + `flow/failure_capture.py` |
 
 ### 7.4 Key docs
 - `docs/FLOW_UI_REFERENCE.md` — UI labels VI+EN + DOM selectors
