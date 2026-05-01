@@ -33,6 +33,7 @@ import logging
 import os
 import platform
 import re
+import signal
 import shutil
 import subprocess
 import time
@@ -239,6 +240,48 @@ def _apply_root_sandbox_guard(args: list[str]) -> list[str]:
         "enable --no-sandbox automatically. Auto-adding --no-sandbox is "
         "gated to avoid silent security boundary changes."
     )
+
+
+def _read_proc_comm(pid: int) -> str | None:
+    """Return ``/proc/<pid>/comm`` when available."""
+    try:
+        return Path(f"/proc/{pid}/comm").read_text(
+            encoding="utf-8", errors="replace"
+        ).strip()
+    except OSError:
+        return None
+
+
+def _read_proc_cmdline(pid: int) -> list[str] | None:
+    """Return ``/proc/<pid>/cmdline`` split into argv entries."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+    return [part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part]
+
+
+def _looks_like_owned_user_data_dir(profile_dir: Path | None) -> bool:
+    """Restrict selective Chrome cleanup to FlowEngine-owned profiles."""
+    if profile_dir is None:
+        return False
+    normalized = str(profile_dir).replace("\\", "/")
+    return "/chrome-profiles/" in normalized or profile_dir.name.startswith("flow_")
+
+
+def _cmdline_has_user_data_dir(cmdline: list[str] | None, profile_dir: Path | None) -> bool:
+    """Return True when argv contains the expected ``--user-data-dir``."""
+    if not cmdline or profile_dir is None:
+        return False
+
+    expected = str(profile_dir)
+    if f"--user-data-dir={expected}" in cmdline:
+        return True
+
+    for index, arg in enumerate(cmdline[:-1]):
+        if arg == "--user-data-dir" and cmdline[index + 1] == expected:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +510,10 @@ class FlowClient:
             popen_kwargs["creationflags"] = getattr(
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0
             )
+        else:
+            # Put Chrome in its own session/process group so teardown can
+            # reap zygote, renderer, and GPU children via killpg().
+            popen_kwargs["start_new_session"] = True
 
         cmd = _apply_root_sandbox_guard(cmd)
         logger.info("Launching Chrome CDP: port=%d  profile=%s", self.debug_port, self._temp_profile)
@@ -744,6 +791,48 @@ class FlowClient:
                 await asyncio.sleep(0.4)
         return False
 
+    def _resolve_owned_chrome_pgid(self, proc: subprocess.Popen) -> int | None:
+        """Return a safe process group id for POSIX Chrome tree teardown."""
+        pid = getattr(proc, "pid", 0)
+        if not pid or not _looks_like_owned_user_data_dir(self._temp_profile):
+            return None
+
+        cmdline = _read_proc_cmdline(pid)
+        if not _cmdline_has_user_data_dir(cmdline, self._temp_profile):
+            logger.debug(
+                "Skipping killpg for pid=%s: cmdline missing owned --user-data-dir",
+                pid,
+            )
+            return None
+
+        try:
+            pgid = os.getpgid(pid)
+        except OSError as exc:
+            logger.debug("Skipping killpg for pid=%s: getpgid failed: %s", pid, exc)
+            return None
+
+        comm = _read_proc_comm(pid)
+        if not comm or not any(name in comm.lower() for name in ("chrome", "chromium")):
+            logger.debug(
+                "Skipping killpg for pid=%s: /proc/%s/comm=%r is not Chrome",
+                pid,
+                pid,
+                comm,
+            )
+            return None
+
+        if pgid != pid:
+            leader_comm = _read_proc_comm(pgid)
+            logger.warning(
+                "Refusing killpg for Chrome pid=%s: pgid=%s leader=%r is not our process",
+                pid,
+                pgid,
+                leader_comm,
+            )
+            return None
+
+        return pgid
+
     def _terminate_chrome_proc(self) -> None:
         """Kill the native Chrome subprocess if it is still running."""
         proc = self._chrome_proc
@@ -768,11 +857,48 @@ class FlowClient:
                     timeout=8,
                 )
             else:
-                proc.terminate()
-                proc.wait(timeout=5)
+                pgid = self._resolve_owned_chrome_pgid(proc)
+                if pgid is not None:
+                    try:
+                        os.killpg(pgid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError, OSError) as exc:
+                        logger.debug(
+                            "killpg(SIGTERM) failed for pid=%s pgid=%s: %s; falling back to terminate()",
+                            pid,
+                            pgid,
+                            exc,
+                        )
+                        proc.terminate()
+                else:
+                    proc.terminate()
+
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    if pgid is not None:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError, OSError) as exc:
+                            logger.debug(
+                                "killpg(SIGKILL) failed for pid=%s pgid=%s: %s; falling back to kill()",
+                                pid,
+                                pgid,
+                                exc,
+                            )
+                            proc.kill()
+                    else:
+                        proc.kill()
+                    proc.wait(timeout=3)
         except Exception:
             try:
-                proc.kill()
+                if not _IS_WINDOWS and pid:
+                    pgid = self._resolve_owned_chrome_pgid(proc)
+                    if pgid is not None:
+                        os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                else:
+                    proc.kill()
             except Exception:
                 pass
         finally:
