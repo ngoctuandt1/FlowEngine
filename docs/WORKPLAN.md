@@ -1,3 +1,14 @@
+# WORKPLAN — Phase A historical ledger
+
+> **Status: CLOSED (Phase A complete 2026-04-17, tag `v0.2.0-phase-a` at `db4c746`).**
+> This file is preserved as a historical record of the Phase A bug fixes (B1–B12).
+> Active planning lives in:
+> - `docs/session-reports/` — chronological execution log
+> - GitHub issues + PR descriptions for in-flight work
+> - `docs/PROJECT_SPINE.md` — canonical project index
+>
+> Do not add new tasks here.
+
 # FlowEngine — Phase A Workplan (Bug Fix Plan)
 
 > Created: 2026-04-17
