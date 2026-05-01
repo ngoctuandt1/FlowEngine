@@ -5,9 +5,9 @@
 (() => {
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
-  const TILE_MEDIA_ERROR_HANDLER = "this.closest('.tile-thumb')?.classList.add('tile-thumb--broken'); this.remove();";
   const CHAIN_STEP_ALIAS_ROUTE = 'chain-builder';
   const DEFAULT_CHAIN_STEP_TYPE = 'extend-video';
+  const ALLOWED_STATUS = new Set(['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
 
   const state = {
     routeChainId: '',
@@ -22,6 +22,7 @@
     loadError: '',
     wsUnsubs: [],
     topBarSnapshot: null,
+    menuCleanup: null,
   };
 
   let routerPatched = false;
@@ -176,6 +177,20 @@
     return Array.isArray(result) ? result : result?.jobs || [];
   }
 
+  function mediaTileHelper() {
+    return App.mediaTile || window.MediaUtil;
+  }
+
+  function formatTileDate(value) {
+    if (typeof App?.formatTileDate === 'function') {
+      return App.formatTileDate(value);
+    }
+    if (typeof App?.formatDate === 'function') {
+      return App.formatDate(value);
+    }
+    return '-';
+  }
+
   function safeDateValue(value) {
     const time = new Date(value || 0).getTime();
     return Number.isFinite(time) ? time : 0;
@@ -185,11 +200,6 @@
     const createdDiff = safeDateValue(b?.created_at || b?.createdAt) - safeDateValue(a?.created_at || a?.createdAt);
     if (createdDiff !== 0) return createdDiff;
     return String(b?.id || '').localeCompare(String(a?.id || ''));
-  }
-
-  function jobTypeLabel(type) {
-    const meta = typeof CONST?.typeMeta === 'function' ? CONST.typeMeta(type) : null;
-    return meta?.label || (type || 'Unknown').replace(/-/g, ' ');
   }
 
   function mediaUrl(file) {
@@ -220,90 +230,105 @@
     return null;
   }
 
-  function renderableFiles(job) {
+  function safeStatus(status) {
+    const normalized = String(status || 'pending').toLowerCase();
+    return ALLOWED_STATUS.has(normalized) ? normalized : 'pending';
+  }
+
+  function primaryMedia(job) {
     const files = Array.isArray(job?.output_files) ? job.output_files : [];
-    return files
+    const renderable = files
       .map((file) => {
         const kind = mediaTypeFromFile(file);
         if (!kind) return null;
-
-        const normalized = String(file).replace(/\\/g, '/').replace(/^\/?downloads\//i, '');
         return {
-          file,
           kind,
-          name: normalized.split('/').pop() || normalized,
           url: mediaUrl(file),
         };
       })
       .filter(Boolean);
-  }
 
-  function previewMedia(job) {
-    const files = renderableFiles(job);
-    if (!files.length) return null;
+    if (!renderable.length) return null;
 
-    const firstVideo = files.find((file) => file.kind === 'video') || null;
-    const firstImage = files.find((file) => file.kind === 'image') || null;
+    const primary = renderable[0];
+    const poster = primary.kind === 'video'
+      ? renderable.find((file) => file.kind === 'image')?.url || ''
+      : '';
 
-    if (!firstVideo && firstImage) {
-      return { kind: 'image', src: firstImage.url };
-    }
-
-    if (firstVideo && firstImage) {
-      return {
-        kind: 'image',
-        src: firstImage.url,
-      };
-    }
-
-    if (firstVideo) {
-      return {
-        kind: 'video',
-        src: firstVideo.url,
-      };
-    }
-
-    return null;
+    return {
+      ...primary,
+      poster,
+    };
   }
 
   function primaryJobTitle(job) {
-    return job?.prompt || job?.direction || jobTypeLabel(job?.type);
+    return job?.prompt || job?.direction || '(no prompt)';
   }
 
-  function safeStatus(status) {
-    const value = String(status || 'pending').toLowerCase();
-    return ['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled'].includes(value)
-      ? value
-      : 'pending';
+  function projectFallbackTitle() {
+    const chainRef = state.chainId || state.routeChainId;
+    return chainRef ? `Project ${App.truncate(chainRef, 18)}` : 'Project';
   }
 
-  function projectSnippet(projectUrl) {
-    if (!projectUrl) return '';
+  function subtitleText() {
+    return state.chainId
+      ? `Chain ${App.truncate(state.chainId, 18)}`
+      : 'Project';
+  }
 
+  async function resolveRootJob(jobs) {
+    const seedJobId = String(jobs[0]?.id || '').trim();
+    if (!seedJobId) return null;
+
+    let related = null;
     try {
-      const url = new URL(projectUrl);
-      const parts = url.pathname.split('/').filter(Boolean);
-      const projectIndex = parts.lastIndexOf('project');
-      const tail = projectIndex >= 0 ? parts.slice(projectIndex).join('/') : `${url.host}${url.pathname}`;
-      return App.truncate(tail, 38);
+      related = await API.fetch(`/api/jobs/${encodeURIComponent(seedJobId)}/related`);
     } catch (_) {
-      return App.truncate(projectUrl, 38);
+      related = null;
     }
+
+    const rootId = String(related?.chain_root_id || '').trim();
+    const relatedCandidates = [
+      related?.self,
+      related?.parent,
+      ...(Array.isArray(related?.ancestors) ? related.ancestors : []),
+    ].filter((job) => job?.id);
+
+    if (rootId) {
+      const rootFromRelated = relatedCandidates.find((job) => String(job.id) === rootId);
+      if (rootFromRelated) return rootFromRelated;
+
+      const rootFromJobs = jobs.find((job) => String(job?.id || '') === rootId);
+      if (rootFromJobs) return rootFromJobs;
+
+      try {
+        return await API.jobs.get(rootId);
+      } catch (_) {
+        // Fall through to local heuristics.
+      }
+    }
+
+    return jobs.find((job) => Number(job?.job_level) === 1)
+      || jobs.find((job) => !String(job?.parent_job_id || '').trim())
+      || null;
   }
 
-  function deriveState(jobs) {
+  function deriveState(jobs, rootJob = null) {
     const sorted = [...jobs].sort(compareJobsDesc);
     const latestCompleted = sorted.find((job) => safeStatus(job.status) === 'completed');
     const latest = latestCompleted || sorted[0] || null;
-    const routeTitle = state.routeProjectUrl
-      ? projectSnippet(state.routeProjectUrl)
-      : App.truncate(state.routeChainId, 30);
 
     state.jobs = sorted;
-    state.chainId = state.routeChainId || String(sorted.find((job) => job?.chain_id)?.chain_id || '').trim();
+    state.chainId = state.routeChainId
+      || String(rootJob?.chain_id || '').trim()
+      || String(sorted.find((job) => job?.chain_id)?.chain_id || '').trim();
     state.projectUrl = String(sorted.find((job) => job?.project_url)?.project_url || state.routeProjectUrl || '').trim();
     state.latestJobId = String(latest?.id || '').trim();
-    state.title = state.projectUrl ? projectSnippet(state.projectUrl) : (routeTitle || 'Project');
+    const rootCreatedAt = rootJob?.created_at || rootJob?.createdAt || '';
+    const rootTitle = formatTileDate(rootCreatedAt);
+    state.title = rootTitle && rootTitle !== '-'
+      ? rootTitle
+      : projectFallbackTitle();
   }
 
   async function fetchProjectJobs() {
@@ -331,14 +356,16 @@
     try {
       const jobs = await fetchProjectJobs();
       if (requestId !== state.requestId) return;
-      deriveState(jobs);
+      const rootJob = await resolveRootJob(jobs);
+      if (requestId !== state.requestId) return;
+      deriveState(jobs, rootJob);
     } catch (err) {
       if (requestId !== state.requestId) return;
       state.jobs = [];
       state.latestJobId = '';
       state.chainId = state.routeChainId;
       state.projectUrl = state.routeProjectUrl;
-      state.title = state.projectUrl ? projectSnippet(state.projectUrl) : (App.truncate(state.chainId, 30) || 'Project');
+      state.title = projectFallbackTitle();
       state.loadError = err.message || 'Failed to load project';
     }
   }
@@ -352,40 +379,16 @@
   }
 
   function renderPreview(job) {
-    const media = previewMedia(job);
-    const alt = primaryJobTitle(job);
+    const status = safeStatus(job?.status);
+    const media = status === 'completed' ? primaryMedia(job) : null;
+    if (!media) return '';
 
-    if (!media) {
-      return `<span class="material-icons type-icon ${App.jobTypeClass(job?.type)}">${App.escapeHtml(App.jobTypeIcon(job?.type))}</span>`;
-    }
-
-    if (media.kind === 'image') {
-      return `
-        <img
-          src="${App.escapeHtml(media.src)}"
-          alt="${App.escapeHtml(alt)}"
-          loading="lazy"
-          decoding="async"
-          onerror="${TILE_MEDIA_ERROR_HANDLER}"
-          style="width:100%; height:100%; object-fit:cover; display:block;"
-        >
-      `;
-    }
-
-    return `
-      <video
-        class="tile-video"
-        src="${App.escapeHtml(media.src)}"
-        aria-label="${App.escapeHtml(alt)}"
-        muted
-        loop
-        playsinline
-        preload="metadata"
-        onerror="${TILE_MEDIA_ERROR_HANDLER}"
-        onmouseenter="this.play().catch(()=>{})"
-        onmouseleave="this.pause(); this.currentTime=0;"
-      ></video>
-    `;
+    const title = primaryJobTitle(job);
+    const mediaTile = mediaTileHelper();
+    if (!mediaTile) return '';
+    return media.kind === 'video'
+      ? mediaTile.videoTag({ src: media.url, poster: media.poster, alt: title })
+      : mediaTile.imgTag({ src: media.url, alt: title });
   }
 
   function renderStatusBadge(job) {
@@ -395,10 +398,10 @@
   }
 
   function renderJobTile(job) {
-    const createdAt = job?.created_at || job?.createdAt || '';
+    const status = safeStatus(job?.status);
     return `
       <a
-        class="project-tile status-${safeStatus(job?.status)}"
+        class="project-tile status-${status}"
         href="#job-detail/${encodeURIComponent(job?.id || '')}"
         data-job-id="${App.escapeHtml(job?.id || '')}"
         title="${App.escapeHtml(primaryJobTitle(job))}"
@@ -408,38 +411,29 @@
           ${renderStatusBadge(job)}
         </div>
         <div class="tile-overlay">
-          <span style="color: var(--text-secondary); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-            ${App.escapeHtml(jobTypeLabel(job?.type))}
-          </span>
-          <span class="tile-date">${App.escapeHtml(App.formatDate(createdAt))}</span>
+          <span class="tile-date">${App.escapeHtml(formatTileDate(job?.created_at || job?.createdAt))}</span>
         </div>
       </a>
     `;
   }
 
-  function renderNewStepTile() {
-    const helperText = state.latestJobId
-      ? 'Continue from latest completed media'
-      : 'Queue the next step';
-
+  function renderFloatingFooter() {
+    if (!state.routeChainId && !state.routeProjectUrl && !state.latestJobId) return '';
     return `
-      <a
-        class="project-tile new-project-tile"
-        href="${App.escapeHtml(newChainStepHref())}"
-        title="New chain step"
-        aria-label="New chain step"
-      >
-        <div class="tile-thumb">
-          <div class="new-project-pill">
+      <div class="pv-fab-wrap">
+        <div class="pv-disclaimer">Flow can make mistakes, so double check it</div>
+        ${state.latestJobId ? `
+          <a
+            class="new-project-pill pv-new-step-pill"
+            href="${App.escapeHtml(newChainStepHref())}"
+            title="New chain step"
+            aria-label="New chain step"
+          >
             <span class="material-icons">add</span>
             <span>New chain step</span>
-          </div>
-        </div>
-        <div class="tile-overlay">
-          <span style="color: var(--text-secondary); font-size: 13px;">${App.escapeHtml(helperText)}</span>
-          <span class="tile-date">Extend</span>
-        </div>
-      </a>
+          </a>
+        ` : ''}
+      </div>
     `;
   }
 
@@ -484,41 +478,15 @@
       return renderEmptyState('No chain outputs yet', 'This project does not have any jobs to render yet. Completed image and video steps will appear here.');
     }
 
-    return `<div class="project-grid">${renderNewStepTile()}${state.jobs.map(renderJobTile).join('')}</div>`;
+    return `<div class="project-grid">${state.jobs.map(renderJobTile).join('')}</div>`;
   }
 
   function renderBody() {
-    const count = state.jobs.length;
-    const subtitleBits = [
-      count ? `${count} job${count === 1 ? '' : 's'} on this project` : '',
-      state.projectUrl ? projectSnippet(state.projectUrl) : '',
-      state.chainId ? App.truncate(state.chainId, 18) : '',
-    ].filter(Boolean);
-
     return `
-      <div style="display:grid; gap:16px;">
-        <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap; padding: 0 24px;">
-          <div>
-            <div style="color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;">
-              Flow Project View
-            </div>
-            <div style="margin-top: 6px; color: var(--text-secondary); font-size: 13px; line-height: 1.5;">
-              ${App.escapeHtml(subtitleBits.join(' / ') || 'Chain media grid')}
-            </div>
-          </div>
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            ${state.chainId ? `
-              <a href="#jobs/${encodeURIComponent(state.chainId)}" class="btn btn-sm btn-outline">
-                <span class="material-icons" style="font-size:16px">list</span> Open jobs
-              </a>
-            ` : ''}
-            <a href="#gallery" class="btn btn-sm btn-outline">
-              <span class="material-icons" style="font-size:16px">collections</span> Gallery
-            </a>
-          </div>
-        </div>
+      <div class="pv-page">
         ${state.loadError && state.jobs.length ? renderBanner(state.loadError) : ''}
         ${renderGrid()}
+        ${renderFloatingFooter()}
       </div>
     `;
   }
@@ -559,10 +527,16 @@
     return false;
   }
 
+  function clearMenuListeners() {
+    state.menuCleanup?.();
+    state.menuCleanup = null;
+  }
+
   function applyTopBar() {
     const titleEl = document.getElementById('page-title');
     const actionsEl = document.querySelector('#top-bar .top-bar-actions');
     if (!titleEl || !actionsEl) return;
+    clearMenuListeners();
 
     if (!state.topBarSnapshot) {
       state.topBarSnapshot = {
@@ -571,10 +545,6 @@
         actionsHtml: actionsEl.innerHTML,
       };
     }
-
-    const subtitle = state.chainId
-      ? `Chain ${App.truncate(state.chainId, 18)}`
-      : 'Project media grid';
 
     titleEl.innerHTML = `
       <button
@@ -586,12 +556,12 @@
       >
         <span class="material-icons">arrow_back</span>
       </button>
-      <span style="display:grid; min-width:0; gap:2px;">
-        <span style="display:block; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+      <span class="pv-topbar-heading">
+        <span class="pv-topbar-title" title="${App.escapeHtml(state.title || projectFallbackTitle())}">
           ${App.escapeHtml(state.title || 'Project')}
         </span>
-        <span style="display:block; color: var(--text-muted); font-size: 12px; font-weight: 500;">
-          ${App.escapeHtml(subtitle)}
+        <span class="pv-topbar-subtitle" title="${App.escapeHtml(state.chainId || '')}">
+          ${App.escapeHtml(subtitleText())}
         </span>
       </span>
     `;
@@ -600,9 +570,23 @@
     titleEl.style.gap = '10px';
 
     actionsEl.innerHTML = `
-      <button id="project-view-menu" class="icon-btn" type="button" aria-label="Project actions">
-        <span class="material-icons">more_vert</span>
-      </button>
+      <div class="pv-topbar-menu" id="project-view-menu-shell">
+        <button id="project-view-menu" class="icon-btn" type="button" aria-label="Project actions" aria-haspopup="menu" aria-expanded="false">
+          <span class="material-icons">more_vert</span>
+        </button>
+        <div class="pv-menu-popover" id="project-view-menu-popover" role="menu" hidden>
+          ${state.chainId ? `
+            <a class="pv-menu-item" href="#jobs/${encodeURIComponent(state.chainId)}" role="menuitem">
+              <span class="material-icons">list</span>
+              <span>Open jobs</span>
+            </a>
+          ` : ''}
+          <a class="pv-menu-item" href="#gallery" role="menuitem">
+            <span class="material-icons">collections</span>
+            <span>Gallery</span>
+          </a>
+        </div>
+      </div>
     `;
 
     document.getElementById('project-view-back')?.addEventListener('click', () => {
@@ -613,15 +597,51 @@
       location.hash = '#home';
     });
 
-    document.getElementById('project-view-menu')?.addEventListener('click', () => {
-      App.toast('Project actions coming soon', 'info');
+    const menuShell = document.getElementById('project-view-menu-shell');
+    const menuButton = document.getElementById('project-view-menu');
+    const menuPopover = document.getElementById('project-view-menu-popover');
+    const syncMenuState = (open) => {
+      menuShell?.classList.toggle('is-open', open);
+      if (menuPopover) {
+        menuPopover.hidden = !open;
+      }
+      menuButton?.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    const closeMenu = () => syncMenuState(false);
+    const handleDocumentClick = (event) => {
+      if (!menuShell?.contains(event.target)) {
+        closeMenu();
+      }
+    };
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        closeMenu();
+      }
+    };
+
+    menuButton?.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      syncMenuState(menuPopover?.hidden);
     });
+
+    menuPopover?.querySelectorAll('a').forEach((link) => {
+      link.addEventListener('click', closeMenu);
+    });
+
+    document.addEventListener('click', handleDocumentClick);
+    document.addEventListener('keydown', handleEscape);
+    state.menuCleanup = () => {
+      document.removeEventListener('click', handleDocumentClick);
+      document.removeEventListener('keydown', handleEscape);
+    };
   }
 
   function restoreTopBar() {
     const titleEl = document.getElementById('page-title');
     const actionsEl = document.querySelector('#top-bar .top-bar-actions');
     if (!titleEl || !actionsEl || !state.topBarSnapshot) return;
+    clearMenuListeners();
 
     titleEl.innerHTML = state.topBarSnapshot.titleHtml;
     if (state.topBarSnapshot.titleStyle) {
