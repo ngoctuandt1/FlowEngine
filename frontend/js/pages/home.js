@@ -103,6 +103,7 @@
   function renderTile(job) {
     const status = safeStatus(job.status);
     const type = job.type || 'text-to-video';
+    const safeJobId = App.escapeHtml(String(job.id || ''));
     const promptText = job.prompt || job.direction || '(no prompt)';
     const media = status === 'completed' ? primaryMedia(job) : null;
 
@@ -123,8 +124,8 @@
     // full job-detail page.
     return `
       <a class="project-tile status-${status}"
-         href="#job-detail/${encodeURIComponent(job.id)}"
-         data-job-id="${App.escapeHtml(job.id)}"
+         href="#job-detail/${safeJobId}"
+         data-job-id="${safeJobId}"
          title="${App.escapeHtml(promptText)}">
         <div class="tile-thumb">
           ${thumb}
