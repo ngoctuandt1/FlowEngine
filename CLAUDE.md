@@ -90,6 +90,12 @@ Worker `main.py` → `POST /api/worker/claim` with `profiles` list → server re
 `job.profile IN profiles` (or `profile IS NULL` for unclaimed L1) → worker locks profile →
 dispatches → on completion `PATCH /api/jobs/{id}` with result fields → releases profile.
 
+### Failure / recovery path
+- `flow/wait.py` raises `RecaptchaError` on visible reCAPTCHA or on network-level `403/429` reCAPTCHA signals.
+- Dispatcher treats that as a **burned profile**. The active job fails as `recaptcha_<kind>_burned_<profile>`.
+- With `FLOW_AUTO_REPLACE_PROFILES=1` (default), `worker/profile_swapper.py` archives `<profile>.burned-*`, warms the next fresh credential from `FLOW_PROFILE_LIST_FILE` / `profiles_ultra.txt`, and resumes the worker pool on the next claim cycle.
+- Replacement restores worker capacity for future claims on the fresh account; it does **not** move an in-flight chain to a different Google account.
+
 ---
 
 ## 5. Dev Conventions
@@ -164,7 +170,22 @@ Body: "Closes #N"
 - Test suite count moved from `153` to `192`.
 - Live-verified on 2026-04-20: image 4K `text-to-image` x3 on `ngoctuandt20`; L2 insert + remove on the same project.
 - L2 `media_id` extraction bug for insert/remove: **RESOLVED 2026-04-23** (commit `0bb9d29`, refactor `b62ac73`, doc PR `e79405d`/#53). See [2026-04-23_l2-media-id-fix-live-verified.md](docs/session-reports/2026-04-23_l2-media-id-fix-live-verified.md).
-- Current `master` context for this branch: handoff feature head `ef09a13` plus docs-sync head `4c2e529`.
+
+**2026-05-01 recovery + diagnostics cluster — merged to `master` at `ebb9569`**
+
+| PR | Commit | Fix |
+|---|---|---|
+| #75 | `6451e72` | Add `pyotp` dependency for auto-login TOTP flows |
+| #76 | `fbc310c` | Accept both `1x` and `x1` output-count chip text in verify logic |
+| #77 | `668592e` | Guard Linux root Chrome launches behind `FLOW_ALLOW_ROOT_NO_SANDBOX=1` |
+| #78 | `9dd4942` | Redesign the livetest sweep into 4 separate L1-rooted chains |
+| #79 | `1d34623` | Detect invisible reCAPTCHA v3 from network signals and prioritize that path in the wait loop |
+| #80 | `71c1cf9` | Add `ProfileSwapper` burn-and-replace helper |
+| #82 | `1bf6779` | Wire `RecaptchaError` → `ProfileSwapper` in the dispatcher |
+| #83 | `b62b878` | Add `flow/diagnostics.py::capture_failure()` forensic capture helper |
+| #85 | `ebb9569` | Wire forensic capture into chrome-time raise sites and append `[cap=<path>]` to surfaced errors |
+
+- Current `master` head for this docs sync: `ebb9569`.
 
 For future epics: create `docs/PRD_<EPIC>.md`, open issues on GitHub, branch `claude/bug-N-slug`
 per issue, one PR per issue with `Closes #N`.
@@ -182,6 +203,13 @@ export PATH="/c/Program Files/GitHub CLI:$PATH"
 
 **Worktrees don't inherit PATH** — if a worktree shell can't find `gh`, `python`, or `pytest`,
 set PATH explicitly. Each worktree is under `.claude/worktrees/<name>/`.
+
+### Recovery + diagnostics
+
+- **reCAPTCHA burn-and-replace** — invisible v3 is detected from network `403/429` reCAPTCHA signals and visible v2 still raises from DOM checks. `FLOW_AUTO_REPLACE_PROFILES=1` is the default, so burned profiles are archived and swapped for the next fresh credential automatically. See memory `feedback_recaptcha_wipe_rewarm.md`.
+- **Forensic capture** — chrome-time raise sites attempt a forensic bundle under `FLOW_ERROR_CAPTURE_DIR`: `<ts>_<job>_<kind>.png`, `.network.json`, and `.html`. Surfaced errors append `[cap=<path>]` when the screenshot path exists. See memory `feedback_flow_error_screenshot_required.md`.
+- **Linux root** — run the worker as a non-root user. `FLOW_ALLOW_ROOT_NO_SANDBOX=1` is the explicit escape hatch that opts into `--no-sandbox`.
+- **LP → Lite migration** — deadline `2026-05-10`; see memory `project_lp_deprecation_2026_10_05.md`.
 
 **Model panel close** — the LP model selector panel must be dismissed by clicking outside it,
 NOT with Escape. Escape closes the whole editor dialog. See `flow/model_selector.py`.
