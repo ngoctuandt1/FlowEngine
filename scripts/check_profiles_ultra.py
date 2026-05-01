@@ -21,8 +21,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
-WINDOWS_DEFAULT_PROFILES_FILE = Path("D:/AI/AI-Engine3-Project/profiles_ultra.txt")
-LINUX_DEFAULT_PROFILES_FILE = Path("/opt/flowengine/profiles_ultra.txt")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from profile_list import DEFAULT_PROFILE_LIST_FILE, configured_profile_list_file, resolve_profile_list_file
+
 DEFAULT_PROFILE_BASE_DIR = Path("./chrome-profiles")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 STATUS_ORDER = [
@@ -58,12 +60,7 @@ class ReportResult:
 
 
 def _default_profiles_file() -> Path:
-    configured = (os.environ.get("FLOW_PROFILE_LIST_FILE") or "").strip()
-    if configured:
-        return Path(configured)
-    if os.name == "nt":
-        return WINDOWS_DEFAULT_PROFILES_FILE
-    return LINUX_DEFAULT_PROFILES_FILE
+    return configured_profile_list_file(default=DEFAULT_PROFILE_LIST_FILE)
 
 
 def _default_profile_base_dir() -> Path:
@@ -80,7 +77,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--profiles-file",
         default=str(_default_profiles_file()),
-        help="Path to profiles_ultra.txt (default: FLOW_PROFILE_LIST_FILE or platform canonical path).",
+        help="Path to profiles_ultra.txt (default: FLOW_PROFILE_LIST_FILE or repo-local profiles_ultra.txt).",
     )
     parser.add_argument(
         "--profile-base-dir",
@@ -227,26 +224,11 @@ def _parse_line(
 
 
 def build_report(profiles_file: Path, profile_base_dir: Path) -> ReportResult:
-    profiles_file = profiles_file.expanduser()
+    profiles_file = resolve_profile_list_file(profiles_file)
     profile_base_dir = profile_base_dir.expanduser()
     # TODO: Detect ServiceNotAllowed and iap-stuck "dead" accounts via
     # marker files / warm-profile log heuristics once those signals are
     # standardized in the repo.
-
-    if not profiles_file.exists():
-        rows: list[ProfileReportRow] = []
-        summary = {status: 0 for status in STATUS_ORDER}
-        summary["total"] = 0
-        return ReportResult(
-            profiles_file=str(profiles_file),
-            profile_base_dir=str(profile_base_dir),
-            rows=rows,
-            summary=summary,
-            parse_error_count=1,
-            todo=[
-                "Dead-account detection (ServiceNotAllowed/iap-stuck) is not implemented in v1.",
-            ],
-        )
 
     rows: list[ProfileReportRow] = []
     for line_number, raw_line in enumerate(
@@ -343,22 +325,20 @@ def format_json(report: ReportResult) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    report = build_report(
-        profiles_file=Path(args.profiles_file),
-        profile_base_dir=Path(args.profile_base_dir),
-    )
+    try:
+        report = build_report(
+            profiles_file=Path(args.profiles_file),
+            profile_base_dir=Path(args.profile_base_dir),
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     if args.json:
         print(format_json(report))
     else:
         print(format_table(report))
 
-    if not Path(args.profiles_file).expanduser().exists():
-        print(
-            f"profiles file not found: {Path(args.profiles_file).expanduser()}",
-            file=sys.stderr,
-        )
-        return 1
     return 1 if report.parse_error_count else 0
 
 
