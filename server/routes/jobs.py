@@ -73,6 +73,11 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
     )
 
 
+def _resolve_parent_chain_id(parent: Job) -> str:
+    """Return the canonical chain id for a child of `parent`."""
+    return parent.chain_id or parent.id
+
+
 def _output_media_url(path: str) -> str:
     normalized = str(path or "").replace("\\", "/").strip()
     if not normalized:
@@ -168,17 +173,20 @@ def _build_chain_stats(jobs: list[Job]) -> dict[str, int]:
 async def create_single_job(req: JobCreate):
     """Create a single job.
 
-    If parent_job_id is given, auto-set job_level = parent.job_level + 1
-    and inherit profile / project_url / media_id from the completed parent.
+    If parent_job_id is given, auto-set job_level = parent.job_level + 1,
+    always inherit chain metadata from the direct parent, and inherit
+    runtime target fields from a completed parent.
     """
     job_level = 1
     profile = req.profile  # L1 pin (ignored when parent present, see below)
+    chain_id = req.chain_id
 
     if req.parent_job_id:
         parent = await get_job(req.parent_job_id)
         if parent is None:
             raise HTTPException(404, f"Parent job {req.parent_job_id} not found")
         job_level = parent.job_level + 1
+        chain_id = _resolve_parent_chain_id(parent)
         # L2+ inherits profile from completed parent — INV-1 account binding.
         # The request's `profile` hint is discarded to avoid accidental cross-
         # account routing on a chain.
@@ -190,7 +198,9 @@ async def create_single_job(req: JobCreate):
                 req.media_id = parent.media_id
 
     validate_job_create(req)
-    job = _build_job(req, profile=profile, job_level=job_level)
+    job = _build_job(req, profile=profile, chain_id=chain_id, job_level=job_level)
+    if job.chain_id is None:
+        job.chain_id = job.id
     await create_job(job)
     await broadcast_job_update(job)
     return job

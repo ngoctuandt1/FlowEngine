@@ -1,7 +1,10 @@
 """SQLite database connection manager using aiosqlite."""
 
-import aiosqlite
+import logging
 from contextlib import asynccontextmanager
+
+import aiosqlite
+
 from server.config import DATABASE_PATH
 
 # ---------------------------------------------------------------------------
@@ -139,6 +142,8 @@ CREATE INDEX IF NOT EXISTS idx_characters_name  ON characters(name);
 CREATE INDEX IF NOT EXISTS idx_render_jobs_status ON render_jobs(status);
 """
 
+logger = logging.getLogger(__name__)
+
 
 async def _ensure_table(db: aiosqlite.Connection, name: str, ddl: str) -> None:
     """Create a table if it does not already exist."""
@@ -172,6 +177,64 @@ async def _ensure_template_column(db: aiosqlite.Connection, name: str, ddl: str)
     columns = {row[1] for row in rows}
     if name not in columns:
         await db.execute(f"ALTER TABLE templates ADD COLUMN {ddl}")
+
+
+async def _backfill_job_chain_ids(db: aiosqlite.Connection) -> int:
+    """Populate legacy NULL chain_id values on persisted jobs."""
+    cursor = await db.execute("SELECT id, parent_job_id, chain_id FROM jobs")
+    rows = await cursor.fetchall()
+    jobs = {
+        row[0]: {
+            "parent_job_id": row[1],
+            "chain_id": row[2],
+        }
+        for row in rows
+    }
+    cache: dict[str, str] = {}
+
+    def resolve_chain_id(job_id: str, trail: set[str] | None = None) -> str:
+        if job_id in cache:
+            return cache[job_id]
+
+        trail = set() if trail is None else set(trail)
+        if job_id in trail:
+            cache[job_id] = job_id
+            return job_id
+        trail.add(job_id)
+
+        job = jobs[job_id]
+        existing_chain_id = job["chain_id"]
+        if existing_chain_id:
+            cache[job_id] = existing_chain_id
+            return existing_chain_id
+
+        parent_job_id = job["parent_job_id"]
+        if not parent_job_id:
+            cache[job_id] = job_id
+            return job_id
+
+        if parent_job_id not in jobs:
+            cache[job_id] = parent_job_id
+            return parent_job_id
+
+        resolved = resolve_chain_id(parent_job_id, trail)
+        cache[job_id] = resolved
+        return resolved
+
+    updates: list[tuple[str, str]] = []
+    for job_id, job in jobs.items():
+        if job["chain_id"] is not None:
+            continue
+        updates.append((resolve_chain_id(job_id), job_id))
+
+    if not updates:
+        return 0
+
+    await db.executemany(
+        "UPDATE jobs SET chain_id = ? WHERE id = ? AND chain_id IS NULL",
+        updates,
+    )
+    return len(updates)
 
 
 async def init_db() -> None:
@@ -216,6 +279,8 @@ async def init_db() -> None:
         await _ensure_template_column(db, "steps_json", "steps_json TEXT NOT NULL DEFAULT '[]'")
         await _ensure_template_column(db, "created_at", "created_at TEXT")
         await _ensure_template_column(db, "updated_at", "updated_at TEXT")
+        backfilled = await _backfill_job_chain_ids(db)
+        logger.info("backfilled chain_id on %d jobs", backfilled)
         await db.commit()
 
 
