@@ -17,6 +17,7 @@ from server.dashboard_auth import (
     serve_login_page,
 )
 from server.routes.idea import router as idea_router
+from server.routes.projects import router as projects_router
 from server.routes import (
     characters_router,
     jobs_router,
@@ -124,6 +125,7 @@ app.add_api_route("/api/auth/logout", api_logout, methods=["POST"])
 
 # -- API routes ----------------------------------------------------------------
 app.include_router(jobs_router)
+app.include_router(projects_router)
 app.include_router(prompt_builder_router)
 app.include_router(media_cut_router)
 app.include_router(media_merge_router)
