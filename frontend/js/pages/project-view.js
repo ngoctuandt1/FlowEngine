@@ -677,11 +677,27 @@
     return { chainId, rootId: String(detail?.root_id || '').trim(), jobs, edges: normalizeEdges(detail?.edges, jobsById) };
   }
 
+  async function loadFromJobIdFallback(routeKey) {
+    // The route key may be a bare job_id for legacy jobs without chain_id.
+    // Render that job as a single-node DAG so old tiles still land somewhere useful.
+    try {
+      const job = await API.jobs.get(routeKey);
+      if (!job?.id) return null;
+      return { chainId: routeKey, rootId: String(job.id), jobs: [job], edges: [] };
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function loadFromCompatibilityFallback(chainId) {
     const listed = normalizeJobList(await API.jobs.list({ limit: 500 }))
       .filter((job) => String(job?.chain_id || '').trim() === chainId)
       .sort(compareByCreatedAsc);
-    if (!listed.length) return { chainId, rootId: '', jobs: [], edges: [] };
+    if (!listed.length) {
+      const single = await loadFromJobIdFallback(chainId);
+      if (single) return single;
+      return { chainId, rootId: '', jobs: [], edges: [] };
+    }
 
     const firstJob = listed[0];
     let related = null;

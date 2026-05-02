@@ -166,10 +166,11 @@
       ? ''
       : `<span class="tile-status-badge state-${status}">${App.escapeHtml(status.toUpperCase())}</span>`;
 
+    const tileHref = `#project-view/${encodeURIComponent(job.chain_id || job.id || '')}`;
     return `
       <a
         class="project-tile gallery-tile status-${status}"
-        href="#job-detail/${encodeURIComponent(job.id || '')}"
+        href="${tileHref}"
         data-job-id="${App.escapeHtml(job.id || '')}"
         title="${App.escapeHtml(title)}"
       >

@@ -129,8 +129,9 @@
       const createdAt = job.created_at || job.createdAt || '';
       const profile = job.profile || '-';
 
+      const chainId = String(job.chain_id || '');
       return `
-        <tr data-job-id="${App.escapeHtml(jobId)}" style="cursor:pointer;">
+        <tr data-job-id="${App.escapeHtml(jobId)}" data-chain-id="${App.escapeHtml(chainId)}" style="cursor:pointer;">
           <td title="${App.escapeHtml(jobId)}">
             <code>${App.escapeHtml(App.truncate(jobId, 12))}</code>
           </td>
@@ -376,8 +377,9 @@
     return payload;
   }
 
-  function openJobDetail(jobId) {
-    window.location.hash = `#job-detail/${encodeURIComponent(jobId)}`;
+  function openJobDetail(jobId, chainId) {
+    const key = chainId || jobId;
+    window.location.hash = `#project-view/${encodeURIComponent(key)}`;
   }
 
   async function retryJob(jobId, button) {
@@ -517,7 +519,7 @@
         const button = event.target.closest('[data-action]');
         if (!button) {
           const row = event.target.closest('tr[data-job-id]');
-          if (row?.dataset.jobId) openJobDetail(row.dataset.jobId);
+          if (row?.dataset.jobId) openJobDetail(row.dataset.jobId, row.dataset.chainId);
           return;
         }
 
@@ -526,7 +528,7 @@
         if (!action || !jobId) return;
 
         if (action === 'view') {
-          openJobDetail(jobId);
+          openJobDetail(jobId, button.dataset.chainId);
           return;
         }
         if (action === 'retry') {
