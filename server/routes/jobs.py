@@ -1,5 +1,6 @@
 """Job management endpoints."""
 
+import logging
 import uuid
 from typing import Optional
 from urllib.parse import quote
@@ -30,6 +31,7 @@ from server.db.job_store import (
 from server.routes.ws import broadcast_job_update
 
 router = APIRouter(prefix="/api", tags=["jobs"])
+logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = frozenset({"mp4", "webm", "mov", "m4v"})
 IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "bmp"})
@@ -69,6 +71,11 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
         profile=profile,
         job_level=job_level,
     )
+
+
+def _resolve_parent_chain_id(parent: Job) -> str:
+    """Return the canonical chain id for a child of `parent`."""
+    return parent.chain_id or parent.id
 
 
 def _output_media_url(path: str) -> str:
@@ -166,17 +173,20 @@ def _build_chain_stats(jobs: list[Job]) -> dict[str, int]:
 async def create_single_job(req: JobCreate):
     """Create a single job.
 
-    If parent_job_id is given, auto-set job_level = parent.job_level + 1
-    and inherit profile / project_url / media_id from the completed parent.
+    If parent_job_id is given, auto-set job_level = parent.job_level + 1,
+    always inherit chain metadata from the direct parent, and inherit
+    runtime target fields from a completed parent.
     """
     job_level = 1
     profile = req.profile  # L1 pin (ignored when parent present, see below)
+    chain_id = req.chain_id
 
     if req.parent_job_id:
         parent = await get_job(req.parent_job_id)
         if parent is None:
             raise HTTPException(404, f"Parent job {req.parent_job_id} not found")
         job_level = parent.job_level + 1
+        chain_id = _resolve_parent_chain_id(parent)
         # L2+ inherits profile from completed parent — INV-1 account binding.
         # The request's `profile` hint is discarded to avoid accidental cross-
         # account routing on a chain.
@@ -188,7 +198,9 @@ async def create_single_job(req: JobCreate):
                 req.media_id = parent.media_id
 
     validate_job_create(req)
-    job = _build_job(req, profile=profile, job_level=job_level)
+    job = _build_job(req, profile=profile, chain_id=chain_id, job_level=job_level)
+    if job.chain_id is None:
+        job.chain_id = job.id
     await create_job(job)
     await broadcast_job_update(job)
     return job
@@ -309,22 +321,32 @@ async def list_all_jobs(
 @router.get("/jobs/{job_id}/related", response_model=JobRelatedResponse)
 async def get_job_related(job_id: str) -> JobRelatedResponse:
     """Return one job plus parent/ancestor/sibling/child context."""
-    related = await get_related_jobs(job_id)
-    if related is None:
-        raise HTTPException(404, f"Job {job_id} not found")
+    try:
+        related = await get_related_jobs(job_id)
+        if related is None:
+            raise HTTPException(404, f"Job {job_id} not found")
 
-    chain_root_id = related["chain_root_id"]
-    chain_id = related["chain_id"] or chain_root_id
-    return JobRelatedResponse(
-        self=_job_with_thumb(related["self"]),
-        parent=_job_with_thumb(related["parent"]),
-        ancestors=[_job_with_thumb(job) for job in related["ancestors"]],
-        siblings=[_job_with_thumb(job) for job in related["siblings"]],
-        children=[_job_with_thumb(job) for job in related["children"]],
-        chain_id=chain_id,
-        chain_root_id=chain_root_id,
-        stats=related["stats"],
-    )
+        chain_root_id = related["chain_root_id"]
+        chain_id = related["chain_id"] or chain_root_id
+        return JobRelatedResponse(
+            self=_job_with_thumb(related["self"]),
+            parent=_job_with_thumb(related["parent"]),
+            ancestors=[_job_with_thumb(job) for job in related["ancestors"]],
+            siblings=[_job_with_thumb(job) for job in related["siblings"]],
+            children=[_job_with_thumb(job) for job in related["children"]],
+            chain_id=chain_id,
+            chain_root_id=chain_root_id,
+            stats=related["stats"],
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "get_job_related failed job_id=%s exc_class=%s",
+            job_id,
+            exc.__class__.__name__,
+        )
+        raise HTTPException(500, "Failed to load related jobs") from exc
 
 
 @router.get("/jobs/{job_id}")

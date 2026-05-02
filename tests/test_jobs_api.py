@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock
 
+import aiosqlite
+
 
 async def test_post_text_to_image_defaults_model(api_client):
     payload = {
@@ -70,6 +72,30 @@ async def test_post_job_with_missing_parent_returns_404(api_client):
     assert response.json()["detail"] == "Parent job missing-parent not found"
 
 
+async def test_post_l1_job_sets_chain_id_to_id(api_client, temp_db_path):
+    response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Create a root job with complete metadata",
+        },
+    )
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["chain_id"] == created["id"]
+
+    async with aiosqlite.connect(temp_db_path) as db:
+        cursor = await db.execute(
+            "SELECT chain_id FROM jobs WHERE id = ?",
+            (created["id"],),
+        )
+        row = await cursor.fetchone()
+
+    assert row is not None
+    assert row[0] == created["id"]
+
+
 async def test_post_child_job_inherits_completed_parent_fields(api_client):
     parent_response = await api_client.post(
         "/api/jobs",
@@ -106,9 +132,70 @@ async def test_post_child_job_inherits_completed_parent_fields(api_client):
     assert child_response.status_code == 201
     child = child_response.json()
     assert child["job_level"] == 2
+    assert child["chain_id"] == parent_response.json()["chain_id"]
     assert child["profile"] == "parent-profile"
     assert child["project_url"] == "https://flow.example/project/123"
     assert child["media_id"] == "media-123"
+
+
+async def test_post_child_job_inherits_chain_id_from_pending_parent(api_client):
+    parent_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Create a parent that is still pending",
+        },
+    )
+    assert parent_response.status_code == 201
+    parent = parent_response.json()
+
+    child_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "extend-video",
+            "prompt": "Queue a follow-up before the parent completes",
+            "parent_job_id": parent["id"],
+        },
+    )
+
+    assert child_response.status_code == 201
+    child = child_response.json()
+    assert child["job_level"] == 2
+    assert child["chain_id"] == parent["chain_id"]
+
+
+async def test_post_child_job_falls_back_to_parent_id_when_parent_chain_id_is_null(
+    api_client, temp_db_path
+):
+    parent_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Create a legacy-style parent row",
+        },
+    )
+    assert parent_response.status_code == 201
+    parent = parent_response.json()
+
+    async with aiosqlite.connect(temp_db_path) as db:
+        await db.execute(
+            "UPDATE jobs SET chain_id = NULL WHERE id = ?",
+            (parent["id"],),
+        )
+        await db.commit()
+
+    child_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "extend-video",
+            "prompt": "Child should inherit the defensive fallback",
+            "parent_job_id": parent["id"],
+        },
+    )
+
+    assert child_response.status_code == 201
+    child = child_response.json()
+    assert child["chain_id"] == parent["id"]
 
 
 async def test_post_chain_creates_linked_jobs(api_client):
