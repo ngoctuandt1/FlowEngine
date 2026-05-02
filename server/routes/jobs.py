@@ -1,5 +1,6 @@
 """Job management endpoints."""
 
+import logging
 import uuid
 from typing import Optional
 from urllib.parse import quote
@@ -30,6 +31,7 @@ from server.db.job_store import (
 from server.routes.ws import broadcast_job_update
 
 router = APIRouter(prefix="/api", tags=["jobs"])
+logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = frozenset({"mp4", "webm", "mov", "m4v"})
 IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "bmp"})
@@ -309,22 +311,32 @@ async def list_all_jobs(
 @router.get("/jobs/{job_id}/related", response_model=JobRelatedResponse)
 async def get_job_related(job_id: str) -> JobRelatedResponse:
     """Return one job plus parent/ancestor/sibling/child context."""
-    related = await get_related_jobs(job_id)
-    if related is None:
-        raise HTTPException(404, f"Job {job_id} not found")
+    try:
+        related = await get_related_jobs(job_id)
+        if related is None:
+            raise HTTPException(404, f"Job {job_id} not found")
 
-    chain_root_id = related["chain_root_id"]
-    chain_id = related["chain_id"] or chain_root_id
-    return JobRelatedResponse(
-        self=_job_with_thumb(related["self"]),
-        parent=_job_with_thumb(related["parent"]),
-        ancestors=[_job_with_thumb(job) for job in related["ancestors"]],
-        siblings=[_job_with_thumb(job) for job in related["siblings"]],
-        children=[_job_with_thumb(job) for job in related["children"]],
-        chain_id=chain_id,
-        chain_root_id=chain_root_id,
-        stats=related["stats"],
-    )
+        chain_root_id = related["chain_root_id"]
+        chain_id = related["chain_id"] or chain_root_id
+        return JobRelatedResponse(
+            self=_job_with_thumb(related["self"]),
+            parent=_job_with_thumb(related["parent"]),
+            ancestors=[_job_with_thumb(job) for job in related["ancestors"]],
+            siblings=[_job_with_thumb(job) for job in related["siblings"]],
+            children=[_job_with_thumb(job) for job in related["children"]],
+            chain_id=chain_id,
+            chain_root_id=chain_root_id,
+            stats=related["stats"],
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "get_job_related failed job_id=%s exc_class=%s",
+            job_id,
+            exc.__class__.__name__,
+        )
+        raise HTTPException(500, "Failed to load related jobs") from exc
 
 
 @router.get("/jobs/{job_id}")
