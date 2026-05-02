@@ -255,6 +255,14 @@ function bustMediaCache(url) {
   }
   return url;
 }
+
+function posterUrlFor(videoUrl) {
+  if (!videoUrl) return '';
+  const match = videoUrl.match(/^(\/downloads\/.+)\.mp4(\?.*)?$/i);
+  if (!match) return '';
+  return `${match[1]}.poster.jpg${match[2] || ''}`;
+}
+
 const TILE_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: '2-digit',
@@ -290,11 +298,96 @@ const MediaTile = {
     return `<img src="${App.escapeHtml(imageSrc)}" alt="${App.escapeHtml(alt || '')}" loading="lazy" decoding="async" onerror="${TILE_MEDIA_ERROR_HANDLER}" style="width:100%; height:100%; object-fit:cover; display:block;">`;
   },
 
-  videoTag({ src, poster, alt } = {}) {
-    const posterAttr = poster ? ` poster="${App.escapeHtml(bustMediaCache(poster))}"` : '';
-    const ariaAttr = alt ? ` aria-label="${App.escapeHtml(alt)}"` : '';
+  markBroken(element) {
+    element?.closest('.tile-thumb')?.classList.add('tile-thumb--broken');
+    element?.remove();
+    return false;
+  },
+
+  createVideoElement({ src, alt, preload = 'metadata', autoplay = false, seekPreview = false, resetOnLeave = false } = {}) {
     const finalSrc = bustMediaCache(src || '');
-    return `<video class="tile-video" src="${App.escapeHtml(finalSrc)}"${posterAttr}${ariaAttr} muted loop playsinline preload="auto" onloadeddata="this.currentTime=0.1" onerror="${TILE_MEDIA_ERROR_HANDLER}" onmouseenter="this.play().catch(()=>{})" onmouseleave="this.pause(); this.currentTime=0;"></video>`;
+    const videoElement = document.createElement('video');
+    videoElement.className = 'tile-video';
+    videoElement.src = finalSrc;
+    if (alt) {
+      videoElement.setAttribute('aria-label', alt);
+    }
+    videoElement.muted = true;
+    videoElement.loop = true;
+    videoElement.playsInline = true;
+    videoElement.preload = preload;
+    videoElement.autoplay = autoplay;
+    if (seekPreview) {
+      videoElement.addEventListener('loadedmetadata', () => {
+        try {
+          videoElement.currentTime = 0.1;
+        } catch {
+          // Ignore preview seek failures and keep the first decoded frame.
+        }
+      }, { once: true });
+    }
+    videoElement.addEventListener('error', () => {
+      MediaTile.markBroken(videoElement);
+    }, { once: true });
+    videoElement.addEventListener('mouseenter', () => {
+      videoElement.play().catch(() => {});
+    });
+    videoElement.addEventListener('mouseleave', () => {
+      videoElement.pause();
+      if (resetOnLeave) {
+        try {
+          videoElement.currentTime = 0;
+        } catch {
+          // Ignore reset failures on partially buffered videos.
+        }
+      }
+    });
+    return videoElement;
+  },
+
+  handlePosterError(imgElement) {
+    const videoSrc = imgElement?.dataset?.videoSrc || '';
+    if (!videoSrc) {
+      return MediaTile.markBroken(imgElement);
+    }
+    const videoElement = MediaTile.createVideoElement({
+      src: videoSrc,
+      alt: imgElement.getAttribute('alt') || '',
+      preload: 'auto',
+      seekPreview: true,
+      resetOnLeave: true,
+    });
+    imgElement.replaceWith(videoElement);
+    return false;
+  },
+
+  upgradeToVideo(imgElement) {
+    const videoSrc = imgElement?.dataset?.videoSrc || '';
+    if (!videoSrc || imgElement?.dataset?.videoUpgraded === '1') {
+      return false;
+    }
+    imgElement.dataset.videoUpgraded = '1';
+    const videoElement = MediaTile.createVideoElement({
+      src: videoSrc,
+      alt: imgElement.getAttribute('alt') || '',
+      preload: 'metadata',
+      autoplay: true,
+    });
+    imgElement.replaceWith(videoElement);
+    videoElement.play().catch(() => {});
+    return false;
+  },
+
+  videoTag({ src, poster, alt } = {}) {
+    const rawSrc = src || '';
+    const finalSrc = bustMediaCache(rawSrc);
+    const derivedPoster = bustMediaCache(poster || '') || posterUrlFor(finalSrc) || '';
+    const safeAlt = App.escapeHtml(alt || '');
+    if (!derivedPoster) {
+      const ariaAttr = alt ? ` aria-label="${safeAlt}"` : '';
+      return `<video class="tile-video" src="${App.escapeHtml(finalSrc)}"${ariaAttr} muted loop playsinline preload="auto" onloadedmetadata="this.currentTime=0.1" onerror="${TILE_MEDIA_ERROR_HANDLER}" onmouseenter="this.play().catch(()=>{})" onmouseleave="this.pause(); this.currentTime=0;"></video>`;
+    }
+    return `<img class="tile-video" src="${App.escapeHtml(derivedPoster)}" alt="${safeAlt}" loading="lazy" decoding="async" data-video-src="${App.escapeHtml(rawSrc)}" onerror="return window.MediaUtil.handlePosterError(this)" onmouseenter="return window.MediaUtil.upgradeToVideo(this)">`;
   },
 };
 
