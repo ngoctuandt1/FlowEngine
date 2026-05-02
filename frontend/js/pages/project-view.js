@@ -13,11 +13,17 @@
   const ZOOM_STEP = 0.14;
   const FIT_PADDING = 80;
   const EXTEND_HINT_DELAY_MS = 600;
-  const X_SPACING = 380;
-  const Y_SPACING = 580;
+  /* === U6 — canvas polish === */
+  const X_SPACING = 300;
+  const Y_SPACING = 420;
   const STAGE_PADDING = 72;
-  const DEFAULT_NODE_WIDTH = 320;
-  const DEFAULT_NODE_HEIGHT = 500;
+  const DEFAULT_NODE_WIDTH = 240;
+  const DEFAULT_NODE_HEIGHT = Math.round((DEFAULT_NODE_WIDTH * 16) / 9);
+  const EDGE_MARKER_SPACING = 30;
+  const EDGE_MARKER_SIZE = 4;
+  const EDGE_PORT_RADIUS = 4;
+  const EDGE_SAMPLE_SEGMENTS = 72;
+  /* === end U6 === */
   const PROMPT_PREVIEW_CHARS = 140;
   const ALLOWED_STATUS = new Set(['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
   const ACTIVE_STATUSES = new Set(['claimed', 'running']);
@@ -159,7 +165,9 @@
       const key = `${parent}->${child}`;
       if (seen.has(key)) return;
       seen.add(key);
-      edges.push({ parent, child });
+      const normalizedEdge = { parent, child };
+      if (edge && Object.prototype.hasOwnProperty.call(edge, 'active')) normalizedEdge.active = edge.active;
+      edges.push(normalizedEdge);
     });
     return edges;
   }
@@ -304,6 +312,26 @@
     return 'schedule';
   }
 
+  function statusPillLabel(job) {
+    const status = safeStatus(job?.status);
+    if (status === 'completed') return 'Hoàn thành';
+    if (status === 'failed') return 'Thất bại';
+    if (status === 'cancelled') return 'Đã hủy';
+    if (ACTIVE_STATUSES.has(status)) return 'Đang chạy';
+    if (Number(job?.job_level) === 1) return 'Đầu vào';
+    return 'Chờ xử lý';
+  }
+
+  function nodeCaption(job) {
+    const text = promptText(job) || typeCardLabel(job?.type);
+    return typeof App?.truncate === 'function' ? App.truncate(text, 54) : text;
+  }
+
+  function nodeMeta(job) {
+    const ratio = String(job?.aspect_ratio || '9:16').trim() || '9:16';
+    return `${ratio} • ${modeLabel(job?.type)}`;
+  }
+
   function latestJob(jobs) {
     return [...jobs].sort(compareByCreatedDesc)[0] || null;
   }
@@ -435,47 +463,36 @@
     `;
   }
 
+  /* === U6 — canvas polish === */
   function renderNode(job) {
     const status = safeStatus(job?.status);
     const frame = state.layout.framesById.get(String(job.id)) || draftFrameForJob(job);
     const classes = ['pv-node', `pv-node--${status}`, state.selectedJobId === String(job.id) ? 'pv-node--selected' : '']
       .filter(Boolean).join(' ');
+    const statusLabel = statusPillLabel(job);
 
     return `
-      <div class="${classes}" data-job-id="${escapeAttr(job.id)}" style="position:absolute; left:${frame.left}px; top:${frame.top}px;">
+      <div class="${classes}" data-job-id="${escapeAttr(job.id)}" data-status="${escapeAttr(status)}" style="position:absolute; left:${frame.left}px; top:${frame.top}px;">
+        ${renderOutput(job)}
+
         <div class="pv-node-header">
           <div class="pv-node-type">
-            <span class="material-icons" aria-hidden="true">${App.escapeHtml(App.jobTypeIcon(job?.type))}</span>
-            <span>${App.escapeHtml(typeCardLabel(job?.type))}</span>
+            <span class="pv-node-status-pill">${App.escapeHtml(statusLabel)}</span>
           </div>
           <div class="pv-node-actions">
             <button type="button" class="icon-btn" data-action="node-upload" data-job-id="${escapeAttr(job.id)}" aria-label="Upload stub"><span class="material-icons">upload</span></button>
             <button type="button" class="icon-btn" data-action="node-play" data-job-id="${escapeAttr(job.id)}" aria-label="Play stub"><span class="material-icons">play_arrow</span></button>
             <button type="button" class="icon-btn" data-action="node-delete" data-job-id="${escapeAttr(job.id)}" aria-label="Delete stub"><span class="material-icons">delete</span></button>
-            <span class="pv-node-status" title="${App.escapeHtml(status.toUpperCase())}">
-              <span class="material-icons" aria-hidden="true">${App.escapeHtml(statusGlyph(status))}</span>
-            </span>
           </div>
         </div>
 
-        <div data-action="open-node" data-job-id="${escapeAttr(job.id)}" style="cursor:pointer;">
-          <div class="pv-node-name">&#272;&#7863;t t&#234;n node&hellip;</div>
-          ${renderPromptSection(job)}
-          <div class="pv-section">
-            <div class="pv-section-label">Reference Images</div>
-            ${renderReferenceStub(job)}
-          </div>
-          <div class="pv-section">
-            <div class="pv-section-label">Format</div>
-            <div style="display:flex; flex-wrap:wrap; gap:8px;">
-              <span class="pv-ratio-chip">${App.escapeHtml(job?.aspect_ratio || '16:9')}</span>
-              <span class="pv-mode-chip">${App.escapeHtml(modeLabel(job?.type))}</span>
-            </div>
-          </div>
-          ${renderCountPills(job)}
+        <div class="pv-node-footer">
+          <button type="button" class="pv-node-caption" data-action="open-node" data-job-id="${escapeAttr(job.id)}" aria-label="Open node">
+            <span class="pv-node-name">${App.escapeHtml(nodeCaption(job))}</span>
+            <span class="pv-node-meta">${App.escapeHtml(nodeMeta(job))}</span>
+          </button>
+          ${status === 'completed' ? '<span class="pv-node-footer-star" aria-hidden="true">✦</span>' : ''}
         </div>
-
-        ${renderOutput(job)}
 
         <a class="pv-new-step-pill pv-node-action-overlay" href="${App.escapeHtml(newChainStepHref(job.id))}" data-job-id="${escapeAttr(job.id)}" title="New chain step" aria-label="New chain step">
           <span class="material-icons">add</span>
@@ -486,18 +503,140 @@
   }
 
   function edgeIsActive(edge) {
+    if (edge && Object.prototype.hasOwnProperty.call(edge, 'active')) {
+      return edge.active === true || edge.active === 'true' || edge.active === 1 || edge.active === '1';
+    }
     const parent = state.jobsById.get(String(edge.parent));
     const child = state.jobsById.get(String(edge.child));
     return ACTIVE_STATUSES.has(safeStatus(parent?.status)) || ACTIVE_STATUSES.has(safeStatus(child?.status));
   }
 
-  function buildEdgePath(frameA, frameB) {
+  function buildEdgeGeometry(frameA, frameB) {
     const sourceX = frameA.left + (frameA.width / 2);
     const sourceY = frameA.top + frameA.height;
     const targetX = frameB.left + (frameB.width / 2);
     const targetY = frameB.top;
-    const curve = Math.max(56, Math.abs(targetY - sourceY) * 0.45);
-    return `M ${sourceX} ${sourceY} C ${sourceX} ${sourceY + curve} ${targetX} ${targetY - curve} ${targetX} ${targetY}`;
+    const curve = Math.max(76, Math.abs(targetY - sourceY) * 0.46);
+    const control1X = sourceX;
+    const control1Y = sourceY + curve;
+    const control2X = targetX;
+    const control2Y = targetY - curve;
+    return {
+      sourceX,
+      sourceY,
+      control1X,
+      control1Y,
+      control2X,
+      control2Y,
+      targetX,
+      targetY,
+      d: `M ${sourceX} ${sourceY} C ${control1X} ${control1Y} ${control2X} ${control2Y} ${targetX} ${targetY}`,
+    };
+  }
+
+  function edgePointAt(geometry, t) {
+    const inv = 1 - t;
+    const inv2 = inv * inv;
+    const inv3 = inv2 * inv;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return {
+      x: (inv3 * geometry.sourceX)
+        + (3 * inv2 * t * geometry.control1X)
+        + (3 * inv * t2 * geometry.control2X)
+        + (t3 * geometry.targetX),
+      y: (inv3 * geometry.sourceY)
+        + (3 * inv2 * t * geometry.control1Y)
+        + (3 * inv * t2 * geometry.control2Y)
+        + (t3 * geometry.targetY),
+    };
+  }
+
+  function buildEdgeSamples(geometry) {
+    const points = [];
+    let totalLength = 0;
+    let previous = edgePointAt(geometry, 0);
+    points.push({ ...previous, distance: 0 });
+    for (let index = 1; index <= EDGE_SAMPLE_SEGMENTS; index += 1) {
+      const point = edgePointAt(geometry, index / EDGE_SAMPLE_SEGMENTS);
+      totalLength += Math.hypot(point.x - previous.x, point.y - previous.y);
+      points.push({ ...point, distance: totalLength });
+      previous = point;
+    }
+    return { points, totalLength };
+  }
+
+  function pointAtDistance(samples, distance) {
+    const points = Array.isArray(samples?.points) ? samples.points : [];
+    if (!points.length) return { x: 0, y: 0 };
+    if (distance <= 0) return points[0];
+    if (distance >= samples.totalLength) return points[points.length - 1];
+
+    for (let index = 1; index < points.length; index += 1) {
+      const previous = points[index - 1];
+      const current = points[index];
+      if (distance > current.distance) continue;
+      const segmentLength = Math.max(0.0001, current.distance - previous.distance);
+      const ratio = (distance - previous.distance) / segmentLength;
+      return {
+        x: previous.x + ((current.x - previous.x) * ratio),
+        y: previous.y + ((current.y - previous.y) * ratio),
+      };
+    }
+
+    return points[points.length - 1];
+  }
+
+  function renderEdgeMarkerDots(samples) {
+    if (!samples?.totalLength || samples.totalLength <= EDGE_MARKER_SPACING * 1.5) return '';
+    const dots = [];
+    for (
+      let distance = EDGE_MARKER_SPACING;
+      distance < samples.totalLength - EDGE_MARKER_SPACING;
+      distance += EDGE_MARKER_SPACING
+    ) {
+      const point = pointAtDistance(samples, distance);
+      const x = (point.x - (EDGE_MARKER_SIZE / 2)).toFixed(2);
+      const y = (point.y - (EDGE_MARKER_SIZE / 2)).toFixed(2);
+      const cx = point.x.toFixed(2);
+      const cy = point.y.toFixed(2);
+      dots.push(`
+        <rect
+          class="pv-edge-marker-dot"
+          x="${x}"
+          y="${y}"
+          width="${EDGE_MARKER_SIZE}"
+          height="${EDGE_MARKER_SIZE}"
+          transform="rotate(45 ${cx} ${cy})"
+        ></rect>
+      `);
+    }
+    return dots.join('');
+  }
+
+  function renderEdgePorts(geometry) {
+    const portPairs = [
+      [geometry.sourceX, geometry.sourceY],
+      [geometry.targetX, geometry.targetY],
+    ];
+    return portPairs.map(([x, y]) => `
+      <circle class="pv-edge-port" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${EDGE_PORT_RADIUS}"></circle>
+    `).join('');
+  }
+
+  function renderEdgeStar(samples, isActive) {
+    if (!isActive || !samples?.totalLength) return '';
+    const midpoint = pointAtDistance(samples, samples.totalLength / 2);
+    return `
+      <text
+        class="pv-edge-star"
+        data-active="true"
+        x="${midpoint.x.toFixed(2)}"
+        y="${midpoint.y.toFixed(2)}"
+        text-anchor="middle"
+        dominant-baseline="middle"
+      >✦</text>
+    `;
   }
 
   function renderEdges() {
@@ -505,18 +644,30 @@
       const parentFrame = state.layout.framesById.get(String(edge.parent));
       const childFrame = state.layout.framesById.get(String(edge.child));
       if (!parentFrame || !childFrame) return '';
+      const geometry = buildEdgeGeometry(parentFrame, childFrame);
+      const samples = buildEdgeSamples(geometry);
+      const active = edgeIsActive(edge);
 
       return `
-        <path
-          class="pv-edge-path ${edgeIsActive(edge) ? 'pv-edge-path--running' : ''}"
+        <g
+          class="pv-edge"
           data-edge-parent="${escapeAttr(edge.parent)}"
           data-edge-child="${escapeAttr(edge.child)}"
-          d="${escapeAttr(buildEdgePath(parentFrame, childFrame))}"
-          fill="none"
-        ></path>
+          data-active="${active ? 'true' : 'false'}"
+        >
+          <path
+            class="pv-edge-path ${active ? 'pv-edge-path--running' : ''}"
+            d="${escapeAttr(geometry.d)}"
+            fill="none"
+          ></path>
+          ${renderEdgeMarkerDots(samples)}
+          ${renderEdgePorts(geometry)}
+          ${renderEdgeStar(samples, active)}
+        </g>
       `;
     }).join('');
   }
+  /* === end U6 === */
 
   function renderToolbar() {
     return `
@@ -1102,14 +1253,8 @@
     nextNode.style.top = `${frame.top}px`;
     nodeEl.replaceWith(nextNode);
 
-    Array.from(rootElement()?.querySelectorAll('[data-edge-parent], [data-edge-child]') || [])
-      .filter((pathEl) => String(pathEl.getAttribute('data-edge-parent') || '') === String(jobId || '').trim()
-        || String(pathEl.getAttribute('data-edge-child') || '') === String(jobId || '').trim())
-      .forEach((pathEl) => {
-        const parent = pathEl.getAttribute('data-edge-parent') || '';
-        const child = pathEl.getAttribute('data-edge-child') || '';
-        pathEl.classList.toggle('pv-edge-path--running', edgeIsActive({ parent, child }));
-      });
+    const edgesNode = edgesEl();
+    if (edgesNode) edgesNode.innerHTML = renderEdges();
 
     if (measure) requestAnimationFrame(() => measureAndPositionCanvas({ fit: false }));
   }

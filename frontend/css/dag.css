@@ -515,6 +515,406 @@
   letter-spacing: 0.04em;
 }
 
+/* === U6 — canvas polish === */
+.pv-edges {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.pv-edge {
+  overflow: visible;
+}
+
+.pv-edge-path {
+  fill: none;
+  stroke: rgba(220, 220, 240, 0.3);
+  stroke-width: 1.2;
+  stroke-dasharray: 2 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.pv-edge-path--running,
+.pv-edge[data-active="true"] .pv-edge-path {
+  stroke: rgba(244, 226, 176, 0.48);
+  animation: pv-flow 1.2s linear infinite;
+}
+
+.pv-edge-marker-dot {
+  fill: rgba(148, 121, 255, 0.5);
+  vector-effect: non-scaling-stroke;
+}
+
+.pv-edge[data-active="true"] .pv-edge-marker-dot {
+  fill: rgba(245, 181, 65, 0.92);
+}
+
+.pv-edge-port {
+  fill: #050506;
+  stroke: rgba(255, 255, 255, 0.14);
+  stroke-width: 0.7;
+  vector-effect: non-scaling-stroke;
+}
+
+.pv-edge-star {
+  fill: #f5c14c;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  paint-order: stroke;
+  stroke: rgba(10, 11, 14, 0.58);
+  stroke-width: 1.3px;
+}
+
+.pv-node {
+  width: 240px;
+  max-width: calc(100vw - 24px);
+  aspect-ratio: 9 / 16;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top, rgba(245, 166, 35, 0.18), transparent 46%),
+    linear-gradient(180deg, #242736 0%, #13151d 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  box-shadow:
+    0 22px 44px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.04);
+  color: #f5f5f7;
+}
+
+.pv-node::before {
+  display: none;
+}
+
+.pv-node:hover {
+  transform: translateY(-4px) scale(1.01);
+  border-color: rgba(245, 166, 35, 0.36);
+  box-shadow:
+    0 26px 52px rgba(0, 0, 0, 0.56),
+    0 0 0 1px rgba(245, 166, 35, 0.22),
+    0 0 36px rgba(245, 166, 35, 0.12);
+}
+
+.pv-node--selected {
+  border-color: rgba(245, 166, 35, 0.82);
+  box-shadow:
+    0 18px 36px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(245, 166, 35, 0.35),
+    0 0 30px rgba(245, 166, 35, 0.14);
+}
+
+.pv-node--selected::after,
+.pv-node--running::after {
+  box-shadow:
+    0 0 0 1px rgba(245, 166, 35, 0.52),
+    0 0 0 4px rgba(245, 166, 35, 0.1);
+}
+
+.pv-node--completed {
+  border-color: rgba(62, 170, 104, 0.24);
+}
+
+.pv-node--failed {
+  border-color: rgba(239, 68, 68, 0.22);
+}
+
+.pv-node--pending {
+  border-color: rgba(255, 214, 104, 0.18);
+}
+
+.pv-node--running {
+  border-color: rgba(245, 166, 35, 0.5);
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.54),
+    0 0 0 1px rgba(245, 166, 35, 0.26),
+    0 0 32px rgba(245, 166, 35, 0.14);
+}
+
+.pv-node-header {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  left: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0;
+  background: none;
+  border: 0;
+}
+
+.pv-node-type {
+  flex: 0 1 auto;
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+  white-space: normal;
+}
+
+.pv-node-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 6px 10px;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(10, 11, 14, 0.64);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.pv-node--completed .pv-node-status-pill {
+  color: #d7ffe3;
+  background: rgba(25, 76, 46, 0.78);
+}
+
+.pv-node--failed .pv-node-status-pill {
+  color: #fecaca;
+  background: rgba(96, 22, 22, 0.78);
+}
+
+.pv-node--pending .pv-node-status-pill {
+  color: #ffe9a3;
+  background: rgba(83, 62, 18, 0.78);
+}
+
+.pv-node--running .pv-node-status-pill {
+  color: #fff0c5;
+  background: rgba(121, 78, 18, 0.8);
+}
+
+.pv-node-actions {
+  margin-left: auto;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.pv-node:hover .pv-node-actions,
+.pv-node:focus-within .pv-node-actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.pv-node-actions > * {
+  width: 26px;
+  height: 26px;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(10, 11, 14, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.pv-node-actions .material-icons {
+  font-size: 16px;
+  opacity: 0.78;
+}
+
+.pv-node-status {
+  display: none;
+}
+
+.pv-node-footer {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.pv-node-caption {
+  flex: 1 1 auto;
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  color: #fff;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  background:
+    linear-gradient(180deg, rgba(10, 11, 14, 0.2), rgba(10, 11, 14, 0.74)),
+    rgba(10, 11, 14, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  appearance: none;
+}
+
+.pv-node-caption:hover,
+.pv-node-caption:focus-visible {
+  border-color: rgba(245, 166, 35, 0.32);
+}
+
+.pv-node-name {
+  display: -webkit-box;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.96);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.pv-node-meta {
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.pv-node-footer-star {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  color: #f5c14c;
+  background: rgba(10, 11, 14, 0.64);
+  border: 1px solid rgba(245, 193, 76, 0.3);
+  border-radius: 999px;
+  box-shadow: 0 10px 18px rgba(0, 0, 0, 0.24);
+  font-size: 18px;
+  line-height: 1;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.pv-output {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top, rgba(245, 166, 35, 0.14), transparent 40%),
+    #0b0c10;
+  border: 0;
+  border-radius: inherit;
+  cursor: pointer;
+}
+
+.pv-output::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background:
+    linear-gradient(180deg, rgba(10, 11, 14, 0.16) 0%, rgba(10, 11, 14, 0.04) 38%, rgba(10, 11, 14, 0.72) 100%);
+  pointer-events: none;
+}
+
+.pv-output > img,
+.pv-output > video {
+  position: relative;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: saturate(0.96) contrast(1.02);
+}
+
+.pv-output .tile-thumb,
+.pv-output .tile-video {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.pv-output .tile-thumb > img,
+.pv-output .tile-thumb > video,
+.pv-output .tile-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.pv-output--empty {
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.56);
+  text-align: center;
+  background:
+    radial-gradient(circle at top, rgba(245, 166, 35, 0.18), transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+}
+
+.pv-output--empty > * {
+  position: relative;
+  z-index: 2;
+}
+
+.pv-output--empty .material-icons {
+  font-size: 30px;
+  opacity: 0.22;
+}
+
+.pv-node-action-overlay {
+  right: 12px;
+  bottom: 60px;
+  z-index: 4;
+  padding: 6px 10px;
+  gap: 5px;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(10, 11, 14, 0.84);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+@media (max-width: 720px) {
+  .pv-node {
+    width: min(240px, calc(100vw - 32px));
+  }
+
+  .pv-node-actions {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* === end U6 === */
+
 .pv-zoom-toolbar {
   position: fixed;
   right: 24px;
