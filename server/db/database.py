@@ -132,7 +132,6 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status      ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_chain_id    ON jobs(chain_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_parent      ON jobs(parent_job_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_profile     ON jobs(profile);
-CREATE INDEX IF NOT EXISTS idx_jobs_project_id  ON jobs(project_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_project_url ON jobs(project_url);
 CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_profiles_status  ON profiles(status);
@@ -194,6 +193,11 @@ async def init_db() -> None:
         await _ensure_job_column(db, "start_image_path", "start_image_path TEXT")
         await _ensure_job_column(db, "end_image_path", "end_image_path TEXT")
         await _ensure_job_column(db, "project_id", "project_id TEXT")
+        # Index must be created AFTER the column-ensure step because executescript
+        # cannot reference a column that the additive migration has not yet added.
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_project_id ON jobs(project_id)"
+        )
         await _ensure_job_column(
             db,
             "ingredient_image_paths_json",
