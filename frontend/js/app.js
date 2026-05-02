@@ -73,10 +73,21 @@ const App = {
     const hash = location.hash.slice(1) || 'home';
     // Strip query string before splitting (`#chain-builder?parent=…`).
     const hashPath = hash.split('?')[0];
-    let pageName = hashPath.split('/')[0];
+    const segments = hashPath.split('/');
+    let pageName = segments[0];
+
+    // Hard redirect: legacy #job-detail/<id> → #project-view/<id> so every
+    // click on a job lands on the DAG canvas (the new project view) instead
+    // of the legacy single-job detail page. Preserves the id and any tail.
+    if (pageName === 'job-detail' && segments[1]) {
+      const tail = segments.slice(1).join('/');
+      const query = hash.includes('?') ? '?' + hash.split('?').slice(1).join('?') : '';
+      location.replace(`#project-view/${tail}${query}`);
+      return;
+    }
 
     // Aliases: semantic hashes that map to a registered page under a different key.
-    const ROUTE_ALIASES = { 'chain-builder': 'chains', 'job-detail': 'job-detail' };
+    const ROUTE_ALIASES = { 'chain-builder': 'chains' };
     if (ROUTE_ALIASES[pageName] && this.pages[ROUTE_ALIASES[pageName]]) {
       pageName = ROUTE_ALIASES[pageName];
     }
