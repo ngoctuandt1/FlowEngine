@@ -22,8 +22,10 @@ from typing import Optional
 
 from server.db.job_store import claim_next_job, create_job, get_job, update_job
 from server.db.profile_store import create_profile
+from server.db.project_store import create_project
 from server.models.job import Job, JobStatus, JobType, JobUpdate
 from server.models.profile import Profile, ProfileStatus
+from server.models.project import Project
 
 
 def _make_profile(name: str) -> Profile:
@@ -43,6 +45,7 @@ def _make_completed_parent(
     project_url: str,
     media_id: str,
     edit_url: Optional[str] = None,
+    project_id: Optional[str] = None,
     *,
     job_type: JobType = JobType.TEXT_TO_VIDEO,
     job_level: int = 1,
@@ -56,6 +59,7 @@ def _make_completed_parent(
         job_level=job_level,
         parent_job_id=parent_job_id,
         profile=profile,
+        project_id=project_id,
         project_url=project_url,
         media_id=media_id,
         edit_url=edit_url,
@@ -102,10 +106,13 @@ async def test_l2_claim_inherits_project_url_media_id_edit_url(db):
     `navigate_to_edit` has something to open.
     """
     await create_profile(_make_profile("b22-prof-a"))
+    project = Project(id="project-b22-a", name="B22 Project A")
+    await create_project(project)
     await create_job(
         _make_completed_parent(
             "b22-parent-a",
             profile="b22-prof-a",
+            project_id="project-b22-a",
             project_url="https://labs.google/fx/tools/flow/project/p-aaa",
             media_id="media-aaa-0001",
             edit_url="https://labs.google/fx/tools/flow/project/p-aaa/edit/media-aaa-0001",
@@ -118,6 +125,7 @@ async def test_l2_claim_inherits_project_url_media_id_edit_url(db):
     assert claimed is not None, "child should be claimable once parent is completed"
     assert claimed.id == "b22-child-a"
     assert claimed.profile == "b22-prof-a", "profile inherit is the pre-B22 baseline"
+    assert claimed.project_id == "project-b22-a", "F2: project_id must be inherited from parent"
     assert claimed.project_url == (
         "https://labs.google/fx/tools/flow/project/p-aaa"
     ), "B22: project_url must be inherited from parent"
@@ -130,6 +138,7 @@ async def test_l2_claim_inherits_project_url_media_id_edit_url(db):
 
     # And persisted — a fresh SELECT must see the same values.
     persisted = await get_job("b22-child-a")
+    assert persisted.project_id == claimed.project_id
     assert persisted.project_url == claimed.project_url
     assert persisted.media_id == claimed.media_id
     assert persisted.edit_url == claimed.edit_url

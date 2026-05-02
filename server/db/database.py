@@ -76,8 +76,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at      TEXT NOT NULL,
 
     FOREIGN KEY (parent_job_id) REFERENCES jobs(id),
-    FOREIGN KEY (chain_id) REFERENCES chains(id),
-    FOREIGN KEY (profile) REFERENCES profiles(name)
+    FOREIGN KEY (chain_id) REFERENCES chains(id)
 );
 
 CREATE TABLE IF NOT EXISTS profiles (
@@ -255,6 +254,10 @@ async def init_db() -> None:
         )
         await _ensure_job_column(db, "start_image_path", "start_image_path TEXT")
         await _ensure_job_column(db, "end_image_path", "end_image_path TEXT")
+        # `project_id` stays as an application-level association. A DB-level
+        # FK on `jobs.project_id` conflicts with existing chain/job flows
+        # (L1 jobs self-seed chain_id before any chain row exists) and also
+        # breaks legacy-schema tests that intentionally drop the column.
         await _ensure_job_column(db, "project_id", "project_id TEXT")
         # Index must be created AFTER the column-ensure step because executescript
         # cannot reference a column that the additive migration has not yet added.
@@ -295,6 +298,7 @@ async def get_db():
     """
     db = await aiosqlite.connect(DATABASE_PATH)
     db.row_factory = aiosqlite.Row          # dict-like access
+    await db.execute("PRAGMA foreign_keys = ON")
     try:
         yield db
     finally:

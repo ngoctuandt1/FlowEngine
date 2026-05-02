@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +27,7 @@ class TemplateStep(BaseModel):
     end_image_path: str | None = None
     ref_image_path: str | None = None
     ingredient_image_paths: list[str] | None = None
+    safety_filter: Literal["block_most", "block_some", "block_few"] | None = None
 
 
 class TemplateCreate(BaseModel):

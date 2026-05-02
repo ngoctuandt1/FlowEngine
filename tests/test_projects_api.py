@@ -64,7 +64,7 @@ async def test_project_cover_thumb_resolves_from_latest_job(api_client):
                 "job-1",
                 "text-to-video",
                 "completed",
-                "chain-1",
+                None,
                 "project-1",
                 json.dumps(["thumb.png"]),
                 now,
@@ -80,3 +80,71 @@ async def test_project_cover_thumb_resolves_from_latest_job(api_client):
     assert len(body) == 1
     assert body[0]["id"] == "project-1"
     assert body[0]["cover_thumb_url"] == "/downloads/thumb.png"
+
+
+async def test_get_project_detail_includes_real_api_created_chain(api_client):
+    created_project = await api_client.post(
+        "/api/projects",
+        json={"name": "Project API Chain"},
+    )
+    assert created_project.status_code == 201
+    project_id = created_project.json()["id"]
+
+    chain_response = await api_client.post(
+        "/api/chains",
+        json={
+            "profile": "project-detail-profile",
+            "jobs": [
+                {
+                    "type": "text-to-video",
+                    "prompt": "Open on project detail",
+                    "project_id": project_id,
+                },
+                {
+                    "type": "extend-video",
+                    "prompt": "Continue on project detail",
+                },
+            ],
+        },
+    )
+    assert chain_response.status_code == 201
+    chain = chain_response.json()
+
+    first_job_id = chain["jobs"][0]["id"]
+    second_job_id = chain["jobs"][1]["id"]
+
+    first_patch = await api_client.put(
+        f"/api/worker/jobs/{first_job_id}",
+        json={
+            "status": "completed",
+            "project_url": "https://flow.example/project/detail-001",
+            "media_id": "media-detail-001",
+            "output_files": ["downloads/detail-thumb-001.png"],
+            "profile": "project-detail-profile",
+        },
+    )
+    assert first_patch.status_code == 200
+
+    second_patch = await api_client.put(
+        f"/api/worker/jobs/{second_job_id}",
+        json={
+            "status": "completed",
+            "project_url": "https://flow.example/project/detail-001",
+            "media_id": "media-detail-002",
+            "output_files": ["downloads/detail-thumb-002.png"],
+            "profile": "project-detail-profile",
+        },
+    )
+    assert second_patch.status_code == 200
+
+    detail = await api_client.get(f"/api/projects/{project_id}")
+
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["id"] == project_id
+    assert len(body["chains"]) == 1
+    assert body["chains"][0]["id"] == chain["chain_id"]
+    assert body["chains"][0]["job_count"] == 2
+    assert body["chains"][0]["completed_jobs"] == 2
+    assert body["chains"][0]["status"] == "completed"
+    assert body["cover_thumb_url"] == "/downloads/detail-thumb-002.png"

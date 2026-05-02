@@ -29,6 +29,12 @@ from server.models.job import Job, JobStatus, JobType, JobUpdate
 from datetime import UTC, datetime
 
 
+async def _create_project(api_client, name: str) -> str:
+    response = await api_client.post("/api/projects", json={"name": name})
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
 def _make_pending_job(job_id: str, chain_id: str, level: int = 1) -> Job:
     now = datetime.now(UTC)
     return Job(
@@ -130,6 +136,64 @@ async def test_post_chains_rejects_empty_jobs(api_client):
     response = await api_client.post("/api/chains", json={"jobs": []})
 
     assert response.status_code == 422
+
+
+async def test_post_chain_propagates_first_step_project_id(api_client):
+    project_id = await _create_project(api_client, "Chain Project")
+
+    response = await api_client.post(
+        "/api/chains",
+        json={
+            "profile": "project-chain-profile",
+            "jobs": [
+                {
+                    "type": "text-to-video",
+                    "prompt": "Start a branded chain",
+                    "project_id": project_id,
+                },
+                {
+                    "type": "extend-video",
+                    "prompt": "Continue the same project",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["jobs"][0]["project_id"] == project_id
+    assert body["jobs"][1]["project_id"] == project_id
+
+
+async def test_post_chain_rejects_mixed_step_project_ids(api_client):
+    first_project_id = await _create_project(api_client, "Chain Project A")
+    second_project_id = await _create_project(api_client, "Chain Project B")
+
+    response = await api_client.post(
+        "/api/chains",
+        json={
+            "profile": "project-chain-profile",
+            "jobs": [
+                {
+                    "type": "text-to-video",
+                    "prompt": "Start a branded chain",
+                    "project_id": first_project_id,
+                },
+                {
+                    "type": "extend-video",
+                    "prompt": "Keep going",
+                },
+                {
+                    "type": "extend-video",
+                    "prompt": "Try to switch projects mid-chain",
+                    "project_id": second_project_id,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "same project_id as the first step" in response.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

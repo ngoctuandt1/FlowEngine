@@ -123,9 +123,10 @@ class JobCreate(BaseModel):
     chain_id: Optional[str] = None
 
     # Target (for Level-2 ops)
+    # FlowEngine-internal project FK; distinct from `project_url` (Google Flow URL).
+    project_id: Optional[str] = None
     project_url: Optional[str] = None
     media_id: Optional[str] = None
-    edit_url: Optional[str] = None
 
     # Operation-specific
     bbox: Optional[BBox] = None
@@ -142,9 +143,9 @@ class JobCreate(BaseModel):
         self.profile = _normalize_optional_text(self.profile)
         self.parent_job_id = _normalize_optional_text(self.parent_job_id)
         self.chain_id = _normalize_optional_text(self.chain_id)
+        self.project_id = _normalize_optional_text(self.project_id)
         self.project_url = _normalize_optional_text(self.project_url)
         self.media_id = _normalize_optional_text(self.media_id)
-        self.edit_url = _normalize_optional_text(self.edit_url)
         self.direction = _normalize_optional_text(self.direction)
         self.start_image_path = _normalize_optional_text(self.start_image_path)
         self.end_image_path = _normalize_optional_text(self.end_image_path)
@@ -231,6 +232,7 @@ class Job(BaseModel):
 
     # Account binding (CRITICAL)
     profile: Optional[str] = None       # Chrome profile = Google account
+    project_id: Optional[str] = None    # FlowEngine-internal project FK; distinct from `project_url` (Google Flow URL).
     project_url: Optional[str] = None   # Flow project URL
     media_id: Optional[str] = None      # Flow media UUID
     edit_url: Optional[str] = None      # project_url + /edit/ + media_id

@@ -8,7 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, status
 
 from server.models.chain import Chain, ChainCreateResponse
-from server.db.chain_store import compute_aggregated_status
+from server.db.chain_store import compute_aggregated_status, create_chain
 from server.models.job import (
     ChainCreate,
     Job,
@@ -18,7 +18,6 @@ from server.models.job import (
     JobWithThumb,
 )
 from server.db.job_store import (
-    create_chain_with_jobs,
     create_job,
     delete_job,
     get_children,
@@ -36,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = frozenset({"mp4", "webm", "mov", "m4v"})
 IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "bmp"})
+CHAIN_PROJECT_ID_MISMATCH_ERROR = (
+    "All chain steps must use the same project_id as the first step when provided."
+)
 
 
 def _resolve_model(req: JobCreate) -> str:
@@ -61,9 +63,9 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
         aspect_ratio=req.aspect_ratio,
         parent_job_id=req.parent_job_id,
         chain_id=chain_id or req.chain_id,
+        project_id=req.project_id,
         project_url=req.project_url,
         media_id=req.media_id,
-        edit_url=req.edit_url,
         bbox=req.bbox,
         direction=req.direction,
         start_image_path=req.start_image_path,
@@ -194,14 +196,11 @@ async def create_single_job(req: JobCreate):
         # account routing on a chain.
         if parent.status == JobStatus.COMPLETED:
             profile = parent.profile
+            req.project_id = parent.project_id
             if req.project_url is None:
                 req.project_url = parent.project_url
             if req.media_id is None:
                 req.media_id = parent.media_id
-            if req.edit_url is None:
-                req.edit_url = parent.edit_url
-                if req.edit_url is None and req.project_url and req.media_id:
-                    req.edit_url = f"{req.project_url.rstrip('/')}/edit/{req.media_id}"
 
     validate_job_create(req)
     job = _build_job(req, profile=profile, chain_id=chain_id, job_level=job_level)
@@ -228,22 +227,34 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     chain = Chain(id=str(uuid.uuid4()), profile=effective_profile)
+    await create_chain(chain)
 
     jobs: list[Job] = []
     prev_id: Optional[str] = None
     level = 1
+    effective_project_id = req.jobs[0].project_id
+
+    for index, step in enumerate(req.jobs):
+        if step.project_id is not None and step.project_id != effective_project_id:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{CHAIN_PROJECT_ID_MISMATCH_ERROR} "
+                    f"jobs[0]={effective_project_id!r}, jobs[{index}]={step.project_id!r}"
+                ),
+            )
 
     for step in req.jobs:
         validate_job_create(step)
         step.parent_job_id = prev_id
         step.chain_id = chain.id
         step.profile = effective_profile
+        step.project_id = effective_project_id
         job = _build_job(step, profile=effective_profile, chain_id=chain.id, job_level=level)
+        await create_job(job)
         jobs.append(job)
         prev_id = job.id
         level += 1
-
-    await create_chain_with_jobs(chain, jobs)
 
     await broadcast_job_update(jobs[0])  # notify once for chain head
     return {"chain_id": chain.id, "jobs": jobs}
@@ -377,12 +388,13 @@ async def get_job_children(job_id: str):
 async def cancel_job(job_id: str):
     """Cancel / delete a job.
 
-    Non-pending or parented jobs are preserved and marked cancelled.
-    Only leaf pending jobs are hard-deleted.
+    Running or claimed jobs are marked cancelled; pending jobs are deleted.
     """
-    job = await delete_job(job_id)
+    job = await get_job(job_id)
     if job is None:
         raise HTTPException(404, f"Job {job_id} not found")
 
+    await delete_job(job_id)
+    job.status = JobStatus.CANCELLED
     await broadcast_job_update(job)
     return {"deleted": job_id}

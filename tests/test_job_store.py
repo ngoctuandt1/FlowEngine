@@ -9,10 +9,15 @@ and the caller did NOT explicitly supply `completed_at`, the DB layer stamps
 `completed_at` with `_now_iso()`. Explicit values from the caller still win.
 """
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from server.db.job_store import create_job, get_job, update_job
 from server.models.job import Job, JobStatus, JobType, JobUpdate
+from server.models.project import Project
+from server.db.project_store import create_project
 
 
 def _make_pending_job(job_id: str) -> Job:
@@ -85,3 +90,28 @@ async def test_completed_at_not_set_on_non_terminal_status(db):
     assert updated.completed_at is None, (
         "Non-terminal status transitions must not populate completed_at"
     )
+
+
+async def test_create_job_rejects_unknown_project_id_on_fresh_schema(db):
+    job = _make_pending_job("f2-project-id-a")
+    job.project_id = "missing-project"
+
+    with pytest.raises(sqlite3.IntegrityError):
+        await create_job(job)
+
+
+async def test_delete_project_nulls_linked_job_project_ids(db):
+    project = Project(name="Linked Project")
+    await create_project(project)
+
+    job = _make_pending_job("f2-project-id-b")
+    job.project_id = project.id
+    await create_job(job)
+
+    from server.db.project_store import delete_project
+
+    deleted = await delete_project(project.id)
+    assert deleted is True
+
+    updated = await get_job("f2-project-id-b")
+    assert updated.project_id is None
