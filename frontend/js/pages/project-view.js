@@ -17,6 +17,7 @@
   const X_SPACING = 300;
   const Y_SPACING = 420;
   const STAGE_PADDING = 72;
+  /* U6 — portrait nodes 9:16 */
   const DEFAULT_NODE_WIDTH = 240;
   const DEFAULT_NODE_HEIGHT = Math.round((DEFAULT_NODE_WIDTH * 16) / 9);
   const EDGE_MARKER_SPACING = 30;
@@ -24,16 +25,29 @@
   const EDGE_PORT_RADIUS = 4;
   const EDGE_SAMPLE_SEGMENTS = 72;
   /* === end U6 === */
+  /* U3 — idea/chat right rail */
+  const IDEA_RAIL_WIDTH = 380;
+  const IDEA_RAIL_COLLAPSED_WIDTH = 64;
+  const MAX_IDEA_REF_IMAGES = 5;
   const PROMPT_PREVIEW_CHARS = 140;
   const ALLOWED_STATUS = new Set(['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
   const ACTIVE_STATUSES = new Set(['claimed', 'running']);
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
+  const IDEA_NODE_TYPES = new Set([
+    'text-to-video',
+    'frames-to-video',
+    'ingredients-to-video',
+    'text-to-image',
+    'extend-video',
+    'insert-object',
+    'remove-object',
+    'camera-move',
+  ]);
   const STUB_ACTIONS = new Set([
     'run-workflow',
     'batch-run',
     'export',
-    'ai-agent',
     'settings',
     'node-upload',
     'node-play',
@@ -41,6 +55,13 @@
     'node-refs',
   ]);
   const COUNT_PILLS = [1, 2, 4];
+  const IDEA_PANEL_TITLE = '\u00dd T\u01af\u1edeNG';
+  const IDEA_EMPTY_COPY = 'Chat v\u1edbi AI c\u00f3 \u0111\u00ednh \u1ea3nh \u0111\u1ea7u v\u00e0o (\u2264 5) \u0111\u1ec3 AI \u0111\u1ecdc, hi\u1ec3u v\u00e0 g\u1ee3i \u00fd k\u1ecbch b\u1ea3n. Khi \u0111\u00f3, b\u1ea5m T\u1ea1o node.';
+  const IDEA_INPUT_PLACEHOLDER = 'B\u1ea1n mu\u1ed1n...';
+  const IDEA_INPUT_SOURCE_LABEL = '\u1ea2nh \u0111\u1ea7u v\u00e0o (canvas) 1.6';
+  const IDEA_CREATE_NODES_LABEL = 'T\u1ea1o node tr\u00ean canvas';
+  const IDEA_CAPTION_TEXT = '\u1ea2nh \u0111\u1ea7u v\u00e0o l\u1ea5y s\u1ed1 (1) ImageInput tr\u00ean flow.';
+  const IDEA_BACKEND_MISSING_TOAST = 'AI agent backend not configured';
 
   const state = {
     chainId: '',
@@ -74,6 +95,17 @@
     topBarEl: null,
     topBarDisplay: '',
     windowListenersBound: false,
+    ideaCollapsed: false,
+    ideaDraft: '',
+    ideaMessages: [],
+    ideaPending: false,
+    ideaUploadPending: false,
+    ideaCreatePending: false,
+    ideaLatestResponse: null,
+    ideaRefImages: [],
+    ideaAutoScrollPending: false,
+    ideaFocusInputPending: false,
+    ideaPreserveCollapseOnNextChain: false,
   };
 
   function escapeAttr(value) {
@@ -230,6 +262,13 @@
     return `/downloads/${encodeURI(normalized)}`;
   }
 
+  function uploadUrl(path) {
+    const normalized = String(path || '').replace(/\\/g, '/').trim();
+    if (!normalized) return '';
+    if (/^https?:\/\//i.test(normalized)) return normalized;
+    return normalized.startsWith('/') ? normalized : `/${normalized}`;
+  }
+
   function mediaTypeFromFile(file) {
     const normalized = String(file || '').replace(/\\/g, '/');
     const filename = normalized.split('/').pop() || normalized;
@@ -237,6 +276,290 @@
     if (VIDEO_EXTENSIONS.has(extension)) return 'video';
     if (IMAGE_EXTENSIONS.has(extension)) return 'image';
     return null;
+  }
+
+  function resetIdeaState({ preserveCollapse = false } = {}) {
+    state.ideaCollapsed = preserveCollapse ? state.ideaCollapsed : false;
+    state.ideaDraft = '';
+    state.ideaMessages = [];
+    state.ideaPending = false;
+    state.ideaUploadPending = false;
+    state.ideaCreatePending = false;
+    state.ideaLatestResponse = null;
+    state.ideaRefImages = [];
+    state.ideaAutoScrollPending = false;
+    state.ideaFocusInputPending = false;
+  }
+
+  function createIdeaMessage(role, content) {
+    return {
+      id: `idea-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      role,
+      content: String(content || ''),
+    };
+  }
+
+  function latestIdeaNodes() {
+    return Array.isArray(state.ideaLatestResponse?.nodes)
+      ? state.ideaLatestResponse.nodes.filter((node) => node && typeof node === 'object')
+      : [];
+  }
+
+  function currentProjectProfile() {
+    return String(
+      state.rootJob?.profile
+      || state.jobs.find((job) => String(job?.profile || '').trim())?.profile
+      || ''
+    ).trim();
+  }
+
+  function renderIdeaInline(text) {
+    let html = App.escapeHtml(String(text || ''));
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    return html;
+  }
+
+  function renderIdeaMarkdown(text) {
+    const lines = String(text || '').split(/\r?\n/);
+    let html = '';
+    let listType = '';
+
+    function closeList() {
+      if (!listType) return;
+      html += `</${listType}>`;
+      listType = '';
+    }
+
+    lines.forEach((rawLine) => {
+      const line = rawLine.trim();
+      if (!line) {
+        closeList();
+        return;
+      }
+
+      let match = line.match(/^\d+[.)]\s+(.+)$/);
+      if (match) {
+        if (listType !== 'ol') {
+          closeList();
+          html += '<ol>';
+          listType = 'ol';
+        }
+        html += `<li>${renderIdeaInline(match[1])}</li>`;
+        return;
+      }
+
+      match = line.match(/^[-*]\s+(.+)$/);
+      if (match) {
+        if (listType !== 'ul') {
+          closeList();
+          html += '<ul>';
+          listType = 'ul';
+        }
+        html += `<li>${renderIdeaInline(match[1])}</li>`;
+        return;
+      }
+
+      closeList();
+      html += `<p>${renderIdeaInline(line)}</p>`;
+    });
+
+    closeList();
+    return html || '<p>No script returned.</p>';
+  }
+
+  function setIdeaRailCollapsed(collapsed, { focusInput = false } = {}) {
+    const nextCollapsed = Boolean(collapsed);
+    if (state.ideaCollapsed === nextCollapsed) {
+      if (focusInput && !nextCollapsed) {
+        const input = rootElement()?.querySelector('.pv-idea-input');
+        if (input) input.focus();
+      }
+      return;
+    }
+
+    state.ideaCollapsed = nextCollapsed;
+    state.ideaFocusInputPending = !nextCollapsed && focusInput;
+    renderIntoRoot({ fit: false });
+  }
+
+  function openIdeaRail({ focusInput = false } = {}) {
+    setIdeaRailCollapsed(false, { focusInput });
+  }
+
+  function syncIdeaSendButton() {
+    const sendButton = rootElement()?.querySelector('.pv-idea-send-btn');
+    if (!sendButton) return;
+    sendButton.disabled = !String(state.ideaDraft || '').trim() || state.ideaPending || state.ideaUploadPending;
+  }
+
+  async function handleIdeaUpload(inputEl) {
+    const files = Array.from(inputEl?.files || []);
+    if (inputEl) inputEl.value = '';
+    if (!files.length) return;
+
+    const remaining = MAX_IDEA_REF_IMAGES - state.ideaRefImages.length;
+    if (remaining <= 0) {
+      App.toast(`You can attach up to ${MAX_IDEA_REF_IMAGES} images.`, 'warning');
+      return;
+    }
+
+    const allowedFiles = files.slice(0, remaining);
+    if (files.length > remaining) {
+      App.toast(`Only ${remaining} more image${remaining === 1 ? '' : 's'} can be attached.`, 'warning');
+    }
+
+    state.ideaUploadPending = true;
+    renderIntoRoot({ fit: false });
+
+    try {
+      for (const file of allowedFiles) {
+        const uploaded = await API.uploads.create(file);
+        const path = String(uploaded?.path || '').trim();
+        if (!path) throw new Error('Upload response missing path');
+        state.ideaRefImages.push({
+          path,
+          url: uploadUrl(path),
+          name: file.name || path.split('/').pop() || 'Reference',
+        });
+      }
+    } catch (error) {
+      App.toast(`Image upload failed: ${error?.message || 'Unknown error'}`, 'error');
+    } finally {
+      state.ideaUploadPending = false;
+      renderIntoRoot({ fit: false });
+    }
+  }
+
+  async function submitIdeaPrompt() {
+    if (state.ideaPending || state.ideaUploadPending) return;
+    const prompt = String(state.ideaDraft || '').trim();
+    if (!prompt) {
+      App.toast('Enter what you want first.', 'warning');
+      openIdeaRail({ focusInput: true });
+      return;
+    }
+
+    state.ideaMessages = [...state.ideaMessages, createIdeaMessage('user', prompt)];
+    state.ideaDraft = '';
+    state.ideaPending = true;
+    state.ideaAutoScrollPending = true;
+    renderIntoRoot({ fit: false });
+
+    try {
+      const payload = {
+        prompt,
+        ref_image_urls: state.ideaRefImages.map((item) => item.url).filter(Boolean),
+      };
+      if (state.chainId) payload.chain_id = state.chainId;
+
+      const result = await API.fetch('/api/idea/generate', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+
+      const script = String(result?.script || '').trim();
+      const nodes = Array.isArray(result?.nodes) ? result.nodes : [];
+      state.ideaLatestResponse = { script, nodes };
+      state.ideaMessages = [
+        ...state.ideaMessages,
+        createIdeaMessage('assistant', script || 'AI returned node suggestions without a script.'),
+      ];
+      state.ideaAutoScrollPending = true;
+    } catch (error) {
+      if (error?.status === 404) {
+        App.toast(IDEA_BACKEND_MISSING_TOAST, 'warning');
+      } else {
+        App.toast(`Idea generation failed: ${error?.message || 'Unknown error'}`, 'error');
+      }
+    } finally {
+      state.ideaPending = false;
+      renderIntoRoot({ fit: false });
+    }
+  }
+
+  function sanitizeBBox(value) {
+    if (!value || typeof value !== 'object') return null;
+    const keys = ['x', 'y', 'w', 'h'];
+    if (!keys.every((key) => typeof value[key] === 'number' && Number.isFinite(value[key]))) return null;
+    return { x: value.x, y: value.y, w: value.w, h: value.h };
+  }
+
+  function normalizeIdeaNodePayload(node) {
+    const type = String(node?.type || '').trim();
+    if (!IDEA_NODE_TYPES.has(type)) {
+      throw new Error(`Unsupported suggested node type: ${type || 'unknown'}`);
+    }
+
+    const payload = { type };
+    const prompt = String(node?.prompt || '').trim();
+    const direction = String(node?.direction || '').trim();
+    const aspectRatio = String(node?.aspect_ratio || node?.ratio || '').trim();
+    const startImagePath = String(node?.start_image_path || '').trim();
+    const endImagePath = String(node?.end_image_path || '').trim();
+    const refImagePath = String(node?.ref_image_path || '').trim();
+    const ingredientImagePaths = Array.isArray(node?.ingredient_image_paths)
+      ? node.ingredient_image_paths.map((path) => String(path || '').trim()).filter(Boolean)
+      : [];
+    const bbox = sanitizeBBox(node?.bbox);
+
+    if (prompt) payload.prompt = prompt;
+    if (direction) payload.direction = direction;
+    if (aspectRatio) payload.aspect_ratio = aspectRatio;
+    if (startImagePath) payload.start_image_path = startImagePath;
+    if (endImagePath) payload.end_image_path = endImagePath;
+    if (refImagePath) payload.ref_image_path = refImagePath;
+    if (ingredientImagePaths.length) payload.ingredient_image_paths = ingredientImagePaths;
+    if (bbox) payload.bbox = bbox;
+
+    return payload;
+  }
+
+  async function createIdeaNodesOnCanvas() {
+    if (state.ideaCreatePending || state.ideaPending || state.ideaUploadPending) return;
+    const nodes = latestIdeaNodes();
+    if (!nodes.length) {
+      App.toast('No suggested nodes to create yet.', 'warning');
+      return;
+    }
+
+    const profile = currentProjectProfile();
+    if (!profile) {
+      App.toast('No project profile available for node creation.', 'warning');
+      return;
+    }
+
+    state.ideaCreatePending = true;
+    renderIntoRoot({ fit: false });
+
+    try {
+      const result = await API.chains.create({
+        profile,
+        jobs: nodes.map((node) => normalizeIdeaNodePayload(node)),
+      });
+
+      const createdChainId = String(result?.chain_id || result?.id || '').trim();
+      state.ideaCreatePending = false;
+      state.ideaCollapsed = true;
+      state.ideaPreserveCollapseOnNextChain = true;
+      App.toast('Idea nodes created on canvas.', 'success');
+
+      if (createdChainId) {
+        location.hash = `#project-view/${encodeURIComponent(createdChainId)}`;
+        return;
+      }
+
+      await refreshFullView({ silent: true, fit: true });
+      renderIntoRoot({ fit: false });
+    } catch (error) {
+      state.ideaCreatePending = false;
+      state.ideaPreserveCollapseOnNextChain = false;
+      renderIntoRoot({ fit: false });
+      App.toast(`Failed to create nodes: ${error?.message || 'Unknown error'}`, 'error');
+    }
   }
 
   function renderableFiles(job) {
@@ -702,7 +1025,7 @@
 
   function renderZoomToolbar() {
     return `
-      <div class="pv-zoom-toolbar">
+      <div class="pv-zoom-toolbar" style="right:${state.ideaCollapsed ? 24 : IDEA_RAIL_WIDTH + 24}px;">
         <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="zoom-out" aria-label="Zoom out">-</button>
         <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="zoom-in" aria-label="Zoom in">+</button>
         <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="fit" aria-label="Fit to screen">Fit</button>
@@ -742,6 +1065,123 @@
         </div>
         ${renderZoomToolbar()}
       </div>
+    `;
+  }
+
+  function renderIdeaMessages() {
+    const transcript = state.ideaMessages.map((message) => `
+      <div class="pv-idea-message ${message.role === 'assistant' ? 'pv-idea-message--assistant' : 'pv-idea-message--user'}">
+        ${message.role === 'assistant'
+          ? renderIdeaMarkdown(message.content)
+          : `<p>${App.escapeHtml(message.content)}</p>`}
+      </div>
+    `).join('');
+
+    const typingIndicator = state.ideaPending ? `
+      <div class="pv-idea-message pv-idea-message--assistant">
+        <p>...</p>
+      </div>
+    ` : '';
+
+    return transcript + typingIndicator;
+  }
+
+  function renderIdeaAttachments() {
+    if (!state.ideaRefImages.length) return '';
+    return `
+      <div class="pv-idea-attachments">
+        ${state.ideaRefImages.map((item, index) => `
+          <div class="pv-idea-thumb">
+            <img src="${escapeAttr(item.url)}" alt="${escapeAttr(item.name || `Reference ${index + 1}`)}">
+            <button
+              type="button"
+              class="pv-idea-thumb-remove"
+              data-action="idea-remove-ref"
+              data-index="${index}"
+              aria-label="Remove reference image ${index + 1}"
+            >&times;</button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function renderIdeaRail() {
+    const collapsedClass = state.ideaCollapsed ? 'pv-idea-rail--collapsed' : '';
+    const canSend = String(state.ideaDraft || '').trim() && !state.ideaPending && !state.ideaUploadPending;
+    const canCreateNodes = latestIdeaNodes().length > 0 && !state.ideaPending && !state.ideaUploadPending && !state.ideaCreatePending;
+
+    return `
+      <aside class="pv-idea-rail ${collapsedClass}" aria-label="${App.escapeHtml(IDEA_PANEL_TITLE)}">
+        <div class="pv-idea-header">
+          <div class="pv-idea-title">
+            <span aria-hidden="true">&#10022;</span>
+            <span>${App.escapeHtml(IDEA_PANEL_TITLE)}</span>
+          </div>
+          <button
+            type="button"
+            class="pv-idea-collapse"
+            data-action="toggle-idea-rail"
+            aria-expanded="${state.ideaCollapsed ? 'false' : 'true'}"
+            aria-label="${state.ideaCollapsed ? 'Open idea panel' : 'Collapse idea panel'}"
+          >
+            <span class="material-icons" aria-hidden="true">expand_more</span>
+          </button>
+        </div>
+        ${state.ideaCollapsed ? '' : `
+          <div class="pv-idea-body" data-role="idea-body">
+            ${state.ideaMessages.length || state.ideaPending
+              ? renderIdeaMessages()
+              : `<div class="pv-idea-empty">${App.escapeHtml(IDEA_EMPTY_COPY)}</div>`}
+          </div>
+          <div class="pv-idea-footer">
+            ${renderIdeaAttachments()}
+            <input type="file" accept="image/*" multiple hidden data-role="idea-file-input">
+            <div class="pv-idea-input-row">
+              <button
+                type="button"
+                class="pv-idea-attach-btn"
+                data-action="idea-attach"
+                aria-label="Attach reference images"
+                ${state.ideaPending || state.ideaUploadPending ? 'disabled' : ''}
+              >
+                <span class="material-icons" aria-hidden="true">attach_file</span>
+              </button>
+              <input
+                type="text"
+                class="pv-idea-input"
+                value="${escapeAttr(state.ideaDraft)}"
+                placeholder="${escapeAttr(IDEA_INPUT_PLACEHOLDER)}"
+                ${state.ideaPending || state.ideaUploadPending ? 'disabled' : ''}
+              >
+              <button
+                type="button"
+                class="pv-idea-send-btn"
+                data-action="idea-send"
+                aria-label="Send idea prompt"
+                ${canSend ? '' : 'disabled'}
+              >
+                <span class="material-icons" aria-hidden="true">send</span>
+              </button>
+            </div>
+            <button
+              type="button"
+              data-action="idea-source"
+              style="display:inline-flex; align-items:center; gap:6px; width:max-content; margin-top:10px; color:rgba(255,255,255,0.62); background:transparent; border:0; padding:0; font-size:12px;"
+            >
+              <span>${App.escapeHtml(IDEA_INPUT_SOURCE_LABEL)}</span>
+              <span class="material-icons" style="font-size:16px;" aria-hidden="true">expand_more</span>
+            </button>
+            <button
+              type="button"
+              class="pv-idea-create-nodes-btn"
+              data-action="idea-create-nodes"
+              ${canCreateNodes ? '' : 'disabled'}
+            >${App.escapeHtml(state.ideaCreatePending ? 'Creating nodes...' : IDEA_CREATE_NODES_LABEL)}</button>
+            <div class="pv-idea-caption"><em>${App.escapeHtml(IDEA_CAPTION_TEXT)}</em></div>
+          </div>
+        `}
+      </aside>
     `;
   }
 
@@ -787,16 +1227,26 @@
 
   function renderPage() {
     const hasNodes = state.jobs.length > 0;
+    const railOffset = state.ideaCollapsed ? IDEA_RAIL_COLLAPSED_WIDTH + 12 : IDEA_RAIL_WIDTH + 12;
+    const mainContent = hasNodes
+      ? renderCanvas()
+      : renderEmptyState(
+        state.chainId ? 'No chain nodes yet' : 'Project not found',
+        state.loadError || (state.chainId
+          ? 'This chain does not have any jobs to render yet. Add a step or open the gallery.'
+          : 'Open a chain from the jobs list or gallery to inspect it on the DAG canvas.')
+      );
+
     return `
       <div class="pv-canvas" style="display:grid; gap:16px; min-height:calc(100vh - var(--appbar-height) - 16px); padding-bottom:152px;">
         ${renderToolbar()}
         ${state.loadError && hasNodes ? renderBanner(state.loadError) : ''}
-        ${hasNodes ? renderCanvas() : renderEmptyState(
-          state.chainId ? 'No chain nodes yet' : 'Project not found',
-          state.loadError || (state.chainId
-            ? 'This chain does not have any jobs to render yet. Add a step or open the gallery.'
-            : 'Open a chain from the jobs list or gallery to inspect it on the DAG canvas.')
-        )}
+        <div data-role="idea-workspace" style="position:relative; min-height:calc(100vh - 220px);">
+          <div data-role="idea-main" style="margin-right:${railOffset}px; min-height:100%; transition:margin-right 180ms ease;">
+            ${mainContent}
+          </div>
+          ${renderIdeaRail()}
+        </div>
         ${renderFooter()}
       </div>
     `;
@@ -904,7 +1354,12 @@
   }
 
   async function loadChainData() {
-    state.chainId = parseRouteChainId().trim();
+    const nextChainId = parseRouteChainId().trim();
+    if (nextChainId !== state.chainId) {
+      resetIdeaState({ preserveCollapse: state.ideaPreserveCollapseOnNextChain });
+      state.ideaPreserveCollapseOnNextChain = false;
+    }
+    state.chainId = nextChainId;
     state.loadError = '';
     const requestId = ++state.requestId;
 
@@ -1188,7 +1643,19 @@
     const root = rootElement();
     if (!root) return;
     root.innerHTML = renderPage();
-    requestAnimationFrame(() => measureAndPositionCanvas({ fit }));
+    requestAnimationFrame(() => {
+      measureAndPositionCanvas({ fit });
+      const ideaBody = rootElement()?.querySelector('[data-role="idea-body"]');
+      if (ideaBody && state.ideaAutoScrollPending) {
+        ideaBody.scrollTop = ideaBody.scrollHeight;
+      }
+      state.ideaAutoScrollPending = false;
+
+      if (state.ideaFocusInputPending) {
+        rootElement()?.querySelector('.pv-idea-input')?.focus();
+      }
+      state.ideaFocusInputPending = false;
+    });
   }
 
   function toggleMenu(force) {
@@ -1403,6 +1870,44 @@
       toggleMenu();
       return;
     }
+    if (action === 'ai-agent') {
+      event.preventDefault();
+      openIdeaRail({ focusInput: true });
+      return;
+    }
+    if (action === 'toggle-idea-rail') {
+      event.preventDefault();
+      setIdeaRailCollapsed(!state.ideaCollapsed);
+      return;
+    }
+    if (action === 'idea-attach') {
+      event.preventDefault();
+      rootElement()?.querySelector('[data-role="idea-file-input"]')?.click();
+      return;
+    }
+    if (action === 'idea-remove-ref') {
+      event.preventDefault();
+      const index = Number(actionEl.dataset.index);
+      if (Number.isFinite(index) && index >= 0) {
+        state.ideaRefImages = state.ideaRefImages.filter((_, itemIndex) => itemIndex !== index);
+        renderIntoRoot({ fit: false });
+      }
+      return;
+    }
+    if (action === 'idea-send') {
+      event.preventDefault();
+      void submitIdeaPrompt();
+      return;
+    }
+    if (action === 'idea-source') {
+      event.preventDefault();
+      return;
+    }
+    if (action === 'idea-create-nodes') {
+      event.preventDefault();
+      void createIdeaNodesOnCanvas();
+      return;
+    }
     if (action === 'open-node') {
       event.preventDefault();
       location.hash = `#job-detail/${encodeURIComponent(jobId)}`;
@@ -1446,6 +1951,26 @@
     }
   }
 
+  function handleRootInput(event) {
+    if (event.target instanceof Element && event.target.classList.contains('pv-idea-input')) {
+      state.ideaDraft = event.target.value;
+      syncIdeaSendButton();
+    }
+  }
+
+  function handleRootChange(event) {
+    if (event.target instanceof Element && event.target.matches('[data-role="idea-file-input"]')) {
+      void handleIdeaUpload(event.target);
+    }
+  }
+
+  function handleRootKeydown(event) {
+    if (!(event.target instanceof Element) || !event.target.classList.contains('pv-idea-input')) return;
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    void submitIdeaPrompt();
+  }
+
   const ProjectViewPage = {
     name: 'project-view',
     title: 'Project View',
@@ -1462,6 +1987,9 @@
       bindWindowListeners();
 
       state.rootEl?.addEventListener('click', handleRootClick);
+      state.rootEl?.addEventListener('input', handleRootInput);
+      state.rootEl?.addEventListener('change', handleRootChange);
+      state.rootEl?.addEventListener('keydown', handleRootKeydown);
       state.rootEl?.addEventListener('mousedown', handleMouseDown);
       state.rootEl?.addEventListener('wheel', handleWheel, { passive: false });
 
@@ -1480,6 +2008,9 @@
       }
 
       state.rootEl?.removeEventListener('click', handleRootClick);
+      state.rootEl?.removeEventListener('input', handleRootInput);
+      state.rootEl?.removeEventListener('change', handleRootChange);
+      state.rootEl?.removeEventListener('keydown', handleRootKeydown);
       state.rootEl?.removeEventListener('mousedown', handleMouseDown);
       state.rootEl?.removeEventListener('wheel', handleWheel);
 
