@@ -87,6 +87,22 @@ CREATE TABLE IF NOT EXISTS characters (
     updated_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS veo_accounts (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    token       TEXT NOT NULL,
+    cookie      TEXT NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 -- Indices for hot query paths
 CREATE INDEX IF NOT EXISTS idx_jobs_status      ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_chain_id    ON jobs(chain_id);
