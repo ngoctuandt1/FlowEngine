@@ -113,6 +113,28 @@ const API = {
     },
   },
 
+  // ---- Projects ----
+
+  projects: {
+    /**
+     * List all projects for the home gallery.
+     */
+    async list() {
+      return API.fetch('/api/projects');
+    },
+
+    /**
+     * Create a new project row.
+     * @param {Object} data - { name }
+     */
+    async create(data) {
+      return API.fetch('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+  },
+
   // ---- Chains ----
 
   chains: {
@@ -280,6 +302,7 @@ window.MediaUtil = MediaTile;
 
 document.addEventListener('DOMContentLoaded', () => {
   if (typeof App !== 'undefined') {
+    App.api = API;
     App.mediaTile = MediaTile;
     App.formatTileDate = formatTileDate;
   }
