@@ -9,6 +9,7 @@
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
   const ACTIVE_STATUSES = new Set(['pending', 'claimed', 'running']);
+  const BACKEND_GAP_WARNED = new Set();
 
   let root = null;
   let handlers = null;
@@ -34,6 +35,39 @@
       .replace(/"/g, '&quot;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
+  }
+
+  function debugBadgesEnabled() {
+    try {
+      return localStorage.getItem('FLOW_DEBUG_BADGES') === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function warnBackendGap({ field, jobId, fallbackUsed }) {
+    const key = `${field}|${jobId || ''}|${fallbackUsed}`;
+    if (BACKEND_GAP_WARNED.has(key)) return;
+    BACKEND_GAP_WARNED.add(key);
+    console.warn('[backend-gap]', {
+      page: 'chain-tree',
+      field,
+      jobId: jobId || '',
+      fallbackUsed,
+    });
+  }
+
+  function renderDebugBadges(items, className = 'chain-tree-stat-chip') {
+    if (!debugBadgesEnabled() || !Array.isArray(items) || !items.length) return '';
+    return items.map((item) => `
+      <span
+        class="${className}"
+        title="${escapeAttr(`${item.field} -> ${item.fallbackUsed}`)}"
+        style="opacity:0.65;"
+      >
+        ${App.escapeHtml(`gap:${item.field}`)}
+      </span>
+    `).join('');
   }
 
   function ensureStyles() {
@@ -969,6 +1003,7 @@
       total_jobs: detailProgress?.total ?? sortedJobs.length,
       stats,
       jobs: sortedJobs,
+      debugBadges: Array.isArray(detail?.debugBadges) ? detail.debugBadges : [],
     };
   }
 
@@ -992,6 +1027,9 @@
       total_jobs: extra.total_jobs || base.total_jobs || mergedJobs.length,
       stats: extra.stats || base.stats || computeSummaryStats(mergedJobs),
       jobs: mergedJobs,
+      debugBadges: Array.isArray(extra.debugBadges) && extra.debugBadges.length
+        ? extra.debugBadges
+        : Array.isArray(base.debugBadges) ? base.debugBadges : [],
     };
   }
 
@@ -1214,9 +1252,16 @@
         : {};
 
       let jobs = [];
+      const debugBadges = [];
       if (Array.isArray(detail.jobs) && detail.jobs.every((job) => job && typeof job === 'object' && job.id)) {
         jobs = detail.jobs;
       } else if (jobsResult.status === 'fulfilled') {
+        warnBackendGap({
+          field: 'detail.jobs',
+          jobId: chainId,
+          fallbackUsed: '/api/jobs?chain_id',
+        });
+        debugBadges.push({ field: 'detail.jobs', fallbackUsed: '/api/jobs?chain_id' });
         jobs = normalizeJobList(jobsResult.value).filter((job) => String(job.chain_id || '') === chainId);
       }
 
@@ -1226,7 +1271,7 @@
 
       if (requestId !== state.detailRequestId) return;
 
-      const summary = buildChainSummary(chainId, jobs, detail);
+      const summary = buildChainSummary(chainId, jobs, { ...detail, debugBadges });
       state.selectedSummary = summary;
       state.selectedJobs = summary.jobs;
       pruneChainUiState(chainId, summary.jobs);
@@ -1590,6 +1635,7 @@
                 <span class="chain-tree-stat-chip fail">${App.escapeHtml(String(stats.failed))} failed</span>
                 <span class="chain-tree-stat-chip active">${App.escapeHtml(String(stats.pending))} active</span>
                 ${chain.profile ? `<span class="chain-tree-stat-chip">${App.escapeHtml(App.truncate(chain.profile, 18))}</span>` : ''}
+                ${renderDebugBadges(chain.debugBadges)}
               </div>
             </button>
           `;
@@ -1654,6 +1700,7 @@
           <span class="chain-tree-status ${status.className}">${App.escapeHtml(status.label)}</span>
           <span class="chain-tree-chain-chip">${App.escapeHtml(summary.id)}</span>
           ${summary.profile ? `<span class="chain-tree-chain-chip">${App.escapeHtml(summary.profile)}</span>` : ''}
+          ${renderDebugBadges(summary.debugBadges, 'chain-tree-chain-chip')}
         </div>
 
         <div class="chain-tree-summary-grid">
