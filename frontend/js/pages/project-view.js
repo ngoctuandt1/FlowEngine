@@ -1,233 +1,75 @@
 /**
  * Project View Page
- * Flow-style grid for all jobs on one chain or Flow project.
+ * DAG canvas for one chain with pan/zoom, node cards, and curved edges.
  */
 (() => {
+  const PAGE_ROOT_ID = 'project-view-page';
+  const CHAIN_STEP_ROUTE = 'chain-builder';
+  const DEFAULT_CHAIN_STEP_TYPE = 'extend-video';
+  const MIN_ZOOM = 0.4;
+  const MAX_ZOOM = 1.6;
+  const ZOOM_STEP = 0.14;
+  const X_SPACING = 320;
+  const Y_SPACING = 280;
+  const STAGE_PADDING = 72;
+  const DEFAULT_NODE_WIDTH = 292;
+  const DEFAULT_NODE_HEIGHT = 356;
+  const PROMPT_PREVIEW_CHARS = 180;
+  const ALLOWED_STATUS = new Set(['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
+  const ACTIVE_STATUSES = new Set(['claimed', 'running']);
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
-  const CHAIN_STEP_ALIAS_ROUTE = 'chain-builder';
-  const DEFAULT_CHAIN_STEP_TYPE = 'extend-video';
-  const ALLOWED_STATUS = new Set(['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
+  const STUB_ACTIONS = new Set([
+    'run-workflow',
+    'batch-run',
+    'export',
+    'ai-agent',
+    'settings',
+    'node-upload',
+    'node-play',
+    'node-delete',
+    'node-refs',
+  ]);
+  const COUNT_PILLS = [1, 2, 4];
 
   const state = {
-    routeChainId: '',
-    routeProjectUrl: '',
     chainId: '',
-    projectUrl: '',
-    jobs: [],
-    latestJobId: '',
-    title: 'Project',
     requestId: 0,
     refreshTimer: null,
     loadError: '',
+    jobs: [],
+    jobsById: new Map(),
+    edges: [],
+    rootId: '',
+    rootJob: null,
+    latestJobId: '',
+    title: 'Project',
+    selectedJobId: '',
+    expandedPrompts: new Set(),
+    layoutModel: null,
+    layout: {
+      framesById: new Map(),
+      width: Math.max(1, STAGE_PADDING * 2 + DEFAULT_NODE_WIDTH),
+      height: Math.max(1, STAGE_PADDING * 2 + DEFAULT_NODE_HEIGHT),
+    },
+    viewport: { x: 0, y: 0, z: 1 },
+    fitViewport: { x: 0, y: 0, z: 1 },
+    userViewportChanged: false,
+    menuOpen: false,
+    drag: null,
     wsUnsubs: [],
-    topBarSnapshot: null,
-    menuCleanup: null,
+    rootEl: null,
+    topBarEl: null,
+    topBarDisplay: '',
+    windowListenersBound: false,
   };
 
-  let routerPatched = false;
-  let createPagePatched = false;
-  let createApiPatched = false;
-
-  function parseHashRoute() {
-    const raw = String(location.hash || '').replace(/^#/, '') || 'home';
-    const [pathPart, queryString = ''] = raw.split('?');
-    const segments = pathPart.split('/').filter(Boolean);
-    return {
-      raw,
-      pathPart,
-      queryString,
-      segments,
-      pageName: segments[0] || 'home',
-      params: new URLSearchParams(queryString),
-    };
-  }
-
-  function parseProjectRoute() {
-    const route = parseHashRoute();
-    const pathValue = route.pageName === 'project-view'
-      ? decodeURIComponent(route.segments.slice(1).join('/'))
-      : '';
-    const queryChainId = route.params.get('chain_id') || '';
-    const queryProjectUrl = route.params.get('project_url') || '';
-
-    return {
-      chainId: queryChainId ? decodeURIComponent(queryChainId) : pathValue,
-      projectUrl: decodeURIComponent(queryProjectUrl || ''),
-    };
-  }
-
-  function parseChainStepPrefill() {
-    const route = parseHashRoute();
-    if (!['create', CHAIN_STEP_ALIAS_ROUTE].includes(route.pageName)) {
-      return null;
-    }
-
-    const parent = String(route.params.get('parent') || '').trim();
-    if (!parent) return null;
-
-    return {
-      parent,
-      type: String(route.params.get('type') || DEFAULT_CHAIN_STEP_TYPE).trim() || DEFAULT_CHAIN_STEP_TYPE,
-      chainId: String(route.params.get('chain_id') || '').trim(),
-    };
-  }
-
-  function patchRouter() {
-    if (routerPatched || !window.App || typeof App._onRoute !== 'function') return;
-
-    // App's stock router treats `#page?x=y` as a literal page name. Strip the
-    // query segment here so deep links like `#project-view?chain_id=...` and
-    // the chain-step CTA alias stay compatible without editing app.js.
-    App._onRoute = function patchedOnRoute() {
-      const route = parseHashRoute();
-      const resolvedPage = route.pageName === CHAIN_STEP_ALIAS_ROUTE ? 'create' : route.pageName || 'home';
-
-      if (!this.pages[resolvedPage]) {
-        location.hash = '#home';
-        return;
-      }
-
-      this._loadPage(resolvedPage);
-    };
-
-    routerPatched = true;
-  }
-
-  function patchCreatePagePrefill() {
-    if (createPagePatched || !window.App?.pages?.create) return;
-
-    const page = App.pages.create;
-    const originalMount = typeof page.mount === 'function' ? page.mount.bind(page) : null;
-
-    page.mount = function patchedCreateMount() {
-      originalMount?.();
-      requestAnimationFrame(() => applyCreatePrefill());
-    };
-
-    createPagePatched = true;
-  }
-
-  function patchCreateApiPrefill() {
-    if (createApiPatched || !window.API?.jobs?.create) return;
-
-    const originalCreate = API.jobs.create.bind(API.jobs);
-    API.jobs.create = function patchedJobsCreate(data) {
-      const prefill = parseChainStepPrefill();
-      if (
-        prefill &&
-        App.currentPage === 'create' &&
-        data &&
-        typeof data === 'object' &&
-        !data.chain_id &&
-        data.parent_job_id &&
-        String(data.parent_job_id) === prefill.parent &&
-        prefill.chainId
-      ) {
-        return originalCreate({ ...data, chain_id: prefill.chainId });
-      }
-
-      return originalCreate(data);
-    };
-
-    createApiPatched = true;
-  }
-
-  function applyCreatePrefill(attempt = 0) {
-    const prefill = parseChainStepPrefill();
-    if (!prefill || App.currentPage !== 'create') return;
-
-    const singleTab = document.querySelector('#mode-tabs [data-mode="single"]');
-    const typeOptions = Array.from(document.querySelectorAll('#type-selector .type-option'));
-
-    if (!typeOptions.length) {
-      if (singleTab && !singleTab.classList.contains('btn-primary')) {
-        singleTab.click();
-        return;
-      }
-      if (attempt < 6) {
-        setTimeout(() => applyCreatePrefill(attempt + 1), 60);
-      }
-      return;
-    }
-
-    const targetType = typeOptions.find((option) => option.dataset.type === prefill.type);
-    if (targetType && !targetType.classList.contains('selected')) {
-      targetType.click();
-    }
-
-    const parentField = document.getElementById('field-parent-job');
-    if (!parentField) {
-      if (attempt < 6) {
-        setTimeout(() => applyCreatePrefill(attempt + 1), 60);
-      }
-      return;
-    }
-
-    if (parentField.value !== prefill.parent) {
-      parentField.value = prefill.parent;
-      parentField.dispatchEvent(new Event('input', { bubbles: true }));
-      parentField.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-
-    document.getElementById('field-prompt')?.focus();
-  }
-
-  function normalizeJobList(result) {
-    return Array.isArray(result) ? result : result?.jobs || [];
-  }
-
-  function mediaTileHelper() {
-    return App.mediaTile || window.MediaUtil;
-  }
-
-  function formatTileDate(value) {
-    if (typeof App?.formatTileDate === 'function') {
-      return App.formatTileDate(value);
-    }
-    if (typeof App?.formatDate === 'function') {
-      return App.formatDate(value);
-    }
-    return '-';
-  }
-
-  function safeDateValue(value) {
-    const time = new Date(value || 0).getTime();
-    return Number.isFinite(time) ? time : 0;
-  }
-
-  function compareJobsDesc(a, b) {
-    const createdDiff = safeDateValue(b?.created_at || b?.createdAt) - safeDateValue(a?.created_at || a?.createdAt);
-    if (createdDiff !== 0) return createdDiff;
-    return String(b?.id || '').localeCompare(String(a?.id || ''));
-  }
-
-  function mediaUrl(file) {
-    const normalized = String(file || '').replace(/\\/g, '/').trim();
-    if (!normalized) return '';
-    if (/^https?:\/\//i.test(normalized)) return normalized;
-
-    if (/^\/?downloads\//i.test(normalized)) {
-      const relative = normalized.replace(/^\/?downloads\//i, '');
-      return `/downloads/${encodeURI(relative)}`;
-    }
-
-    const markerIndex = normalized.toLowerCase().lastIndexOf('/downloads/');
-    if (markerIndex !== -1) {
-      const relative = normalized.slice(markerIndex + '/downloads/'.length);
-      return `/downloads/${encodeURI(relative)}`;
-    }
-
-    return `/downloads/${encodeURI(normalized)}`;
-  }
-
-  function mediaTypeFromFile(file) {
-    const normalized = String(file || '').replace(/\\/g, '/');
-    const name = normalized.split('/').pop() || normalized;
-    const extension = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
-    if (VIDEO_EXTENSIONS.has(extension)) return 'video';
-    if (IMAGE_EXTENSIONS.has(extension)) return 'image';
-    return null;
+  function escapeAttr(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
   }
 
   function safeStatus(status) {
@@ -235,200 +77,504 @@
     return ALLOWED_STATUS.has(normalized) ? normalized : 'pending';
   }
 
-  function primaryMedia(job) {
+  function safeDateValue(value) {
+    const time = new Date(value || 0).getTime();
+    return Number.isFinite(time) ? time : 0;
+  }
+
+  function compareByCreatedAsc(a, b) {
+    const createdDiff = safeDateValue(a?.created_at || a?.createdAt) - safeDateValue(b?.created_at || b?.createdAt);
+    if (createdDiff !== 0) return createdDiff;
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+  }
+
+  function compareJobs(a, b) {
+    const levelDiff = (Number(a?.job_level) || 1) - (Number(b?.job_level) || 1);
+    if (levelDiff !== 0) return levelDiff;
+    return compareByCreatedAsc(a, b);
+  }
+
+  function compareByCreatedDesc(a, b) {
+    const createdDiff = safeDateValue(b?.created_at || b?.createdAt) - safeDateValue(a?.created_at || a?.createdAt);
+    if (createdDiff !== 0) return createdDiff;
+    return String(b?.id || '').localeCompare(String(a?.id || ''));
+  }
+
+  function formatTileDate(value) {
+    if (typeof App?.formatTileDate === 'function') return App.formatTileDate(value);
+    if (typeof App?.formatDate === 'function') return App.formatDate(value);
+    return '-';
+  }
+
+  function parseRouteChainId() {
+    const raw = String(location.hash || '').replace(/^#/, '');
+    if (!raw) return '';
+    const [pathPart, queryString = ''] = raw.split('?');
+    const segments = pathPart.split('/').filter(Boolean);
+    if ((segments[0] || '') !== 'project-view') return '';
+    if (segments.length > 1) return decodeURIComponent(segments.slice(1).join('/'));
+    return decodeURIComponent(new URLSearchParams(queryString).get('chain_id') || '');
+  }
+
+  function normalizeJobList(result) {
+    const items = Array.isArray(result) ? result : result?.jobs || [];
+    return items.filter((job) => job && typeof job === 'object' && job.id).map((job) => ({ ...job }));
+  }
+
+  function uniqueJobsById(jobs) {
+    const byId = new Map();
+    jobs.forEach((job) => {
+      if (!job?.id) return;
+      byId.set(String(job.id), { ...job });
+    });
+    return Array.from(byId.values());
+  }
+
+  function pickRootJob(jobs, explicitRootId = '') {
+    if (explicitRootId) {
+      const explicit = jobs.find((job) => String(job.id) === explicitRootId);
+      if (explicit) return explicit;
+    }
+    return (
+      jobs.find((job) => !String(job.parent_job_id || '').trim()) ||
+      jobs.find((job) => Number(job.job_level) === 1) ||
+      [...jobs].sort(compareByCreatedAsc)[0] ||
+      null
+    );
+  }
+
+  function normalizeEdges(rawEdges, jobsById) {
+    const seen = new Set();
+    const edges = [];
+    (Array.isArray(rawEdges) ? rawEdges : []).forEach((edge) => {
+      const parent = String(edge?.parent || '').trim();
+      const child = String(edge?.child || '').trim();
+      if (!parent || !child || !jobsById.has(parent) || !jobsById.has(child)) return;
+      const key = `${parent}->${child}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      edges.push({ parent, child });
+    });
+    return edges;
+  }
+
+  function buildEdgesFromJobs(jobs) {
+    const jobsById = new Map(jobs.map((job) => [String(job.id), job]));
+    const seen = new Set();
+    const edges = [];
+    jobs.forEach((job) => {
+      const child = String(job?.id || '').trim();
+      const parent = String(job?.parent_job_id || '').trim();
+      if (!parent || !child || !jobsById.has(parent)) return;
+      const key = `${parent}->${child}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      edges.push({ parent, child });
+    });
+    return edges;
+  }
+
+  function walkChainJobs(jobs, rootId = '') {
+    if (!jobs.length) return [];
+    const nodesById = new Map(jobs.map((job) => [String(job.id), job]));
+    const childrenByParent = new Map();
+    jobs.forEach((job) => {
+      const parentId = String(job?.parent_job_id || '').trim();
+      if (!parentId || !nodesById.has(parentId)) return;
+      if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+      childrenByParent.get(parentId).push(job);
+    });
+    childrenByParent.forEach((items) => items.sort(compareJobs));
+
+    const ordered = [];
+    const seen = new Set();
+    function visit(jobId) {
+      const key = String(jobId || '').trim();
+      if (!key || seen.has(key) || !nodesById.has(key)) return;
+      seen.add(key);
+      ordered.push(nodesById.get(key));
+      (childrenByParent.get(key) || []).forEach((child) => visit(child.id));
+    }
+
+    const rootJob = pickRootJob(jobs, rootId);
+    if (rootJob?.id) visit(rootJob.id);
+    [...jobs].sort(compareJobs).forEach((job) => visit(job.id));
+    return ordered;
+  }
+
+  function mediaUrl(file) {
+    const normalized = String(file || '').replace(/\\/g, '/').trim();
+    if (!normalized) return '';
+    if (/^https?:\/\//i.test(normalized)) return normalized;
+    if (/^\/?downloads\//i.test(normalized)) {
+      return `/downloads/${encodeURI(normalized.replace(/^\/?downloads\//i, ''))}`;
+    }
+    const markerIndex = normalized.toLowerCase().lastIndexOf('/downloads/');
+    if (markerIndex !== -1) {
+      return `/downloads/${encodeURI(normalized.slice(markerIndex + '/downloads/'.length))}`;
+    }
+    return `/downloads/${encodeURI(normalized)}`;
+  }
+
+  function mediaTypeFromFile(file) {
+    const normalized = String(file || '').replace(/\\/g, '/');
+    const filename = normalized.split('/').pop() || normalized;
+    const extension = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+    if (VIDEO_EXTENSIONS.has(extension)) return 'video';
+    if (IMAGE_EXTENSIONS.has(extension)) return 'image';
+    return null;
+  }
+
+  function renderableFiles(job) {
     const files = Array.isArray(job?.output_files) ? job.output_files : [];
-    const renderable = files
-      .map((file) => {
-        const kind = mediaTypeFromFile(file);
-        if (!kind) return null;
-        return {
-          kind,
-          url: mediaUrl(file),
-        };
-      })
-      .filter(Boolean);
+    return files.map((file) => {
+      const kind = mediaTypeFromFile(file);
+      if (!kind) return null;
+      return { kind, url: mediaUrl(file), name: String(file || '') };
+    }).filter(Boolean);
+  }
 
-    if (!renderable.length) return null;
+  function primaryMedia(job) {
+    const files = renderableFiles(job);
+    if (!files.length) return null;
+    const primary = files.find((file) => file.kind === 'video') || files[0];
+    const poster = primary.kind === 'video' ? files.find((file) => file.kind === 'image')?.url || '' : '';
+    return { ...primary, poster, files };
+  }
 
-    const primary = renderable[0];
-    const poster = primary.kind === 'video'
-      ? renderable.find((file) => file.kind === 'image')?.url || ''
-      : '';
+  function referenceImageCount(job) {
+    const ingredients = Array.isArray(job?.ingredient_image_paths) ? job.ingredient_image_paths.filter(Boolean).length : 0;
+    return [job?.start_image_path, job?.end_image_path, job?.ref_image_path].filter(Boolean).length + ingredients;
+  }
+
+  function outputCount(job) {
+    const files = renderableFiles(job);
+    if (!files.length) return 1;
+    const videos = files.filter((file) => file.kind === 'video').length;
+    const images = files.filter((file) => file.kind === 'image').length;
+    return videos || images || 1;
+  }
+
+  function activeCountPill(job) {
+    const count = outputCount(job);
+    if (count === 4) return 4;
+    if (count === 2) return 2;
+    return 1;
+  }
+
+  function typeCardLabel(type) {
+    const normalized = String(type || '').trim();
+    if (['text-to-video', 'frames-to-video', 'ingredients-to-video'].includes(normalized)) return 'VIDEO LABS';
+    if (normalized === 'text-to-image') return 'IMAGE LABS';
+    if (normalized === 'extend-video') return 'EXTEND';
+    if (normalized === 'insert-object') return 'INSERT';
+    if (normalized === 'remove-object') return 'REMOVE';
+    if (normalized === 'camera-move') return 'CAMERA';
+    return String(normalized || 'WORK').replace(/-/g, ' ').toUpperCase();
+  }
+
+  function modeLabel(type) {
+    const normalized = String(type || '').trim();
+    if (normalized === 'text-to-video') return 'Txt 2 Vid';
+    if (normalized === 'frames-to-video') return 'Img 2 Vid';
+    if (normalized === 'ingredients-to-video') return 'Refs 2 Vid';
+    if (normalized === 'text-to-image') return 'Txt 2 Img';
+    if (normalized === 'extend-video') return 'Extend';
+    if (normalized === 'insert-object') return 'Insert';
+    if (normalized === 'remove-object') return 'Remove';
+    if (normalized === 'camera-move') return 'Camera';
+    return 'Workflow';
+  }
+
+  function promptText(job) {
+    return String(job?.prompt || job?.direction || '').trim();
+  }
+
+  function statusGlyph(status) {
+    const safe = safeStatus(status);
+    if (safe === 'completed') return '&check;';
+    if (safe === 'failed') return '!';
+    if (safe === 'cancelled') return '&times;';
+    if (ACTIVE_STATUSES.has(safe)) return '&hellip;';
+    return '&#9633;';
+  }
+
+  function latestJob(jobs) {
+    return [...jobs].sort(compareByCreatedDesc)[0] || null;
+  }
+
+  function chainTitle(rootJob) {
+    const formatted = formatTileDate(rootJob?.created_at || rootJob?.createdAt || '');
+    if (formatted && formatted !== '-') return formatted;
+    return state.chainId ? `Chain ${App.truncate(state.chainId, 18)}` : 'Project';
+  }
+
+  function buildLayoutModel(jobs) {
+    const ranks = new Map();
+    jobs.forEach((job) => {
+      const rank = Math.max(1, Number(job?.job_level) || 1);
+      if (!ranks.has(rank)) ranks.set(rank, []);
+      ranks.get(rank).push(job);
+    });
+    const rankKeys = [...ranks.keys()].sort((a, b) => a - b);
+    rankKeys.forEach((rank) => ranks.get(rank).sort(compareByCreatedAsc));
+
+    const maxCount = rankKeys.reduce((max, rank) => Math.max(max, ranks.get(rank).length), 0);
+    const anchorsById = new Map();
+    rankKeys.forEach((rank, rowIndex) => {
+      const row = ranks.get(rank);
+      const rowOffset = ((maxCount - row.length) * X_SPACING) / 2;
+      row.forEach((job, columnIndex) => {
+        anchorsById.set(String(job.id), {
+          centerX: STAGE_PADDING + (DEFAULT_NODE_WIDTH / 2) + rowOffset + (columnIndex * X_SPACING),
+          top: STAGE_PADDING + (rowIndex * Y_SPACING),
+          rowIndex,
+          rank,
+        });
+      });
+    });
 
     return {
-      ...primary,
-      poster,
+      ranks,
+      rankKeys,
+      maxCount,
+      anchorsById,
+      estimatedWidth: Math.max(1, STAGE_PADDING * 2 + DEFAULT_NODE_WIDTH + Math.max(0, maxCount - 1) * X_SPACING),
+      estimatedHeight: Math.max(1, STAGE_PADDING * 2 + DEFAULT_NODE_HEIGHT + Math.max(0, rankKeys.length - 1) * Y_SPACING),
     };
   }
 
-  function primaryJobTitle(job) {
-    return job?.prompt || job?.direction || '(no prompt)';
+  function draftFrameForJob(job) {
+    const anchor = state.layoutModel?.anchorsById?.get(String(job?.id || ''));
+    const centerX = anchor?.centerX || (STAGE_PADDING + DEFAULT_NODE_WIDTH / 2);
+    const top = anchor?.top || STAGE_PADDING;
+    return { left: centerX - (DEFAULT_NODE_WIDTH / 2), top, width: DEFAULT_NODE_WIDTH, height: DEFAULT_NODE_HEIGHT };
   }
 
-  function projectFallbackTitle() {
-    const chainRef = state.chainId || state.routeChainId;
-    return chainRef ? `Project ${App.truncate(chainRef, 18)}` : 'Project';
+  function newChainStepHref(parentJobId = '') {
+    const params = new URLSearchParams();
+    if (parentJobId) params.set('parent', String(parentJobId).trim());
+    params.set('type', DEFAULT_CHAIN_STEP_TYPE);
+    if (state.chainId) params.set('chain_id', state.chainId);
+    return `#${CHAIN_STEP_ROUTE}?${params.toString()}`;
   }
 
-  function subtitleText() {
-    return state.chainId
-      ? `Chain ${App.truncate(state.chainId, 18)}`
-      : 'Project';
-  }
+  function renderPromptSection(job) {
+    const text = promptText(job) || 'No prompt yet.';
+    const expanded = state.expandedPrompts.has(String(job.id));
+    const needsToggle = text.length > PROMPT_PREVIEW_CHARS;
+    const visibleText = expanded || !needsToggle ? text : `${text.slice(0, PROMPT_PREVIEW_CHARS).trim()}...`;
 
-  async function resolveRootJob(jobs) {
-    const seedJobId = String(jobs[0]?.id || '').trim();
-    if (!seedJobId) return null;
-
-    let related = null;
-    try {
-      related = await API.fetch(`/api/jobs/${encodeURIComponent(seedJobId)}/related`);
-    } catch (_) {
-      related = null;
-    }
-
-    const rootId = String(related?.chain_root_id || '').trim();
-    const relatedCandidates = [
-      related?.self,
-      related?.parent,
-      ...(Array.isArray(related?.ancestors) ? related.ancestors : []),
-    ].filter((job) => job?.id);
-
-    if (rootId) {
-      const rootFromRelated = relatedCandidates.find((job) => String(job.id) === rootId);
-      if (rootFromRelated) return rootFromRelated;
-
-      const rootFromJobs = jobs.find((job) => String(job?.id || '') === rootId);
-      if (rootFromJobs) return rootFromJobs;
-
-      try {
-        return await API.jobs.get(rootId);
-      } catch (_) {
-        // Fall through to local heuristics.
-      }
-    }
-
-    return jobs.find((job) => Number(job?.job_level) === 1)
-      || jobs.find((job) => !String(job?.parent_job_id || '').trim())
-      || null;
-  }
-
-  function deriveState(jobs, rootJob = null) {
-    const sorted = [...jobs].sort(compareJobsDesc);
-    const latestCompleted = sorted.find((job) => safeStatus(job.status) === 'completed');
-    const latest = latestCompleted || sorted[0] || null;
-
-    state.jobs = sorted;
-    state.chainId = state.routeChainId
-      || String(rootJob?.chain_id || '').trim()
-      || String(sorted.find((job) => job?.chain_id)?.chain_id || '').trim();
-    state.projectUrl = String(sorted.find((job) => job?.project_url)?.project_url || state.routeProjectUrl || '').trim();
-    state.latestJobId = String(latest?.id || '').trim();
-    const rootCreatedAt = rootJob?.created_at || rootJob?.createdAt || '';
-    const rootTitle = formatTileDate(rootCreatedAt);
-    state.title = rootTitle && rootTitle !== '-'
-      ? rootTitle
-      : projectFallbackTitle();
-  }
-
-  async function fetchProjectJobs() {
-    if (state.routeChainId) {
-      const jobs = normalizeJobList(await API.jobs.list({ chain_id: state.routeChainId }));
-      return jobs.filter((job) => String(job?.chain_id || '') === state.routeChainId);
-    }
-
-    if (state.routeProjectUrl) {
-      const jobs = normalizeJobList(await API.jobs.list());
-      return jobs.filter((job) => String(job?.project_url || '') === state.routeProjectUrl);
-    }
-
-    return [];
-  }
-
-  async function hydrateProject() {
-    const route = parseProjectRoute();
-    state.routeChainId = String(route.chainId || '').trim();
-    state.routeProjectUrl = String(route.projectUrl || '').trim();
-    state.loadError = '';
-
-    const requestId = ++state.requestId;
-
-    try {
-      const jobs = await fetchProjectJobs();
-      if (requestId !== state.requestId) return;
-      const rootJob = await resolveRootJob(jobs);
-      if (requestId !== state.requestId) return;
-      deriveState(jobs, rootJob);
-    } catch (err) {
-      if (requestId !== state.requestId) return;
-      state.jobs = [];
-      state.latestJobId = '';
-      state.chainId = state.routeChainId;
-      state.projectUrl = state.routeProjectUrl;
-      state.title = projectFallbackTitle();
-      state.loadError = err.message || 'Failed to load project';
-    }
-  }
-
-  function newChainStepHref() {
-    const query = new URLSearchParams();
-    if (state.latestJobId) query.set('parent', state.latestJobId);
-    query.set('type', DEFAULT_CHAIN_STEP_TYPE);
-    if (state.chainId) query.set('chain_id', state.chainId);
-    return `#${CHAIN_STEP_ALIAS_ROUTE}?${query.toString()}`;
-  }
-
-  function renderPreview(job) {
-    const status = safeStatus(job?.status);
-    const media = status === 'completed' ? primaryMedia(job) : null;
-    if (!media) return '';
-
-    const title = primaryJobTitle(job);
-    const mediaTile = mediaTileHelper();
-    if (!mediaTile) return '';
-    return media.kind === 'video'
-      ? mediaTile.videoTag({ src: media.url, poster: media.poster, alt: title })
-      : mediaTile.imgTag({ src: media.url, alt: title });
-  }
-
-  function renderStatusBadge(job) {
-    const status = safeStatus(job?.status);
-    if (status === 'completed') return '';
-    return `<span class="tile-status-badge state-${status}">${App.escapeHtml(status.toUpperCase())}</span>`;
-  }
-
-  function renderJobTile(job) {
-    const status = safeStatus(job?.status);
     return `
-      <a
-        class="project-tile status-${status}"
-        href="#job-detail/${encodeURIComponent(job?.id || '')}"
-        data-job-id="${App.escapeHtml(job?.id || '')}"
-        title="${App.escapeHtml(primaryJobTitle(job))}"
-      >
-        <div class="tile-thumb">
-          ${renderPreview(job)}
-          ${renderStatusBadge(job)}
-        </div>
-        <div class="tile-overlay">
-          <span class="tile-date">${App.escapeHtml(formatTileDate(job?.created_at || job?.createdAt))}</span>
-        </div>
-      </a>
+      <div class="pv-section">
+        <div class="pv-prompt">${App.escapeHtml(visibleText)}</div>
+        ${needsToggle ? `
+          <button type="button" class="pv-prompt-toggle" data-action="prompt-toggle" data-job-id="${escapeAttr(job.id)}">
+            ${expanded ? 'Show Less' : 'Show More'}
+          </button>
+        ` : ''}
+      </div>
     `;
   }
 
-  function renderFloatingFooter() {
-    if (!state.routeChainId && !state.routeProjectUrl && !state.latestJobId) return '';
+  function renderReferenceStub(job) {
+    const count = referenceImageCount(job);
     return `
-      <div class="pv-fab-wrap">
+      <button type="button" class="pv-ref-images" data-action="node-refs" data-job-id="${escapeAttr(job.id)}" title="Reference images">
+        <span>REFERENCE IMAGES</span>
+        <span>${App.escapeHtml(String(count))}</span>
+        <span class="material-icons" aria-hidden="true">expand_more</span>
+      </button>
+    `;
+  }
+
+  function renderCountPills(job) {
+    const active = activeCountPill(job);
+    const noun = primaryMedia(job)?.kind === 'image' && String(job?.type || '') === 'text-to-image' ? 'Image' : 'Video';
+    return `
+      <div class="pv-count-pills">
+        ${COUNT_PILLS.map((count) => `
+          <span class="pv-count-pill ${count === active ? 'pv-count-pill--active' : ''}">
+            ${App.escapeHtml(String(count))} ${App.escapeHtml(count === 1 ? noun : `${noun}s`)}
+          </span>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function renderOutput(job) {
+    const status = safeStatus(job?.status);
+    const media = status === 'completed' ? primaryMedia(job) : null;
+    if (!media) {
+      return `
+        <div class="pv-output pv-output--empty">
+          <span class="material-icons" aria-hidden="true">${App.escapeHtml(App.jobTypeIcon(job?.type))}</span>
+          <span>No output yet</span>
+        </div>
+      `;
+    }
+
+    const title = promptText(job) || typeCardLabel(job?.type);
+    const mediaTile = App.mediaTile || window.MediaUtil;
+    const preview = media.kind === 'video'
+      ? mediaTile.videoTag({ src: media.url, poster: media.poster, alt: title })
+      : mediaTile.imgTag({ src: media.url, alt: title });
+
+    return `
+      <button type="button" class="pv-output" data-action="preview-output" data-job-id="${escapeAttr(job.id)}" title="Preview output">
+        ${preview}
+      </button>
+    `;
+  }
+
+  function renderNode(job) {
+    const status = safeStatus(job?.status);
+    const frame = state.layout.framesById.get(String(job.id)) || draftFrameForJob(job);
+    const classes = ['pv-node', `pv-node--${status}`, state.selectedJobId === String(job.id) ? 'pv-node--selected' : '']
+      .filter(Boolean).join(' ');
+
+    return `
+      <div class="${classes}" data-job-id="${escapeAttr(job.id)}" style="position:absolute; left:${frame.left}px; top:${frame.top}px;">
+        <div class="pv-node-header">
+          <div class="pv-node-type">
+            <span class="material-icons" aria-hidden="true">${App.escapeHtml(App.jobTypeIcon(job?.type))}</span>
+            <span>${App.escapeHtml(typeCardLabel(job?.type))}</span>
+          </div>
+          <div class="pv-node-actions">
+            <button type="button" class="icon-btn" data-action="node-upload" data-job-id="${escapeAttr(job.id)}" aria-label="Upload stub"><span class="material-icons">upload</span></button>
+            <button type="button" class="icon-btn" data-action="node-play" data-job-id="${escapeAttr(job.id)}" aria-label="Play stub"><span class="material-icons">play_arrow</span></button>
+            <button type="button" class="icon-btn" data-action="node-delete" data-job-id="${escapeAttr(job.id)}" aria-label="Delete stub"><span class="material-icons">delete</span></button>
+            <span class="pv-node-status" title="${App.escapeHtml(status.toUpperCase())}">${statusGlyph(status)}</span>
+          </div>
+        </div>
+
+        <div data-action="open-node" data-job-id="${escapeAttr(job.id)}" style="cursor:pointer;">
+          <div class="pv-node-name">&#272;&#7863;t t&#234;n node&hellip;</div>
+          ${renderPromptSection(job)}
+          <div class="pv-section">${renderReferenceStub(job)}</div>
+          <div class="pv-section" style="display:flex; flex-wrap:wrap; gap:8px;">
+            <span class="pv-ratio-chip">${App.escapeHtml(job?.aspect_ratio || '16:9')}</span>
+            <span class="pv-mode-chip">${App.escapeHtml(modeLabel(job?.type))}</span>
+          </div>
+          ${renderCountPills(job)}
+        </div>
+
+        ${renderOutput(job)}
+
+        <a class="pv-new-step-pill" href="${App.escapeHtml(newChainStepHref(job.id))}" data-job-id="${escapeAttr(job.id)}" style="position:absolute; right:12px; bottom:12px; z-index:2;">
+          <span class="new-project-pill">
+            <span class="material-icons">add</span>
+            <span>Chain step</span>
+          </span>
+        </a>
+      </div>
+    `;
+  }
+
+  function edgeIsActive(edge) {
+    const parent = state.jobsById.get(String(edge.parent));
+    const child = state.jobsById.get(String(edge.child));
+    return ACTIVE_STATUSES.has(safeStatus(parent?.status)) || ACTIVE_STATUSES.has(safeStatus(child?.status));
+  }
+
+  function buildEdgePath(frameA, frameB) {
+    const sourceX = frameA.left + (frameA.width / 2);
+    const sourceY = frameA.top + frameA.height;
+    const targetX = frameB.left + (frameB.width / 2);
+    const targetY = frameB.top;
+    const curve = Math.max(56, Math.abs(targetY - sourceY) * 0.45);
+    return `M ${sourceX} ${sourceY} C ${sourceX} ${sourceY + curve} ${targetX} ${targetY - curve} ${targetX} ${targetY}`;
+  }
+
+  function renderEdges() {
+    return state.edges.map((edge) => {
+      const parentFrame = state.layout.framesById.get(String(edge.parent));
+      const childFrame = state.layout.framesById.get(String(edge.child));
+      if (!parentFrame || !childFrame) return '';
+
+      return `
+        <path
+          class="pv-edge-path ${edgeIsActive(edge) ? 'pv-edge-path--running' : ''}"
+          data-edge-parent="${escapeAttr(edge.parent)}"
+          data-edge-child="${escapeAttr(edge.child)}"
+          d="${escapeAttr(buildEdgePath(parentFrame, childFrame))}"
+          fill="none"
+          stroke="rgba(161, 161, 170, 0.5)"
+          stroke-width="2"
+          stroke-dasharray="6 10"
+          stroke-linecap="round"
+          opacity="0.5"
+        ></path>
+      `;
+    }).join('');
+  }
+
+  function renderToolbar() {
+    return `
+      <div class="pv-toolbar">
+        <div style="display:flex; align-items:center; gap:12px; min-width:0;">
+          <button type="button" class="icon-btn" data-action="back" aria-label="Back"><span class="material-icons">arrow_back</span></button>
+          <div style="display:grid; gap:4px; min-width:0;">
+            <div style="font-size:20px; font-weight:700; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${App.escapeHtml(state.title || 'Project')}</div>
+            <div style="color: var(--text-muted); font-size: 12px; line-height: 1.4;">${state.chainId ? `Chain ${App.escapeHtml(App.truncate(state.chainId, 18))}` : 'Workflow canvas'}</div>
+          </div>
+          <div class="pv-topbar-menu" data-role="project-menu-shell">
+            <button type="button" class="icon-btn" data-action="toggle-menu" aria-label="Project actions" aria-haspopup="menu" aria-expanded="${state.menuOpen ? 'true' : 'false'}">
+              <span class="material-icons">more_vert</span>
+            </button>
+            <div class="pv-menu-popover" role="menu" ${state.menuOpen ? '' : 'hidden'}>
+              ${state.chainId ? `<a class="pv-menu-item" href="#jobs/${encodeURIComponent(state.chainId)}" role="menuitem"><span class="material-icons">list</span><span>Open jobs</span></a>` : ''}
+              <a class="pv-menu-item" href="#gallery" role="menuitem"><span class="material-icons">collections</span><span>Gallery</span></a>
+            </div>
+          </div>
+        </div>
+
+        <div class="pv-toolbar-actions">
+          <button type="button" class="btn btn-sm btn-outline" data-action="run-workflow">Run Workflow</button>
+          <button type="button" class="btn btn-sm btn-outline" data-action="batch-run">Batch Run</button>
+          <button type="button" class="btn btn-sm btn-outline" data-action="export">Export</button>
+          <button type="button" class="btn btn-sm btn-outline" data-action="ai-agent">AI Agent</button>
+          <button type="button" class="btn btn-sm btn-outline" data-action="settings">Settings</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderZoomToolbar() {
+    return `
+      <div class="pv-zoom-toolbar" style="position:absolute; right:16px; bottom:16px; z-index:3; display:flex; gap:8px;">
+        <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="zoom-out" aria-label="Zoom out">-</button>
+        <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="zoom-in" aria-label="Zoom in">+</button>
+        <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="fit" aria-label="Fit to screen">Fit</button>
+        <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="reset-zoom" aria-label="Reset zoom">Reset</button>
+      </div>
+    `;
+  }
+
+  function renderCanvas() {
+    return `
+      <div data-role="pan-shell" style="position:relative; overflow:hidden; min-height:calc(100vh - 220px); border-radius:24px; cursor:${state.drag ? 'grabbing' : 'grab'};">
+        <div
+          class="pv-pan"
+          data-role="pan-stage"
+          style="position:relative; width:${Math.max(1, state.layout.width)}px; height:${Math.max(1, state.layout.height)}px; transform-origin:0 0; transform:translate(${state.viewport.x}px, ${state.viewport.y}px) scale(${state.viewport.z});"
+        >
+          <svg class="pv-edges" data-role="edges" viewBox="0 0 ${Math.max(1, state.layout.width)} ${Math.max(1, state.layout.height)}" width="${Math.max(1, state.layout.width)}" height="${Math.max(1, state.layout.height)}" style="position:absolute; inset:0; overflow:visible;">
+            ${renderEdges()}
+          </svg>
+          ${state.jobs.map(renderNode).join('')}
+        </div>
+        ${renderZoomToolbar()}
+      </div>
+    `;
+  }
+
+  function renderFooter() {
+    return `
+      <div class="pv-fab-wrap" style="position:fixed; left:50%; bottom:24px; transform:translateX(-50%); z-index:5; display:flex; flex-direction:column; align-items:center; gap:12px;">
         <div class="pv-disclaimer">Flow can make mistakes, so double check it</div>
         ${state.latestJobId ? `
-          <a
-            class="new-project-pill pv-new-step-pill"
-            href="${App.escapeHtml(newChainStepHref())}"
-            title="New chain step"
-            aria-label="New chain step"
-          >
+          <a class="new-project-pill pv-new-step-pill" href="${App.escapeHtml(newChainStepHref(state.latestJobId))}" title="New chain step" aria-label="New chain step">
             <span class="material-icons">add</span>
             <span>New chain step</span>
           </a>
@@ -439,10 +585,10 @@
 
   function renderBanner(message) {
     return `
-      <div class="card" style="padding: 14px 16px; color: #fde68a; background: rgba(234, 179, 8, 0.10); border-color: rgba(234, 179, 8, 0.28);">
+      <div class="card" style="padding:14px 16px; color:#fde68a; background:rgba(234, 179, 8, 0.10); border-color:rgba(234, 179, 8, 0.28);">
         <div style="display:flex; align-items:flex-start; gap:10px;">
           <span class="material-icons" style="font-size:18px;">warning</span>
-          <div style="font-size: 13px; line-height: 1.5;">${App.escapeHtml(message)}</div>
+          <div style="font-size:13px; line-height:1.5;">${App.escapeHtml(message)}</div>
         </div>
       </div>
     `;
@@ -452,57 +598,400 @@
     return `
       <div class="card">
         <div class="empty-state">
-          <span class="material-icons">collections</span>
+          <span class="material-icons">account_tree</span>
           <h3>${App.escapeHtml(title)}</h3>
           <p>${App.escapeHtml(body)}</p>
-          <div style="margin-top: 12px;">
-            <a href="#gallery" class="btn btn-primary">
-              <span class="material-icons" style="font-size:16px">collections</span> Open gallery
-            </a>
+          <div style="margin-top:12px;">
+            <a href="#gallery" class="btn btn-primary"><span class="material-icons" style="font-size:16px">collections</span> Open gallery</a>
           </div>
         </div>
       </div>
     `;
   }
 
-  function renderGrid() {
-    if (state.loadError && !state.jobs.length) {
-      return renderEmptyState('Failed to load project', state.loadError);
-    }
-
-    if (!state.routeChainId && !state.routeProjectUrl) {
-      return renderEmptyState('Project not found', 'Open a chain from the gallery or jobs list to inspect its media grid.');
-    }
-
-    if (!state.jobs.length) {
-      return renderEmptyState('No chain outputs yet', 'This project does not have any jobs to render yet. Completed image and video steps will appear here.');
-    }
-
-    return `<div class="project-grid">${state.jobs.map(renderJobTile).join('')}</div>`;
-  }
-
-  function renderBody() {
+  function renderPage() {
+    const hasNodes = state.jobs.length > 0;
     return `
-      <div class="pv-page">
-        ${state.loadError && state.jobs.length ? renderBanner(state.loadError) : ''}
-        ${renderGrid()}
-        ${renderFloatingFooter()}
+      <div class="pv-canvas" style="display:grid; gap:16px; min-height:calc(100vh - var(--appbar-height) - 16px); padding-bottom:152px;">
+        ${renderToolbar()}
+        ${state.loadError && hasNodes ? renderBanner(state.loadError) : ''}
+        ${hasNodes ? renderCanvas() : renderEmptyState(
+          state.chainId ? 'No chain nodes yet' : 'Project not found',
+          state.loadError || (state.chainId
+            ? 'This chain does not have any jobs to render yet. Add a step or open the gallery.'
+            : 'Open a chain from the jobs list or gallery to inspect it on the DAG canvas.')
+        )}
+        ${renderFooter()}
       </div>
     `;
   }
 
-  function repaint() {
-    const root = document.getElementById('project-view-page');
-    if (!root) return;
-    root.innerHTML = renderBody();
-    applyTopBar();
+  function hideShellTopBar() {
+    const topBar = document.getElementById('top-bar');
+    if (!topBar) return;
+    state.topBarEl = topBar;
+    state.topBarDisplay = topBar.style.display;
+    topBar.style.display = 'none';
   }
 
-  async function refreshProject(options = {}) {
-    await hydrateProject();
-    repaint();
-    if (state.loadError && !options.silent) {
-      App.toast('Failed to refresh project: ' + state.loadError, 'error');
+  function restoreShellTopBar() {
+    if (!state.topBarEl) return;
+    state.topBarEl.style.display = state.topBarDisplay || '';
+    state.topBarEl = null;
+  }
+
+  function rebuildLayoutState() {
+    state.layoutModel = buildLayoutModel(state.jobs);
+    state.layout = {
+      framesById: new Map(state.jobs.map((job) => [String(job.id), draftFrameForJob(job)])),
+      width: state.layoutModel?.estimatedWidth || Math.max(1, STAGE_PADDING * 2 + DEFAULT_NODE_WIDTH),
+      height: state.layoutModel?.estimatedHeight || Math.max(1, STAGE_PADDING * 2 + DEFAULT_NODE_HEIGHT),
+    };
+  }
+
+  function applyChainData(chain) {
+    const jobs = uniqueJobsById(chain?.jobs || []).sort(compareJobs);
+    const jobsById = new Map(jobs.map((job) => [String(job.id), job]));
+    const rootJob = pickRootJob(jobs, String(chain?.rootId || '').trim());
+    const edges = normalizeEdges(chain?.edges, jobsById);
+    const latest = latestJob(jobs);
+
+    state.jobs = jobs;
+    state.jobsById = jobsById;
+    state.edges = edges.length ? edges : buildEdgesFromJobs(jobs);
+    state.rootId = String(rootJob?.id || chain?.rootId || '').trim();
+    state.rootJob = rootJob || null;
+    state.latestJobId = String(latest?.id || '').trim();
+    state.title = chainTitle(rootJob);
+    if (!jobsById.has(state.selectedJobId)) {
+      state.selectedJobId = String(rootJob?.id || latest?.id || '');
+    }
+    rebuildLayoutState();
+  }
+
+  async function loadFromBulkChain(chainId) {
+    const detail = await API.chains.get(chainId);
+    const jobs = normalizeJobList(detail);
+    if (!jobs.length) return null;
+    const jobsById = new Map(jobs.map((job) => [String(job.id), job]));
+    return { chainId, rootId: String(detail?.root_id || '').trim(), jobs, edges: normalizeEdges(detail?.edges, jobsById) };
+  }
+
+  async function loadFromCompatibilityFallback(chainId) {
+    const listed = normalizeJobList(await API.jobs.list({ limit: 500 }))
+      .filter((job) => String(job?.chain_id || '').trim() === chainId)
+      .sort(compareByCreatedAsc);
+    if (!listed.length) return { chainId, rootId: '', jobs: [], edges: [] };
+
+    const firstJob = listed[0];
+    let related = null;
+    try {
+      related = await API.fetch(`/api/jobs/${encodeURIComponent(firstJob.id)}/related`);
+    } catch (_) {
+      related = null;
+    }
+
+    const relatedJobs = uniqueJobsById([
+      ...listed,
+      related?.self,
+      related?.parent,
+      ...(Array.isArray(related?.ancestors) ? related.ancestors : []),
+      ...(Array.isArray(related?.children) ? related.children : []),
+      ...(Array.isArray(related?.siblings) ? related.siblings : []),
+    ]).filter((job) => String(job?.chain_id || '').trim() === chainId || !job?.chain_id);
+
+    const rootId = String(related?.chain_root_id || '').trim() || String(firstJob.id || '').trim();
+    const walked = walkChainJobs(relatedJobs, rootId);
+    return { chainId, rootId, jobs: walked.length ? walked : listed, edges: buildEdgesFromJobs(walked.length ? walked : listed) };
+  }
+
+  async function loadChainData() {
+    state.chainId = parseRouteChainId().trim();
+    state.loadError = '';
+    const requestId = ++state.requestId;
+
+    if (!state.chainId) {
+      state.jobs = [];
+      state.jobsById = new Map();
+      state.edges = [];
+      state.rootId = '';
+      state.rootJob = null;
+      state.latestJobId = '';
+      state.title = 'Project';
+      rebuildLayoutState();
+      return;
+    }
+
+    try {
+      let chain = null;
+      try {
+        chain = await loadFromBulkChain(state.chainId);
+      } catch (error) {
+        if (error?.status !== 404) state.loadError = error?.message || '';
+      }
+      if (!chain) chain = await loadFromCompatibilityFallback(state.chainId);
+      if (requestId !== state.requestId) return;
+      applyChainData(chain);
+      if (!state.jobs.length && !state.loadError) state.loadError = '';
+    } catch (error) {
+      if (requestId !== state.requestId) return;
+      state.jobs = [];
+      state.jobsById = new Map();
+      state.edges = [];
+      state.rootId = '';
+      state.rootJob = null;
+      state.latestJobId = '';
+      state.title = state.chainId ? `Chain ${App.truncate(state.chainId, 18)}` : 'Project';
+      state.loadError = error?.message || 'Failed to load project view.';
+      rebuildLayoutState();
+    }
+  }
+
+  function rootElement() {
+    return state.rootEl || document.getElementById(PAGE_ROOT_ID);
+  }
+
+  function panShellEl() {
+    return rootElement()?.querySelector('[data-role="pan-shell"]') || null;
+  }
+
+  function panStageEl() {
+    return rootElement()?.querySelector('[data-role="pan-stage"]') || null;
+  }
+
+  function edgesEl() {
+    return rootElement()?.querySelector('[data-role="edges"]') || null;
+  }
+
+  function measureAndPositionCanvas({ fit = false } = {}) {
+    const root = rootElement();
+    const panStage = panStageEl();
+    if (!root || !panStage || !state.layoutModel) return;
+
+    const nodeElements = Array.from(panStage.querySelectorAll('.pv-node[data-job-id]'));
+    if (!nodeElements.length) {
+      panStage.style.width = `${Math.max(1, state.layout.width)}px`;
+      panStage.style.height = `${Math.max(1, state.layout.height)}px`;
+      applyViewport();
+      return;
+    }
+
+    const frames = new Map();
+    let minLeft = Infinity;
+    let maxRight = 0;
+    let maxBottom = 0;
+
+    nodeElements.forEach((nodeEl) => {
+      const jobId = String(nodeEl.dataset.jobId || '').trim();
+      const anchor = state.layoutModel.anchorsById.get(jobId);
+      const rect = nodeEl.getBoundingClientRect();
+      const width = rect.width || DEFAULT_NODE_WIDTH;
+      const height = rect.height || DEFAULT_NODE_HEIGHT;
+      const left = (anchor?.centerX || (STAGE_PADDING + width / 2)) - (width / 2);
+      const top = anchor?.top || STAGE_PADDING;
+      frames.set(jobId, { left, top, width, height });
+      minLeft = Math.min(minLeft, left);
+      maxRight = Math.max(maxRight, left + width);
+      maxBottom = Math.max(maxBottom, top + height);
+    });
+
+    const shiftX = Number.isFinite(minLeft) && minLeft < STAGE_PADDING ? STAGE_PADDING - minLeft : 0;
+    frames.forEach((frame, jobId) => {
+      const shifted = { ...frame, left: frame.left + shiftX };
+      frames.set(jobId, shifted);
+      const nodeEl = nodeElements.find((entry) => String(entry.dataset.jobId || '').trim() === jobId);
+      if (nodeEl) {
+        nodeEl.style.left = `${shifted.left}px`;
+        nodeEl.style.top = `${shifted.top}px`;
+      }
+    });
+
+    const width = Math.max(1, maxRight + shiftX + STAGE_PADDING);
+    const height = Math.max(1, maxBottom + STAGE_PADDING);
+    state.layout = { framesById: frames, width, height };
+    panStage.style.width = `${width}px`;
+    panStage.style.height = `${height}px`;
+
+    const edgesNode = edgesEl();
+    if (edgesNode) {
+      edgesNode.setAttribute('viewBox', `0 0 ${width} ${height}`);
+      edgesNode.setAttribute('width', String(width));
+      edgesNode.setAttribute('height', String(height));
+      edgesNode.innerHTML = renderEdges();
+    }
+
+    if (fit || !state.userViewportChanged) {
+      fitToScreen({ markUser: false });
+    } else {
+      applyViewport();
+    }
+  }
+
+  function clampZoom(value) {
+    return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
+  }
+
+  function applyViewport() {
+    const panStage = panStageEl();
+    if (!panStage) return;
+    panStage.style.transform = `translate(${state.viewport.x}px, ${state.viewport.y}px) scale(${state.viewport.z})`;
+  }
+
+  function shellCenterPoint() {
+    const rect = panShellEl()?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return { x: rect.left + (rect.width / 2), y: rect.top + (rect.height / 2) };
+  }
+
+  function setViewport(next, { markUser = true } = {}) {
+    state.viewport = {
+      x: Number.isFinite(next.x) ? next.x : state.viewport.x,
+      y: Number.isFinite(next.y) ? next.y : state.viewport.y,
+      z: clampZoom(Number.isFinite(next.z) ? next.z : state.viewport.z),
+    };
+    if (markUser) state.userViewportChanged = true;
+    applyViewport();
+  }
+
+  function zoomAroundPoint(nextZoom, clientX, clientY, { markUser = true } = {}) {
+    const shell = panShellEl();
+    if (!shell) return;
+    const rect = shell.getBoundingClientRect();
+    const currentZoom = state.viewport.z;
+    const clamped = clampZoom(nextZoom);
+    if (clamped === currentZoom) return;
+    const localX = clientX - rect.left;
+    const localY = clientY - rect.top;
+    const scale = clamped / currentZoom;
+
+    setViewport({
+      z: clamped,
+      x: localX - ((localX - state.viewport.x) * scale),
+      y: localY - ((localY - state.viewport.y) * scale),
+    }, { markUser });
+  }
+
+  function zoomBy(delta) {
+    const center = shellCenterPoint();
+    zoomAroundPoint(state.viewport.z + delta, center.x, center.y, { markUser: true });
+  }
+
+  function fitToScreen({ markUser = false } = {}) {
+    const shell = panShellEl();
+    if (!shell) return;
+    const rect = shell.getBoundingClientRect();
+    const usableWidth = Math.max(1, rect.width - 32);
+    const usableHeight = Math.max(1, rect.height - 32);
+    const zoom = clampZoom(Math.min(usableWidth / state.layout.width, usableHeight / state.layout.height));
+    const next = {
+      z: zoom,
+      x: (rect.width - (state.layout.width * zoom)) / 2,
+      y: (rect.height - (state.layout.height * zoom)) / 2,
+    };
+
+    state.fitViewport = { ...next };
+    state.userViewportChanged = markUser;
+    state.viewport = { ...next };
+    applyViewport();
+  }
+
+  function resetZoom() {
+    const shell = panShellEl();
+    if (!shell) return;
+    const rect = shell.getBoundingClientRect();
+    setViewport({
+      z: 1,
+      x: Math.max(24, (rect.width - state.layout.width) / 2),
+      y: Math.max(24, (rect.height - state.layout.height) / 2),
+    }, { markUser: true });
+  }
+
+  function renderIntoRoot({ fit = false } = {}) {
+    const root = rootElement();
+    if (!root) return;
+    root.innerHTML = renderPage();
+    requestAnimationFrame(() => measureAndPositionCanvas({ fit }));
+  }
+
+  function toggleMenu(force) {
+    state.menuOpen = typeof force === 'boolean' ? force : !state.menuOpen;
+    renderIntoRoot({ fit: false });
+  }
+
+  function selectNode(jobId) {
+    const nextId = String(jobId || '').trim();
+    if (!nextId || state.selectedJobId === nextId) return;
+    state.selectedJobId = nextId;
+    Array.from(rootElement()?.querySelectorAll('.pv-node[data-job-id]') || []).forEach((nodeEl) => {
+      nodeEl.classList.toggle('pv-node--selected', String(nodeEl.dataset.jobId || '').trim() === nextId);
+    });
+  }
+
+  function openOutputLightbox(jobId) {
+    const job = state.jobsById.get(String(jobId || '').trim());
+    const media = primaryMedia(job);
+    if (!job || !media) return;
+
+    const title = promptText(job) || typeCardLabel(job.type);
+    const mediaHtml = media.kind === 'video'
+      ? `<video src="${escapeAttr(media.url)}" ${media.poster ? `poster="${escapeAttr(media.poster)}"` : ''} controls autoplay playsinline style="width:100%; max-height:75vh; background:#000; border-radius:16px;"></video>`
+      : `<img src="${escapeAttr(media.url)}" alt="${escapeAttr(title)}" style="width:100%; max-height:75vh; object-fit:contain; background:#000; border-radius:16px;">`;
+
+    App.openModal(
+      title,
+      `<div style="display:grid; gap:12px;"><div style="display:grid; place-items:center;">${mediaHtml}</div><div style="color: var(--text-secondary); font-size: 13px; line-height: 1.5;">${App.escapeHtml(typeCardLabel(job.type))} &middot; ${App.escapeHtml(formatTileDate(job.created_at || job.createdAt))}</div></div>`
+    );
+  }
+
+  function navigateBack() {
+    if (window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    location.hash = '#gallery';
+  }
+
+  function toastComingSoon() {
+    App.toast('Coming soon', 'info');
+  }
+
+  function nodeElementFor(jobId) {
+    return Array.from(rootElement()?.querySelectorAll('.pv-node[data-job-id]') || [])
+      .find((nodeEl) => String(nodeEl.dataset.jobId || '').trim() === String(jobId || '').trim()) || null;
+  }
+
+  function refreshNode(jobId, { measure = true } = {}) {
+    const job = state.jobsById.get(String(jobId || '').trim());
+    const nodeEl = nodeElementFor(jobId);
+    if (!job || !nodeEl) return;
+
+    const frame = state.layout.framesById.get(String(job.id)) || draftFrameForJob(job);
+    const replacement = document.createElement('div');
+    replacement.innerHTML = renderNode(job);
+    const nextNode = replacement.firstElementChild;
+    if (!nextNode) return;
+
+    nextNode.style.left = `${frame.left}px`;
+    nextNode.style.top = `${frame.top}px`;
+    nodeEl.replaceWith(nextNode);
+
+    Array.from(rootElement()?.querySelectorAll('[data-edge-parent], [data-edge-child]') || [])
+      .filter((pathEl) => String(pathEl.getAttribute('data-edge-parent') || '') === String(jobId || '').trim()
+        || String(pathEl.getAttribute('data-edge-child') || '') === String(jobId || '').trim())
+      .forEach((pathEl) => {
+        const parent = pathEl.getAttribute('data-edge-parent') || '';
+        const child = pathEl.getAttribute('data-edge-child') || '';
+        pathEl.classList.toggle('pv-edge-path--running', edgeIsActive({ parent, child }));
+      });
+
+    if (measure) requestAnimationFrame(() => measureAndPositionCanvas({ fit: false }));
+  }
+
+  async function refreshFullView({ silent = false, fit = false } = {}) {
+    await loadChainData();
+    renderIntoRoot({ fit });
+    if (state.loadError && !silent && state.jobs.length === 0) {
+      App.toast(`Failed to refresh project view: ${state.loadError}`, 'error');
     }
   }
 
@@ -511,174 +1000,204 @@
     if (state.refreshTimer) clearTimeout(state.refreshTimer);
     state.refreshTimer = setTimeout(() => {
       state.refreshTimer = null;
-      void refreshProject({ silent: true });
+      void refreshFullView({ silent: true, fit: false });
     }, 250);
   }
 
-  function shouldRefreshForJob(job) {
-    if (!job?.id) return false;
-
-    const jobId = String(job.id);
-    if (state.jobs.some((entry) => String(entry?.id || '') === jobId)) return true;
-
-    if (state.chainId && String(job.chain_id || '') === state.chainId) return true;
-    if (state.projectUrl && String(job.project_url || '') === state.projectUrl) return true;
-
+  function belongsToCurrentChain(job) {
+    const jobId = String(job?.id || '').trim();
+    if (state.jobsById.has(jobId)) return true;
+    if (state.chainId && String(job?.chain_id || '').trim() === state.chainId) return true;
+    if (String(job?.parent_job_id || '').trim() && state.jobsById.has(String(job.parent_job_id).trim())) return true;
     return false;
   }
 
-  function clearMenuListeners() {
-    state.menuCleanup?.();
-    state.menuCleanup = null;
-  }
-
-  function applyTopBar() {
-    const titleEl = document.getElementById('page-title');
-    const actionsEl = document.querySelector('#top-bar .top-bar-actions');
-    if (!titleEl || !actionsEl) return;
-    clearMenuListeners();
-
-    if (!state.topBarSnapshot) {
-      state.topBarSnapshot = {
-        titleHtml: titleEl.innerHTML,
-        titleStyle: titleEl.getAttribute('style') || '',
-        actionsHtml: actionsEl.innerHTML,
-      };
+  function handleJobUpdate(job) {
+    if (!belongsToCurrentChain(job)) return;
+    const jobId = String(job?.id || '').trim();
+    if (!state.jobsById.has(jobId)) {
+      scheduleRefresh();
+      return;
     }
 
-    titleEl.innerHTML = `
-      <button
-        id="project-view-back"
-        type="button"
-        class="icon-btn"
-        aria-label="Back"
-        style="width:40px; height:40px; margin-left:-8px;"
-      >
-        <span class="material-icons">arrow_back</span>
-      </button>
-      <span class="pv-topbar-heading">
-        <span class="pv-topbar-title" title="${App.escapeHtml(state.title || projectFallbackTitle())}">
-          ${App.escapeHtml(state.title || 'Project')}
-        </span>
-        <span class="pv-topbar-subtitle" title="${App.escapeHtml(state.chainId || '')}">
-          ${App.escapeHtml(subtitleText())}
-        </span>
-      </span>
-    `;
-    titleEl.style.display = 'flex';
-    titleEl.style.alignItems = 'center';
-    titleEl.style.gap = '10px';
+    const merged = { ...state.jobsById.get(jobId), ...job };
+    state.jobsById.set(jobId, merged);
+    state.jobs = state.jobs.map((entry) => (String(entry.id) === jobId ? merged : entry));
+    state.latestJobId = String(latestJob(state.jobs)?.id || '').trim();
 
-    actionsEl.innerHTML = `
-      <div class="pv-topbar-menu" id="project-view-menu-shell">
-        <button id="project-view-menu" class="icon-btn" type="button" aria-label="Project actions" aria-haspopup="menu" aria-expanded="false">
-          <span class="material-icons">more_vert</span>
-        </button>
-        <div class="pv-menu-popover" id="project-view-menu-popover" role="menu" hidden>
-          ${state.chainId ? `
-            <a class="pv-menu-item" href="#jobs/${encodeURIComponent(state.chainId)}" role="menuitem">
-              <span class="material-icons">list</span>
-              <span>Open jobs</span>
-            </a>
-          ` : ''}
-          <a class="pv-menu-item" href="#gallery" role="menuitem">
-            <span class="material-icons">collections</span>
-            <span>Gallery</span>
-          </a>
-        </div>
-      </div>
-    `;
+    if (String(state.rootId || '') === jobId) {
+      state.rootJob = merged;
+      state.title = chainTitle(merged);
+      renderIntoRoot({ fit: false });
+      return;
+    }
 
-    document.getElementById('project-view-back')?.addEventListener('click', () => {
-      if (window.history.length > 1) {
-        window.history.back();
-        return;
-      }
-      location.hash = '#home';
-    });
-
-    const menuShell = document.getElementById('project-view-menu-shell');
-    const menuButton = document.getElementById('project-view-menu');
-    const menuPopover = document.getElementById('project-view-menu-popover');
-    const syncMenuState = (open) => {
-      menuShell?.classList.toggle('is-open', open);
-      if (menuPopover) {
-        menuPopover.hidden = !open;
-      }
-      menuButton?.setAttribute('aria-expanded', open ? 'true' : 'false');
-    };
-    const closeMenu = () => syncMenuState(false);
-    const handleDocumentClick = (event) => {
-      if (!menuShell?.contains(event.target)) {
-        closeMenu();
-      }
-    };
-    const handleEscape = (event) => {
-      if (event.key === 'Escape') {
-        closeMenu();
-      }
-    };
-
-    menuButton?.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      syncMenuState(menuPopover?.hidden);
-    });
-
-    menuPopover?.querySelectorAll('a').forEach((link) => {
-      link.addEventListener('click', closeMenu);
-    });
-
-    document.addEventListener('click', handleDocumentClick);
-    document.addEventListener('keydown', handleEscape);
-    state.menuCleanup = () => {
-      document.removeEventListener('click', handleDocumentClick);
-      document.removeEventListener('keydown', handleEscape);
-    };
+    refreshNode(jobId, { measure: true });
   }
 
-  function restoreTopBar() {
-    const titleEl = document.getElementById('page-title');
-    const actionsEl = document.querySelector('#top-bar .top-bar-actions');
-    if (!titleEl || !actionsEl || !state.topBarSnapshot) return;
-    clearMenuListeners();
+  function bindWindowListeners() {
+    if (state.windowListenersBound) return;
+    state.windowListenersBound = true;
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleResize);
+  }
 
-    titleEl.innerHTML = state.topBarSnapshot.titleHtml;
-    if (state.topBarSnapshot.titleStyle) {
-      titleEl.setAttribute('style', state.topBarSnapshot.titleStyle);
+  function unbindWindowListeners() {
+    if (!state.windowListenersBound) return;
+    state.windowListenersBound = false;
+    document.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', handleMouseUp);
+    document.removeEventListener('keydown', handleKeyDown);
+    window.removeEventListener('resize', handleResize);
+  }
+
+  function handleResize() {
+    if (App.currentPage !== 'project-view' || !state.jobs.length) return;
+    if (!state.userViewportChanged) {
+      requestAnimationFrame(() => fitToScreen({ markUser: false }));
     } else {
-      titleEl.removeAttribute('style');
+      applyViewport();
     }
-
-    actionsEl.innerHTML = state.topBarSnapshot.actionsHtml;
-    state.topBarSnapshot = null;
   }
 
-  patchRouter();
-  patchCreatePagePrefill();
-  patchCreateApiPrefill();
+  function handleKeyDown(event) {
+    if (event.key === 'Escape' && state.menuOpen) {
+      event.preventDefault();
+      toggleMenu(false);
+    }
+  }
+
+  function handleMouseDown(event) {
+    if (event.button !== 0) return;
+    const shell = event.target.closest('[data-role="pan-shell"]');
+    if (!shell || event.target.closest('.pv-node, .pv-toolbar, .pv-zoom-toolbar')) return;
+
+    state.drag = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: state.viewport.x,
+      originY: state.viewport.y,
+    };
+    event.preventDefault();
+  }
+
+  function handleMouseMove(event) {
+    if (!state.drag) return;
+    setViewport({
+      x: state.drag.originX + (event.clientX - state.drag.startX),
+      y: state.drag.originY + (event.clientY - state.drag.startY),
+      z: state.viewport.z,
+    }, { markUser: true });
+  }
+
+  function handleMouseUp() {
+    state.drag = null;
+  }
+
+  function handleWheel(event) {
+    const shell = event.target.closest('[data-role="pan-shell"]');
+    if (!shell || !event.ctrlKey) return;
+    event.preventDefault();
+    zoomAroundPoint(state.viewport.z + (event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP), event.clientX, event.clientY, { markUser: true });
+  }
+
+  function handleRootClick(event) {
+    if (state.menuOpen && !event.target.closest('[data-role="project-menu-shell"]')) {
+      state.menuOpen = false;
+      renderIntoRoot({ fit: false });
+      return;
+    }
+
+    const actionEl = event.target.closest('[data-action]');
+    if (!actionEl) {
+      const selectedNode = event.target.closest('.pv-node[data-job-id]');
+      if (selectedNode?.dataset.jobId) selectNode(selectedNode.dataset.jobId);
+      return;
+    }
+
+    const action = String(actionEl.dataset.action || '').trim();
+    const jobId = String(actionEl.dataset.jobId || '').trim();
+    if (jobId) selectNode(jobId);
+
+    if (action === 'back') {
+      event.preventDefault();
+      navigateBack();
+      return;
+    }
+    if (action === 'toggle-menu') {
+      event.preventDefault();
+      toggleMenu();
+      return;
+    }
+    if (action === 'open-node') {
+      event.preventDefault();
+      location.hash = `#job-detail/${encodeURIComponent(jobId)}`;
+      return;
+    }
+    if (action === 'prompt-toggle') {
+      event.preventDefault();
+      if (state.expandedPrompts.has(jobId)) state.expandedPrompts.delete(jobId);
+      else state.expandedPrompts.add(jobId);
+      refreshNode(jobId, { measure: true });
+      return;
+    }
+    if (action === 'preview-output') {
+      event.preventDefault();
+      openOutputLightbox(jobId);
+      return;
+    }
+    if (action === 'zoom-in') {
+      event.preventDefault();
+      zoomBy(ZOOM_STEP);
+      return;
+    }
+    if (action === 'zoom-out') {
+      event.preventDefault();
+      zoomBy(-ZOOM_STEP);
+      return;
+    }
+    if (action === 'fit') {
+      event.preventDefault();
+      fitToScreen({ markUser: false });
+      return;
+    }
+    if (action === 'reset-zoom') {
+      event.preventDefault();
+      resetZoom();
+      return;
+    }
+    if (STUB_ACTIONS.has(action)) {
+      event.preventDefault();
+      toastComingSoon();
+    }
+  }
 
   const ProjectViewPage = {
     name: 'project-view',
     title: 'Project View',
-    icon: 'view_module',
+    icon: 'account_tree',
 
     async render() {
-      await hydrateProject();
-      return `<div id="project-view-page">${renderBody()}</div>`;
+      await loadChainData();
+      return `<div id="${PAGE_ROOT_ID}">${renderPage()}</div>`;
     },
 
     mount() {
-      applyTopBar();
-      state.wsUnsubs.push(WS.on('job_update', (job) => {
-        if (shouldRefreshForJob(job)) {
-          scheduleRefresh();
-        }
-      }));
+      state.rootEl = document.getElementById(PAGE_ROOT_ID);
+      hideShellTopBar();
+      bindWindowListeners();
+
+      state.rootEl?.addEventListener('click', handleRootClick);
+      state.rootEl?.addEventListener('mousedown', handleMouseDown);
+      state.rootEl?.addEventListener('wheel', handleWheel, { passive: false });
+
+      requestAnimationFrame(() => measureAndPositionCanvas({ fit: true }));
+
+      state.wsUnsubs.push(WS.on('job_update', handleJobUpdate));
       state.wsUnsubs.push(WS.on('connected', () => {
-        if (App.currentPage === 'project-view') {
-          scheduleRefresh();
-        }
+        if (App.currentPage === 'project-view') scheduleRefresh();
       }));
     },
 
@@ -688,6 +1207,10 @@
         state.refreshTimer = null;
       }
 
+      state.rootEl?.removeEventListener('click', handleRootClick);
+      state.rootEl?.removeEventListener('mousedown', handleMouseDown);
+      state.rootEl?.removeEventListener('wheel', handleWheel);
+
       state.wsUnsubs.forEach((unsubscribe) => {
         try {
           unsubscribe?.();
@@ -696,7 +1219,14 @@
         }
       });
       state.wsUnsubs = [];
-      restoreTopBar();
+
+      unbindWindowListeners();
+      restoreShellTopBar();
+
+      state.rootEl = null;
+      state.menuOpen = false;
+      state.drag = null;
+      state.userViewportChanged = false;
     },
   };
 
