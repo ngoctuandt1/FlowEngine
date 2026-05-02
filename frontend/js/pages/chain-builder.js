@@ -43,6 +43,7 @@
   let parentPrefill = null;
   let prefillError = '';
   let routerPatched = false;
+  let collapsedSteps = new Set();
 
   function isL1Type(type) { return L1_ONLY_TYPES.has(type); }
 
@@ -56,6 +57,48 @@
 
   function getJobTypeLabel(type) {
     return getJobTypeMeta(type)?.label || type || 'Unknown';
+  }
+
+  function syncCollapsedSteps() {
+    const next = new Set();
+    if (steps.length > 1) {
+      for (let i = 0; i < steps.length - 1; i++) next.add(i);
+    }
+    collapsedSteps.forEach((index) => {
+      if (index >= 0 && index < steps.length) next.add(index);
+    });
+    collapsedSteps = next;
+  }
+
+  function truncateMiddle(value, max = 42) {
+    const text = String(value || '').trim();
+    if (!text || text.length <= max) return text;
+    const head = Math.ceil((max - 1) / 2);
+    const tail = Math.floor((max - 1) / 2);
+    return `${text.slice(0, head)}...${text.slice(-tail)}`;
+  }
+
+  async function copyText(value, label) {
+    const text = String(value || '').trim();
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const temp = document.createElement('textarea');
+        temp.value = text;
+        temp.setAttribute('readonly', '');
+        temp.style.position = 'absolute';
+        temp.style.left = '-9999px';
+        document.body.appendChild(temp);
+        temp.select();
+        document.execCommand('copy');
+        temp.remove();
+      }
+      App.toast(`${label} copied.`, 'success');
+    } catch (err) {
+      App.toast(`Failed to copy ${label.toLowerCase()}: ${err.message}`, 'error');
+    }
   }
 
   function debugBadgesEnabled() {
@@ -188,6 +231,7 @@
       projectUrl: parentJob.project_url || '',
       profile: parentJob.profile || '',
       mediaId: parentJob.media_id || '',
+      thumbUrl: parentJob.thumb_url || '',
       debugBadges,
     };
   }
@@ -295,6 +339,8 @@
 
   function addStep(type) {
     steps.push(emptyStep(type));
+    collapsedSteps.delete(steps.length - 1);
+    syncCollapsedSteps();
     clearResult();
     refreshSteps();
   }
@@ -304,11 +350,13 @@
       return;
     }
     steps.splice(i, 1);
+    syncCollapsedSteps();
     clearResult();
     refreshSteps();
   }
 
   function refreshSteps() {
+    syncCollapsedSteps();
     const container = document.getElementById('chain-steps');
     if (container) container.innerHTML = renderSteps();
     bindStepEvents();
@@ -356,20 +404,18 @@
           .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedNextType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
           .join('');
         el.innerHTML = `
-          <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">
+          <p class="chain-inline-note">
             This builder continues an existing parent job, so the first step must be an L2 edit.
           </p>
-          <div class="form-row" style="align-items: end;">
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label">First chained step <span class="required">*</span></label>
+          <div class="chain-inline-control">
+            <label class="form-label" for="chain-next-type">First chained step <span class="required">*</span></label>
+            <div class="chain-inline-control-main">
               <select class="form-select" id="chain-next-type">${options}</select>
-              <span class="form-hint">Choose the first edit that should run against the inherited parent media.</span>
-            </div>
-            <div class="form-group" style="margin-bottom: 0;">
               <button class="btn btn-primary" id="chain-add-next">
                 <span class="material-icons">add_link</span> Add Step
               </button>
             </div>
+            <span class="form-hint">Choose the first edit that should run against the inherited parent media.</span>
           </div>
         `;
         el.querySelector('#chain-next-type')?.addEventListener('change', (event) => {
@@ -381,20 +427,18 @@
           .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedFirstType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
           .join('');
         el.innerHTML = `
-          <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">
+          <p class="chain-inline-note">
             Chains must start with an L1 step that creates a new project.
           </p>
-          <div class="form-row" style="align-items: end;">
-            <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label">Root step <span class="required">*</span></label>
+          <div class="chain-inline-control">
+            <label class="form-label" for="chain-root-type">Root step <span class="required">*</span></label>
+            <div class="chain-inline-control-main">
               <select class="form-select" id="chain-root-type">${options}</select>
-              <span class="form-hint">Choose the L1 job that creates the chain's project.</span>
-            </div>
-            <div class="form-group" style="margin-bottom: 0;">
               <button class="btn btn-primary" id="chain-add-root">
                 <span class="material-icons">add_link</span> Add Root Step
               </button>
             </div>
+            <span class="form-hint">Choose the L1 job that creates the chain's project.</span>
           </div>
         `;
         el.querySelector('#chain-root-type')?.addEventListener('change', (event) => {
@@ -407,20 +451,18 @@
         .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedNextType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
         .join('');
       el.innerHTML = `
-        <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">
+        <p class="chain-inline-note">
           Add the next chained edit. Only L2 job types are allowed after the root step.
         </p>
-        <div class="form-row" style="align-items: end;">
-          <div class="form-group" style="margin-bottom: 0;">
-            <label class="form-label">Next step <span class="required">*</span></label>
+        <div class="chain-inline-control">
+          <label class="form-label" for="chain-next-type">Next step <span class="required">*</span></label>
+          <div class="chain-inline-control-main">
             <select class="form-select" id="chain-next-type">${options}</select>
-            <span class="form-hint">Extend, insert, remove, and camera all chain off the parent media.</span>
-          </div>
-          <div class="form-group" style="margin-bottom: 0;">
             <button class="btn btn-outline" id="chain-add-next">
               <span class="material-icons">add</span> Add Step
             </button>
           </div>
+          <span class="form-hint">Extend, insert, remove, and camera all chain off the parent media.</span>
         </div>
       `;
       el.querySelector('#chain-next-type')?.addEventListener('change', (event) => {
@@ -600,19 +642,27 @@
   function renderSteps() {
     return steps.map((s, i) => {
       const meta = getJobTypeMeta(s.type) || {};
+      const collapsed = collapsedSteps.has(i);
       return `
         <div class="chain-step">
           <div class="chain-step-card">
-            <div class="chain-step-header">
+            <button type="button" class="chain-step-header chain-step-toggle" data-step-toggle="${i}" aria-expanded="${collapsed ? 'false' : 'true'}">
               <span class="chain-step-num">
                 <span class="material-icons" style="font-size:16px; vertical-align:middle;">${meta.icon || 'work'}</span>
                 Step ${i + 1}: ${App.escapeHtml(meta.label || s.type)}
               </span>
-              <button class="icon-btn step-remove" data-step-index="${i}" title="Remove step">
-                <span class="material-icons" style="font-size:18px;">close</span>
-              </button>
+              <span class="chain-step-actions">
+                <span class="material-icons chain-step-chevron">${collapsed ? 'expand_more' : 'expand_less'}</span>
+              </span>
+            </button>
+            <div class="chain-step-body"${collapsed ? ' hidden' : ''}>
+              ${renderStepConfig(s, i)}
+              <div class="chain-step-footer">
+                <button class="icon-btn step-remove" data-step-index="${i}" title="Remove step">
+                  <span class="material-icons" style="font-size:18px;">close</span>
+                </button>
+              </div>
             </div>
-            ${renderStepConfig(s, i)}
           </div>
         </div>
       `;
@@ -720,6 +770,25 @@
 
     document.querySelectorAll('.step-remove').forEach((btn) => {
       btn.addEventListener('click', () => removeStep(parseInt(btn.dataset.stepIndex)));
+    });
+
+    document.querySelectorAll('.chain-step-toggle').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const index = Number.parseInt(btn.dataset.stepToggle, 10);
+        if (Number.isNaN(index)) return;
+        if (collapsedSteps.has(index)) collapsedSteps.delete(index);
+        else collapsedSteps.add(index);
+        refreshSteps();
+      });
+    });
+
+    document.querySelectorAll('.chain-copy-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.copyValue;
+        const label = btn.dataset.copyLabel || 'Value';
+        const value = key === 'project_url' ? parentPrefill?.projectUrl : parentPrefill?.mediaId;
+        copyText(value, label);
+      });
     });
   }
 
@@ -881,16 +950,50 @@
     if (!parentPrefill) return '';
 
     return `
-      <div class="card" style="margin-bottom: 16px;">
-        <div class="form-hint" style="margin-bottom: 6px;">Continue Chain</div>
-        <div style="font-size: 14px; color: var(--text-primary); word-break: break-all;">
-          Chained from: ${App.escapeHtml(getJobTypeLabel(parentPrefill.parentType))} &middot; ${App.escapeHtml(parentPrefill.mediaId || 'unknown media')}
-        </div>
-        <div class="form-hint" style="margin-top: 6px;">
-          Parent job ${App.escapeHtml(parentPrefill.parentJobId)} locks the profile and existing project context for the first chained step.
-        </div>
+      <div class="chain-parent-banner">
+        <span class="material-icons">link</span>
+        <span>Continue Chain</span>
+        <span class="chain-parent-banner-meta">${App.escapeHtml(getJobTypeLabel(parentPrefill.parentType))}</span>
+        <span class="chain-parent-banner-meta">${App.escapeHtml(parentPrefill.mediaId || 'unknown media')}</span>
         ${renderDebugBadges(parentPrefill.debugBadges)}
       </div>
+    `;
+  }
+
+  function renderParentPanel() {
+    if (!parentPrefill) return '';
+    const thumb = String(parentPrefill.thumbUrl || '').trim();
+    const projectUrl = String(parentPrefill.projectUrl || '').trim();
+    const mediaId = String(parentPrefill.mediaId || '').trim();
+    return `
+      <aside class="card chain-parent-panel">
+        <div class="chain-parent-thumb-wrap">
+          ${thumb
+            ? `<img class="chain-parent-thumb" src="${App.escapeHtml(thumb)}" alt="${App.escapeHtml(`${getJobTypeLabel(parentPrefill.parentType)} parent thumbnail`)}">`
+            : `<div class="chain-parent-thumb chain-parent-thumb-placeholder"><span class="material-icons">video_library</span></div>`}
+        </div>
+        <div class="chain-parent-panel-head">
+          <span class="chain-parent-type"><span class="material-icons">category</span>${App.escapeHtml(getJobTypeLabel(parentPrefill.parentType))}</span>
+          <span class="chain-parent-profile"><span class="material-icons">lock</span>${App.escapeHtml(parentPrefill.profile || 'Profile locked')}</span>
+        </div>
+        <div class="chain-parent-field">
+          <span class="chain-parent-field-label">Project URL</span>
+          <div class="chain-parent-field-value">
+            <code>${App.escapeHtml(truncateMiddle(projectUrl || 'Unavailable', 48))}</code>
+            ${projectUrl ? '<button type="button" class="icon-btn chain-copy-btn" data-copy-label="Project URL" data-copy-value="project_url" title="Copy project URL"><span class="material-icons">content_copy</span></button>' : ''}
+          </div>
+        </div>
+        <div class="chain-parent-field">
+          <span class="chain-parent-field-label">Media ID</span>
+          <div class="chain-parent-field-value">
+            <code>${App.escapeHtml(truncateMiddle(mediaId || 'Unavailable', 32))}</code>
+            ${mediaId ? '<button type="button" class="icon-btn chain-copy-btn" data-copy-label="Media ID" data-copy-value="media_id" title="Copy media ID"><span class="material-icons">content_copy</span></button>' : ''}
+          </div>
+        </div>
+        <a class="chain-parent-link" href="#job-detail?id=${encodeURIComponent(parentPrefill.parentJobId)}">
+          View parent <span class="material-icons">arrow_forward</span>
+        </a>
+      </aside>
     `;
   }
 
@@ -904,43 +1007,54 @@
       pinnedProfile = '';
       selectedFirstType = FIRST_TYPE;
       selectedNextType = SUBSEQUENT_TYPES[0]?.id || '';
+      collapsedSteps = new Set();
       await fetchProfiles();
       await initializePrefill();
 
       return `
-        <div style="max-width: 800px;">
-          <div class="card" style="margin-bottom: 16px;">
+        <style>
+          .chain-layout{display:grid;grid-template-columns:minmax(0,480px) minmax(320px,1fr);gap:16px;align-items:start}.chain-stack{display:grid;gap:16px}.chain-builder-card,.chain-step-card,.chain-parent-panel,.chain-parent-banner{border:1px solid rgba(255,255,255,0.08);border-radius:12px}.chain-builder-card{padding:14px}.chain-parent-banner{display:flex;align-items:center;gap:8px;padding:10px 14px;margin-bottom:16px;background:rgba(255,255,255,0.03)}.chain-parent-banner-meta{font-size:12px;color:var(--text-muted)}.chain-parent-panel{padding:14px;display:grid;gap:12px;position:sticky;top:16px}.chain-parent-thumb-wrap{border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08)}.chain-parent-thumb{display:block;width:100%;height:220px;object-fit:cover}.chain-parent-thumb-placeholder{display:grid;place-items:center;color:var(--text-muted)}.chain-parent-thumb-placeholder .material-icons{font-size:40px}.chain-parent-panel-head{display:flex;flex-wrap:wrap;gap:8px}.chain-parent-type,.chain-parent-profile{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,0.04);font-size:12px}.chain-parent-field{display:grid;gap:6px}.chain-parent-field-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted)}.chain-parent-field-value{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08)}.chain-parent-field-value code{font-size:12px;color:var(--text-secondary)}.chain-parent-link{display:inline-flex;align-items:center;gap:6px;color:var(--accent);text-decoration:none}.chain-inline-note{color:var(--text-muted);font-size:13px;margin-bottom:10px}.chain-inline-control{display:grid;gap:8px}.chain-inline-control-main{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center}.chain-step-card{padding:12px}.chain-step-header{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;background:none;border:0;padding:0;text-align:left}.chain-step-body{padding-top:12px}.chain-step-footer{display:flex;justify-content:flex-end;padding-top:8px}.chain-profile-row{display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px;align-items:center}.chain-actions{display:flex;gap:12px}@media (max-width:899px){.chain-layout{grid-template-columns:1fr}.chain-parent-panel{position:static}.chain-profile-row,.chain-inline-control-main{grid-template-columns:1fr}.chain-actions{flex-direction:column}}
+        </style>
+        <div class="chain-layout">
+          <div class="chain-stack">
+            <div class="card chain-builder-card">
             <h3 style="margin-bottom: 8px; font-size: 16px; font-weight: 600;">Build a Job Chain</h3>
             <p style="color: var(--text-muted); font-size: 13px;">
               Chains run sequentially on a single profile. Start with an L1 project-creating step,
               then add only L2 edits that chain off the parent media.
             </p>
+            </div>
+
+            ${renderPrefillBanner()}
+
+            <div class="card chain-builder-card" style="margin-bottom:16px;">
+              <div class="chain-profile-row">
+                <label class="form-label" for="chain-profile">Profile <span class="required">*</span></label>
+                <div>
+                  ${renderProfileSelect()}
+                  <span class="form-hint">${parentPrefill?.profile
+                    ? 'Inherited from the parent job and locked to the same Google account.'
+                    : 'All steps run on this Google account. L2+ inherits it automatically.'}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="chain-timeline" id="chain-steps"></div>
+
+            <div class="card chain-builder-card" id="chain-add-buttons" style="margin-bottom: 16px;"></div>
+
+            <div class="chain-actions">
+              <button class="btn btn-primary" id="submit-chain" disabled>
+                <span class="material-icons">send</span> Submit Chain
+              </button>
+              <button class="btn btn-outline" id="reset-chain">
+                <span class="material-icons">refresh</span> Reset
+              </button>
+            </div>
+
+            <div id="chain-result" style="margin-top: 16px;"></div>
           </div>
-
-          ${renderPrefillBanner()}
-
-          <div class="card" style="margin-bottom:16px;">
-            <label class="form-label">Profile <span class="required">*</span></label>
-            ${renderProfileSelect()}
-            <span class="form-hint">${parentPrefill?.profile
-              ? 'Inherited from the parent job and locked to the same Google account.'
-              : 'All steps run on this Google account. L2+ inherits it automatically.'}</span>
-          </div>
-
-          <div class="chain-timeline" id="chain-steps"></div>
-
-          <div class="card" id="chain-add-buttons" style="margin-bottom: 16px;"></div>
-
-          <div style="display: flex; gap: 12px;">
-            <button class="btn btn-primary" id="submit-chain" disabled>
-              <span class="material-icons">send</span> Submit Chain
-            </button>
-            <button class="btn btn-outline" id="reset-chain">
-              <span class="material-icons">refresh</span> Reset
-            </button>
-          </div>
-
-          <div id="chain-result" style="margin-top: 16px;"></div>
+          ${renderParentPanel()}
         </div>
       `;
     },
