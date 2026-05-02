@@ -1,3 +1,4 @@
+import aiosqlite
 from datetime import UTC, datetime, timedelta
 
 from server.db.job_store import create_job
@@ -113,3 +114,48 @@ async def test_get_job_related_returns_404_for_missing_job(api_client):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Job missing-job not found"
+
+
+async def test_get_job_related_ignores_missing_project_id_column(api_client, temp_db_path):
+    async with aiosqlite.connect(temp_db_path) as db:
+        await db.execute("DROP INDEX IF EXISTS idx_jobs_project_id")
+        await db.execute("ALTER TABLE jobs DROP COLUMN project_id")
+        await db.commit()
+
+    chain_id = "chain-related-no-project-id"
+    now = datetime.now(UTC)
+    root = _make_job(
+        job_id="root-no-project-id",
+        job_type=JobType.TEXT_TO_VIDEO,
+        status=JobStatus.COMPLETED,
+        level=1,
+        created_at=now,
+        chain_id=chain_id,
+        media_id="media-root-no-project-id",
+    )
+    child = _make_job(
+        job_id="child-no-project-id",
+        job_type=JobType.EXTEND_VIDEO,
+        status=JobStatus.PENDING,
+        level=2,
+        created_at=now + timedelta(seconds=1),
+        chain_id=chain_id,
+        parent_job_id=root.id,
+    )
+
+    for job in (root, child):
+        await create_job(job)
+
+    response = await api_client.get(f"/api/jobs/{child.id}/related")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["self"]["id"] == child.id
+    assert body["parent"]["id"] == root.id
+    assert body["chain_root_id"] == root.id
+    assert body["stats"] == {
+        "total": 2,
+        "completed": 1,
+        "failed": 0,
+        "pending": 1,
+    }
