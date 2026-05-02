@@ -240,14 +240,9 @@
   async function handleCreateProject() {
     if (state.creating) return;
 
-    const rawName = window.prompt('T\u00ean project m\u1edbi?');
-    if (rawName === null) return;
-
-    const name = rawName.trim();
-    if (!name) {
-      App.toast('T\u00ean project kh\u00f4ng \u0111\u01b0\u1ee3c \u0111\u1ec3 tr\u1ed1ng', 'warning');
-      return;
-    }
+    // Auto-name with the current date so a click goes straight to the canvas.
+    // Users can rename later from the project view (PUT /api/projects/{id}).
+    const name = `Project \u00b7 ${App.formatTileDate(new Date().toISOString())}`;
 
     const button = document.getElementById('home-create-project');
     state.creating = true;
