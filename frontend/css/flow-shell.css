@@ -315,28 +315,41 @@ body.route-home #top-bar { display: none; }
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
 }
 
-/* "+ New project" tile — a slot in the gallery, not a FAB. */
-.new-project-tile { flex-direction: column; }
-.new-project-tile .tile-thumb {
-  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
-  border: 1px dashed rgba(255,255,255,0.10);
-  border-radius: var(--radius);
-}
-.new-project-pill {
+/* "+ New project" — floating action pill anchored to viewport bottom-center.
+   Mirrors Google Flow's gallery FAB: stays on-screen while the grid scrolls,
+   subtle backdrop blur, soft shadow, gentle hover lift. */
+.new-project-fab {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 18px;
+  gap: 10px;
+  padding: 12px 22px;
   border-radius: 999px;
-  background: rgba(255,255,255,0.10);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(20, 22, 28, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
   color: var(--text-flow);
   font-weight: 500;
   font-size: 14px;
+  text-decoration: none;
+  z-index: 50;
+  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
 }
-.new-project-pill .material-icons { font-size: 20px; }
-.new-project-tile:hover .new-project-pill { background: rgba(255,255,255,0.18); }
+.new-project-fab:hover {
+  transform: translateX(-50%) translateY(-2px);
+  background: rgba(28, 30, 38, 0.92);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(124, 92, 255, 0.32) inset;
+}
+.new-project-fab .material-icons { font-size: 20px; }
+
+/* Legacy alias kept for any code still referencing the old grid-slot pill. */
+.new-project-pill { display: none; }
+.new-project-tile { display: none; }
 
 /* ---- Project view -------------------------------------------------------- */
 
