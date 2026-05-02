@@ -8,13 +8,17 @@
   const DEFAULT_CHAIN_STEP_TYPE = 'extend-video';
   const MIN_ZOOM = 0.4;
   const MAX_ZOOM = 1.6;
+  const FIT_MAX_ZOOM = 1.4;
+  const SINGLE_NODE_FIT_ZOOM = 0.95;
   const ZOOM_STEP = 0.14;
-  const X_SPACING = 320;
-  const Y_SPACING = 280;
+  const FIT_PADDING = 80;
+  const EXTEND_HINT_DELAY_MS = 600;
+  const X_SPACING = 380;
+  const Y_SPACING = 580;
   const STAGE_PADDING = 72;
-  const DEFAULT_NODE_WIDTH = 292;
-  const DEFAULT_NODE_HEIGHT = 356;
-  const PROMPT_PREVIEW_CHARS = 180;
+  const DEFAULT_NODE_WIDTH = 320;
+  const DEFAULT_NODE_HEIGHT = 500;
+  const PROMPT_PREVIEW_CHARS = 140;
   const ALLOWED_STATUS = new Set(['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
   const ACTIVE_STATUSES = new Set(['claimed', 'running']);
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
@@ -55,6 +59,8 @@
     viewport: { x: 0, y: 0, z: 1 },
     fitViewport: { x: 0, y: 0, z: 1 },
     userViewportChanged: false,
+    extendHintTimer: null,
+    extendHintVisible: false,
     menuOpen: false,
     drag: null,
     wsUnsubs: [],
@@ -292,11 +298,10 @@
 
   function statusGlyph(status) {
     const safe = safeStatus(status);
-    if (safe === 'completed') return '&check;';
-    if (safe === 'failed') return '!';
-    if (safe === 'cancelled') return '&times;';
-    if (ACTIVE_STATUSES.has(safe)) return '&hellip;';
-    return '&#9633;';
+    if (safe === 'completed') return 'check';
+    if (safe === 'failed' || safe === 'cancelled') return 'close';
+    if (ACTIVE_STATUSES.has(safe)) return 'autorenew';
+    return 'schedule';
   }
 
   function latestJob(jobs) {
@@ -363,11 +368,11 @@
     const text = promptText(job) || 'No prompt yet.';
     const expanded = state.expandedPrompts.has(String(job.id));
     const needsToggle = text.length > PROMPT_PREVIEW_CHARS;
-    const visibleText = expanded || !needsToggle ? text : `${text.slice(0, PROMPT_PREVIEW_CHARS).trim()}...`;
 
     return `
       <div class="pv-section">
-        <div class="pv-prompt">${App.escapeHtml(visibleText)}</div>
+        <div class="pv-section-label">Prompt</div>
+        <div class="pv-prompt ${expanded ? 'pv-prompt--expanded' : ''}">${App.escapeHtml(text)}</div>
         ${needsToggle ? `
           <button type="button" class="pv-prompt-toggle" data-action="prompt-toggle" data-job-id="${escapeAttr(job.id)}">
             ${expanded ? 'Show Less' : 'Show More'}
@@ -381,7 +386,7 @@
     const count = referenceImageCount(job);
     return `
       <button type="button" class="pv-ref-images" data-action="node-refs" data-job-id="${escapeAttr(job.id)}" title="Reference images">
-        <span>REFERENCE IMAGES</span>
+        <span>Reference images</span>
         <span>${App.escapeHtml(String(count))}</span>
         <span class="material-icons" aria-hidden="true">expand_more</span>
       </button>
@@ -392,12 +397,15 @@
     const active = activeCountPill(job);
     const noun = primaryMedia(job)?.kind === 'image' && String(job?.type || '') === 'text-to-image' ? 'Image' : 'Video';
     return `
-      <div class="pv-count-pills">
-        ${COUNT_PILLS.map((count) => `
-          <span class="pv-count-pill ${count === active ? 'pv-count-pill--active' : ''}">
-            ${App.escapeHtml(String(count))} ${App.escapeHtml(count === 1 ? noun : `${noun}s`)}
-          </span>
-        `).join('')}
+      <div class="pv-section">
+        <div class="pv-section-label">Count</div>
+        <div class="pv-count-pills">
+          ${COUNT_PILLS.map((count) => `
+            <span class="pv-count-pill ${count === active ? 'pv-count-pill--active' : ''}">
+              ${App.escapeHtml(String(count))} ${App.escapeHtml(count === 1 ? noun : `${noun}s`)}
+            </span>
+          `).join('')}
+        </div>
       </div>
     `;
   }
@@ -408,7 +416,7 @@
     if (!media) {
       return `
         <div class="pv-output pv-output--empty">
-          <span class="material-icons" aria-hidden="true">${App.escapeHtml(App.jobTypeIcon(job?.type))}</span>
+          <span class="material-icons" aria-hidden="true">video_off</span>
           <span>No output yet</span>
         </div>
       `;
@@ -444,28 +452,34 @@
             <button type="button" class="icon-btn" data-action="node-upload" data-job-id="${escapeAttr(job.id)}" aria-label="Upload stub"><span class="material-icons">upload</span></button>
             <button type="button" class="icon-btn" data-action="node-play" data-job-id="${escapeAttr(job.id)}" aria-label="Play stub"><span class="material-icons">play_arrow</span></button>
             <button type="button" class="icon-btn" data-action="node-delete" data-job-id="${escapeAttr(job.id)}" aria-label="Delete stub"><span class="material-icons">delete</span></button>
-            <span class="pv-node-status" title="${App.escapeHtml(status.toUpperCase())}">${statusGlyph(status)}</span>
+            <span class="pv-node-status" title="${App.escapeHtml(status.toUpperCase())}">
+              <span class="material-icons" aria-hidden="true">${App.escapeHtml(statusGlyph(status))}</span>
+            </span>
           </div>
         </div>
 
         <div data-action="open-node" data-job-id="${escapeAttr(job.id)}" style="cursor:pointer;">
           <div class="pv-node-name">&#272;&#7863;t t&#234;n node&hellip;</div>
           ${renderPromptSection(job)}
-          <div class="pv-section">${renderReferenceStub(job)}</div>
-          <div class="pv-section" style="display:flex; flex-wrap:wrap; gap:8px;">
-            <span class="pv-ratio-chip">${App.escapeHtml(job?.aspect_ratio || '16:9')}</span>
-            <span class="pv-mode-chip">${App.escapeHtml(modeLabel(job?.type))}</span>
+          <div class="pv-section">
+            <div class="pv-section-label">Reference Images</div>
+            ${renderReferenceStub(job)}
+          </div>
+          <div class="pv-section">
+            <div class="pv-section-label">Format</div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+              <span class="pv-ratio-chip">${App.escapeHtml(job?.aspect_ratio || '16:9')}</span>
+              <span class="pv-mode-chip">${App.escapeHtml(modeLabel(job?.type))}</span>
+            </div>
           </div>
           ${renderCountPills(job)}
         </div>
 
         ${renderOutput(job)}
 
-        <a class="pv-new-step-pill" href="${App.escapeHtml(newChainStepHref(job.id))}" data-job-id="${escapeAttr(job.id)}" style="position:absolute; right:12px; bottom:12px; z-index:2;">
-          <span class="new-project-pill">
-            <span class="material-icons">add</span>
-            <span>Chain step</span>
-          </span>
+        <a class="pv-new-step-pill pv-node-action-overlay" href="${App.escapeHtml(newChainStepHref(job.id))}" data-job-id="${escapeAttr(job.id)}" title="New chain step" aria-label="New chain step">
+          <span class="material-icons">add</span>
+          <span>Chain step</span>
         </a>
       </div>
     `;
@@ -499,11 +513,6 @@
           data-edge-child="${escapeAttr(edge.child)}"
           d="${escapeAttr(buildEdgePath(parentFrame, childFrame))}"
           fill="none"
-          stroke="rgba(161, 161, 170, 0.5)"
-          stroke-width="2"
-          stroke-dasharray="6 10"
-          stroke-linecap="round"
-          opacity="0.5"
         ></path>
       `;
     }).join('');
@@ -542,12 +551,27 @@
 
   function renderZoomToolbar() {
     return `
-      <div class="pv-zoom-toolbar" style="position:absolute; right:16px; bottom:16px; z-index:3; display:flex; gap:8px;">
+      <div class="pv-zoom-toolbar">
         <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="zoom-out" aria-label="Zoom out">-</button>
         <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="zoom-in" aria-label="Zoom in">+</button>
         <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="fit" aria-label="Fit to screen">Fit</button>
         <button type="button" class="pv-zoom-btn btn btn-sm btn-outline" data-action="reset-zoom" aria-label="Reset zoom">Reset</button>
       </div>
+    `;
+  }
+
+  function renderExtendHint() {
+    if (state.jobs.length !== 1) return '';
+    const onlyJob = state.jobs[0];
+    if (!onlyJob?.id) return '';
+    const frame = state.layout.framesById.get(String(onlyJob.id)) || draftFrameForJob(onlyJob);
+    return `
+      <div
+        class="pv-extend-hint"
+        data-role="extend-hint"
+        data-visible="${state.extendHintVisible ? 'true' : 'false'}"
+        style="left:${frame.left + (frame.width / 2)}px; top:${frame.top + frame.height + 28}px;"
+      >Click + New chain step below to extend this chain</div>
     `;
   }
 
@@ -563,6 +587,7 @@
             ${renderEdges()}
           </svg>
           ${state.jobs.map(renderNode).join('')}
+          ${renderExtendHint()}
         </div>
         ${renderZoomToolbar()}
       </div>
@@ -646,6 +671,7 @@
       framesById: new Map(state.jobs.map((job) => [String(job.id), draftFrameForJob(job)])),
       width: state.layoutModel?.estimatedWidth || Math.max(1, STAGE_PADDING * 2 + DEFAULT_NODE_WIDTH),
       height: state.layoutModel?.estimatedHeight || Math.max(1, STAGE_PADDING * 2 + DEFAULT_NODE_HEIGHT),
+      bounds: null,
     };
   }
 
@@ -655,6 +681,7 @@
     const rootJob = pickRootJob(jobs, String(chain?.rootId || '').trim());
     const edges = normalizeEdges(chain?.edges, jobsById);
     const latest = latestJob(jobs);
+    const previousSingleJobId = state.jobs.length === 1 ? String(state.jobs[0]?.id || '') : '';
 
     state.jobs = jobs;
     state.jobsById = jobsById;
@@ -665,6 +692,10 @@
     state.title = chainTitle(rootJob);
     if (!jobsById.has(state.selectedJobId)) {
       state.selectedJobId = String(rootJob?.id || latest?.id || '');
+    }
+    if (jobs.length !== 1 || String(jobs[0]?.id || '') !== previousSingleJobId) {
+      clearExtendHintTimer();
+      state.extendHintVisible = false;
     }
     rebuildLayoutState();
   }
@@ -734,6 +765,8 @@
       state.rootJob = null;
       state.latestJobId = '';
       state.title = 'Project';
+      clearExtendHintTimer();
+      state.extendHintVisible = false;
       rebuildLayoutState();
       return;
     }
@@ -759,6 +792,8 @@
       state.latestJobId = '';
       state.title = state.chainId ? `Chain ${App.truncate(state.chainId, 18)}` : 'Project';
       state.loadError = error?.message || 'Failed to load project view.';
+      clearExtendHintTimer();
+      state.extendHintVisible = false;
       rebuildLayoutState();
     }
   }
@@ -824,7 +859,7 @@
 
     const width = Math.max(1, maxRight + shiftX + STAGE_PADDING);
     const height = Math.max(1, maxBottom + STAGE_PADDING);
-    state.layout = { framesById: frames, width, height };
+    state.layout = { framesById: frames, width, height, bounds: frameBounds(frames) };
     panStage.style.width = `${width}px`;
     panStage.style.height = `${height}px`;
 
@@ -836,15 +871,75 @@
       edgesNode.innerHTML = renderEdges();
     }
 
-    if (fit || !state.userViewportChanged) {
+    const shouldAutoFit = fit || state.jobs.length >= 2 || !state.userViewportChanged;
+    if (shouldAutoFit) {
       fitToScreen({ markUser: false });
     } else {
       applyViewport();
     }
+    syncExtendHint();
   }
 
   function clampZoom(value) {
     return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
+  }
+
+  function clearExtendHintTimer() {
+    if (!state.extendHintTimer) return;
+    clearTimeout(state.extendHintTimer);
+    state.extendHintTimer = null;
+  }
+
+  function frameBounds(frames) {
+    const list = frames instanceof Map ? Array.from(frames.values()) : [];
+    if (!list.length) return null;
+
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    list.forEach((frame) => {
+      if (!frame) return;
+      left = Math.min(left, frame.left);
+      top = Math.min(top, frame.top);
+      right = Math.max(right, frame.left + frame.width);
+      bottom = Math.max(bottom, frame.top + frame.height);
+    });
+
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+    return {
+      left,
+      top,
+      right,
+      bottom,
+      width: Math.max(1, right - left),
+      height: Math.max(1, bottom - top),
+    };
+  }
+
+  function syncExtendHint() {
+    const hintEl = rootElement()?.querySelector('[data-role="extend-hint"]');
+    const onlyJob = state.jobs.length === 1 ? state.jobs[0] : null;
+    const frame = onlyJob?.id ? state.layout.framesById.get(String(onlyJob.id)) : null;
+    if (!hintEl || !frame) {
+      clearExtendHintTimer();
+      if (state.jobs.length !== 1) state.extendHintVisible = false;
+      return;
+    }
+
+    hintEl.style.left = `${frame.left + (frame.width / 2)}px`;
+    hintEl.style.top = `${frame.top + frame.height + 28}px`;
+    hintEl.dataset.visible = state.extendHintVisible ? 'true' : 'false';
+    if (state.extendHintVisible) return;
+
+    clearExtendHintTimer();
+    state.extendHintTimer = setTimeout(() => {
+      state.extendHintTimer = null;
+      if (App.currentPage !== 'project-view' || state.jobs.length !== 1) return;
+      state.extendHintVisible = true;
+      const liveHintEl = rootElement()?.querySelector('[data-role="extend-hint"]');
+      if (liveHintEl) liveHintEl.dataset.visible = 'true';
+    }, EXTEND_HINT_DELAY_MS);
   }
 
   function applyViewport() {
@@ -896,13 +991,29 @@
     const shell = panShellEl();
     if (!shell) return;
     const rect = shell.getBoundingClientRect();
+    const bounds = state.layout.bounds || frameBounds(state.layout.framesById);
+    if (!bounds) return;
     const usableWidth = Math.max(1, rect.width - 32);
     const usableHeight = Math.max(1, rect.height - 32);
-    const zoom = clampZoom(Math.min(usableWidth / state.layout.width, usableHeight / state.layout.height));
+    const fitBox = state.jobs.length === 1
+      ? { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height }
+      : {
+        left: bounds.left - FIT_PADDING,
+        top: bounds.top - FIT_PADDING,
+        width: bounds.width + (FIT_PADDING * 2),
+        height: bounds.height + (FIT_PADDING * 2),
+      };
+    const maxFitZoom = Math.min(FIT_MAX_ZOOM, MAX_ZOOM);
+    const zoom = clampZoom(Math.min(
+      state.jobs.length === 1 ? SINGLE_NODE_FIT_ZOOM : maxFitZoom,
+      maxFitZoom,
+      usableWidth / fitBox.width,
+      usableHeight / fitBox.height,
+    ));
     const next = {
       z: zoom,
-      x: (rect.width - (state.layout.width * zoom)) / 2,
-      y: (rect.height - (state.layout.height * zoom)) / 2,
+      x: ((rect.width - (fitBox.width * zoom)) / 2) - (fitBox.left * zoom),
+      y: ((rect.height - (fitBox.height * zoom)) / 2) - (fitBox.top * zoom),
     };
 
     state.fitViewport = { ...next };
@@ -1071,7 +1182,7 @@
 
   function handleResize() {
     if (App.currentPage !== 'project-view' || !state.jobs.length) return;
-    if (!state.userViewportChanged) {
+    if (state.jobs.length >= 2 || !state.userViewportChanged) {
       requestAnimationFrame(() => fitToScreen({ markUser: false }));
     } else {
       applyViewport();
@@ -1238,11 +1349,13 @@
 
       unbindWindowListeners();
       restoreShellTopBar();
+      clearExtendHintTimer();
 
       state.rootEl = null;
       state.menuOpen = false;
       state.drag = null;
       state.userViewportChanged = false;
+      state.extendHintVisible = false;
     },
   };
 
