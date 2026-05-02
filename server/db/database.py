@@ -104,6 +104,19 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS render_jobs (
+    id           TEXT PRIMARY KEY,
+    status       TEXT NOT NULL DEFAULT 'queued',
+    progress     INTEGER NOT NULL DEFAULT 0,
+    ratio        TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    output_path  TEXT,
+    error        TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    completed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS veo_accounts (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -124,6 +137,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_project_url ON jobs(project_url);
 CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_profiles_status  ON profiles(status);
 CREATE INDEX IF NOT EXISTS idx_characters_name  ON characters(name);
+CREATE INDEX IF NOT EXISTS idx_render_jobs_status ON render_jobs(status);
 """
 
 

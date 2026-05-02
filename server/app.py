@@ -18,6 +18,7 @@ from server.dashboard_auth import (
 )
 from server.routes.idea import router as idea_router
 from server.routes.projects import router as projects_router
+from server.routes.render import router as render_router
 from server.routes import (
     characters_router,
     jobs_router,
@@ -135,6 +136,7 @@ app.include_router(llm_router)
 app.include_router(idea_router)
 app.include_router(product_pipeline_router)
 app.include_router(retarget_router)
+app.include_router(render_router)
 app.include_router(uploads_router)
 app.include_router(worker_router)
 app.include_router(profiles_router)
