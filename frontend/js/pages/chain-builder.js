@@ -1003,50 +1003,57 @@
       await fetchProfiles();
       await initializePrefill();
 
+      const parentTypeLabel = parentPrefill?.parentType ? String(parentPrefill.parentType).toUpperCase().replace(/-/g,' ') : 'NEW CHAIN';
+      const parentThumb = parentPrefill?.thumb_url || '';
+      const shortChainId = parentPrefill?.chainId ? `${parentPrefill.chainId.slice(0,8)}…${parentPrefill.chainId.slice(-4)}` : '';
+      const shortMediaId = parentPrefill?.mediaId ? `${parentPrefill.mediaId.slice(0,8)}…${parentPrefill.mediaId.slice(-4)}` : '';
       return `
-        <style>
-          .chain-layout{display:grid;grid-template-columns:minmax(0,480px) minmax(320px,1fr);gap:16px;align-items:start}.chain-stack{display:grid;gap:16px}.chain-builder-card,.chain-step-card,.chain-parent-panel,.chain-parent-banner{border:1px solid rgba(255,255,255,0.08);border-radius:12px}.chain-builder-card{padding:14px}.chain-parent-banner{display:flex;align-items:center;gap:8px;padding:10px 14px;margin-bottom:16px;background:rgba(255,255,255,0.03)}.chain-parent-banner-meta{font-size:12px;color:var(--text-muted)}.chain-parent-panel{padding:14px;display:grid;gap:12px;position:sticky;top:16px}.chain-parent-thumb-wrap{border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08)}.chain-parent-thumb{display:block;width:100%;height:220px;object-fit:cover}.chain-parent-thumb-placeholder{display:grid;place-items:center;color:var(--text-muted)}.chain-parent-thumb-placeholder .material-icons{font-size:40px}.chain-parent-panel-head{display:flex;flex-wrap:wrap;gap:8px}.chain-parent-type,.chain-parent-profile{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,0.04);font-size:12px}.chain-parent-field{display:grid;gap:6px}.chain-parent-field-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted)}.chain-parent-field-value{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08)}.chain-parent-field-value code{font-size:12px;color:var(--text-secondary)}.chain-parent-link{display:inline-flex;align-items:center;gap:6px;color:var(--accent);text-decoration:none}.chain-inline-note{color:var(--text-muted);font-size:13px;margin-bottom:10px}.chain-inline-control{display:grid;gap:8px}.chain-inline-control-main{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center}.chain-step-card{padding:12px}.chain-step-header{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;background:none;border:0;padding:0;text-align:left}.chain-step-body{padding-top:12px}.chain-step-footer{display:flex;justify-content:flex-end;padding-top:8px}.chain-profile-row{display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px;align-items:center}.chain-actions{display:flex;gap:12px}@media (max-width:899px){.chain-layout{grid-template-columns:1fr}.chain-parent-panel{position:static}.chain-profile-row,.chain-inline-control-main{grid-template-columns:1fr}.chain-actions{flex-direction:column}}
-        </style>
-        <div class="chain-layout">
-          <div class="chain-stack">
-            <div class="card chain-builder-card">
-            <h3 style="margin-bottom: 8px; font-size: 16px; font-weight: 600;">Build a Job Chain</h3>
-            <p style="color: var(--text-muted); font-size: 13px;">
-              Chains run sequentially on a single profile. Start with an L1 project-creating step,
-              then add only L2 edits that chain off the parent media.
-            </p>
-            </div>
+        <div class="cbf-shell">
+          <aside class="cbf-thin-rail">
+            <a href="#dashboard" title="Home" style="color:inherit;display:grid;place-items:center;width:40px;height:40px;border-radius:10px;text-decoration:none"><span class="material-icons">home</span></a>
+            <a href="#gallery" title="Gallery" style="color:inherit;display:grid;place-items:center;width:40px;height:40px;border-radius:10px;text-decoration:none"><span class="material-icons">photo_library</span></a>
+            <a href="#jobs" title="Jobs" style="color:inherit;display:grid;place-items:center;width:40px;height:40px;border-radius:10px;text-decoration:none"><span class="material-icons">timeline</span></a>
+          </aside>
+          <main class="cbf-main">
+            <header class="cbf-header">
+              <div class="cbf-breadcrumb">
+                <span class="material-icons" style="font-size:16px;vertical-align:middle">link</span>
+                Chain Builder ${parentPrefill ? '› Continue from ' + parentTypeLabel : ''}
+              </div>
+              ${shortChainId ? `<span class="cbf-id-chip" title="${App.escapeHtml(parentPrefill.chainId)}">${shortChainId}</span>` : ''}
+            </header>
 
             ${renderPrefillBanner()}
 
-            <div class="card chain-builder-card" style="margin-bottom:16px;">
-              <div class="chain-profile-row">
-                <label class="form-label" for="chain-profile">Profile <span class="required">*</span></label>
-                <div>
-                  ${renderProfileSelect()}
-                  <span class="form-hint">${parentPrefill?.profile
-                    ? 'Inherited from the parent job and locked to the same Google account.'
-                    : 'All steps run on this Google account. L2+ inherits it automatically.'}</span>
-                </div>
-              </div>
+            <div class="cbf-stage ${parentThumb ? '' : 'cbf-stage-empty'}" ${parentThumb ? `style="background-image:url('${App.escapeHtml(parentThumb)}');background-size:cover;background-position:center"` : ''}>
+              ${parentThumb ? '' : `<div style="display:grid;place-items:center;height:100%"><span class="material-icons" style="font-size:64px;opacity:0.3">movie</span></div>`}
+              ${parentPrefill ? `<div class="cbf-stage-meta">
+                <span class="cbf-id-chip">${parentTypeLabel}</span>
+                ${shortMediaId ? `<span class="cbf-id-chip" title="${App.escapeHtml(parentPrefill.mediaId)}">${shortMediaId}</span>` : ''}
+              </div>` : ''}
             </div>
 
-            <div class="chain-timeline" id="chain-steps"></div>
+            <div class="cbf-timeline" id="chain-steps"></div>
 
-            <div class="card chain-builder-card" id="chain-add-buttons" style="margin-bottom: 16px;"></div>
+            <div id="chain-add-buttons" style="margin-top:16px"></div>
+            <div id="chain-result" style="margin-top:16px"></div>
+          </main>
 
-            <div class="chain-actions">
-              <button class="btn btn-primary" id="submit-chain" disabled>
-                <span class="material-icons">send</span> Submit Chain
-              </button>
-              <button class="btn btn-outline" id="reset-chain">
-                <span class="material-icons">refresh</span> Reset
-              </button>
-            </div>
+          <aside class="cbf-rail">
+            <section class="cbf-rail-section">
+              <label class="cbf-rail-label">Profile</label>
+              ${renderProfileSelect()}
+              <p class="cbf-helper">${parentPrefill?.profile ? 'Locked from parent job. L2+ inherit account binding.' : 'All steps run on this Google account.'}</p>
+            </section>
 
-            <div id="chain-result" style="margin-top: 16px;"></div>
-          </div>
-          ${renderParentPanel()}
+            <div class="cbf-divider"></div>
+
+            <button class="cbf-cta" id="submit-chain" disabled>Submit Chain</button>
+            <button id="reset-chain" style="background:transparent;border:1px solid rgba(255,255,255,0.1);color:inherit;width:100%;height:40px;border-radius:999px;margin-top:10px;cursor:pointer">Reset</button>
+
+            <div class="cbf-divider"></div>
+            <p class="cbf-helper">Chain runs serial on this profile. Backend invariants enforce single-account per project.</p>
+          </aside>
         </div>
       `;
     },
