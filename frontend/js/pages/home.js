@@ -140,34 +140,25 @@
     `;
   }
 
-  function renderNewProjectTile() {
+  function renderNewProjectFab() {
+    // Floating action button — sticks to the viewport bottom-center while
+    // the user scrolls the gallery. Mirrors the floating "+ New project"
+    // pill in Google Flow's gallery (not an inline grid slot).
     return `
-      <a class="project-tile new-project-tile" href="#create"
+      <a class="new-project-fab" href="#create"
          title="New project" aria-label="New project">
-        <div class="tile-thumb">
-          <div class="new-project-pill">
-            <span class="material-icons">add</span>
-            <span>New project</span>
-          </div>
-        </div>
+        <span class="material-icons">add</span>
+        <span>New project</span>
       </a>
     `;
   }
 
   function renderGrid() {
     if (recentJobs.length === 0) {
-      // Empty-state still gets the + tile so the operator can start.
-      return `
-        <div class="project-grid" id="home-grid">
-          ${renderNewProjectTile()}
-        </div>
-      `;
+      // Empty gallery: still show the FAB so the operator can start.
+      return `<div class="project-grid" id="home-grid"></div>`;
     }
     const tiles = recentJobs.map(renderTile);
-    // Insert + New tile near the centre — Flow places its CTA roughly
-    // mid-grid as a slot, not as a floating FAB.
-    const insertAt = Math.min(Math.floor(tiles.length / 2), 5);
-    tiles.splice(insertAt, 0, renderNewProjectTile());
     return `<div class="project-grid" id="home-grid">${tiles.join('')}</div>`;
   }
 
@@ -221,6 +212,7 @@
       return `
         <div class="home-canvas home-canvas-gallery">
           <div id="home-recent">${renderGrid()}</div>
+          ${renderNewProjectFab()}
         </div>
       `;
     },
