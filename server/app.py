@@ -33,6 +33,7 @@ from server.routes import (
     worker_router,
     ws_router,
 )
+from server.routes.settings import router as settings_router
 
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
@@ -135,6 +136,7 @@ app.include_router(worker_router)
 app.include_router(profiles_router)
 app.include_router(templates_router)
 app.include_router(tts_router)
+app.include_router(settings_router)
 app.include_router(ws_router)
 
 # -- Static files (frontend) --------------------------------------------------
