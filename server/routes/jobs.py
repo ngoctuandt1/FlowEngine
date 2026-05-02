@@ -8,7 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, status
 
 from server.models.chain import Chain, ChainCreateResponse
-from server.db.chain_store import compute_aggregated_status, create_chain
+from server.db.chain_store import compute_aggregated_status
 from server.models.job import (
     ChainCreate,
     Job,
@@ -18,6 +18,7 @@ from server.models.job import (
     JobWithThumb,
 )
 from server.db.job_store import (
+    create_chain_with_jobs,
     create_job,
     delete_job,
     get_children,
@@ -227,7 +228,6 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     chain = Chain(id=str(uuid.uuid4()), profile=effective_profile)
-    await create_chain(chain)
 
     jobs: list[Job] = []
     prev_id: Optional[str] = None
@@ -251,10 +251,11 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
         step.profile = effective_profile
         step.project_id = effective_project_id
         job = _build_job(step, profile=effective_profile, chain_id=chain.id, job_level=level)
-        await create_job(job)
         jobs.append(job)
         prev_id = job.id
         level += 1
+
+    await create_chain_with_jobs(chain, jobs)
 
     await broadcast_job_update(jobs[0])  # notify once for chain head
     return {"chain_id": chain.id, "jobs": jobs}
