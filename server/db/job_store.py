@@ -252,19 +252,39 @@ async def get_related_jobs(
                 depth,
                 id, type, status, job_level, parent_job_id, chain_id,
                 profile, project_url, media_id, edit_url,
+                project_id,
                 prompt, model, aspect_ratio, bbox_json, direction,
                 start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
                 safety_filter, output_files_json, generation_id,
                 worker_id, claimed_at, completed_at, error,
                 created_at, updated_at
             ) AS (
-                SELECT 0, jobs.*
+                SELECT
+                    0,
+                    jobs.id, jobs.type, jobs.status, jobs.job_level, jobs.parent_job_id, jobs.chain_id,
+                    jobs.profile, jobs.project_url, jobs.media_id, jobs.edit_url,
+                    jobs.project_id,
+                    jobs.prompt, jobs.model, jobs.aspect_ratio, jobs.bbox_json, jobs.direction,
+                    jobs.start_image_path, jobs.end_image_path, jobs.ingredient_image_paths_json,
+                    jobs.ref_image_path, jobs.safety_filter, jobs.output_files_json,
+                    jobs.generation_id, jobs.worker_id, jobs.claimed_at, jobs.completed_at,
+                    jobs.error, jobs.created_at, jobs.updated_at
                 FROM jobs
                 WHERE id = ?
 
                 UNION ALL
 
-                SELECT ancestors.depth + 1, parent.*
+                SELECT
+                    ancestors.depth + 1,
+                    parent.id, parent.type, parent.status, parent.job_level, parent.parent_job_id,
+                    parent.chain_id, parent.profile, parent.project_url, parent.media_id,
+                    parent.edit_url, parent.project_id, parent.prompt, parent.model,
+                    parent.aspect_ratio, parent.bbox_json, parent.direction,
+                    parent.start_image_path, parent.end_image_path,
+                    parent.ingredient_image_paths_json, parent.ref_image_path,
+                    parent.safety_filter, parent.output_files_json, parent.generation_id,
+                    parent.worker_id, parent.claimed_at, parent.completed_at, parent.error,
+                    parent.created_at, parent.updated_at
                 FROM jobs AS parent
                 JOIN ancestors ON ancestors.parent_job_id = parent.id
                 WHERE ancestors.parent_job_id IS NOT NULL

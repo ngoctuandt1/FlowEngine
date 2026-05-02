@@ -19,6 +19,16 @@ CREATE TABLE IF NOT EXISTS chains (
     updated_at  TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    id             TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    description    TEXT,
+    cover_chain_id TEXT,
+    cover_job_id   TEXT,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id              TEXT PRIMARY KEY,
     type            TEXT NOT NULL,
@@ -34,6 +44,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     project_url     TEXT,
     media_id        TEXT,
     edit_url        TEXT,
+    project_id      TEXT,
 
     -- Operation params
     prompt          TEXT,
@@ -108,7 +119,9 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status      ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_chain_id    ON jobs(chain_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_parent      ON jobs(parent_job_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_profile     ON jobs(profile);
+CREATE INDEX IF NOT EXISTS idx_jobs_project_id  ON jobs(project_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_project_url ON jobs(project_url);
+CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_profiles_status  ON profiles(status);
 CREATE INDEX IF NOT EXISTS idx_characters_name  ON characters(name);
 """
@@ -166,6 +179,7 @@ async def init_db() -> None:
         )
         await _ensure_job_column(db, "start_image_path", "start_image_path TEXT")
         await _ensure_job_column(db, "end_image_path", "end_image_path TEXT")
+        await _ensure_job_column(db, "project_id", "project_id TEXT")
         await _ensure_job_column(
             db,
             "ingredient_image_paths_json",
