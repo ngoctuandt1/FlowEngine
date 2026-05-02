@@ -219,6 +219,20 @@ class APIError extends Error {
 }
 
 const TILE_MEDIA_ERROR_HANDLER = "this.closest('.tile-thumb')?.classList.add('tile-thumb--broken'); this.remove();";
+
+// Append a versioned query string so Cloudflare's edge serves a fresh
+// response after the Cache-Control middleware change (CF was caching old
+// responses without Accept-Ranges, breaking <video> playback). Stable per
+// session — picked up at script load — so within one tab the URL doesn't
+// flap and the browser still benefits from its own cache.
+const MEDIA_CACHE_BUST = `_v=${Date.now().toString(36)}`;
+function bustMediaCache(url) {
+  if (!url) return url;
+  if (url.startsWith('/downloads/') || url.startsWith('/uploads/')) {
+    return url.includes('?') ? `${url}&${MEDIA_CACHE_BUST}` : `${url}?${MEDIA_CACHE_BUST}`;
+  }
+  return url;
+}
 const TILE_DATE_FORMATTER = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: '2-digit',
@@ -250,14 +264,15 @@ function formatTileDate(dateStr) {
 
 const MediaTile = {
   imgTag({ src, alt, posterFallback } = {}) {
-    const imageSrc = src || posterFallback || '';
+    const imageSrc = bustMediaCache(src || posterFallback || '');
     return `<img src="${App.escapeHtml(imageSrc)}" alt="${App.escapeHtml(alt || '')}" loading="lazy" decoding="async" onerror="${TILE_MEDIA_ERROR_HANDLER}" style="width:100%; height:100%; object-fit:cover; display:block;">`;
   },
 
   videoTag({ src, poster, alt } = {}) {
-    const posterAttr = poster ? ` poster="${App.escapeHtml(poster)}"` : '';
+    const posterAttr = poster ? ` poster="${App.escapeHtml(bustMediaCache(poster))}"` : '';
     const ariaAttr = alt ? ` aria-label="${App.escapeHtml(alt)}"` : '';
-    return `<video class="tile-video" src="${App.escapeHtml(src || '')}"${posterAttr}${ariaAttr} muted loop playsinline preload="auto" onloadeddata="this.currentTime=0.1" onerror="${TILE_MEDIA_ERROR_HANDLER}" onmouseenter="this.play().catch(()=>{})" onmouseleave="this.pause(); this.currentTime=0;"></video>`;
+    const finalSrc = bustMediaCache(src || '');
+    return `<video class="tile-video" src="${App.escapeHtml(finalSrc)}"${posterAttr}${ariaAttr} muted loop playsinline preload="auto" onloadeddata="this.currentTime=0.1" onerror="${TILE_MEDIA_ERROR_HANDLER}" onmouseenter="this.play().catch(()=>{})" onmouseleave="this.pause(); this.currentTime=0;"></video>`;
   },
 };
 
