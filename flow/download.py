@@ -5,6 +5,7 @@ import base64
 import logging
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Literal
@@ -316,6 +317,7 @@ async def _api_download_with_retry(
                             filepath,
                             len(body),
                         )
+                        _faststart_mp4(filepath)
                         return str(filepath)
 
                 # 200 but redirected -- may need to follow
@@ -360,10 +362,48 @@ async def _fetch_and_save(
                 logger.info(
                     "Fetched %s: %s (%d bytes)", quality, filepath, len(body)
                 )
+                _faststart_mp4(filepath)
                 return str(filepath)
     except Exception as e:
         logger.warning("Fetch error: %s", e)
     return None
+
+
+def _faststart_mp4(filepath: Path) -> None:
+    """Move the MP4 ``moov`` atom to the head so HTML5 ``<video>`` can stream.
+
+    Flow's API delivers MP4s with ``moov`` after ``mdat``, which prevents
+    progressive download — browsers stall at ``readyState=0`` and tile
+    thumbnails render fully black. ``-movflags +faststart`` rewrites the
+    container with ``moov`` first so Range requests can stream the head.
+    Best-effort: any failure is logged and the original file is kept.
+    """
+    if filepath.suffix.lower() != ".mp4" or not filepath.exists():
+        return
+    tmp_path = filepath.with_suffix(filepath.suffix + ".faststart.tmp")
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", str(filepath),
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(tmp_path),
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        if proc.returncode == 0 and tmp_path.exists() and tmp_path.stat().st_size > 0:
+            tmp_path.replace(filepath)
+        else:
+            tmp_path.unlink(missing_ok=True)
+            logger.warning(
+                "faststart failed for %s: rc=%s",
+                filepath.name, proc.returncode,
+            )
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        logger.warning("faststart exception for %s: %s", filepath.name, exc)
 
 
 async def _download_via_ui(client, prefix: str, output_dir: Path, media_kind: str) -> str | None:
@@ -405,6 +445,7 @@ async def _download_via_ui(client, prefix: str, output_dir: Path, media_kind: st
 
             if filepath.stat().st_size > _minimum_size_for(media_kind):
                 logger.info("UI download: %s", filepath)
+                _faststart_mp4(filepath)
                 return str(filepath)
     except Exception as e:
         logger.warning("UI download failed: %s", e)
@@ -446,6 +487,7 @@ async def _download_blob(page, prefix: str, output_dir: Path) -> str | None:
                 filepath = output_dir / filename
                 filepath.write_bytes(raw)
                 logger.info("Blob download: %s (%d bytes)", filepath, len(raw))
+                _faststart_mp4(filepath)
                 return str(filepath)
     except Exception as e:
         logger.warning("Blob download failed: %s", e)
