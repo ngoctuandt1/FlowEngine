@@ -1,9 +1,34 @@
 /**
  * FlowEngine SPA Router & App Initialization
  */
+const ROUTE_ALIASES = { 'chain-builder': 'chains' };
+const LAZY_MODULE_MAP = {
+  dashboard: 'dashboard',
+  'engine-status': 'engine-status',
+  create: 'create-job',
+  'create-job': 'create-job',
+  'chain-builder': 'chain-builder',
+  'chain-tree': 'chain-tree',
+  characters: 'characters',
+  profiles: 'profiles',
+  settings: 'settings',
+  tts: 'tts',
+  workflows: 'workflows',
+  'media-tools': 'media-tools',
+  gallery: 'gallery',
+  'project-view': 'project-view',
+  'job-detail': 'job-detail',
+  jobs: 'jobs',
+  'batch-queue': 'batch-queue',
+  chains: 'chain-builder',
+};
+
 const App = {
   currentPage: null,
   pages: {},
+  lazyModuleLoads: {},
+  lazyModuleReady: {},
+  lazyModuleVersion: null,
 
   /**
    * Register a page module.
@@ -66,6 +91,67 @@ const App = {
     this._onRoute();
   },
 
+  _resolvePageName(name) {
+    const alias = ROUTE_ALIASES[name];
+    return alias && this.pages[alias] ? alias : name;
+  },
+
+  _getLazyModuleVersion() {
+    if (this.lazyModuleVersion !== null) return this.lazyModuleVersion;
+
+    const eagerScript = document.querySelector('script[src*="/js/app.js"]');
+    const src = eagerScript?.getAttribute('src') || '';
+    const match = src.match(/[?&]v=([^&]+)/);
+    this.lazyModuleVersion = match ? decodeURIComponent(match[1]) : '';
+    return this.lazyModuleVersion;
+  },
+
+  _fallbackToHome() {
+    if (location.hash === '#home') {
+      this._loadPage('home');
+      return;
+    }
+    location.hash = '#home';
+  },
+
+  _ensureLazyPage(name) {
+    const fileStem = LAZY_MODULE_MAP[name];
+    if (!fileStem) return Promise.resolve(false);
+    if (this.pages[name] || this.lazyModuleReady[fileStem]) return Promise.resolve(false);
+    if (this.lazyModuleLoads[fileStem]) return this.lazyModuleLoads[fileStem];
+
+    const version = this._getLazyModuleVersion();
+    const query = version ? `?v=${encodeURIComponent(version)}` : '';
+    const script = document.createElement('script');
+    const loadingToast = this.toast('Loading…', 'info', 0);
+
+    script.src = `/js/pages/${fileStem}.js${query}`;
+    script.async = true;
+    script.dataset.lazyPageModule = fileStem;
+
+    const loadPromise = new Promise((resolve, reject) => {
+      script.onload = () => {
+        this.lazyModuleReady[fileStem] = true;
+        delete this.lazyModuleLoads[fileStem];
+        this.dismissToast(loadingToast);
+        resolve(true);
+      };
+
+      script.onerror = () => {
+        delete this.lazyModuleLoads[fileStem];
+        delete this.lazyModuleReady[fileStem];
+        script.remove();
+        this.dismissToast(loadingToast);
+        this.toast(`Failed to load ${name}`, 'error');
+        reject(new Error(`Failed to load ${name}`));
+      };
+    });
+
+    this.lazyModuleLoads[fileStem] = loadPromise;
+    document.body.appendChild(script);
+    return loadPromise;
+  },
+
   /**
    * Handle route changes.
    */
@@ -86,14 +172,20 @@ const App = {
       return;
     }
 
-    // Aliases: semantic hashes that map to a registered page under a different key.
-    const ROUTE_ALIASES = { 'chain-builder': 'chains' };
-    if (ROUTE_ALIASES[pageName] && this.pages[ROUTE_ALIASES[pageName]]) {
-      pageName = ROUTE_ALIASES[pageName];
+    pageName = this._resolvePageName(pageName);
+
+    const lazyFile = LAZY_MODULE_MAP[pageName];
+    if (lazyFile && !this.pages[pageName]) {
+      if (!this.lazyModuleLoads[lazyFile] && !this.lazyModuleReady[lazyFile]) {
+        this._ensureLazyPage(pageName)
+          .then(() => this._onRoute())
+          .catch(() => this._fallbackToHome());
+      }
+      return;
     }
 
     if (!this.pages[pageName]) {
-      location.hash = '#home';
+      this._fallbackToHome();
       return;
     }
 
@@ -104,19 +196,40 @@ const App = {
    * Load and render a page.
    */
   async _loadPage(name) {
-    const page = this.pages[name];
-    if (!page) return;
+    const resolvedName = this._resolvePageName(name);
+    const page = this.pages[resolvedName];
+    if (!page) {
+      const lazyFile = LAZY_MODULE_MAP[resolvedName] || LAZY_MODULE_MAP[name];
+      if (!lazyFile) return;
+
+      try {
+        if (!this.lazyModuleReady[lazyFile]) {
+          await this._ensureLazyPage(name);
+        }
+
+        const retryName = this._resolvePageName(name);
+        if (!this.pages[retryName]) {
+          throw new Error(`Page '${name}' did not register after loading`);
+        }
+
+        return this._loadPage(retryName);
+      } catch (err) {
+        console.error(`[App] Failed to lazy-load page '${name}':`, err);
+        this._fallbackToHome();
+        return;
+      }
+    }
 
     // Destroy current page if it has cleanup
     if (this.currentPage && this.pages[this.currentPage]?.destroy) {
       this.pages[this.currentPage].destroy();
     }
 
-    this.currentPage = name;
+    this.currentPage = resolvedName;
 
     // Update nav (sidebar + appbar)
     document.querySelectorAll('.nav-link, .appbar-link').forEach((link) => {
-      link.classList.toggle('active', link.dataset.page === name);
+      link.classList.toggle('active', link.dataset.page === resolvedName);
     });
 
     // Update title
@@ -127,7 +240,7 @@ const App = {
     document.body.className = document.body.className
       .split(/\s+/)
       .filter((c) => !c.startsWith('route-'))
-      .concat(`route-${name}`)
+      .concat(`route-${resolvedName}`)
       .join(' ').trim();
 
     // Close drawer
@@ -147,7 +260,7 @@ const App = {
       // Call mount if page has post-render logic
       if (page.mount) page.mount();
     } catch (err) {
-      console.error(`[App] Failed to render page '${name}':`, err);
+      console.error(`[App] Failed to render page '${resolvedName}':`, err);
       container.innerHTML = `
         <div class="empty-state">
           <span class="material-icons">error_outline</span>
@@ -216,12 +329,19 @@ const App = {
 
     if (duration > 0) {
       setTimeout(() => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateX(40px)';
-        toast.style.transition = 'all 0.3s ease';
-        setTimeout(() => toast.remove(), 300);
+        this.dismissToast(toast);
       }, duration);
     }
+
+    return toast;
+  },
+
+  dismissToast(toast) {
+    if (!toast?.isConnected) return;
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(40px)';
+    toast.style.transition = 'all 0.3s ease';
+    setTimeout(() => toast.remove(), 300);
   },
 
   // ---- Utilities ----
