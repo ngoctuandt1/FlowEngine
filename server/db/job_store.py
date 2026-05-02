@@ -1,16 +1,20 @@
 """Job CRUD operations (async, aiosqlite)."""
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from server.db.database import get_db
+from server.db.profile_store import get_available_profiles
+from server.models.chain import Chain
 from server.models.job import BBox, Job, JobStatus, JobUpdate
 
 # Job states that release the profile and stamp completed_at (B5 + B6).
 # Hoisted to module level so claim/update paths share a single source of truth.
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 RELATED_CHAIN_DEPTH_CAP = 256
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -51,61 +55,97 @@ def _now_iso() -> str:
 # CRUD
 # ---------------------------------------------------------------------------
 
-async def create_job(job: Job) -> Job:
+async def create_job(
+    job: Job,
+    *,
+    db=None,
+    commit: bool = True,
+) -> Job:
     """Insert a new job row and return it."""
-    async with get_db() as db:
-        await db.execute(
-            """
-            INSERT INTO jobs (
-                id, type, status, job_level, parent_job_id, chain_id,
-                profile, project_url, media_id, edit_url,
-                prompt, model, aspect_ratio, bbox_json, direction,
-                start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
-                output_files_json, generation_id,
-                worker_id, claimed_at, completed_at, error,
-                created_at, updated_at
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?,
-                ?, ?,
-                ?, ?, ?, ?,
-                ?, ?
-            )
-            """,
-            (
-                job.id,
-                job.type.value,
-                job.status.value,
-                job.job_level,
-                job.parent_job_id,
-                job.chain_id,
-                job.profile,
-                job.project_url,
-                job.media_id,
-                job.edit_url,
-                job.prompt,
-                job.model,
-                job.aspect_ratio,
-                json.dumps(job.bbox.model_dump()) if job.bbox else None,
-                job.direction,
-                job.start_image_path,
-                job.end_image_path,
-                json.dumps(job.ingredient_image_paths) if job.ingredient_image_paths else None,
-                job.ref_image_path,
-                json.dumps(job.output_files) if job.output_files else None,
-                job.generation_id,
-                job.worker_id,
-                job.claimed_at.isoformat() if job.claimed_at else None,
-                job.completed_at.isoformat() if job.completed_at else None,
-                job.error,
-                job.created_at.isoformat(),
-                job.updated_at.isoformat(),
-            ),
+    if db is None:
+        async with get_db() as db:
+            return await create_job(job, db=db, commit=True)
+
+    await db.execute(
+        """
+        INSERT INTO jobs (
+            id, type, status, job_level, parent_job_id, chain_id,
+            profile, project_url, media_id, edit_url,
+            prompt, model, aspect_ratio, bbox_json, direction,
+            start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
+            output_files_json, generation_id,
+            worker_id, claimed_at, completed_at, error,
+            created_at, updated_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?,
+            ?, ?, ?, ?,
+            ?, ?
         )
+        """,
+        (
+            job.id,
+            job.type.value,
+            job.status.value,
+            job.job_level,
+            job.parent_job_id,
+            job.chain_id,
+            job.profile,
+            job.project_url,
+            job.media_id,
+            job.edit_url,
+            job.prompt,
+            job.model,
+            job.aspect_ratio,
+            json.dumps(job.bbox.model_dump()) if job.bbox else None,
+            job.direction,
+            job.start_image_path,
+            job.end_image_path,
+            json.dumps(job.ingredient_image_paths) if job.ingredient_image_paths else None,
+            job.ref_image_path,
+            json.dumps(job.output_files) if job.output_files else None,
+            job.generation_id,
+            job.worker_id,
+            job.claimed_at.isoformat() if job.claimed_at else None,
+            job.completed_at.isoformat() if job.completed_at else None,
+            job.error,
+            job.created_at.isoformat(),
+            job.updated_at.isoformat(),
+        ),
+    )
+    if commit:
         await db.commit()
     return job
+
+
+async def create_chain_with_jobs(chain: Chain, jobs: list[Job]) -> list[Job]:
+    """Create a chain row plus all child jobs in one transaction."""
+    async with get_db() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute(
+                """
+                INSERT INTO chains (id, profile, project_url, media_id, status,
+                                    created_at, updated_at)
+                VALUES (?, ?, NULL, NULL, 'active', ?, ?)
+                """,
+                (
+                    chain.id,
+                    chain.profile,
+                    chain.created_at.isoformat(),
+                    chain.updated_at.isoformat(),
+                ),
+            )
+            for job in jobs:
+                await create_job(job, db=db, commit=False)
+            await db.commit()
+        except Exception:
+            await db.execute("ROLLBACK")
+            raise
+    return jobs
 
 
 async def get_job(job_id: str) -> Optional[Job]:
@@ -157,15 +197,11 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
     if not fields:
         return await get_job(job_id)
 
-    # Normalise incoming status (enum or str) once — reused by B5 stamp
-    # and B6 profile clear below.
     new_status = fields.get("status")
     status_value: Optional[str] = None
     if new_status is not None:
         status_value = new_status.value if hasattr(new_status, "value") else new_status
 
-    # B5: stamp completed_at when the caller moves the job into a terminal
-    # state but didn't set the timestamp themselves. Explicit caller wins.
     if status_value in TERMINAL_STATES and "completed_at" not in fields:
         fields["completed_at"] = _now_iso()
 
@@ -186,7 +222,6 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
             sets.append(f"{key} = ?")
             params.append(value)
 
-    # Always bump updated_at
     sets.append("updated_at = ?")
     params.append(_now_iso())
 
@@ -196,14 +231,14 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
     async with get_db() as db:
         cursor = await db.execute(sql, params)
 
-        # B6: release the profile pointer when the job reaches a terminal
-        # state. Same connection as the jobs UPDATE so the two rows commit
-        # together — UI never sees a profile pinned to a completed job.
-        # No-op when no profile row references this job (e.g. worker using
-        # a profile that was never registered in the DB).
         if status_value in TERMINAL_STATES:
             await db.execute(
-                "UPDATE profiles SET current_job_id = NULL WHERE current_job_id = ?",
+                """
+                UPDATE profiles
+                SET current_job_id = NULL,
+                    worker_id = NULL
+                WHERE current_job_id = ?
+                """,
                 (job_id,),
             )
 
@@ -240,11 +275,7 @@ async def get_related_jobs(
     *,
     depth_cap: int = RELATED_CHAIN_DEPTH_CAP,
 ) -> Optional[dict]:
-    """Fetch one job's lineage, adjacent relatives, and root-scoped stats.
-
-    The recursive CTE is capped at 256 hops to guard against corrupted parent
-    cycles while still covering the 100-job chain sanity target from the ticket.
-    """
+    """Fetch one job's lineage, adjacent relatives, and root-scoped stats."""
     async with get_db() as db:
         lineage_cursor = await db.execute(
             """
@@ -254,7 +285,7 @@ async def get_related_jobs(
                 profile, project_url, media_id, edit_url,
                 prompt, model, aspect_ratio, bbox_json, direction,
                 start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
-                safety_filter, output_files_json, generation_id,
+                output_files_json, generation_id,
                 worker_id, claimed_at, completed_at, error,
                 created_at, updated_at
             ) AS (
@@ -264,9 +295,9 @@ async def get_related_jobs(
                     jobs.profile, jobs.project_url, jobs.media_id, jobs.edit_url,
                     jobs.prompt, jobs.model, jobs.aspect_ratio, jobs.bbox_json, jobs.direction,
                     jobs.start_image_path, jobs.end_image_path, jobs.ingredient_image_paths_json,
-                    jobs.ref_image_path, jobs.safety_filter, jobs.output_files_json,
-                    jobs.generation_id, jobs.worker_id, jobs.claimed_at, jobs.completed_at,
-                    jobs.error, jobs.created_at, jobs.updated_at
+                    jobs.ref_image_path, jobs.output_files_json, jobs.generation_id,
+                    jobs.worker_id, jobs.claimed_at, jobs.completed_at, jobs.error,
+                    jobs.created_at, jobs.updated_at
                 FROM jobs
                 WHERE id = ?
 
@@ -280,7 +311,7 @@ async def get_related_jobs(
                     parent.aspect_ratio, parent.bbox_json, parent.direction,
                     parent.start_image_path, parent.end_image_path,
                     parent.ingredient_image_paths_json, parent.ref_image_path,
-                    parent.safety_filter, parent.output_files_json, parent.generation_id,
+                    parent.output_files_json, parent.generation_id,
                     parent.worker_id, parent.claimed_at, parent.completed_at, parent.error,
                     parent.created_at, parent.updated_at
                 FROM jobs AS parent
@@ -380,28 +411,25 @@ async def get_related_jobs(
 async def claim_next_job(
     worker_id: str, available_profiles: list[str]
 ) -> Optional[Job]:
-    """Atomically claim the highest-priority pending job.
-
-    Priority order (inside a single IMMEDIATE transaction):
-      1. Level-2+ jobs whose parent is completed, parent profile is in
-         *available_profiles*, and there is NO other active (claimed/running)
-         job on the same project_url.
-      2. Level-1 jobs assignable to any of the *available_profiles*.
-
-    Returns the claimed Job or None if nothing qualifies.
-    """
-    if not available_profiles:
+    """Atomically claim the highest-priority pending job."""
+    allowed_profile_set = set(await get_available_profiles(worker_id))
+    effective_profiles = [p for p in available_profiles if p in allowed_profile_set]
+    blocked_profiles = [p for p in available_profiles if p not in allowed_profile_set]
+    if blocked_profiles:
+        logger.warning(
+            "Worker %s advertised unavailable or quarantined profiles: %s",
+            worker_id,
+            blocked_profiles,
+        )
+    if not effective_profiles:
         return None
 
-    placeholders = ", ".join("?" for _ in available_profiles)
+    placeholders = ", ".join("?" for _ in effective_profiles)
     now = _now_iso()
 
     async with get_db() as db:
-        # BEGIN IMMEDIATE gives us a write-lock immediately, preventing
-        # concurrent workers from both claiming the same row.
         await db.execute("BEGIN IMMEDIATE")
         try:
-            # ----- Priority 1: Level-2+ child jobs -----
             cursor = await db.execute(
                 f"""
                 SELECT j.*
@@ -411,6 +439,8 @@ async def claim_next_job(
                   AND j.job_level >= 2
                   AND parent.status = 'completed'
                   AND parent.profile IN ({placeholders})
+                  AND parent.project_url IS NOT NULL
+                  AND parent.media_id IS NOT NULL
                   AND NOT EXISTS (
                       SELECT 1 FROM jobs active
                       WHERE active.project_url = parent.project_url
@@ -420,18 +450,12 @@ async def claim_next_job(
                 ORDER BY j.created_at ASC
                 LIMIT 1
                 """,
-                available_profiles,
+                effective_profiles,
             )
             row = await cursor.fetchone()
 
             if row is not None:
                 job_dict = dict(row)
-                # B4 profile + B22 target-field inheritance. The direct parent
-                # is the single source of truth for child routing. Keep
-                # project_url, media_id, and edit_url aligned to the same
-                # direct-parent clip; splitting edit_url from an ancestor
-                # media_id created an unrecoverable mismatch in Run 20 follow-up
-                # jobs after landing recovery.
                 parent_cur = await db.execute(
                     "SELECT profile, project_url, media_id, edit_url "
                     "FROM jobs WHERE id = ?",
@@ -473,8 +497,6 @@ async def claim_next_job(
                         job_dict["id"],
                     ),
                 )
-                # B6: mirror the claim onto the profile row in the same
-                # transaction so the dashboard sees a consistent view.
                 await db.execute(
                     """
                     UPDATE profiles
@@ -486,7 +508,6 @@ async def claim_next_job(
                 await db.commit()
                 return await get_job(job_dict["id"])
 
-            # ----- Priority 2: Level-1 jobs (any available profile) -----
             cursor = await db.execute(
                 f"""
                 SELECT *
@@ -497,14 +518,13 @@ async def claim_next_job(
                 ORDER BY created_at ASC
                 LIMIT 1
                 """,
-                available_profiles,
+                effective_profiles,
             )
             row = await cursor.fetchone()
 
             if row is not None:
                 job_dict = dict(row)
-                # Assign first available profile if not already pinned
-                assigned_profile = job_dict["profile"] or available_profiles[0]
+                assigned_profile = job_dict["profile"] or effective_profiles[0]
 
                 await db.execute(
                     """
@@ -518,8 +538,6 @@ async def claim_next_job(
                     """,
                     (worker_id, now, assigned_profile, now, job_dict["id"]),
                 )
-                # B6: mirror the claim onto the profile row so the dashboard
-                # can show which profile is running which job.
                 await db.execute(
                     """
                     UPDATE profiles
@@ -531,7 +549,6 @@ async def claim_next_job(
                 await db.commit()
                 return await get_job(job_dict["id"])
 
-            # Nothing to claim
             await db.execute("COMMIT")
             return None
 
@@ -554,13 +571,7 @@ async def get_job_counts() -> dict[str, int]:
 
 
 async def recover_stale_jobs(stale_minutes: int = 30) -> list[Job]:
-    """Find and reset jobs stuck in 'claimed' or 'running' for too long.
-
-    These are jobs where the worker died or lost connection without
-    reporting back. Reset them to 'pending' so they can be re-claimed.
-
-    Returns list of recovered jobs.
-    """
+    """Find and reset jobs stuck in 'claimed' or 'running' for too long."""
     cutoff = (datetime.now(UTC) - timedelta(minutes=stale_minutes)).isoformat()
 
     async with get_db() as db:
@@ -594,6 +605,15 @@ async def recover_stale_jobs(stale_minutes: int = 30) -> list[Job]:
                 """,
                 (f"Recovered from stale {job.status} (was stuck since {job.updated_at})", now, job.id),
             )
+            await db.execute(
+                """
+                UPDATE profiles
+                SET current_job_id = NULL,
+                    worker_id = NULL
+                WHERE current_job_id = ?
+                """,
+                (job.id,),
+            )
             job.status = JobStatus.PENDING
             recovered.append(job)
 
@@ -601,9 +621,56 @@ async def recover_stale_jobs(stale_minutes: int = 30) -> list[Job]:
         return recovered
 
 
-async def delete_job(job_id: str) -> bool:
-    """Delete a job by id. Returns True if a row was removed."""
+async def delete_job(job_id: str) -> Optional[Job]:
+    """Delete only leaf pending jobs; otherwise preserve the row and cancel it."""
     async with get_db() as db:
-        cursor = await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-        await db.commit()
-        return cursor.rowcount > 0
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+            row = await cursor.fetchone()
+            if row is None:
+                await db.execute("ROLLBACK")
+                return None
+
+            job = _row_to_job(row)
+            child_cursor = await db.execute(
+                "SELECT 1 FROM jobs WHERE parent_job_id = ? LIMIT 1",
+                (job_id,),
+            )
+            has_descendants = await child_cursor.fetchone() is not None
+
+            if job.status == JobStatus.PENDING and not has_descendants:
+                await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+                await db.commit()
+                job.status = JobStatus.CANCELLED
+                return job
+
+            if job.status != JobStatus.CANCELLED:
+                now = _now_iso()
+                await db.execute(
+                    """
+                    UPDATE jobs
+                    SET status = 'cancelled',
+                        completed_at = COALESCE(completed_at, ?),
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, now, job_id),
+                )
+                await db.execute(
+                    """
+                    UPDATE profiles
+                    SET current_job_id = NULL,
+                        worker_id = NULL
+                    WHERE current_job_id = ?
+                    """,
+                    (job_id,),
+                )
+                await db.commit()
+                return await get_job(job_id)
+
+            await db.commit()
+            return job
+        except Exception:
+            await db.execute("ROLLBACK")
+            raise

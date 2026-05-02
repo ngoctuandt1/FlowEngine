@@ -125,6 +125,7 @@ class JobCreate(BaseModel):
     # Target (for Level-2 ops)
     project_url: Optional[str] = None
     media_id: Optional[str] = None
+    edit_url: Optional[str] = None
 
     # Operation-specific
     bbox: Optional[BBox] = None
@@ -143,6 +144,7 @@ class JobCreate(BaseModel):
         self.chain_id = _normalize_optional_text(self.chain_id)
         self.project_url = _normalize_optional_text(self.project_url)
         self.media_id = _normalize_optional_text(self.media_id)
+        self.edit_url = _normalize_optional_text(self.edit_url)
         self.direction = _normalize_optional_text(self.direction)
         self.start_image_path = _normalize_optional_text(self.start_image_path)
         self.end_image_path = _normalize_optional_text(self.end_image_path)
