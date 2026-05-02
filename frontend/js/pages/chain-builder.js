@@ -44,6 +44,7 @@
   let prefillError = '';
   let routerPatched = false;
   let collapsedSteps = new Set();
+  let activeStepIndex = -1;
 
   function isL1Type(type) { return L1_ONLY_TYPES.has(type); }
 
@@ -57,6 +58,43 @@
 
   function getJobTypeLabel(type) {
     return getJobTypeMeta(type)?.label || type || 'Unknown';
+  }
+
+  function getJobTypeIcon(type) {
+    return getJobTypeMeta(type)?.icon || 'work';
+  }
+
+  function getShortId(value, size = 8) {
+    const text = String(value || '').trim();
+    if (!text) return 'Unknown';
+    return text.length <= size ? text : text.slice(0, size);
+  }
+
+  function getAllowedTypesForStep(index) {
+    if (index > 0 || parentPrefill) return SUBSEQUENT_TYPES;
+    return FIRST_TYPES;
+  }
+
+  function getStepTypeOptions(index, selected) {
+    return renderOptions(getAllowedTypesForStep(index), { selected });
+  }
+
+  function setStepType(index, type) {
+    const prev = steps[index];
+    if (!prev) return;
+    const next = emptyStep(type);
+    next.prompt = TYPES_WITH_PROMPT.has(type) ? prev.prompt : '';
+    next.model = TYPES_WITH_MODEL.has(type) ? (prev.model || getDefaultModel(type)) : '';
+    next.aspect_ratio = TYPES_WITH_ASPECT.has(type) ? (prev.aspect_ratio || DEFAULT_ASPECT) : '';
+    next.direction = type === 'camera-move' ? prev.direction : '';
+    next.bbox = TYPES_WITH_BBOX.has(type) ? prev.bbox : null;
+    next.start_image_path = type === 'frames-to-video' ? prev.start_image_path : '';
+    next.end_image_path = type === 'frames-to-video' ? prev.end_image_path : '';
+    next.ref_image_path = type === 'text-to-image' ? prev.ref_image_path : '';
+    next.ingredient_image_paths = type === 'ingredients-to-video'
+      ? [...(prev.ingredient_image_paths || [])]
+      : [];
+    steps[index] = next;
   }
 
   function syncCollapsedSteps() {
@@ -339,7 +377,8 @@
 
   function addStep(type) {
     steps.push(emptyStep(type));
-    collapsedSteps.delete(steps.length - 1);
+    activeStepIndex = steps.length - 1;
+    collapsedSteps.delete(activeStepIndex);
     syncCollapsedSteps();
     clearResult();
     refreshSteps();
@@ -350,6 +389,9 @@
       return;
     }
     steps.splice(i, 1);
+    if (!steps.length) activeStepIndex = -1;
+    else if (activeStepIndex >= steps.length) activeStepIndex = steps.length - 1;
+    else if (activeStepIndex === i) activeStepIndex = Math.max(0, i - 1);
     syncCollapsedSteps();
     clearResult();
     refreshSteps();
@@ -359,8 +401,9 @@
     syncCollapsedSteps();
     const container = document.getElementById('chain-steps');
     if (container) container.innerHTML = renderSteps();
+    const editor = document.getElementById('chain-editor');
+    if (editor) editor.innerHTML = renderEditorRail();
     bindStepEvents();
-    updateAddButtons();
     const btn = document.getElementById('submit-chain');
     if (btn) btn.disabled = steps.length === 0;
   }
@@ -388,122 +431,71 @@
 
     const disabled = parentPrefill?.profile ? ' disabled' : '';
     return `
-      <select class="form-select" id="chain-profile" required${disabled}>
+      <select class="cbf-input" id="chain-profile" required${disabled}>
         <option value="">Select profile...</option>
         ${options.join('')}
       </select>
     `;
   }
 
-  function updateAddButtons() {
-    const el = document.getElementById('chain-add-buttons');
-    if (!el) return;
-    if (steps.length === 0) {
-      if (parentPrefill) {
-        const options = SUBSEQUENT_TYPES
-          .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedNextType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
-          .join('');
-        el.innerHTML = `
-          <p class="chain-inline-note">
-            This builder continues an existing parent job, so the first step must be an L2 edit.
-          </p>
-          <div class="chain-inline-control">
-            <label class="form-label" for="chain-next-type">First chained step <span class="required">*</span></label>
-            <div class="chain-inline-control-main">
-              <select class="form-select" id="chain-next-type">${options}</select>
-              <button class="btn btn-primary" id="chain-add-next">
-                <span class="material-icons">add_link</span> Add Step
-              </button>
-            </div>
-            <span class="form-hint">Choose the first edit that should run against the inherited parent media.</span>
-          </div>
-        `;
-        el.querySelector('#chain-next-type')?.addEventListener('change', (event) => {
-          selectedNextType = event.target.value;
-        });
-        el.querySelector('#chain-add-next')?.addEventListener('click', () => addStep(selectedNextType));
-      } else {
-        const options = FIRST_TYPES
-          .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedFirstType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
-          .join('');
-        el.innerHTML = `
-          <p class="chain-inline-note">
-            Chains must start with an L1 step that creates a new project.
-          </p>
-          <div class="chain-inline-control">
-            <label class="form-label" for="chain-root-type">Root step <span class="required">*</span></label>
-            <div class="chain-inline-control-main">
-              <select class="form-select" id="chain-root-type">${options}</select>
-              <button class="btn btn-primary" id="chain-add-root">
-                <span class="material-icons">add_link</span> Add Root Step
-              </button>
-            </div>
-            <span class="form-hint">Choose the L1 job that creates the chain's project.</span>
-          </div>
-        `;
-        el.querySelector('#chain-root-type')?.addEventListener('change', (event) => {
-          selectedFirstType = event.target.value;
-        });
-        el.querySelector('#chain-add-root')?.addEventListener('click', () => addStep(selectedFirstType));
-      }
-    } else {
-      const options = SUBSEQUENT_TYPES
-        .map((t) => `<option value="${App.escapeHtml(t.id)}" ${selectedNextType === t.id ? 'selected' : ''}>${App.escapeHtml(t.label)}</option>`)
-        .join('');
-      el.innerHTML = `
-        <p class="chain-inline-note">
-          Add the next chained edit. Only L2 job types are allowed after the root step.
-        </p>
-        <div class="chain-inline-control">
-          <label class="form-label" for="chain-next-type">Next step <span class="required">*</span></label>
-          <div class="chain-inline-control-main">
-            <select class="form-select" id="chain-next-type">${options}</select>
-            <button class="btn btn-outline" id="chain-add-next">
-              <span class="material-icons">add</span> Add Step
-            </button>
-          </div>
-          <span class="form-hint">Extend, insert, remove, and camera all chain off the parent media.</span>
-        </div>
-      `;
-      el.querySelector('#chain-next-type')?.addEventListener('change', (event) => {
-        selectedNextType = event.target.value;
-      });
-      el.querySelector('#chain-add-next')?.addEventListener('click', () => addStep(selectedNextType));
-    }
+  function renderPillRow({ name, stepIndex, options, selected, label }) {
+    return `
+      <div class="cbf-pill-row" role="list" aria-label="${App.escapeHtml(label)}">
+        ${options.map((option) => {
+          const value = typeof option === 'string' ? option : option.value;
+          const text = typeof option === 'string' ? option : option.label;
+          const active = value === selected ? ' selected' : '';
+          return `
+            <button
+              type="button"
+              class="cbf-pill${active}"
+              data-step="${stepIndex}"
+              data-field="${App.escapeHtml(name)}"
+              data-pill-value="${App.escapeHtml(value)}"
+            >${App.escapeHtml(text)}</button>
+          `;
+        }).join('')}
+      </div>
+    `;
   }
 
   function renderStepConfig(step, i) {
     const parts = [];
-    const tag = (field, html) => parts.push(html);
+    const tag = (html) => parts.push(html);
 
     if (TYPES_WITH_PROMPT.has(step.type)) {
       const req = REQUIRED_PROMPT_TYPES.has(step.type);
-      tag('prompt', `
-        <div class="form-group" style="margin-bottom:12px">
-          <label class="form-label">Prompt ${req ? '<span class="required">*</span>' : '(optional)'}</label>
-          <textarea class="form-textarea step-field" data-step="${i}" data-field="prompt"
-                    rows="2" placeholder="Describe...">${App.escapeHtml(step.prompt)}</textarea>
-        </div>
+      tag(`
+        <section class="cbf-rail-section">
+          <label class="cbf-rail-label">Prompt ${req ? '<span class="required">*</span>' : ''}</label>
+          <textarea class="cbf-textarea step-field" data-step="${i}" data-field="prompt"
+            rows="5" placeholder="Describe...">${App.escapeHtml(step.prompt)}</textarea>
+        </section>
       `);
     }
 
     if (TYPES_WITH_MODEL.has(step.type)) {
-      const opts = renderOptions(getModelOptions(step.type), { selected: step.model });
-      tag('model', `
-        <div class="form-group" style="margin-bottom:12px">
-          <label class="form-label">Model</label>
-          <select class="form-select step-field" data-step="${i}" data-field="model">${opts}</select>
-        </div>
+      tag(`
+        <section class="cbf-rail-section">
+          <label class="cbf-rail-label">Model</label>
+          ${renderPillRow({
+            name: 'model',
+            stepIndex: i,
+            options: getModelOptions(step.type),
+            selected: step.model,
+            label: 'Model',
+          })}
+        </section>
       `);
     }
 
     if (TYPES_WITH_ASPECT.has(step.type)) {
       const opts = renderOptions(getAspectOptions(step.type), { selected: step.aspect_ratio });
       tag('aspect_ratio', `
-        <div class="form-group" style="margin-bottom:12px">
-          <label class="form-label">Aspect Ratio</label>
-          <select class="form-select step-field" data-step="${i}" data-field="aspect_ratio">${opts}</select>
-        </div>
+        <section class="cbf-rail-section">
+          <label class="cbf-rail-label">Aspect Ratio</label>
+          <select class="cbf-input step-field" data-step="${i}" data-field="aspect_ratio">${opts}</select>
+        </section>
       `);
     }
 
@@ -520,29 +512,29 @@
         .map((p) => `<option value="${p}" ${step.direction === p ? 'selected' : ''}>${p}</option>`)
         .join('');
       tag('direction', `
-        <div class="form-group" style="margin-bottom:12px">
-          <label class="form-label">Direction <span class="required">*</span></label>
-          <select class="form-select step-field" data-step="${i}" data-field="direction">
+        <section class="cbf-rail-section">
+          <label class="cbf-rail-label">Direction <span class="required">*</span></label>
+          <select class="cbf-input step-field" data-step="${i}" data-field="direction">
             <option value="">Select preset...</option>
             ${opts}
           </select>
-        </div>
+        </section>
       `);
     }
 
     if (TYPES_WITH_BBOX.has(step.type)) {
       const b = step.bbox || {};
       tag('bbox', `
-        <div class="form-group" style="margin-bottom:12px">
-          <label class="form-label">Bounding Box (0.0 – 1.0, optional)</label>
+        <section class="cbf-rail-section">
+          <label class="cbf-rail-label">Bounding Box (0.0 – 1.0, optional)</label>
           <div class="form-row" style="grid-template-columns: repeat(4, 1fr);">
             ${['x','y','w','h'].map((k) => `
-              <input type="number" class="form-input step-bbox" data-step="${i}" data-bbox="${k}"
+              <input type="number" class="cbf-input step-bbox" data-step="${i}" data-bbox="${k}"
                      placeholder="${k}" step="0.01" min="0" max="1"
                      value="${b[k] != null ? b[k] : ''}">
             `).join('')}
           </div>
-        </div>
+        </section>
       `);
     }
 
@@ -602,8 +594,8 @@
       : '<div class="form-hint">No reference images uploaded yet.</div>';
 
     return `
-      <div class="form-group" style="margin-bottom:12px">
-        <label class="form-label">Reference Images <span class="required">*</span></label>
+      <section class="cbf-rail-section">
+        <label class="cbf-rail-label">Reference Images <span class="required">*</span></label>
         <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
           <button type="button" class="btn btn-outline btn-sm step-ingredient-add" data-step="${i}">
             <span class="material-icons">add_photo_alternate</span> Add reference image
@@ -616,7 +608,7 @@
           ${cards}
         </div>
         <span class="form-hint" style="margin-top:8px; display:block;">Upload 1-10 reference images before submit.</span>
-      </div>
+      </section>
     `;
   }
 
@@ -629,13 +621,13 @@
       <div class="form-hint" style="margin-top:6px;">${App.escapeHtml(path)}</div>
     ` : '<div class="form-hint" style="margin-top:6px;">No image uploaded.</div>';
     return `
-      <div class="form-group">
-        <label class="form-label">${label} Image ${required ? '<span class="required">*</span>' : '(optional)'}</label>
-        <input type="file" class="form-input step-upload-input"
+      <section class="cbf-rail-section">
+        <label class="cbf-rail-label">${label} Image ${required ? '<span class="required">*</span>' : '(optional)'}</label>
+        <input type="file" class="cbf-input step-upload-input"
                data-step="${stepIndex}" data-field="${field}" data-label="${App.escapeHtml(label)} image"
                accept="image/png,image/jpeg,image/webp">
         ${preview}
-      </div>
+      </section>
     `;
   }
 
