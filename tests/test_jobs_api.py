@@ -114,6 +114,7 @@ async def test_post_child_job_inherits_completed_parent_fields(api_client):
             "status": "completed",
             "project_url": "https://flow.example/project/123",
             "media_id": "media-123",
+            "edit_url": "https://flow.example/project/123/edit/media-123",
             "profile": "parent-profile",
         },
     )
@@ -136,6 +137,45 @@ async def test_post_child_job_inherits_completed_parent_fields(api_client):
     assert child["profile"] == "parent-profile"
     assert child["project_url"] == "https://flow.example/project/123"
     assert child["media_id"] == "media-123"
+    assert child["edit_url"] == "https://flow.example/project/123/edit/media-123"
+
+
+async def test_post_child_job_derives_edit_url_when_completed_parent_column_is_null(api_client):
+    parent_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Create a desert flythrough",
+            "profile": "derive-edit-profile",
+        },
+    )
+    assert parent_response.status_code == 201
+    parent_id = parent_response.json()["id"]
+
+    patch_response = await api_client.put(
+        f"/api/worker/jobs/{parent_id}",
+        json={
+            "status": "completed",
+            "project_url": "https://flow.example/project/derive-456",
+            "media_id": "media-456",
+            "edit_url": None,
+            "profile": "derive-edit-profile",
+        },
+    )
+    assert patch_response.status_code == 200
+
+    child_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "extend-video",
+            "prompt": "Add a second pass",
+            "parent_job_id": parent_id,
+        },
+    )
+
+    assert child_response.status_code == 201
+    child = child_response.json()
+    assert child["edit_url"] == "https://flow.example/project/derive-456/edit/media-456"
 
 
 async def test_post_child_job_inherits_chain_id_from_pending_parent(api_client):
@@ -324,6 +364,39 @@ async def test_delete_job_broadcasts_cancelled_update(api_client, monkeypatch):
     cancelled_job = broadcast.await_args.args[0]
     assert cancelled_job.id == job_id
     assert cancelled_job.status.value == "cancelled"
+
+
+async def test_delete_parented_job_preserves_lineage_and_cancels_parent(api_client):
+    parent = await api_client.post(
+        "/api/jobs",
+        json={"type": "text-to-video", "prompt": "Parent"},
+    )
+    assert parent.status_code == 201
+    parent_id = parent.json()["id"]
+
+    child = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "extend-video",
+            "prompt": "Child",
+            "parent_job_id": parent_id,
+        },
+    )
+    assert child.status_code == 201
+    child_id = child.json()["id"]
+
+    deleted = await api_client.delete(f"/api/jobs/{parent_id}")
+
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": parent_id}
+
+    parent_after = await api_client.get(f"/api/jobs/{parent_id}")
+    assert parent_after.status_code == 200
+    assert parent_after.json()["status"] == "cancelled"
+
+    child_after = await api_client.get(f"/api/jobs/{child_id}")
+    assert child_after.status_code == 200
+    assert child_after.json()["parent_job_id"] == parent_id
 
 
 async def test_recover_jobs_broadcasts_each_recovered_job(api_client, monkeypatch):

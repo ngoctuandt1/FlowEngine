@@ -8,7 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, status
 
 from server.models.chain import Chain, ChainCreateResponse
-from server.db.chain_store import compute_aggregated_status, create_chain
+from server.db.chain_store import compute_aggregated_status
 from server.models.job import (
     ChainCreate,
     Job,
@@ -18,6 +18,7 @@ from server.models.job import (
     JobWithThumb,
 )
 from server.db.job_store import (
+    create_chain_with_jobs,
     create_job,
     delete_job,
     get_children,
@@ -62,6 +63,7 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
         chain_id=chain_id or req.chain_id,
         project_url=req.project_url,
         media_id=req.media_id,
+        edit_url=req.edit_url,
         bbox=req.bbox,
         direction=req.direction,
         start_image_path=req.start_image_path,
@@ -196,6 +198,10 @@ async def create_single_job(req: JobCreate):
                 req.project_url = parent.project_url
             if req.media_id is None:
                 req.media_id = parent.media_id
+            if req.edit_url is None:
+                req.edit_url = parent.edit_url
+                if req.edit_url is None and req.project_url and req.media_id:
+                    req.edit_url = f"{req.project_url.rstrip('/')}/edit/{req.media_id}"
 
     validate_job_create(req)
     job = _build_job(req, profile=profile, chain_id=chain_id, job_level=job_level)
@@ -222,7 +228,6 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     chain = Chain(id=str(uuid.uuid4()), profile=effective_profile)
-    await create_chain(chain)
 
     jobs: list[Job] = []
     prev_id: Optional[str] = None
@@ -234,10 +239,11 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
         step.chain_id = chain.id
         step.profile = effective_profile
         job = _build_job(step, profile=effective_profile, chain_id=chain.id, job_level=level)
-        await create_job(job)
         jobs.append(job)
         prev_id = job.id
         level += 1
+
+    await create_chain_with_jobs(chain, jobs)
 
     await broadcast_job_update(jobs[0])  # notify once for chain head
     return {"chain_id": chain.id, "jobs": jobs}
@@ -371,13 +377,12 @@ async def get_job_children(job_id: str):
 async def cancel_job(job_id: str):
     """Cancel / delete a job.
 
-    Running or claimed jobs are marked cancelled; pending jobs are deleted.
+    Non-pending or parented jobs are preserved and marked cancelled.
+    Only leaf pending jobs are hard-deleted.
     """
-    job = await get_job(job_id)
+    job = await delete_job(job_id)
     if job is None:
         raise HTTPException(404, f"Job {job_id} not found")
 
-    await delete_job(job_id)
-    job.status = JobStatus.CANCELLED
     await broadcast_job_update(job)
     return {"deleted": job_id}

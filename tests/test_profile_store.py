@@ -23,7 +23,11 @@ from server.models.job import Job, JobStatus, JobType, JobUpdate
 from server.models.profile import Profile, ProfileStatus
 
 
-def _make_profile(name: str, current_job_id: Optional[str] = None) -> Profile:
+def _make_profile(
+    name: str,
+    current_job_id: Optional[str] = None,
+    worker_id: Optional[str] = None,
+) -> Profile:
     return Profile(
         name=name,
         google_account=f"{name}@example.com",
@@ -31,6 +35,7 @@ def _make_profile(name: str, current_job_id: Optional[str] = None) -> Profile:
         tier="ultra",
         status=ProfileStatus.AVAILABLE,
         current_job_id=current_job_id,
+        worker_id=worker_id,
         created_at=datetime.now(UTC),
     )
 
@@ -69,7 +74,13 @@ async def test_profile_current_job_set_on_claim(db):
 
 async def test_profile_current_job_cleared_on_completion(db):
     """B6: update_job with a terminal status must clear profile.current_job_id."""
-    await create_profile(_make_profile("b6-prof-b", current_job_id="b6-job-b"))
+    await create_profile(
+        _make_profile(
+            "b6-prof-b",
+            current_job_id="b6-job-b",
+            worker_id="worker-1",
+        )
+    )
     await create_job(_make_pending_l1_job("b6-job-b"))
     assert (await get_profile("b6-prof-b")).current_job_id == "b6-job-b"
 
@@ -79,6 +90,10 @@ async def test_profile_current_job_cleared_on_completion(db):
     assert profile.current_job_id is None, (
         "terminal status must release the profile pointer so a new job "
         "can claim it"
+    )
+    assert profile.worker_id is None, (
+        "terminal status must also clear the mirrored worker_id so the "
+        "profile row no longer looks busy"
     )
 
 
