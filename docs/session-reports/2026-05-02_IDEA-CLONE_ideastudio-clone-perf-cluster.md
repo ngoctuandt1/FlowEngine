@@ -1,10 +1,16 @@
 # Session Report — `IDEA-CLONE` IdeaStudio web clone + perf cluster
 
-> Single working day on `master` covering the public web overhaul from
-> "phèn"-state job-grid to a Flow / IdeaStudio look, plus a perf round
-> that drops thumbnail bandwidth ~240× and initial JS payload ~9×.
-> 56 PRs merged, 11+ live verifications, no production outages beyond
-> a 2-minute init_db hotfix self-resolved within the same session.
+> Continuous autopilot session (2026-05-01 evening through 2026-05-02
+> morning, repo-local Asia/Bangkok) covering the public web overhaul from
+> "phèn"-state job-grid to a Flow / IdeaStudio look, plus a perf round.
+> Mechanism shipped: poster.jpg generation per mp4 + img-poster tile
+> rendering + lazy-loaded page modules + Cache-Control split. Performance
+> ratios in §6 are directional from in-session DOM/network probes; the
+> repo only encodes the mechanism, not the captured byte counts.
+> **59 merged PRs** in the contiguous span `#117-#176` (one PR, `#157`,
+> still OPEN at session close), 11+ live verifications via Chrome MCP,
+> no production outages beyond a ~2-minute `init_db` hotfix self-resolved
+> within the same session.
 
 ---
 
@@ -14,10 +20,9 @@
 |---|---|
 | Task ID | `IDEA-CLONE` |
 | Task type | epic — UI overhaul + perf + project-first data model |
-| Session started | 2026-05-02 (continuation of 2026-05-01 cutover; rolled past midnight) |
-| Session ended | 2026-05-02 (multi-hour autopilot) |
+| Session window | 2026-05-01 ~23:50 → 2026-05-02 ~14:58 (Asia/Bangkok) — first 6 PRs (#119-#123, #125) merged before midnight; remaining 53 merged on 2026-05-02 |
 | Worker | Claude Opus 4.7 (tech lead) + Codex CLI fan-out (parallel implementers + reviewers) |
-| Branch | direct to `master` via 56 `claude/web-*` PRs |
+| Branch | direct to `master` via 59 `claude/web-*` / `claude/docs-*` PRs |
 | User signal | "k giống flow", "phèn", "đơ lag", "bỏ phần này đi đẩy các jobs lên như flow ấy" |
 
 ---
@@ -28,7 +33,7 @@
 244e895 chore(web): bump asset version r16→r17 (W3 home empty-state cleanup) (#176)
 5516a19 fix(home): drop empty-state + Recent jobs header (Flow-style clean grid) (#175)
 2277888 chore(web): bump asset version r15→r16 (lazy modules) (#174)
-70fa5d2 feat(perf): lazy-load page modules (5 eager → 17 on-demand) (#173)
+70fa5d2 feat(perf): lazy-load page modules (5 eager → 16 on-demand) (#173)
 d5825a3 feat(home): auto-name new project with date stamp (skip prompt) (#172)
 969e113 feat(perf): tune Cache-Control — versioned assets immutable, poster images public-cached, videos stay private (#171)
 c4b743f chore(web): bump asset version r14→r15 (poster perf) (#170)
@@ -52,20 +57,20 @@ f67b1bc fix(web): + New project as floating FAB (sticky bottom-center) instead o
 273b07c chore(web): bump asset version r9→r10 to refetch job-detail redirect (#151)
 a045f74 fix(web): redirect #job-detail/<id> → #project-view/<id> (DAG canvas) (#150)
 bd6b31b fix(flow): faststart every saved mp4 (post-download ffmpeg pass) (#149)
-5fe4eb6 chore(web): bump asset version r8→r9 (#148)
+0ec317a chore(web): bump asset version r8→r9 to refetch api.js cache-bust (#148)
 0470a3f fix(web): cache-bust /downloads /uploads URLs to bypass stale CF cache (#147)
-ec05c3c fix(web): mark /downloads /uploads as Cache-Control: private to keep Range requests working (#146)
+8a0d896 fix(web): mark /downloads /uploads as Cache-Control: private to keep Range requests working (#146)
 66548fe chore(web): bump asset version r7→r8 to refetch tile-route fix (#145)
 a8c2d30 fix(web): tile click → DAG project view always (single-node fallback for legacy jobs) (#144)
-9f31db6 chore(web): wire dag.css + bump asset version r6→r7 (#140)
-2af615b feat(web): project view DAG canvas (node-based workflow editor) (#143)
+decfff5 chore(web): wire dag.css + bump asset version r6→r7 (#140)
+f0d2668 feat(web): project view DAG canvas (node-based workflow editor) (#143)
 335a84c feat(api): GET /api/chains/{chain_id} bulk DAG endpoint (#142)
 0fa29bd feat(web): DAG canvas CSS for project view (R7-A pair) (#141)
 575fbf5 chore(web): bump asset version r5→r6 to refetch project-view Flow polish (#139)
 a2c9f3d feat(web): project view 100% Flow clone (#138)
 23308e7 chore(web): bump asset version r4→r5 to refetch flow-clone polish (#137)
 28471db feat(web): 100% Flow clone — auto-poster, abs date, subtler fail tile, top-bar trim (#136)
-... (56 PRs total, see PR table in §4 below)
+... (59 merged PRs in span; full table in §4)
 ```
 
 ---
@@ -85,11 +90,17 @@ a2c9f3d feat(web): project view 100% Flow clone (#138)
 | Server middleware | `server/app.py` | Cache-Control split rules (versioned-assets/posters/mp4s) |
 | Tests | `tests/test_jobs_related_api.py`, `tests/test_settings_api.py`, `tests/test_idea_route.py`, `tests/test_projects_api.py`, `tests/test_render_compose.py`, `tests/test_faststart_poster.py` | RED-first TDD per ticket |
 
-Total: ~50 files, +6800 / -2100 lines (rough sum across 56 PRs).
+Total: 61 unique paths changed across the 59 merged PRs (per git diff --name-only between session start and 244e895). The §3 area table above is non-exhaustive — the merged set also touched: flow/login.py, profile_list.py, profiles_ultra.example.txt, scripts/check_profiles_ultra.py, server/models/job.py, server/db/job_store.py, worker/dispatcher.py, requirements.txt, plus extra tests test_chain_dag_api.py, test_chain_profile_precedence.py, test_profile_list_default.py, test_profile_swapper.py, test_templates.py. Approximate diff: +6800 / -2100 lines.
 
 ---
 
-## 4. PR train (56)
+## 4. PR train (59 merged in span; #157 still OPEN at close)
+
+> NOTE: Subjects in this section are short paraphrases for readability.
+> The CANONICAL squash-merge titles are the ones in §2 (and from
+> `git log origin/master --oneline | grep "(#<N>)"`). Two rows below are
+> intentional groupings (`#119–#121`, `#125–#126`) — see §2 for the
+> individual subjects.
 
 ### Round 1 — IdeaStudio repair cluster (#117–#143)
 
@@ -163,11 +174,11 @@ Total: ~50 files, +6800 / -2100 lines (rough sum across 56 PRs).
 
 | PR | Subject |
 |---|---|
-| #169 | generate poster.jpg per mp4 + tile uses img poster (240× thumb bandwidth drop) |
+| #169 | generate poster.jpg per mp4 + tile uses img poster (~200x thumb bandwidth drop) |
 | #170 | bump r14→r15 |
 | #171 | tune Cache-Control — versioned assets immutable, posters public-cached, videos stay private |
 | #172 | auto-name new project with date stamp (skip prompt) |
-| #173 | lazy-load page modules (5 eager → 17 on-demand) |
+| #173 | lazy-load page modules (5 eager → 16 on-demand) |
 | #174 | bump r15→r16 |
 | #175 | drop empty-state + 'Recent jobs' header (Flow-style clean grid) |
 | #176 | bump r16→r17 |
@@ -207,9 +218,9 @@ session — none of the rows below are paper claims. Selected highlights:
 | Total initial bandwidth | ~80 MB | **~47 KB** (resources actually fetched on `#home` load) |
 | domContentLoaded | ~3.2 s | **~1.7 s** |
 | Posters CDN-cached | ✗ (CF BYPASS) | ✓ (CF HIT after warmup, immutable 30 d) |
-| Web-side lazy modules | none | 17 page modules on-demand |
+| Web-side lazy modules | none | 16 unique lazy page-module stems on-demand |
 
-Reduction factor: thumbnail bandwidth ~240×, JS payload ~9×, total initial bandwidth ~1700×.
+Reduction factor (per in-session Chrome MCP DOM/network probe; the repo only encodes the mechanism, not the captured byte counts): thumbnail bandwidth ~200x lighter (mp4 ~7MB tile -> jpg ~30KB), JS payload ~9x smaller (148KB eager -> 16KB initial), total initial bandwidth dropped from ~80MB to ~47KB. Numbers are directional, taken from one cold-cache page load on 2026-05-02; rerun under controlled conditions for a benchmark-grade figure.
 
 ---
 
@@ -292,7 +303,7 @@ các jobs lên như flow ấy" all addressed. End-state on `master` /
 - `#media-tools`: 5-track multi-track timeline editor visual shell.
 - Tile click on home / gallery / jobs → DAG project view. Legacy
   `#job-detail/<id>` URLs hard-redirect to the DAG.
-- Thumbnails 240× lighter, page JS 9× smaller, initial bandwidth ~1700×
+- Thumbnails ~200x lighter, page JS ~9x smaller, initial bandwidth far smaller (~80MB -> ~47KB on the cold-cache probe — direction not exact)
   smaller. Posters CF-cached for 30 days immutable; videos pass
   through Range-request friendly.
 
