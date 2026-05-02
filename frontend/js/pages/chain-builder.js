@@ -270,9 +270,23 @@
       profile: parentJob.profile || '',
       mediaId: parentJob.media_id || '',
       thumbUrl: parentJob.thumb_url || '',
+      outputFiles: Array.isArray(parentJob.output_files) ? parentJob.output_files : [],
+      editUrl: parentJob.edit_url || '',
       debugBadges,
     };
   }
+
+  function _outputMediaUrl(p){
+    const s=String(p||'').replace(/\\/g,'/').trim();
+    if(!s)return'';
+    if(/^https?:\/\//i.test(s))return s;
+    if(s.toLowerCase().startsWith('/downloads/'))return s;
+    if(s.toLowerCase().startsWith('downloads/'))return '/'+s;
+    const m=s.toLowerCase().lastIndexOf('/downloads/');
+    return m!==-1?s.slice(m):'/downloads/'+s;
+  }
+  function _isVideo(p){return /\.(mp4|webm|mov|m4v|ogv)(\?|$)/i.test(String(p||''));}
+  function _isImage(p){return /\.(jpg|jpeg|png|gif|webp|avif)(\?|$)/i.test(String(p||''));}
 
   async function initializePrefill() {
     parentPrefill = null;
@@ -1004,7 +1018,10 @@
       await initializePrefill();
 
       const parentTypeLabel = parentPrefill?.parentType ? String(parentPrefill.parentType).toUpperCase().replace(/-/g,' ') : 'NEW CHAIN';
-      const parentThumb = parentPrefill?.thumb_url || '';
+      const parentThumb = parentPrefill?.thumbUrl || '';
+      const parentFiles = (parentPrefill?.outputFiles || []).map(_outputMediaUrl).filter(Boolean);
+      const parentVideo = parentFiles.find(_isVideo) || '';
+      const parentImage = parentFiles.find(_isImage) || parentThumb || '';
       const shortChainId = parentPrefill?.chainId ? `${parentPrefill.chainId.slice(0,8)}…${parentPrefill.chainId.slice(-4)}` : '';
       const shortMediaId = parentPrefill?.mediaId ? `${parentPrefill.mediaId.slice(0,8)}…${parentPrefill.mediaId.slice(-4)}` : '';
       return `
@@ -1025,8 +1042,16 @@
 
             ${renderPrefillBanner()}
 
-            <div class="cbf-stage ${parentThumb ? '' : 'cbf-stage-empty'}" ${parentThumb ? `style="background-image:url('${App.escapeHtml(parentThumb)}');background-size:cover;background-position:center"` : ''}>
-              ${parentThumb ? '' : `<div style="display:grid;place-items:center;height:100%"><span class="material-icons" style="font-size:64px;opacity:0.3">movie</span></div>`}
+            <div class="cbf-stage ${(parentVideo || parentImage) ? '' : 'cbf-stage-empty'}">
+              ${parentVideo ? `
+                <video controls preload="metadata" playsinline ${parentImage ? `poster="${App.escapeHtml(parentImage)}"` : ''} style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000">
+                  <source src="${App.escapeHtml(parentVideo)}" type="${parentVideo.toLowerCase().endsWith('.webm')?'video/webm':'video/mp4'}">
+                </video>
+              ` : parentImage ? `
+                <img src="${App.escapeHtml(parentImage)}" alt="parent" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover">
+              ` : `
+                <div style="display:grid;place-items:center;height:100%"><span class="material-icons" style="font-size:64px;opacity:0.3">movie</span></div>
+              `}
               ${parentPrefill ? `<div class="cbf-stage-meta">
                 <span class="cbf-id-chip">${parentTypeLabel}</span>
                 ${shortMediaId ? `<span class="cbf-id-chip" title="${App.escapeHtml(parentPrefill.mediaId)}">${shortMediaId}</span>` : ''}
