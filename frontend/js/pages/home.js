@@ -119,11 +119,14 @@
       ? ''
       : `<span class="tile-status-badge state-${status}">${App.escapeHtml(status.toUpperCase())}</span>`;
 
-    // <a> keeps keyboard activation native and routes straight to the
-    // full job-detail page.
+    // Always land on the DAG project view; key by chain_id when available
+    // and fall back to job_id for legacy jobs (project-view renders that as
+    // a single-node DAG via /api/jobs/{id}).
+    const routeKey = encodeURIComponent(job.chain_id || job.id || '');
+    const tileHref = `#project-view/${routeKey}`;
     return `
       <a class="project-tile status-${status}"
-         href="#job-detail/${safeJobId}"
+         href="${tileHref}"
          data-job-id="${safeJobId}"
          title="${App.escapeHtml(promptText)}">
         <div class="tile-thumb">
