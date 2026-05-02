@@ -38,6 +38,11 @@ from server.routes import (
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 STATIC_CACHEABLE_PREFIXES = ("/js/", "/css/", "/assets/")
 STATIC_CACHE_CONTROL = "public, max-age=60, must-revalidate"
+# CDN-bypass for media so HTML5 <video> Range requests work; otherwise
+# Cloudflare strips Accept-Ranges on cached responses and the video tags
+# stall at readyState 0 forever (this is what made tile thumbnails go black).
+MEDIA_PREFIXES = ("/downloads/", "/uploads/")
+MEDIA_CACHE_CONTROL = "private, max-age=300"
 
 
 def _resolve_data_dir(env_var: str, default: str) -> Path:
@@ -150,10 +155,16 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 @app.middleware("http")
 async def set_static_cache_headers(request: Request, call_next):
-    """Keep frontend bundles revalidating quickly after deploys."""
+    """Keep frontend bundles revalidating quickly + bypass CDN for media."""
     response = await call_next(request)
-    if request.url.path.startswith(STATIC_CACHEABLE_PREFIXES):
+    path = request.url.path
+    if path.startswith(STATIC_CACHEABLE_PREFIXES):
         response.headers["Cache-Control"] = STATIC_CACHE_CONTROL
+    elif path.startswith(MEDIA_PREFIXES):
+        # `private` tells Cloudflare not to cache, which preserves the origin
+        # `Accept-Ranges: bytes` so the browser can do partial fetches for
+        # `<video>` elements. Browser still caches locally for 5 min.
+        response.headers["Cache-Control"] = MEDIA_CACHE_CONTROL
     return response
 
 
