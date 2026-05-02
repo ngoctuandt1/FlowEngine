@@ -11,6 +11,10 @@
   --bg-chip-hover: #1d1e24;
   --accent:        #7c5cff;
   --accent-soft:   rgba(124, 92, 255, 0.16);
+  --accent-gold-start: #F5A623;
+  --accent-gold-end: #E89500;
+  --accent-gold-soft: rgba(245, 166, 35, 0.18);
+  --accent-gold-text: #1a1306;
   --text-flow: rgb(241, 243, 244);
   --hairline:  rgba(255, 255, 255, 0.05);
   --radius:    16px;          /* unified — Flow uses 16 for tiles + chips */
@@ -328,22 +332,28 @@ body.route-home #top-bar { display: none; }
   gap: 10px;
   padding: 12px 22px;
   border-radius: 999px;
-  background: rgba(20, 22, 28, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(135deg, var(--accent-gold-start), var(--accent-gold-end));
+  border: 1px solid rgba(245, 166, 35, 0.24);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
-  color: var(--text-flow);
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.55),
+    0 12px 28px rgba(232, 149, 0, 0.28),
+    0 1px 0 rgba(255, 255, 255, 0.18) inset;
+  color: var(--accent-gold-text);
   font-weight: 500;
   font-size: 14px;
   text-decoration: none;
   z-index: 50;
-  transition: transform 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+  transition: transform 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 .new-project-fab:hover {
   transform: translateX(-50%) translateY(-2px);
-  background: rgba(28, 30, 38, 0.92);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(124, 92, 255, 0.32) inset;
+  background: linear-gradient(135deg, var(--accent-gold-start), var(--accent-gold-end));
+  box-shadow:
+    0 18px 40px rgba(0, 0, 0, 0.65),
+    0 16px 32px rgba(232, 149, 0, 0.32),
+    0 0 0 1px rgba(245, 166, 35, 0.45) inset;
 }
 .new-project-fab .material-icons { font-size: 20px; }
 
