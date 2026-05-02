@@ -188,38 +188,17 @@
   }
 
   function renderEmptyState() {
-    if (state.projects.length) return '';
-    return `
-      <div class="empty-state" style="padding:48px 24px 20px;">
-        <span class="material-icons">folder_open</span>
-        <h3>Ch\u01b0a c\u00f3 project n\u00e0o</h3>
-        <p>Ch\u01b0a c\u00f3 project n\u00e0o \u2014 b\u1ea5m + T\u1ea1o project \u0111\u1ec3 b\u1eaft \u0111\u1ea7u</p>
-      </div>
-    `;
+    // Empty state suppressed by design \u2014 match Flow's gallery, which jumps
+    // straight to the tile grid without a "no projects yet" placeholder.
+    return '';
   }
 
   function renderRecentJobsSection() {
-    if (state.projects.length) return '';
-
-    const grid = state.recentJobs.length
-      ? `<div class="project-grid" id="home-recent-jobs" style="padding-top:0;">${state.recentJobs.map(renderRecentJobTile).join('')}</div>`
-      : `
-        <div class="empty-state" style="padding:24px 16px;">
-          <span class="material-icons">history</span>
-          <h3>No recent jobs yet</h3>
-          <p>Completed jobs will appear here once the engine has legacy outputs to browse.</p>
-        </div>
-      `;
-
-    return `
-      <section style="display:grid; gap:12px; margin-top:24px;">
-        <div style="padding:0 24px;">
-          <h3 style="margin:0; font-size:18px; font-weight:600; color:var(--text-flow);">Recent jobs</h3>
-          <p style="margin:6px 0 0; color:var(--text-muted); font-size:13px;">Legacy completed jobs stay reachable here while the projects table is empty.</p>
-        </div>
-        ${grid}
-      </section>
-    `;
+    // Render recent jobs as the primary grid when no projects exist (and
+    // mix them in below the projects when both exist). No section header,
+    // no "Recent jobs" label \u2014 just tiles, like Flow.
+    if (!state.recentJobs.length) return '';
+    return `<div class="project-grid" id="home-recent-jobs">${state.recentJobs.map(renderRecentJobTile).join('')}</div>`;
   }
 
   function renderCreateProjectFab() {
