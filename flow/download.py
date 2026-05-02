@@ -395,6 +395,28 @@ def _faststart_mp4(filepath: Path) -> None:
         )
         if proc.returncode == 0 and tmp_path.exists() and tmp_path.stat().st_size > 0:
             tmp_path.replace(filepath)
+            poster_path = filepath.with_suffix(".poster.jpg")
+            try:
+                poster_proc = subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-loglevel", "error",
+                        "-ss", "0.1",
+                        "-i", str(filepath),
+                        "-frames:v", "1",
+                        "-q:v", "4",
+                        "-vf", "scale=480:-1",
+                        str(poster_path),
+                    ],
+                    capture_output=True,
+                    timeout=20,
+                )
+                if poster_proc.returncode != 0:
+                    logger.warning(
+                        "poster extract failed for %s: rc=%s",
+                        filepath.name, poster_proc.returncode,
+                    )
+            except Exception as exc:
+                logger.warning("poster extract exception for %s: %s", filepath.name, exc)
         else:
             tmp_path.unlink(missing_ok=True)
             logger.warning(
