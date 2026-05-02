@@ -492,10 +492,10 @@
     if (TYPES_WITH_ASPECT.has(step.type)) {
       const opts = renderOptions(getAspectOptions(step.type), { selected: step.aspect_ratio });
       tag('aspect_ratio', `
-        <div class="form-group" style="margin-bottom:12px">
-          <label class="form-label">Aspect Ratio</label>
-          <select class="form-select step-field" data-step="${i}" data-field="aspect_ratio">${opts}</select>
-        </div>
+        <section class="cbf-rail-section">
+          <label class="cbf-rail-label">Aspect Ratio</label>
+          <select class="cbf-input step-field" data-step="${i}" data-field="aspect_ratio">${opts}</select>
+        </section>
       `);
     }
 
@@ -512,29 +512,29 @@
         .map((p) => `<option value="${p}" ${step.direction === p ? 'selected' : ''}>${p}</option>`)
         .join('');
       tag('direction', `
-        <div class="form-group" style="margin-bottom:12px">
-          <label class="form-label">Direction <span class="required">*</span></label>
-          <select class="form-select step-field" data-step="${i}" data-field="direction">
+        <section class="cbf-rail-section">
+          <label class="cbf-rail-label">Direction <span class="required">*</span></label>
+          <select class="cbf-input step-field" data-step="${i}" data-field="direction">
             <option value="">Select preset...</option>
             ${opts}
           </select>
-        </div>
+        </section>
       `);
     }
 
     if (TYPES_WITH_BBOX.has(step.type)) {
       const b = step.bbox || {};
       tag('bbox', `
-        <div class="form-group" style="margin-bottom:12px">
-          <label class="form-label">Bounding Box (0.0 – 1.0, optional)</label>
+        <section class="cbf-rail-section">
+          <label class="cbf-rail-label">Bounding Box (0.0 – 1.0, optional)</label>
           <div class="form-row" style="grid-template-columns: repeat(4, 1fr);">
             ${['x','y','w','h'].map((k) => `
-              <input type="number" class="form-input step-bbox" data-step="${i}" data-bbox="${k}"
+              <input type="number" class="cbf-input step-bbox" data-step="${i}" data-bbox="${k}"
                      placeholder="${k}" step="0.01" min="0" max="1"
                      value="${b[k] != null ? b[k] : ''}">
             `).join('')}
           </div>
-        </div>
+        </section>
       `);
     }
 
@@ -594,8 +594,8 @@
       : '<div class="form-hint">No reference images uploaded yet.</div>';
 
     return `
-      <div class="form-group" style="margin-bottom:12px">
-        <label class="form-label">Reference Images <span class="required">*</span></label>
+      <section class="cbf-rail-section">
+        <label class="cbf-rail-label">Reference Images <span class="required">*</span></label>
         <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
           <button type="button" class="btn btn-outline btn-sm step-ingredient-add" data-step="${i}">
             <span class="material-icons">add_photo_alternate</span> Add reference image
@@ -608,7 +608,7 @@
           ${cards}
         </div>
         <span class="form-hint" style="margin-top:8px; display:block;">Upload 1-10 reference images before submit.</span>
-      </div>
+      </section>
     `;
   }
 
@@ -621,13 +621,13 @@
       <div class="form-hint" style="margin-top:6px;">${App.escapeHtml(path)}</div>
     ` : '<div class="form-hint" style="margin-top:6px;">No image uploaded.</div>';
     return `
-      <div class="form-group">
-        <label class="form-label">${label} Image ${required ? '<span class="required">*</span>' : '(optional)'}</label>
-        <input type="file" class="form-input step-upload-input"
+      <section class="cbf-rail-section">
+        <label class="cbf-rail-label">${label} Image ${required ? '<span class="required">*</span>' : '(optional)'}</label>
+        <input type="file" class="cbf-input step-upload-input"
                data-step="${stepIndex}" data-field="${field}" data-label="${App.escapeHtml(label)} image"
                accept="image/png,image/jpeg,image/webp">
         ${preview}
-      </div>
+      </section>
     `;
   }
 
