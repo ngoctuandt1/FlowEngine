@@ -475,7 +475,7 @@
 
   function renderStepConfig(step, i) {
     const parts = [];
-    const tag = (html) => parts.push(html);
+    const tag = (nameOrHtml, maybeHtml) => parts.push(maybeHtml ?? nameOrHtml);
 
     if (TYPES_WITH_PROMPT.has(step.type)) {
       const req = REQUIRED_PROMPT_TYPES.has(step.type);
