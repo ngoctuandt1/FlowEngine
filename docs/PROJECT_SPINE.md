@@ -2,10 +2,12 @@
 
 > This is the canonical spine. Read first. Update whenever architecture, code map, or deploy topology changes.
 
-- Last synced: `cf991e0` (`origin/master`) on 2026-05-02.
-- Scope: tracks current `master` through the 2026-05-02 SPINE canon-sync state.
+- Last synced: `244e895` (`origin/master`) on 2026-05-02 after the IdeaStudio web-clone + perf cluster.
+- Scope: tracks current `master` through the 2026-05-02 IdeaStudio overhaul.
 - Purpose: one 5-minute sync doc for future feature work.
-- Recent epics: SPINE workstream 2026-05-01 -> 2026-05-02: 14 PRs (#109-#125 span; #117, #118, #124 unrelated), 4 review rounds (25 reviewer codex), 6 real bugs surfaced from doc review, all linked canon docs (SPEC/DESIGN/FLOW_UI/WORKPLAN) synced.
+- Recent epics:
+  - 2026-05-02 IdeaStudio web clone + perf cluster: 59 merged PRs in span #117-#176 (one PR, #157, still open at close). DAG canvas project view, Ý TƯỞNG idea/chat right rail, Setup page (Gemini SDK + Veo accounts + Nano API), multi-track timeline shell, project-first data model + `/api/projects` CRUD, render-compose backend, gold theme. Perf round drops thumbnail bandwidth ~200x (mp4 → poster.jpg) and initial eager JS ~9x (5 eager scripts vs 21; ratios from in-session DOM probes, not benchmark-grade). See [session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md](session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md).
+  - 2026-05-01 -> 2026-05-02 SPINE workstream: 14 PRs (#109-#125 span; #117, #118, #124 unrelated), 4 review rounds (25 reviewer codex), 6 real bugs surfaced from doc review, all linked canon docs (SPEC/DESIGN/FLOW_UI/WORKPLAN) synced.
 - Not here: deep rationale lives in [docs/DESIGN.md](DESIGN.md), invariants/test contract in [docs/SPEC.md](SPEC.md), and roadmap in [docs/WORKPLAN.md](WORKPLAN.md).
 
 ## 1. What is FlowEngine
@@ -606,5 +608,6 @@ Frontend pages are plain global scripts, not bundled modules: wrap page-local st
 - [docs/CHROME_LAUNCH_SECURITY.md](CHROME_LAUNCH_SECURITY.md) - Chrome anti-detection and launch-security notes.
 - [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md) - why the 3-level safety filter is legacy only.
 - [docs/session-reports/INDEX.md](session-reports/INDEX.md) - chronological session report index.
+- Latest IdeaStudio clone + perf report: [docs/session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md](session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md).
 - Latest SPINE canon-sync report: [docs/session-reports/2026-05-02_spine-doc-canon-sync.md](session-reports/2026-05-02_spine-doc-canon-sync.md).
 - Latest public-cutover report: [docs/session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md).
