@@ -6,6 +6,7 @@
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
   const ALLOWED_STATUS = new Set(['pending', 'claimed', 'running', 'completed', 'failed', 'cancelled']);
+  const BACKEND_GAP_WARNED = new Set();
 
   const state = {
     jobs: [],
@@ -49,6 +50,39 @@
 
   function safeStatus(status) {
     return ALLOWED_STATUS.has(status) ? status : 'pending';
+  }
+
+  function debugBadgesEnabled() {
+    try {
+      return localStorage.getItem('FLOW_DEBUG_BADGES') === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function warnBackendGap({ field, jobId, fallbackUsed }) {
+    const key = `${field}|${jobId || ''}|${fallbackUsed}`;
+    if (BACKEND_GAP_WARNED.has(key)) return;
+    BACKEND_GAP_WARNED.add(key);
+    console.warn('[backend-gap]', {
+      page: 'gallery',
+      field,
+      jobId: jobId || '',
+      fallbackUsed,
+    });
+  }
+
+  function renderDebugBadges(items) {
+    if (!debugBadgesEnabled() || !Array.isArray(items) || !items.length) return '';
+    return items.map((item) => `
+      <span
+        class="tile-status-badge state-pending"
+        title="${App.escapeHtml(`${item.field} -> ${item.fallbackUsed}`)}"
+        style="opacity:0.65;"
+      >
+        ${App.escapeHtml(`gap:${item.field}`)}
+      </span>
+    `).join('');
   }
 
   function collectProfiles() {
@@ -165,8 +199,15 @@
     const stateChip = status === 'completed'
       ? ''
       : `<span class="tile-status-badge state-${status}">${App.escapeHtml(status.toUpperCase())}</span>`;
-
-    const tileHref = `#project-view/${encodeURIComponent(job.chain_id || job.id || '')}`;
+    const debugBadges = [];
+    let tileRouteKey = String(job.chain_id || '').trim();
+    if (!tileRouteKey) {
+      tileRouteKey = String(job.id || '').trim();
+      const fallbackUsed = 'job.id';
+      warnBackendGap({ field: 'chain_id', jobId: String(job.id || ''), fallbackUsed });
+      debugBadges.push({ field: 'chain_id', fallbackUsed });
+    }
+    const tileHref = `#project-view/${encodeURIComponent(tileRouteKey)}`;
     return `
       <a
         class="project-tile gallery-tile status-${status}"
@@ -177,6 +218,7 @@
         <div class="tile-thumb">
           ${preview}
           ${stateChip}
+          ${renderDebugBadges(debugBadges)}
         </div>
         <div class="tile-overlay">
           <span class="tile-date">${App.escapeHtml(App.formatTileDate(job.created_at || job.createdAt))}</span>

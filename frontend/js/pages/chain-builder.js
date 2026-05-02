@@ -33,6 +33,7 @@
   ]);
   const MAX_INGREDIENT_IMAGES = 10;
   const CHAIN_BUILDER_ROUTE_RE = /^(chains|chain-builder)(?:[/?]|$)/i;
+  const BACKEND_GAP_WARNED = new Set();
 
   let steps = [];
   let profiles = [];
@@ -55,6 +56,43 @@
 
   function getJobTypeLabel(type) {
     return getJobTypeMeta(type)?.label || type || 'Unknown';
+  }
+
+  function debugBadgesEnabled() {
+    try {
+      return localStorage.getItem('FLOW_DEBUG_BADGES') === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function warnBackendGap({ field, jobId, fallbackUsed }) {
+    const key = `${field}|${jobId || ''}|${fallbackUsed}`;
+    if (BACKEND_GAP_WARNED.has(key)) return;
+    BACKEND_GAP_WARNED.add(key);
+    console.warn('[backend-gap]', {
+      page: 'chain-builder',
+      field,
+      jobId: jobId || '',
+      fallbackUsed,
+    });
+  }
+
+  function renderDebugBadges(items) {
+    if (!debugBadgesEnabled() || !Array.isArray(items) || !items.length) return '';
+    return `
+      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">
+        ${items.map((item) => `
+          <span
+            class="tile-status-badge state-pending"
+            title="${App.escapeHtml(`${item.field} -> ${item.fallbackUsed}`)}"
+            style="opacity:0.65;"
+          >
+            ${App.escapeHtml(`gap:${item.field}`)}
+          </span>
+        `).join('')}
+      </div>
+    `;
   }
 
   function patchRouter() {
@@ -123,13 +161,34 @@
       throw new Error(`Parent job ${parentJobId} not found`);
     }
 
+    let chainId = String(related?.chain_id || '').trim();
+    const debugBadges = [];
+    let fallbackUsed = '';
+    if (!chainId) {
+      chainId = String(related?.chain_root_id || '').trim();
+      fallbackUsed = 'related.chain_root_id';
+    }
+    if (!chainId) {
+      chainId = String(parentJob.chain_id || '').trim();
+      fallbackUsed = 'parentJob.chain_id';
+    }
+    if (!chainId) {
+      chainId = String(parentJob.id || '').trim();
+      fallbackUsed = 'parentJob.id';
+    }
+    if (fallbackUsed) {
+      warnBackendGap({ field: 'chain_id', jobId: parentJob.id, fallbackUsed });
+      debugBadges.push({ field: 'chain_id', fallbackUsed });
+    }
+
     return {
       parentJobId: parentJob.id,
       parentType: parentJob.type || '',
-      chainId: related?.chain_id || related?.chain_root_id || parentJob.chain_id || parentJob.id,
+      chainId,
       projectUrl: parentJob.project_url || '',
       profile: parentJob.profile || '',
       mediaId: parentJob.media_id || '',
+      debugBadges,
     };
   }
 
@@ -830,6 +889,7 @@
         <div class="form-hint" style="margin-top: 6px;">
           Parent job ${App.escapeHtml(parentPrefill.parentJobId)} locks the profile and existing project context for the first chained step.
         </div>
+        ${renderDebugBadges(parentPrefill.debugBadges)}
       </div>
     `;
   }

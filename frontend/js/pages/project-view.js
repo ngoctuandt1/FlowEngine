@@ -6,6 +6,7 @@
   const PAGE_ROOT_ID = 'project-view-page';
   const CHAIN_STEP_ROUTE = 'chain-builder';
   const DEFAULT_CHAIN_STEP_TYPE = 'extend-video';
+  const BACKEND_GAP_WARNED = new Set();
   const MIN_ZOOM = 0.4;
   const MAX_ZOOM = 1.6;
   const FIT_MAX_ZOOM = 1.4;
@@ -106,6 +107,7 @@
     ideaAutoScrollPending: false,
     ideaFocusInputPending: false,
     ideaPreserveCollapseOnNextChain: false,
+    debugBadges: [],
   };
 
   function escapeAttr(value) {
@@ -114,6 +116,43 @@
       .replace(/"/g, '&quot;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
+  }
+
+  function debugBadgesEnabled() {
+    try {
+      return localStorage.getItem('FLOW_DEBUG_BADGES') === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function warnBackendGap({ field, jobId, fallbackUsed }) {
+    const key = `${field}|${jobId || ''}|${fallbackUsed}`;
+    if (BACKEND_GAP_WARNED.has(key)) return;
+    BACKEND_GAP_WARNED.add(key);
+    console.warn('[backend-gap]', {
+      page: 'project-view',
+      field,
+      jobId: jobId || '',
+      fallbackUsed,
+    });
+  }
+
+  function renderDebugBadges(items) {
+    if (!debugBadgesEnabled() || !Array.isArray(items) || !items.length) return '';
+    return `
+      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;">
+        ${items.map((item) => `
+          <span
+            class="pv-node-status-pill"
+            title="${escapeAttr(`${item.field} -> ${item.fallbackUsed}`)}"
+            style="opacity:0.65;"
+          >
+            ${App.escapeHtml(`gap:${item.field}`)}
+          </span>
+        `).join('')}
+      </div>
+    `;
   }
 
   function safeStatus(status) {
@@ -1000,6 +1039,7 @@
           <div style="display:grid; gap:4px; min-width:0;">
             <div style="font-size:20px; font-weight:700; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${App.escapeHtml(state.title || 'Project')}</div>
             <div style="color: var(--text-muted); font-size: 12px; line-height: 1.4;">${state.chainId ? `Chain ${App.escapeHtml(App.truncate(state.chainId, 18))}` : 'Workflow canvas'}</div>
+            ${renderDebugBadges(state.debugBadges)}
           </div>
           <div class="pv-topbar-menu" data-role="project-menu-shell">
             <button type="button" class="icon-btn" data-action="toggle-menu" aria-label="Project actions" aria-haspopup="menu" aria-expanded="${state.menuOpen ? 'true' : 'false'}">
@@ -1291,6 +1331,7 @@
     state.rootJob = rootJob || null;
     state.latestJobId = String(latest?.id || '').trim();
     state.title = chainTitle(rootJob);
+    state.debugBadges = Array.isArray(chain?.debugBadges) ? chain.debugBadges : [];
     if (!jobsById.has(state.selectedJobId)) {
       state.selectedJobId = String(rootJob?.id || latest?.id || '');
     }
@@ -1306,7 +1347,13 @@
     const jobs = normalizeJobList(detail);
     if (!jobs.length) return null;
     const jobsById = new Map(jobs.map((job) => [String(job.id), job]));
-    return { chainId, rootId: String(detail?.root_id || '').trim(), jobs, edges: normalizeEdges(detail?.edges, jobsById) };
+    return {
+      chainId,
+      rootId: String(detail?.root_id || '').trim(),
+      jobs,
+      edges: normalizeEdges(detail?.edges, jobsById),
+      debugBadges: [],
+    };
   }
 
   async function loadFromJobIdFallback(routeKey) {
@@ -1315,20 +1362,29 @@
     try {
       const job = await API.jobs.get(routeKey);
       if (!job?.id) return null;
-      return { chainId: routeKey, rootId: String(job.id), jobs: [job], edges: [] };
+      const fallbackUsed = 'job.id';
+      warnBackendGap({ field: 'chain_id', jobId: String(job.id), fallbackUsed });
+      return {
+        chainId: routeKey,
+        rootId: String(job.id),
+        jobs: [job],
+        edges: [],
+        debugBadges: [{ field: 'chain_id', fallbackUsed }],
+      };
     } catch (_) {
       return null;
     }
   }
 
   async function loadFromCompatibilityFallback(chainId) {
+    const debugBadges = [];
     const listed = normalizeJobList(await API.jobs.list({ limit: 500 }))
       .filter((job) => String(job?.chain_id || '').trim() === chainId)
       .sort(compareByCreatedAsc);
     if (!listed.length) {
       const single = await loadFromJobIdFallback(chainId);
       if (single) return single;
-      return { chainId, rootId: '', jobs: [], edges: [] };
+      return { chainId, rootId: '', jobs: [], edges: [], debugBadges };
     }
 
     const firstJob = listed[0];
@@ -1348,9 +1404,28 @@
       ...(Array.isArray(related?.siblings) ? related.siblings : []),
     ]).filter((job) => String(job?.chain_id || '').trim() === chainId || !job?.chain_id);
 
-    const rootId = String(related?.chain_root_id || '').trim() || String(firstJob.id || '').trim();
+    const compatibilityJob = relatedJobs.find((job) => !String(job?.chain_id || '').trim());
+    if (compatibilityJob) {
+      const fallbackUsed = 'compatibility-merge';
+      warnBackendGap({ field: 'chain_id', jobId: String(compatibilityJob.id || ''), fallbackUsed });
+      debugBadges.push({ field: 'chain_id', fallbackUsed });
+    }
+
+    const chainRootId = String(related?.chain_root_id || '').trim();
+    const rootId = chainRootId || String(firstJob.id || '').trim();
+    if (!chainRootId && firstJob?.id) {
+      const fallbackUsed = 'firstJob.id';
+      warnBackendGap({ field: 'chain_root_id', jobId: String(firstJob.id), fallbackUsed });
+      debugBadges.push({ field: 'chain_root_id', fallbackUsed });
+    }
     const walked = walkChainJobs(relatedJobs, rootId);
-    return { chainId, rootId, jobs: walked.length ? walked : listed, edges: buildEdgesFromJobs(walked.length ? walked : listed) };
+    return {
+      chainId,
+      rootId,
+      jobs: walked.length ? walked : listed,
+      edges: buildEdgesFromJobs(walked.length ? walked : listed),
+      debugBadges,
+    };
   }
 
   async function loadChainData() {
@@ -1371,6 +1446,7 @@
       state.rootJob = null;
       state.latestJobId = '';
       state.title = 'Project';
+      state.debugBadges = [];
       clearExtendHintTimer();
       state.extendHintVisible = false;
       rebuildLayoutState();
@@ -1398,6 +1474,7 @@
       state.latestJobId = '';
       state.title = state.chainId ? `Chain ${App.truncate(state.chainId, 18)}` : 'Project';
       state.loadError = error?.message || 'Failed to load project view.';
+      state.debugBadges = [];
       clearExtendHintTimer();
       state.extendHintVisible = false;
       rebuildLayoutState();

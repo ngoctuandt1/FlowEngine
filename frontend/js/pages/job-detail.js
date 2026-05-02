@@ -13,6 +13,7 @@
   const CHAIN_BUILDER_ROUTE_RE = /^chain-builder(?:[/?]|\?|$)/i;
   const CHAIN_TREE_ROUTE_RE = /^chain-tree(?:[/?]|$)/i;
   const MAX_CHAIN_TREE_SELECT_ATTEMPTS = 24;
+  const BACKEND_GAP_WARNED = new Set();
   const VIDEO_PARENT_JOB_TYPES = new Set([
     'text-to-video',
     'frames-to-video',
@@ -55,6 +56,7 @@
     socketTarget: null,
     rootTarget: null,
     rootClickHandler: null,
+    debugBadges: [],
   };
 
   let routerPatched = false;
@@ -68,6 +70,53 @@
       .replace(/"/g, '&quot;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
+  }
+
+  function debugBadgesEnabled() {
+    try {
+      return localStorage.getItem('FLOW_DEBUG_BADGES') === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function warnBackendGap({ field, jobId, fallbackUsed }) {
+    const key = `${field}|${jobId || ''}|${fallbackUsed}`;
+    if (BACKEND_GAP_WARNED.has(key)) return;
+    BACKEND_GAP_WARNED.add(key);
+    console.warn('[backend-gap]', {
+      page: 'job-detail',
+      field,
+      jobId: jobId || '',
+      fallbackUsed,
+    });
+  }
+
+  function renderDebugBadges(items) {
+    if (!debugBadgesEnabled() || !Array.isArray(items) || !items.length) return '';
+    return items.map((item) => `
+      <span
+        class="job-detail-chip"
+        title="${escapeAttr(`${item.field} -> ${item.fallbackUsed}`)}"
+        style="opacity:0.65;"
+      >
+        ${App.escapeHtml(`gap:${item.field}`)}
+      </span>
+    `).join('');
+  }
+
+  function collectJobDebugBadges(job) {
+    const items = [];
+    if (!job?.edit_url && job?.project_url && job?.media_id) {
+      const fallbackUsed = 'project_url+media_id';
+      warnBackendGap({ field: 'edit_url', jobId: String(job.id || ''), fallbackUsed });
+      items.push({ field: 'edit_url', fallbackUsed });
+    } else if (!job?.edit_url && job?.project_url) {
+      const fallbackUsed = 'project_url';
+      warnBackendGap({ field: 'edit_url', jobId: String(job.id || ''), fallbackUsed });
+      items.push({ field: 'edit_url', fallbackUsed });
+    }
+    return items;
   }
 
   function isJobRouteHash(hash) {
@@ -392,7 +441,19 @@
   function flowLink(job) {
     if (job?.edit_url) return job.edit_url;
     if (job?.project_url && job?.media_id) {
+      warnBackendGap({
+        field: 'edit_url',
+        jobId: String(job.id || ''),
+        fallbackUsed: 'project_url+media_id',
+      });
       return `${String(job.project_url).replace(/\/+$/, '')}/edit/${job.media_id}`;
+    }
+    if (job?.project_url) {
+      warnBackendGap({
+        field: 'edit_url',
+        jobId: String(job.id || ''),
+        fallbackUsed: 'project_url',
+      });
     }
     return job?.project_url || '';
   }
@@ -544,6 +605,7 @@
     state.rootJob = null;
     state.profileMismatch = false;
     state.projectMismatch = false;
+    state.debugBadges = [];
     state.loadError = '';
     state.refreshError = '';
     state.parentError = '';
@@ -610,6 +672,7 @@
       job.bbox ? `<span class="job-detail-chip">BBox: ${App.escapeHtml(formatBBox(job.bbox))}</span>` : '',
       job.media_id ? `<span class="job-detail-chip">Media: ${App.escapeHtml(shortId(job.media_id, 18))}</span>` : '<span class="job-detail-chip">Media: Pending</span>',
       job.generation_id ? `<span class="job-detail-chip">Generation: ${App.escapeHtml(shortId(job.generation_id, 18))}</span>` : '',
+      renderDebugBadges(state.debugBadges),
     ].filter(Boolean).join('');
 
     const attachments = [
@@ -1483,6 +1546,7 @@
       state.rootJob = context.rootJob;
       state.profileMismatch = context.profileMismatch;
       state.projectMismatch = context.projectMismatch;
+      state.debugBadges = collectJobDebugBadges(state.job);
       state.parentError = parentResult.status === 'rejected' && !context.parent ? errorMessage(parentResult.reason) : '';
       state.childrenError = childrenResult.status === 'rejected' && !context.children.length ? errorMessage(childrenResult.reason) : '';
       state.chainError = chainResult.status === 'rejected' && job.chain_id ? errorMessage(chainResult.reason) : '';
