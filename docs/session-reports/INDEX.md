@@ -4,7 +4,7 @@
 > session report under `docs/session-reports/`. Update when adding a new
 > report. The `_TEMPLATE.md` defines the report skeleton (do not list it).
 
-**Last regenerated:** 2026-05-02 (covers 57 reports across `2026-04-17 -> 2026-05-02`).
+**Last regenerated:** 2026-05-02 (covers 58 reports across `2026-04-17 -> 2026-05-02`).
 
 ---
 
@@ -48,6 +48,12 @@
 ---
 
 ## 3. Timeline
+
+### IdeaStudio web clone + perf cluster (2026-05-02 cont.)
+
+| Date | Report | Type | Status | Outcome |
+|---|---|---|---|---|
+| 05-02 | [ideastudio-clone-perf-cluster](2026-05-02_ideastudio-clone-perf-cluster.md) | epic — UI overhaul + perf + project-first | ✅ | 56 PRs (#117–#176) shipped to `master` and live on `ai.hassio.io.vn`. DAG canvas project view, Ý TƯỞNG idea rail, Setup page (Gemini + Veo + Nano), multi-track timeline shell, project-first data model + API, gold theme, render compose backend. Perf round drops thumbnail bandwidth ~240× (mp4 → poster.jpg) and initial JS payload ~9× (lazy-load page modules). |
 
 ### SPINE canon sync + doc-review bug surfacing (2026-05-02)
 
@@ -158,6 +164,7 @@ Single-day landing of B1-B12 + Tier 1 DOM validation. Tag: `v0.2.0-phase-a` at `
 
 | PR | Description | Primary report(s) |
 |---|---|---|
+| #117-#176 (56 PRs, IdeaStudio epic) | DAG canvas + Idea rail + Setup + Timeline shell + project-first data model + render-compose backend + perf round (thumbnails 240× lighter, JS 9× lighter) | `2026-05-02_ideastudio-clone-perf-cluster` |
 | #109-#125 (SPINE workstream span) | Canonical spine bootstrap, linked-doc sync, and doc-review bug surfacing | `2026-05-02_spine-doc-canon-sync` |
 | #90-#108 (excluding #93) | Public dashboard/pages, auth gate, deploy hardening, public cutover | `2026-05-01_web-ai-hassio-flowengine-cutover` |
 | #2-#8 | flow-bugs epic | `B<n>` reports + Tier 1 r2 |
