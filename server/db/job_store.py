@@ -224,6 +224,17 @@ async def get_children(parent_job_id: str) -> list[Job]:
         return [_row_to_job(r) for r in rows]
 
 
+async def get_jobs_by_chain(chain_id: str) -> list[Job]:
+    """Return every job on a chain, oldest first, in one query."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM jobs WHERE chain_id = ? ORDER BY created_at ASC",
+            (chain_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_job(r) for r in rows]
+
+
 async def get_related_jobs(
     job_id: str,
     *,

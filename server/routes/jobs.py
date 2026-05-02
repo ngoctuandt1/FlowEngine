@@ -7,6 +7,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, status
 
 from server.models.chain import Chain, ChainCreateResponse
+from server.db.chain_store import compute_aggregated_status, create_chain
 from server.models.job import (
     ChainCreate,
     Job,
@@ -15,12 +16,12 @@ from server.models.job import (
     JobStatus,
     JobWithThumb,
 )
-from server.db.chain_store import create_chain, get_chain_aggregate
 from server.db.job_store import (
     create_job,
     delete_job,
     get_children,
     get_job,
+    get_jobs_by_chain,
     get_job_counts,
     get_related_jobs,
     list_jobs,
@@ -128,6 +129,37 @@ def _job_with_thumb(job: Optional[Job]) -> Optional[JobWithThumb]:
     return JobWithThumb(**job.model_dump(mode="json"), thumb_url=_thumb_url(job))
 
 
+def _pick_chain_root(jobs: list[Job]) -> Optional[Job]:
+    return next((job for job in jobs if job.job_level == 1), jobs[0] if jobs else None)
+
+
+def _build_chain_edges(jobs: list[Job]) -> list[dict[str, str]]:
+    chain_job_ids = {job.id for job in jobs}
+    return [
+        {"parent": job.parent_job_id, "child": job.id}
+        for job in jobs
+        if job.parent_job_id in chain_job_ids
+    ]
+
+
+def _build_chain_stats(jobs: list[Job]) -> dict[str, int]:
+    total = len(jobs)
+    completed = sum(1 for job in jobs if job.status == JobStatus.COMPLETED)
+    failed = sum(1 for job in jobs if job.status == JobStatus.FAILED)
+    running = sum(
+        1
+        for job in jobs
+        if job.status in {JobStatus.CLAIMED, JobStatus.RUNNING}
+    )
+    return {
+        "total": total,
+        "completed": completed,
+        "failed": failed,
+        "pending": max(total - completed - failed - running, 0),
+        "running": running,
+    }
+
+
 # -- Endpoints -----------------------------------------------------------------
 
 @router.post("/jobs", status_code=201)
@@ -201,11 +233,36 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
 
 @router.get("/chains/{chain_id}")
 async def get_chain(chain_id: str):
-    """Return chain metadata + aggregated status + job ids (B4)."""
-    aggregate = await get_chain_aggregate(chain_id)
-    if aggregate is None:
+    """Return one chain as a bulk DAG payload plus legacy aggregate fields."""
+    jobs = await get_jobs_by_chain(chain_id)
+    if not jobs:
         raise HTTPException(404, f"Chain {chain_id} not found")
-    return aggregate
+
+    root_job = _pick_chain_root(jobs)
+    stats = _build_chain_stats(jobs)
+    latest_updated_at = max((job.updated_at for job in jobs), default=jobs[0].updated_at)
+    profile = (
+        (root_job.profile if root_job else None)
+        or next((job.profile for job in jobs if job.profile), None)
+    )
+
+    return {
+        "id": chain_id,
+        "chain_id": chain_id,
+        "profile": profile,
+        "created_at": jobs[0].created_at.isoformat(),
+        "updated_at": latest_updated_at.isoformat(),
+        "status": compute_aggregated_status([job.status.value for job in jobs]),
+        "progress": {
+            "completed": stats["completed"],
+            "total": stats["total"],
+        },
+        "root_prompt": (root_job.prompt if root_job else "") or "",
+        "root_id": root_job.id if root_job else None,
+        "jobs": [_job_with_thumb(job).model_dump(mode="json") for job in jobs],
+        "edges": _build_chain_edges(jobs),
+        "stats": stats,
+    }
 
 
 @router.get("/jobs/counts")
