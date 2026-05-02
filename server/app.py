@@ -16,6 +16,7 @@ from server.dashboard_auth import (
     api_logout,
     serve_login_page,
 )
+from server.routes.idea import router as idea_router
 from server.routes import (
     characters_router,
     jobs_router,
@@ -129,6 +130,7 @@ app.include_router(media_merge_router)
 app.include_router(media_fetch_router)
 app.include_router(characters_router)
 app.include_router(llm_router)
+app.include_router(idea_router)
 app.include_router(product_pipeline_router)
 app.include_router(retarget_router)
 app.include_router(uploads_router)
