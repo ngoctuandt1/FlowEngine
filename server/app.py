@@ -40,11 +40,19 @@ from server.routes.settings import router as settings_router
 
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+# Versioned assets (`?v=...` cache-bust on every script/link tag). Long
+# max-age is safe because index.html bumps the query string per release.
 STATIC_CACHEABLE_PREFIXES = ("/js/", "/css/", "/assets/")
-STATIC_CACHE_CONTROL = "public, max-age=60, must-revalidate"
-# CDN-bypass for media so HTML5 <video> Range requests work; otherwise
-# Cloudflare strips Accept-Ranges on cached responses and the video tags
-# stall at readyState 0 forever (this is what made tile thumbnails go black).
+STATIC_CACHE_CONTROL = "public, max-age=2592000, immutable"
+# Poster jpg / png / webp under /downloads/ + /uploads/ are immutable per
+# filename (filename includes a unix timestamp). Caching these on the CDN
+# is the entire point of the perf work — visitors share a hot edge cache.
+MEDIA_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+MEDIA_IMAGE_CACHE_CONTROL = "public, max-age=2592000, immutable"
+# Videos stay private so Cloudflare passes through `Accept-Ranges: bytes`
+# instead of stripping it — without ranges, HTML5 `<video>` stalls at
+# readyState 0 (what caused the black-thumbnail bug pre-R9). Browser still
+# caches locally for 5 minutes.
 MEDIA_PREFIXES = ("/downloads/", "/uploads/")
 MEDIA_CACHE_CONTROL = "private, max-age=300"
 
@@ -163,16 +171,20 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 @app.middleware("http")
 async def set_static_cache_headers(request: Request, call_next):
-    """Keep frontend bundles revalidating quickly + bypass CDN for media."""
+    """Long-cache versioned bundles + media images, keep videos CDN-private."""
     response = await call_next(request)
     path = request.url.path
     if path.startswith(STATIC_CACHEABLE_PREFIXES):
         response.headers["Cache-Control"] = STATIC_CACHE_CONTROL
     elif path.startswith(MEDIA_PREFIXES):
-        # `private` tells Cloudflare not to cache, which preserves the origin
-        # `Accept-Ranges: bytes` so the browser can do partial fetches for
-        # `<video>` elements. Browser still caches locally for 5 min.
-        response.headers["Cache-Control"] = MEDIA_CACHE_CONTROL
+        # Images in /downloads/ + /uploads/ (poster jpg, generated png, etc.)
+        # are immutable per filename, so let Cloudflare cache them forever.
+        # Videos stay private so the CDN doesn't strip Accept-Ranges.
+        lower = path.lower()
+        if lower.endswith(MEDIA_IMAGE_SUFFIXES):
+            response.headers["Cache-Control"] = MEDIA_IMAGE_CACHE_CONTROL
+        else:
+            response.headers["Cache-Control"] = MEDIA_CACHE_CONTROL
     return response
 
 
