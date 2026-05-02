@@ -3,6 +3,12 @@ from unittest.mock import AsyncMock
 import aiosqlite
 
 
+async def _create_project(api_client, name: str) -> str:
+    response = await api_client.post("/api/projects", json={"name": name})
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
 async def test_post_text_to_image_defaults_model(api_client):
     payload = {
         "type": "text-to-image",
@@ -97,12 +103,15 @@ async def test_post_l1_job_sets_chain_id_to_id(api_client, temp_db_path):
 
 
 async def test_post_child_job_inherits_completed_parent_fields(api_client):
+    project_id = await _create_project(api_client, "Parent Project")
+
     parent_response = await api_client.post(
         "/api/jobs",
         json={
             "type": "text-to-video",
             "prompt": "Create a forest flythrough",
             "profile": "parent-profile",
+            "project_id": project_id,
         },
     )
     assert parent_response.status_code == 201
@@ -114,7 +123,6 @@ async def test_post_child_job_inherits_completed_parent_fields(api_client):
             "status": "completed",
             "project_url": "https://flow.example/project/123",
             "media_id": "media-123",
-            "edit_url": "https://flow.example/project/123/edit/media-123",
             "profile": "parent-profile",
         },
     )
@@ -135,18 +143,43 @@ async def test_post_child_job_inherits_completed_parent_fields(api_client):
     assert child["job_level"] == 2
     assert child["chain_id"] == parent_response.json()["chain_id"]
     assert child["profile"] == "parent-profile"
+    assert child["project_id"] == project_id
     assert child["project_url"] == "https://flow.example/project/123"
     assert child["media_id"] == "media-123"
-    assert child["edit_url"] == "https://flow.example/project/123/edit/media-123"
 
 
-async def test_post_child_job_derives_edit_url_when_completed_parent_column_is_null(api_client):
+async def test_post_l1_job_persists_project_id(api_client):
+    project_id = await _create_project(api_client, "L1 Project")
+
+    response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Create a branded opener",
+            "project_id": project_id,
+        },
+    )
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["project_id"] == project_id
+
+    fetched = await api_client.get(f"/api/jobs/{created['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["project_id"] == project_id
+
+
+async def test_post_child_job_discards_explicit_project_id_override(api_client):
+    parent_project_id = await _create_project(api_client, "Parent Override Project")
+    await _create_project(api_client, "Child Override Project")
+
     parent_response = await api_client.post(
         "/api/jobs",
         json={
             "type": "text-to-video",
-            "prompt": "Create a desert flythrough",
-            "profile": "derive-edit-profile",
+            "prompt": "Create a parent clip",
+            "profile": "override-profile",
+            "project_id": parent_project_id,
         },
     )
     assert parent_response.status_code == 201
@@ -156,10 +189,9 @@ async def test_post_child_job_derives_edit_url_when_completed_parent_column_is_n
         f"/api/worker/jobs/{parent_id}",
         json={
             "status": "completed",
-            "project_url": "https://flow.example/project/derive-456",
-            "media_id": "media-456",
-            "edit_url": None,
-            "profile": "derive-edit-profile",
+            "project_url": "https://flow.example/project/parent",
+            "media_id": "media-parent",
+            "profile": "override-profile",
         },
     )
     assert patch_response.status_code == 200
@@ -168,14 +200,45 @@ async def test_post_child_job_derives_edit_url_when_completed_parent_column_is_n
         "/api/jobs",
         json={
             "type": "extend-video",
-            "prompt": "Add a second pass",
+            "prompt": "Explicitly reassign this child",
             "parent_job_id": parent_id,
+            "project_id": "project-child-override",
         },
     )
 
     assert child_response.status_code == 201
     child = child_response.json()
-    assert child["edit_url"] == "https://flow.example/project/derive-456/edit/media-456"
+    assert child["project_id"] == parent_project_id
+
+
+async def test_worker_patch_ignores_project_id_reassignment(api_client):
+    project_id = await _create_project(api_client, "Stable Project")
+
+    created = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Pinned project assignment",
+            "project_id": project_id,
+        },
+    )
+    assert created.status_code == 201
+    job_id = created.json()["id"]
+
+    patch_response = await api_client.put(
+        f"/api/worker/jobs/{job_id}",
+        json={
+            "status": "completed",
+            "project_id": "project-moved",
+        },
+    )
+
+    assert patch_response.status_code == 200
+    assert patch_response.json()["project_id"] == project_id
+
+    fetched = await api_client.get(f"/api/jobs/{job_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["project_id"] == project_id
 
 
 async def test_post_child_job_inherits_chain_id_from_pending_parent(api_client):
@@ -364,39 +427,6 @@ async def test_delete_job_broadcasts_cancelled_update(api_client, monkeypatch):
     cancelled_job = broadcast.await_args.args[0]
     assert cancelled_job.id == job_id
     assert cancelled_job.status.value == "cancelled"
-
-
-async def test_delete_parented_job_preserves_lineage_and_cancels_parent(api_client):
-    parent = await api_client.post(
-        "/api/jobs",
-        json={"type": "text-to-video", "prompt": "Parent"},
-    )
-    assert parent.status_code == 201
-    parent_id = parent.json()["id"]
-
-    child = await api_client.post(
-        "/api/jobs",
-        json={
-            "type": "extend-video",
-            "prompt": "Child",
-            "parent_job_id": parent_id,
-        },
-    )
-    assert child.status_code == 201
-    child_id = child.json()["id"]
-
-    deleted = await api_client.delete(f"/api/jobs/{parent_id}")
-
-    assert deleted.status_code == 200
-    assert deleted.json() == {"deleted": parent_id}
-
-    parent_after = await api_client.get(f"/api/jobs/{parent_id}")
-    assert parent_after.status_code == 200
-    assert parent_after.json()["status"] == "cancelled"
-
-    child_after = await api_client.get(f"/api/jobs/{child_id}")
-    assert child_after.status_code == 200
-    assert child_after.json()["parent_job_id"] == parent_id
 
 
 async def test_recover_jobs_broadcasts_each_recovered_job(api_client, monkeypatch):

@@ -1,0 +1,9 @@
+[
+  {
+    "url": "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoText",
+    "status": 403,
+    "method": "",
+    "ts": 100.0,
+    "body_preview": ""
+  }
+]

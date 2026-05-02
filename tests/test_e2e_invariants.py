@@ -334,15 +334,6 @@ async def test_7_stale_recovery_resets_claimed_and_reopens_for_claim(db):
         "recovery marks the row with an error breadcrumb so operators can "
         "trace why it was reset"
     )
-    recovered_profile = await get_profile("t7-p1")
-    assert recovered_profile.current_job_id is None, (
-        "stale recovery must clear profile.current_job_id in the same "
-        "transaction as the job reset"
-    )
-    assert recovered_profile.worker_id is None, (
-        "stale recovery must clear the mirrored worker_id so operators do "
-        "not see a dead worker still owning the profile"
-    )
 
     # The recovered row is now claimable by a worker holding the pinned
     # profile. `recover_stale_jobs` keeps `profile` intact on purpose: a

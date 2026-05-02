@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 
+from server.db.chain_store import create_chain
 from server.db.job_store import create_job
+from server.models.chain import Chain
 from server.models.job import Job, JobStatus, JobType
 
 
@@ -36,6 +38,7 @@ def _make_job(
 async def test_get_chain_returns_bulk_dag_payload(api_client):
     chain_id = "chain-dag-1"
     now = datetime.now(UTC)
+    await create_chain(Chain(id=chain_id, profile="profile-dag", created_at=now, updated_at=now))
 
     root = _make_job(
         job_id="root-l1",

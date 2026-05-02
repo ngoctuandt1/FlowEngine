@@ -1,7 +1,9 @@
 import aiosqlite
 from datetime import UTC, datetime, timedelta
 
+from server.db.chain_store import create_chain
 from server.db.job_store import create_job
+from server.models.chain import Chain
 from server.models.job import Job, JobStatus, JobType
 
 
@@ -37,6 +39,7 @@ def _make_job(
 async def test_get_job_related_returns_lineage_stats_and_thumb_urls(api_client):
     chain_id = "chain-related-1"
     now = datetime.now(UTC)
+    await create_chain(Chain(id=chain_id, profile="profile-a", created_at=now, updated_at=now))
 
     root = _make_job(
         job_id="root-l1",

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
@@ -51,6 +52,39 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+async def _job_columns(db) -> set[str]:
+    cursor = await db.execute("PRAGMA table_info(jobs)")
+    rows = await cursor.fetchall()
+    return {row[1] for row in rows}
+
+
+async def _ensure_chain_row(db, job: Job) -> None:
+    if not job.chain_id:
+        return
+    created_at = job.created_at.isoformat()
+    updated_at = job.updated_at.isoformat()
+    await db.execute(
+        """
+        INSERT OR IGNORE INTO chains (
+            id, profile, project_url, media_id, status, created_at, updated_at
+        ) VALUES (?, ?, NULL, NULL, 'active', ?, ?)
+        """,
+        (job.chain_id, job.profile, created_at, updated_at),
+    )
+
+
+async def _validate_project_id(db, job: Job, columns: set[str]) -> None:
+    if "project_id" not in columns or not job.project_id:
+        return
+    cursor = await db.execute(
+        "SELECT 1 FROM projects WHERE id = ?",
+        (job.project_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
+
+
 # ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------
@@ -66,11 +100,18 @@ async def create_job(
         async with get_db() as db:
             return await create_job(job, db=db, commit=True)
 
+    columns = await _job_columns(db)
+    await _ensure_chain_row(db, job)
+    await _validate_project_id(db, job, columns)
+    include_project_id = "project_id" in columns
+    project_id_column = "project_id, " if include_project_id else ""
+    project_id_placeholder = "?, " if include_project_id else ""
+    project_id_value = (job.project_id,) if include_project_id else ()
     await db.execute(
-        """
+        f"""
         INSERT INTO jobs (
             id, type, status, job_level, parent_job_id, chain_id,
-            profile, project_url, media_id, edit_url,
+            profile, {project_id_column}project_url, media_id, edit_url,
             prompt, model, aspect_ratio, bbox_json, direction,
             start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
             output_files_json, generation_id,
@@ -78,7 +119,7 @@ async def create_job(
             created_at, updated_at
         ) VALUES (
             ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?,
+            ?, {project_id_placeholder}?, ?, ?,
             ?, ?, ?, ?, ?,
             ?, ?, ?, ?,
             ?, ?,
@@ -94,6 +135,7 @@ async def create_job(
             job.parent_job_id,
             job.chain_id,
             job.profile,
+            *project_id_value,
             job.project_url,
             job.media_id,
             job.edit_url,
@@ -456,9 +498,13 @@ async def claim_next_job(
 
             if row is not None:
                 job_dict = dict(row)
+                columns = await _job_columns(db)
+                parent_select = "SELECT profile, project_url, media_id, edit_url"
+                if "project_id" in columns:
+                    parent_select += ", project_id"
+                parent_select += " FROM jobs WHERE id = ?"
                 parent_cur = await db.execute(
-                    "SELECT profile, project_url, media_id, edit_url "
-                    "FROM jobs WHERE id = ?",
+                    parent_select,
                     (job_dict["parent_job_id"],),
                 )
                 parent_row = await parent_cur.fetchone()
@@ -467,14 +513,18 @@ async def claim_next_job(
                     bound_project_url = parent_row["project_url"]
                     bound_media_id = parent_row["media_id"]
                     bound_edit_url: Optional[str] = parent_row["edit_url"]
+                    bound_project_id = parent_row["project_id"] if "project_id" in columns else None
                 else:
                     bound_profile = None
                     bound_project_url = None
                     bound_media_id = None
                     bound_edit_url = None
+                    bound_project_id = None
 
+                project_id_set = ", project_id = ?" if "project_id" in columns else ""
+                project_id_param = (bound_project_id,) if "project_id" in columns else ()
                 await db.execute(
-                    """
+                    f"""
                     UPDATE jobs
                     SET status = 'claimed',
                         worker_id = ?,
@@ -482,7 +532,7 @@ async def claim_next_job(
                         profile = ?,
                         project_url = ?,
                         media_id = ?,
-                        edit_url = ?,
+                        edit_url = ?{project_id_set},
                         updated_at = ?
                     WHERE id = ?
                     """,
@@ -493,6 +543,7 @@ async def claim_next_job(
                         bound_project_url,
                         bound_media_id,
                         bound_edit_url,
+                        *project_id_param,
                         now,
                         job_dict["id"],
                     ),

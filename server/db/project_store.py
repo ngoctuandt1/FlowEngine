@@ -26,6 +26,12 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+async def _jobs_has_project_id_column(db) -> bool:
+    cursor = await db.execute("PRAGMA table_info(jobs)")
+    rows = await cursor.fetchall()
+    return any(row[1] == "project_id" for row in rows)
+
+
 def _output_media_url(path: str) -> str:
     normalized = str(path or "").replace("\\", "/").strip()
     if not normalized:
@@ -281,9 +287,14 @@ async def update_project(project_id: str, update: ProjectUpdate) -> Optional[Pro
 
 
 async def delete_project(project_id: str) -> bool:
-    """Delete a project row without touching jobs or chains."""
+    """Delete a project row and clear linked job project ids when available."""
 
     async with get_db() as db:
+        if await _jobs_has_project_id_column(db):
+            await db.execute(
+                "UPDATE jobs SET project_id = NULL WHERE project_id = ?",
+                (project_id,),
+            )
         cursor = await db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
         await db.commit()
         return cursor.rowcount > 0
