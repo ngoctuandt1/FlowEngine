@@ -821,6 +821,145 @@ async def download_l1_gen(
     return files
 
 
+async def download_l1_gen_at_tile(
+    client,
+    *,
+    tile_index: int,
+    media_id: str,
+    project_url: str,
+    prefix: str = "t2v",
+    quality: str = "1080p",
+) -> list[str]:
+    """Download the i-th project tile (most-recent-first ordering).
+
+    Phase 1 Live verify on debian-root 2026-05-04 surfaced a contamination
+    bug: Flow's project view orders tiles by creation timestamp DESC, but
+    `flow.upscale._ensure_edit_view` always clicks ``[data-tile-id^=fe_id_]``
+    .first. Three batched L1 t2v downloads therefore all fetched tile[0]
+    (the most-recent submit's video, repeated 3×, identical md5).
+
+    This wrapper routes around that by clicking tile_index BEFORE calling
+    download_video. Once the SPA settles on ``/edit/{routing_slug}`` the
+    upscale path's tile-click branch is skipped (it's gated on
+    ``"/edit/" in page.url``).
+
+    Tile-index → submit-index mapping (caller's responsibility):
+
+      tile order   = [submit_N-1, submit_N-2, ..., submit_0]   # newest first
+      tile_index   = N - 1 - submit_index
+
+    so submit 0 (oldest) downloads from tile_index = N-1.
+    """
+    if not media_id:
+        raise RuntimeError("download_l1_gen_at_tile called without media_id")
+    page = client.page
+
+    # Step 0 — make sure we're on the project root view (NOT /edit/) so
+    # the tiles are addressable and reorderable. If we're already on /edit/
+    # of one tile, the tile rail still renders, but to be safe step out
+    # to the project URL first.
+    if "/project/" not in page.url or "/edit/" in page.url:
+        if project_url:
+            try:
+                await page.goto(project_url, wait_until="domcontentloaded",
+                                timeout=20000)
+                await asyncio.sleep(2)
+            except Exception as exc:
+                logger.warning("download_l1_gen_at_tile: goto project failed: %s", exc)
+
+    # Step 1 — click the i-th UNIQUE tile.
+    # Live verify on debian-root 2026-05-04 showed Flow renders each tile
+    # twice in the project view (live evidence: 3 generations → 6
+    # ``[data-tile-id^=fe_id_]`` elements, each id appearing in two
+    # adjacent positions). Picking by raw .nth() index lands on a
+    # duplicate of an earlier tile and downloads the wrong video.
+    # Resolve to the first DOM occurrence per data-tile-id, then index
+    # into the deduped list.
+    try:
+        unique_tile_ids = await page.evaluate(
+            """() => {
+                const seen = new Set(); const out = [];
+                for (const el of document.querySelectorAll('[data-tile-id^="fe_id_"]')) {
+                    const tid = el.getAttribute('data-tile-id');
+                    if (!tid || seen.has(tid)) continue;
+                    seen.add(tid);
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 50 || r.height < 50) continue;  // skip non-render
+                    out.push(tid);
+                }
+                return out;
+            }"""
+        )
+        logger.info(
+            "download_l1_gen_at_tile: %d unique tiles, target idx=%d, ids=%s",
+            len(unique_tile_ids), tile_index,
+            [t[:25] for t in unique_tile_ids[:10]],
+        )
+        if tile_index >= len(unique_tile_ids):
+            raise RuntimeError(
+                f"download_l1_gen_at_tile: tile_index={tile_index} but only "
+                f"{len(unique_tile_ids)} unique tiles rendered"
+            )
+        target_tile_id = unique_tile_ids[tile_index]
+        target = page.locator(f"[data-tile-id='{target_tile_id}']").first
+        await target.wait_for(state="attached", timeout=8000)
+        await target.scroll_into_view_if_needed(timeout=2000)
+        # Some tiles are <div> without click handler on the outer element —
+        # fall back to dispatching MouseEvents on the inner card via JS.
+        try:
+            await target.click(timeout=5000)
+        except Exception:
+            tile_id = await target.get_attribute("data-tile-id")
+            await page.evaluate(
+                """(tid) => {
+                    const el = document.querySelector(`[data-tile-id="${tid}"]`);
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    const cx = r.x + r.width/2, cy = r.y + r.height/2;
+                    for (const t of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+                        el.dispatchEvent(new MouseEvent(t, {
+                            bubbles: true, cancelable: true, view: window,
+                            clientX: cx, clientY: cy, button: 0,
+                        }));
+                    }
+                    return true;
+                }""",
+                tile_id,
+            )
+        # Wait for /edit/ URL to settle.
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if "/edit/" in page.url:
+                break
+            await asyncio.sleep(0.2)
+        else:
+            logger.warning(
+                "download_l1_gen_at_tile: SPA didn't reach /edit/ after click; URL=%s",
+                page.url[:120],
+            )
+        await asyncio.sleep(1.5)
+    except Exception as exc:
+        raise RuntimeError(
+            f"download_l1_gen_at_tile: tile click failed (index={tile_index}): {exc}"
+        ) from exc
+
+    # Step 2 — download. download_video will see we're on /edit/ already
+    # and skip its own tile.first click.
+    files = await download_video(
+        client,
+        media_ids=[media_id],
+        prefix=prefix,
+        quality=quality,
+        media_kind="video",
+    )
+    if not files:
+        raise RuntimeError(
+            f"download_l1_gen_at_tile(idx={tile_index}, mid={media_id[:12]}): "
+            f"no output file"
+        )
+    return files
+
+
 # ---------------------------------------------------------------------------
 # Result builder
 # ---------------------------------------------------------------------------

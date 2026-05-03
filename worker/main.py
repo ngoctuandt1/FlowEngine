@@ -17,7 +17,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from worker.browser_pool import init_pool, shutdown_pool
-from worker.dispatcher import dispatch_batch_l1_same_project, dispatch_job
+from worker.dispatcher import (
+    dispatch_batch_l1_same_project,
+    dispatch_batch_l2_siblings,
+    dispatch_job,
+)
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
 from worker.remote_api import RemoteAPI
@@ -56,6 +60,12 @@ try:
     FLOW_BATCH_L1_MAX = max(1, int(os.getenv("FLOW_BATCH_L1_MAX", "3").strip() or 3))
 except ValueError:
     FLOW_BATCH_L1_MAX = 3
+try:
+    FLOW_BATCH_L2_MAX = max(1, int(os.getenv("FLOW_BATCH_L2_MAX", "3").strip() or 3))
+except ValueError:
+    FLOW_BATCH_L2_MAX = 3
+
+L2_BATCH_OPS = {"extend-video", "camera-move", "insert-object", "remove-object"}
 
 HEARTBEAT_INTERVAL_SEC = 30
 
@@ -234,6 +244,73 @@ async def claim_loop(
                 break
         return siblings
 
+    async def _maybe_claim_l2_siblings(claimed: dict) -> list[dict]:
+        """Peek + claim up to FLOW_BATCH_L2_MAX-1 sibling L2 jobs sharing
+        the same `parent_job_id` and profile. Returns claimed siblings in
+        FIFO order. Empty list on any peek/claim failure.
+        """
+        slots = max(0, FLOW_BATCH_L2_MAX - 1)
+        parent_id = claimed.get("parent_job_id") or ""
+        if slots <= 0 or not parent_id:
+            return []
+        try:
+            peeked = await api.list_pending_l2_siblings(
+                parent_job_id=parent_id,
+                profile=claimed.get("profile") or None,
+                limit=slots + 1,
+            )
+        except Exception:
+            logger.warning("list_pending_l2_siblings failed", exc_info=True)
+            return []
+
+        siblings: list[dict] = []
+        for cand in peeked:
+            cid = cand.get("id")
+            if not cid or cid == claimed.get("id"):
+                continue
+            if (cand.get("type") or "") not in L2_BATCH_OPS:
+                continue
+            try:
+                claimed_sibling = await api.claim_job_by_id(
+                    cid, profile=claimed.get("profile") or None,
+                )
+            except Exception:
+                logger.warning("claim_job_by_id failed for %s", cid, exc_info=True)
+                continue
+            if claimed_sibling is None:
+                continue
+            siblings.append(claimed_sibling)
+            if len(siblings) >= slots:
+                break
+        return siblings
+
+    async def run_claimed_batch_l2(jobs: list[dict]) -> None:
+        if len(jobs) == 1:
+            await run_claimed_job(jobs[0])
+            return
+        ids = [j.get("id") for j in jobs]
+        profile = jobs[0].get("profile") or ""
+        logger.info("Dispatching L2 batch %s on profile %s", ids, profile)
+        try:
+            results = await dispatch_batch_l2_siblings(
+                jobs, profile_mgr, project_lock,
+            )
+        except Exception as exc:
+            logger.exception("L2 batch dispatch crashed for jobs %s", ids)
+            results = [
+                {"job_id": j.get("id"), "status": "failed", "error": str(exc)}
+                for j in jobs
+            ]
+        for r in results:
+            jid = r.pop("job_id", None) or r.get("id")
+            if not jid:
+                continue
+            try:
+                await api.update_job(jid, r)
+                logger.info("L2 batch job %s -> %s", jid, r.get("status"))
+            except Exception:
+                logger.error("Failed to report L2 batch result for %s", jid, exc_info=True)
+
     async def run_claimed_batch(jobs: list[dict]) -> None:
         if len(jobs) == 1:
             await run_claimed_job(jobs[0])
@@ -391,9 +468,26 @@ async def claim_loop(
                     if sp:
                         profile_mgr.mark_busy(sp, sib.get("id", "?"))
 
+            l2_siblings: list[dict] = []
+            if (
+                FLOW_BATCH_DISPATCH
+                and not siblings
+                and job.get("job_level", 1) == 2
+                and (job.get("type") or "") in L2_BATCH_OPS
+                and (job.get("parent_job_id") or "") != ""
+            ):
+                l2_siblings = await _maybe_claim_l2_siblings(job)
+                for sib in l2_siblings:
+                    sp = sib.get("profile") or ""
+                    if sp:
+                        profile_mgr.mark_busy(sp, sib.get("id", "?"))
+
             if siblings:
                 batch_jobs = [job, *siblings]
                 task = asyncio.create_task(run_claimed_batch(batch_jobs))
+            elif l2_siblings:
+                batch_jobs = [job, *l2_siblings]
+                task = asyncio.create_task(run_claimed_batch_l2(batch_jobs))
             else:
                 task = asyncio.create_task(run_claimed_job(job))
             in_flight.add(task)

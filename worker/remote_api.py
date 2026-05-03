@@ -136,6 +136,35 @@ class RemoteAPI:
         data = resp.json()
         return data if isinstance(data, list) else []
 
+    async def list_pending_l2_siblings(
+        self,
+        *,
+        parent_job_id: str,
+        profile: Optional[str] = None,
+        limit: int = 5,
+    ) -> list[dict]:
+        """GET /api/jobs/l2-siblings — peek pending L2 siblings for batch.
+
+        Returns [] on transport failure rather than raising.
+        """
+        if not parent_job_id:
+            return []
+        params: dict[str, object] = {
+            "parent_job_id": parent_job_id, "limit": limit,
+        }
+        if profile is not None:
+            params["profile"] = profile
+        resp = await self._request("GET", "/api/jobs/l2-siblings", params=params)
+        if resp is None:
+            return []
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            logger.warning("list_pending_l2_siblings non-2xx: %s", resp.status_code)
+            return []
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
     async def heartbeat(self) -> None:
         """POST /api/worker/heartbeat -- worker keepalive."""
         payload = {"worker_id": self.worker_id}

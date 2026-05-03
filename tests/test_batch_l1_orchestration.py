@@ -83,6 +83,9 @@ async def test_batch_full_success_returns_three_distinct_results(monkeypatch):
     monkeypatch.setattr(batch_mod, "submit_generate_l1", fake_submit)
     monkeypatch.setattr(batch_mod, "wait_for_all_l1_gens", _make_collective_wait(fake_wait))
     monkeypatch.setattr(batch_mod, "download_l1_gen", fake_download)
+    async def _fake_dl_at_tile(client, *, tile_index, media_id, project_url, **kw):
+        return await fake_download(client, media_id)
+    monkeypatch.setattr(batch_mod, "download_l1_gen_at_tile", _fake_dl_at_tile)
 
     jobs = [_job("aa", "red cat"), _job("bb", "blue dog"), _job("cc", "yellow bird")]
     results = await batch_mod.batch_dispatch_l1_same_project(_FakeClient(), jobs)
@@ -122,6 +125,9 @@ async def test_batch_mid_submit_failure_does_not_abort(monkeypatch):
     monkeypatch.setattr(batch_mod, "submit_generate_l1", fake_submit)
     monkeypatch.setattr(batch_mod, "wait_for_all_l1_gens", _make_collective_wait(fake_wait))
     monkeypatch.setattr(batch_mod, "download_l1_gen", fake_download)
+    async def _fake_dl_at_tile(client, *, tile_index, media_id, project_url, **kw):
+        return await fake_download(client, media_id)
+    monkeypatch.setattr(batch_mod, "download_l1_gen_at_tile", _fake_dl_at_tile)
 
     results = await batch_mod.batch_dispatch_l1_same_project(
         _FakeClient(),
@@ -175,6 +181,9 @@ async def test_batch_wait_failure_does_not_block_other_completions(monkeypatch):
     monkeypatch.setattr(batch_mod, "submit_generate_l1", fake_submit)
     monkeypatch.setattr(batch_mod, "wait_for_all_l1_gens", _make_collective_wait(fake_wait))
     monkeypatch.setattr(batch_mod, "download_l1_gen", fake_download)
+    async def _fake_dl_at_tile(client, *, tile_index, media_id, project_url, **kw):
+        return await fake_download(client, media_id)
+    monkeypatch.setattr(batch_mod, "download_l1_gen_at_tile", _fake_dl_at_tile)
 
     results = await batch_mod.batch_dispatch_l1_same_project(
         _FakeClient(), [_job("aa"), _job("bb"), _job("cc")],
@@ -237,6 +246,9 @@ async def test_batch_results_in_input_order_under_concurrent_waits(monkeypatch):
     monkeypatch.setattr(batch_mod, "submit_generate_l1", fake_submit)
     monkeypatch.setattr(batch_mod, "wait_for_all_l1_gens", _make_collective_wait(fake_wait))
     monkeypatch.setattr(batch_mod, "download_l1_gen", fake_download)
+    async def _fake_dl_at_tile(client, *, tile_index, media_id, project_url, **kw):
+        return await fake_download(client, media_id)
+    monkeypatch.setattr(batch_mod, "download_l1_gen_at_tile", _fake_dl_at_tile)
 
     async def signaller():
         for jid in finish_order:

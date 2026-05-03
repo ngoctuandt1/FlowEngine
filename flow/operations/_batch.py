@@ -34,9 +34,19 @@ from typing import Any
 from flow.operations._l1_batch import (
     build_l1_result,
     download_l1_gen,
+    download_l1_gen_at_tile,
     submit_generate_l1,
     wait_for_all_l1_gens,
     wait_for_l1_gen,
+)
+from flow.operations._l2_batch import (
+    build_l2_result,
+    download_l2_gen_at_tile,
+    submit_camera,
+    submit_extend,
+    submit_insert,
+    submit_remove,
+    wait_for_all_l2_gens,
 )
 from flow.recaptcha import RecaptchaError
 
@@ -138,6 +148,28 @@ async def batch_dispatch_l1_same_project(
                           "media_id": None, "media_ids": []})
 
     # ----------------------------------------------------------------- C
+    # Tile-index download mapping. Flow's project view orders tiles by
+    # creation timestamp DESC (newest first), but the legacy upscale path
+    # always clicks ``[data-tile-id^=fe_id_].first`` which would download
+    # the same (most-recent) tile N times — verified contamination on
+    # 2026-05-04 live verify (3 batched downloads → identical md5).
+    #
+    # Map per-submit to tile_index. Only successful submits (with a
+    # completed wait + resolved media_id) earn a tile to download.
+    completed_indices = [
+        i for i, (rec, wait) in enumerate(zip(submits, waits))
+        if (
+            rec.get("submit") and not rec.get("error")
+            and wait.get("status") == "completed"
+            and wait.get("media_id")
+        )
+    ]
+    n_tiles = len(completed_indices)
+    # Reverse mapping: oldest completed submit → highest tile_index.
+    submit_to_tile: dict[int, int] = {}
+    for rank, submit_idx in enumerate(completed_indices):
+        submit_to_tile[submit_idx] = n_tiles - 1 - rank
+
     profile = getattr(client, "profile_name", "") or ""
     results: list[dict[str, Any]] = []
     for rec, wait in zip(submits, waits):
@@ -172,7 +204,19 @@ async def batch_dispatch_l1_same_project(
             continue
 
         try:
-            files = await download_l1_gen(client, media_id)
+            submit_index = submits.index(rec)
+            tile_index = submit_to_tile.get(submit_index)
+            if tile_index is None:
+                # Should not happen — we computed completed_indices from
+                # the same condition. Fall back to legacy path.
+                files = await download_l1_gen(client, media_id)
+            else:
+                files = await download_l1_gen_at_tile(
+                    client,
+                    tile_index=tile_index,
+                    media_id=media_id,
+                    project_url=project_url,
+                )
         except Exception as exc:
             logger.exception("L1 batch download failed for mid=%s: %s",
                              media_id[:12], exc)
@@ -210,8 +254,225 @@ def _finalize_failed_batch(client, submits: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-async def batch_dispatch_l2_siblings(*args, **kwargs) -> list[dict]:
-    raise NotImplementedError("Phase 2 not yet implemented")
+async def batch_dispatch_l2_siblings(
+    client,
+    parent_edit_url: str,
+    parent_media_id: str,
+    l2_jobs: list[dict],
+) -> list[dict[str, Any]]:
+    """Submit N L2 ops back-to-back on a shared parent L1, return results.
+
+    PRD §4. Caller guarantees:
+      * all jobs have ``job_level == 2``
+      * all share the same ``parent_job_id`` (= the L1)
+      * all share ``profile`` = ``client.profile_name``
+      * ``parent_edit_url`` and ``parent_media_id`` come from the parent L1
+
+    Phase A — sequential submits dispatched by ``type`` (extend / camera /
+    insert / remove). Each ``submit_X`` clicks its own mode panel; the
+    first submit lands on /edit/ and subsequent ones reuse the same page.
+    Phase B — collective wait for N new media_ids via
+    :func:`wait_for_all_l2_gens` (excluding parent's mid).
+    Phase C — sequential downloads keyed by tile_index (oldest submit →
+    highest index, mirroring L1 batch's mapping).
+    """
+    if not l2_jobs:
+        return []
+
+    from flow.navigation import detect_locale, extract_project_id
+
+    # Synthetic "parent job" object for navigate_to_edit. We only need
+    # edit_url/project_url/media_id keys; the rest of the fields are unused.
+    parent_synth = {
+        "edit_url": parent_edit_url,
+        "media_id": parent_media_id,
+        "project_url": "",  # navigate_to_edit happily uses edit_url alone
+    }
+
+    # ----------------------------------------------------------------- A
+    submits: list[dict[str, Any]] = []
+    project_id = ""
+    locale = ""
+    for idx, job in enumerate(l2_jobs):
+        try:
+            sub = await _dispatch_l2_submit(
+                client, job, parent_synth,
+                first=(idx == 0),
+            )
+        except RecaptchaError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "L2 batch submit %d/%d failed: %s",
+                idx + 1, len(l2_jobs), exc,
+            )
+            submits.append({"job": job, "submit": None, "error": str(exc)})
+            continue
+        submits.append({"job": job, "submit": sub, "error": None})
+        logger.info(
+            "L2 batch submit %d/%d ok: type=%s gen=%s",
+            idx + 1, len(l2_jobs), sub["op_type"], sub["gen_id"][-12:],
+        )
+
+    # Page is now on /edit/{parent or latest}; harvest project_id + locale.
+    page_url = client.page.url
+    project_id = extract_project_id(page_url) or ""
+    locale = detect_locale(page_url)
+    project_url = (
+        f"https://labs.google/fx/{(locale + '/') if locale else ''}tools/flow"
+        f"/project/{project_id}" if project_id else ""
+    )
+
+    # ----------------------------------------------------------------- B
+    successful = [
+        rec["submit"] for rec in submits
+        if rec.get("submit") and not rec.get("error")
+    ]
+    if successful:
+        try:
+            collective = await wait_for_all_l2_gens(
+                client, successful, parent_media_id=parent_media_id,
+            )
+        except RecaptchaError:
+            raise
+        except Exception as exc:
+            logger.exception("L2 batch collective wait failed: %s", exc)
+            collective = [
+                {"status": "failed", "error": str(exc),
+                 "media_id": None, "media_ids": []}
+                for _ in successful
+            ]
+    else:
+        collective = []
+
+    waits: list[dict[str, Any]] = []
+    coll_iter = iter(collective)
+    for rec in submits:
+        if rec.get("submit") and not rec.get("error"):
+            try:
+                waits.append(next(coll_iter))
+            except StopIteration:
+                waits.append({"status": "failed", "error": "wait result missing",
+                              "media_id": None, "media_ids": []})
+        else:
+            waits.append({"status": "failed",
+                          "error": rec.get("error") or "no submit",
+                          "media_id": None, "media_ids": []})
+
+    # ----------------------------------------------------------------- C
+    completed_indices = [
+        i for i, (rec, wait) in enumerate(zip(submits, waits))
+        if (
+            rec.get("submit") and not rec.get("error")
+            and wait.get("status") == "completed"
+            and wait.get("media_id")
+        )
+    ]
+    n_tiles = len(completed_indices)
+    submit_to_tile: dict[int, int] = {}
+    for rank, submit_idx in enumerate(completed_indices):
+        submit_to_tile[submit_idx] = n_tiles - 1 - rank
+
+    profile = getattr(client, "profile_name", "") or ""
+    results: list[dict[str, Any]] = []
+    for i, (rec, wait) in enumerate(zip(submits, waits)):
+        job = rec["job"]
+        sub = rec.get("submit") or {}
+
+        common = dict(
+            job=job, submit=sub, profile=profile,
+            project_url=project_url, project_id=project_id, locale=locale,
+        )
+
+        if rec.get("error"):
+            results.append(_attach_job_id(job, build_l2_result(
+                wait={}, output_files=None, error=rec["error"], **common,
+            )))
+            continue
+        if wait.get("status") != "completed":
+            results.append(_attach_job_id(job, build_l2_result(
+                wait=wait, output_files=None,
+                error=wait.get("error") or "wait failed", **common,
+            )))
+            continue
+
+        media_id = wait.get("media_id")
+        if not media_id:
+            results.append(_attach_job_id(job, build_l2_result(
+                wait=wait, output_files=None,
+                error="no media_id resolved post-completion", **common,
+            )))
+            continue
+
+        try:
+            tile_index = submit_to_tile.get(i)
+            edit_url_val = (
+                f"https://labs.google/fx/{(locale + '/') if locale else ''}"
+                f"tools/flow/project/{project_id}/edit/{media_id}"
+                if project_id else parent_edit_url
+            )
+            files = await download_l2_gen_at_tile(
+                client,
+                tile_index=tile_index if tile_index is not None else 0,
+                media_id=media_id,
+                edit_url=edit_url_val,
+                prefix=_prefix_for_l2(job),
+            )
+        except Exception as exc:
+            logger.exception("L2 batch download failed for mid=%s: %s",
+                             media_id[:12], exc)
+            results.append(_attach_job_id(job, build_l2_result(
+                wait=wait, output_files=None,
+                error=f"download: {exc}", **common,
+            )))
+            continue
+
+        results.append(_attach_job_id(job, build_l2_result(
+            wait=wait, output_files=files, **common,
+        )))
+
+    return results
+
+
+def _prefix_for_l2(job: dict) -> str:
+    return {
+        "extend-video": "ext",
+        "camera-move": "cam",
+        "insert-object": "ins",
+        "remove-object": "rm",
+    }.get(job.get("type") or "", "l2")
+
+
+async def _dispatch_l2_submit(client, job: dict, parent_synth: dict, *,
+                              first: bool) -> dict:
+    """Route one job to its op-specific submit_X by ``job['type']``."""
+    op = (job.get("type") or "").strip()
+    # ``panel_already_open`` is False for every submit — between siblings
+    # the prior op's panel may have closed (Flow auto-resets on submit).
+    # Each submit_X re-clicks its mode button idempotently.
+    panel_open = False
+    if op == "extend-video":
+        return await submit_extend(
+            client, parent_synth, prompt=job.get("prompt") or "",
+            panel_already_open=panel_open,
+        )
+    if op == "camera-move":
+        direction = job.get("direction") or "Dolly in"
+        return await submit_camera(
+            client, parent_synth, direction,
+            panel_already_open=panel_open,
+        )
+    if op == "insert-object":
+        return await submit_insert(
+            client, parent_synth, prompt=job.get("prompt") or "",
+            bbox=job.get("bbox"), panel_already_open=panel_open,
+        )
+    if op == "remove-object":
+        return await submit_remove(
+            client, parent_synth, bbox=job.get("bbox"),
+            panel_already_open=panel_open,
+        )
+    raise RuntimeError(f"Unsupported L2 batch op type: {op!r}")
 
 
 async def batch_dispatch_l3_siblings(*args, **kwargs) -> list[dict]:
