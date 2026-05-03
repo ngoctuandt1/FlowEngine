@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,7 +116,7 @@ class ProfileSwapper:
         env.setdefault("FLOW_USE_BASE_PROFILE", "1")
         try:
             result = subprocess.run(
-                ["python", "scripts/warm_profile.py", profile_name],
+                [sys.executable, "scripts/warm_profile.py", profile_name],
                 cwd=self.repo_root,
                 env=env,
                 timeout=timeout,
