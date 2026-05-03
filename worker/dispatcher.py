@@ -513,6 +513,7 @@ async def dispatch_job(
         )
         if old_profile and _auto_replace_profiles_enabled():
             swap_failed_logged = False
+            recovery_mode = os.environ.get("FLOW_BURN_RECOVERY_MODE", "swap").strip().lower()
             try:
                 from worker.profile_swapper import ProfileSwapper
 
@@ -520,18 +521,29 @@ async def dispatch_job(
                     profile_base_dir=_profile_base_dir(),
                     credentials_file=_credentials_file_path(),
                 )
-                new_profile = await asyncio.to_thread(
-                    swapper.swap_burned,
-                    old_profile,
-                )
+                if recovery_mode == "wipe":
+                    # Same-account recovery: kill chrome, wipe profile dir
+                    # and any .burned-* archives, then re-warm under SAME
+                    # name. Keeps single-account chains alive instead of
+                    # rotating to a different Google account.
+                    rewarmed = await asyncio.to_thread(
+                        swapper.wipe_and_rewarm,
+                        old_profile,
+                    )
+                    new_profile = old_profile if rewarmed else None
+                else:
+                    new_profile = await asyncio.to_thread(
+                        swapper.swap_burned,
+                        old_profile,
+                    )
             except Exception:
                 logger.exception(
-                    "Profile burned, swap failed; pool exhausted or warm failed"
+                    "Profile burned, recovery failed; pool exhausted or warm failed"
                 )
                 swap_failed_logged = True
                 new_profile = None
 
-            if new_profile:
+            if new_profile and new_profile != old_profile:
                 profile_manager.replace_profile(old_profile, new_profile)
                 logger.info(
                     "Profile burned, auto-replaced: %s -> %s",
@@ -540,10 +552,20 @@ async def dispatch_job(
                 )
                 if manage_profile:
                     profile = ""
+            elif new_profile == old_profile:
+                # wipe-and-rewarm path: same profile name reused. Mark it
+                # available again so claim loop picks the fresh session.
+                profile_manager.mark_available(old_profile)
+                logger.info(
+                    "Profile burned, wiped and re-warmed in place: %s",
+                    old_profile,
+                )
+                if manage_profile:
+                    profile = ""
             else:
                 if not swap_failed_logged:
                     logger.error(
-                        "Profile burned, swap failed; pool exhausted or warm failed"
+                        "Profile burned, recovery failed; pool exhausted or warm failed"
                     )
                 profile_manager.remove_profile(old_profile)
                 if manage_profile:
