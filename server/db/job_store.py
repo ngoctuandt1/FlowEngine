@@ -234,6 +234,59 @@ async def list_jobs(
         return [_row_to_job(r) for r in rows]
 
 
+async def list_pending_l1_siblings(
+    *,
+    project_url: Optional[str] = None,
+    profile: Optional[str] = None,
+    limit: int = 5,
+) -> list[Job]:
+    """List pending L1 jobs that can be batched into one Chrome.
+
+    PRD §3.2 Phase 1. Used by the worker batch claim path: after claiming
+    one L1 t2v, peek the next N-1 candidates that share the same project
+    target (or the same profile when no project_url is bound yet).
+
+    Filters:
+      * status = 'pending'
+      * job_level = 1
+      * type = 'text-to-video' (Phase 1 only — image / frames defer)
+      * project_url = ? (or NULL when None)
+      * profile = ? (or any when None)
+
+    Order: created_at ASC (FIFO so first-submitted siblings drain first).
+    """
+    if limit < 1:
+        return []
+    if limit > 20:
+        limit = 20
+
+    clauses = [
+        "status = 'pending'",
+        "job_level = 1",
+        "type = 'text-to-video'",
+    ]
+    params: list = []
+    if project_url is None:
+        clauses.append("(project_url IS NULL OR project_url = '')")
+    else:
+        clauses.append("project_url = ?")
+        params.append(project_url)
+    if profile is not None:
+        clauses.append("profile = ?")
+        params.append(profile)
+
+    query = (
+        f"SELECT * FROM jobs WHERE {' AND '.join(clauses)} "
+        "ORDER BY created_at ASC LIMIT ?"
+    )
+    params.append(limit)
+
+    async with get_db() as db:
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [_row_to_job(r) for r in rows]
+
+
 async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
     """Apply partial update to a job. Returns updated Job or None if not found."""
     fields = update.model_dump(exclude_unset=True)
@@ -615,6 +668,64 @@ async def claim_next_job(
             await db.execute("COMMIT")
             return None
 
+        except Exception:
+            await db.execute("ROLLBACK")
+            raise
+
+
+async def claim_specific_pending_job(
+    worker_id: str,
+    job_id: str,
+    *,
+    profile: Optional[str] = None,
+) -> Optional[Job]:
+    """Atomically transition a specific pending job to 'claimed'.
+
+    PRD §3.2 Phase 1. Used by the worker batch path: after claiming the
+    first L1 t2v normally, sibling jobs are claimed by id (race-safe via
+    BEGIN IMMEDIATE + status='pending' WHERE-clause).
+
+    Returns the updated Job on success, or None if the job is no longer
+    pending (someone else claimed it, or it was already cancelled).
+    """
+    now = _now_iso()
+    async with get_db() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT * FROM jobs WHERE id = ? AND status = 'pending'",
+                (job_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                await db.execute("COMMIT")
+                return None
+
+            assigned_profile = profile or row["profile"]
+
+            await db.execute(
+                """
+                UPDATE jobs
+                SET status = 'claimed',
+                    worker_id = ?,
+                    claimed_at = ?,
+                    profile = ?,
+                    updated_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (worker_id, now, assigned_profile, now, job_id),
+            )
+            if assigned_profile:
+                await db.execute(
+                    """
+                    UPDATE profiles
+                    SET current_job_id = ?, worker_id = ?, last_used_at = ?
+                    WHERE name = ?
+                    """,
+                    (job_id, worker_id, now, assigned_profile),
+                )
+            await db.commit()
+            return await get_job(job_id)
         except Exception:
             await db.execute("ROLLBACK")
             raise

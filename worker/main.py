@@ -17,7 +17,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from worker.browser_pool import init_pool, shutdown_pool
-from worker.dispatcher import dispatch_job
+from worker.dispatcher import dispatch_batch_l1_same_project, dispatch_job
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
 from worker.remote_api import RemoteAPI
@@ -47,6 +47,16 @@ MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
 ALLOW_SAME_PROFILE_CONCURRENCY = os.getenv(
     "ALLOW_SAME_PROFILE_CONCURRENCY", "0"
 ).strip() in ("1", "true", "yes")
+
+# FLOW_BATCH_DISPATCH=1 enables the batch path (PRD §2.2). Default OFF.
+# When ON, the worker peeks for L1 t2v siblings after each L1 claim and
+# fans out one Chrome over up to FLOW_BATCH_L1_MAX jobs.
+FLOW_BATCH_DISPATCH = os.getenv("FLOW_BATCH_DISPATCH", "0").strip() == "1"
+try:
+    FLOW_BATCH_L1_MAX = max(1, int(os.getenv("FLOW_BATCH_L1_MAX", "3").strip() or 3))
+except ValueError:
+    FLOW_BATCH_L1_MAX = 3
+
 HEARTBEAT_INTERVAL_SEC = 30
 
 # ======================================================================
@@ -184,6 +194,73 @@ async def claim_loop(
         SERVER_URL, WORKER_ID, WORKER_PROFILES, POLL_INTERVAL_SEC, max_concurrent,
     )
 
+    async def _maybe_claim_l1_siblings(claimed: dict) -> list[dict]:
+        """Peek + claim up to FLOW_BATCH_L1_MAX-1 sibling L1 t2v jobs.
+
+        Only invoked when FLOW_BATCH_DISPATCH=1 and the just-claimed job
+        is an L1 text-to-video. Returns the claimed sibling jobs in
+        FIFO order. Empty list when there are none, or when the peek /
+        claim API fails — caller falls back to single-job dispatch.
+        """
+        slots = max(0, FLOW_BATCH_L1_MAX - 1)
+        if slots <= 0:
+            return []
+        try:
+            peeked = await api.list_pending_l1_siblings(
+                project_url=None,
+                profile=claimed.get("profile") or None,
+                limit=slots + 1,  # over-fetch so we can drop the just-claimed one
+            )
+        except Exception:
+            logger.warning("list_pending_l1_siblings failed", exc_info=True)
+            return []
+
+        siblings: list[dict] = []
+        for cand in peeked:
+            cid = cand.get("id")
+            if not cid or cid == claimed.get("id"):
+                continue
+            try:
+                claimed_sibling = await api.claim_job_by_id(
+                    cid, profile=claimed.get("profile") or None,
+                )
+            except Exception:
+                logger.warning("claim_job_by_id failed for %s", cid, exc_info=True)
+                continue
+            if claimed_sibling is None:
+                continue
+            siblings.append(claimed_sibling)
+            if len(siblings) >= slots:
+                break
+        return siblings
+
+    async def run_claimed_batch(jobs: list[dict]) -> None:
+        if len(jobs) == 1:
+            await run_claimed_job(jobs[0])
+            return
+        ids = [j.get("id") for j in jobs]
+        profile = jobs[0].get("profile") or ""
+        logger.info("Dispatching L1 batch %s on profile %s", ids, profile)
+        try:
+            results = await dispatch_batch_l1_same_project(
+                jobs, profile_mgr, project_lock,
+            )
+        except Exception as exc:
+            logger.exception("Batch dispatch crashed for jobs %s", ids)
+            results = [
+                {"job_id": j.get("id"), "status": "failed", "error": str(exc)}
+                for j in jobs
+            ]
+        for r in results:
+            jid = r.pop("job_id", None) or r.get("id")
+            if not jid:
+                continue
+            try:
+                await api.update_job(jid, r)
+                logger.info("Batch job %s -> %s", jid, r.get("status"))
+            except Exception:
+                logger.error("Failed to report batch result for %s", jid, exc_info=True)
+
     async def run_claimed_job(job: dict) -> None:
         job_id = job.get("id", "?")
         profile = job.get("profile", "")
@@ -297,7 +374,28 @@ async def claim_loop(
 
             if job_profile:
                 profile_mgr.mark_busy(job_profile, job_id)
-            task = asyncio.create_task(run_claimed_job(job))
+
+            # FLOW_BATCH_DISPATCH=1: opportunistically claim L1 t2v siblings
+            # so 1 Chrome handles up to FLOW_BATCH_L1_MAX jobs in a single
+            # /project/{id} session. Default OFF preserves the legacy 1-1-1.
+            siblings: list[dict] = []
+            if (
+                FLOW_BATCH_DISPATCH
+                and job.get("job_level", 1) == 1
+                and job.get("type") == "text-to-video"
+                and (job.get("project_url") or "") == ""
+            ):
+                siblings = await _maybe_claim_l1_siblings(job)
+                for sib in siblings:
+                    sp = sib.get("profile") or ""
+                    if sp:
+                        profile_mgr.mark_busy(sp, sib.get("id", "?"))
+
+            if siblings:
+                batch_jobs = [job, *siblings]
+                task = asyncio.create_task(run_claimed_batch(batch_jobs))
+            else:
+                task = asyncio.create_task(run_claimed_job(job))
             in_flight.add(task)
 
     finally:

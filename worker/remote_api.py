@@ -67,6 +67,34 @@ class RemoteAPI:
         resp.raise_for_status()
         return resp.json()
 
+    async def claim_job_by_id(
+        self,
+        job_id: str,
+        *,
+        profile: Optional[str] = None,
+    ) -> Optional[dict]:
+        """POST /api/worker/claim-by-id — claim a specific pending job.
+
+        Returns the Job dict on success, None if the job is no longer
+        pending (someone else claimed, or cancelled).
+        """
+        payload = {
+            "worker_id": self.worker_id,
+            "job_id": job_id,
+        }
+        if profile is not None:
+            payload["profile"] = profile
+        resp = await self._request("POST", "/api/worker/claim-by-id", json=payload)
+        if resp is None or resp.status_code == 204:
+            return None
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            logger.warning("claim_job_by_id non-2xx for %s: %s",
+                           job_id, resp.status_code)
+            return None
+        return resp.json()
+
     async def update_job(self, job_id: str, update: dict) -> dict:
         """PUT /api/worker/jobs/{job_id} -- push result back to server."""
         resp = await self._request(
@@ -78,6 +106,35 @@ class RemoteAPI:
             )
         resp.raise_for_status()
         return resp.json()
+
+    async def list_pending_l1_siblings(
+        self,
+        *,
+        project_url: Optional[str] = None,
+        profile: Optional[str] = None,
+        limit: int = 5,
+    ) -> list[dict]:
+        """GET /api/jobs/l1-siblings — peek pending L1 siblings for batch.
+
+        Returns a list (possibly empty). Returns [] on transport failure
+        rather than raising — batch is opportunistic, single-job claim
+        path is the safe fallback.
+        """
+        params: dict[str, object] = {"limit": limit}
+        if project_url is not None:
+            params["project_url"] = project_url
+        if profile is not None:
+            params["profile"] = profile
+        resp = await self._request("GET", "/api/jobs/l1-siblings", params=params)
+        if resp is None:
+            return []
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            logger.warning("list_pending_l1_siblings non-2xx: %s", resp.status_code)
+            return []
+        data = resp.json()
+        return data if isinstance(data, list) else []
 
     async def heartbeat(self) -> None:
         """POST /api/worker/heartbeat -- worker keepalive."""

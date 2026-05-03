@@ -27,6 +27,7 @@ from server.db.job_store import (
     get_job_counts,
     get_related_jobs,
     list_jobs,
+    list_pending_l1_siblings,
     recover_stale_jobs,
 )
 from server.routes.ws import broadcast_job_update
@@ -334,6 +335,24 @@ async def list_all_jobs(
     if chain_id:
         filters["chain_id"] = chain_id
     return await list_jobs(**filters)
+
+
+@router.get("/jobs/l1-siblings")
+async def get_pending_l1_siblings(
+    project_url: Optional[str] = Query(None),
+    profile: Optional[str] = Query(None),
+    limit: int = Query(5, ge=1, le=20),
+):
+    """List pending L1 t2v jobs eligible for batch dispatch.
+
+    PRD §3.2 Phase 1. Worker uses this after claiming an L1 t2v to
+    discover up to N-1 sibling jobs that can be batched into the same
+    Chrome (same profile, same target project — or unbound when the
+    project is about to be created).
+    """
+    return await list_pending_l1_siblings(
+        project_url=project_url, profile=profile, limit=limit,
+    )
 
 
 @router.get("/jobs/{job_id}/related", response_model=JobRelatedResponse)

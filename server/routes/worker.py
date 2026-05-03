@@ -7,7 +7,12 @@ from pydantic import BaseModel
 
 from server.auth import require_worker_token
 from server.models.job import JobUpdate
-from server.db.job_store import claim_next_job, get_job, update_job
+from server.db.job_store import (
+    claim_next_job,
+    claim_specific_pending_job,
+    get_job,
+    update_job,
+)
 from server.routes.ws import broadcast_job_update
 
 
@@ -32,6 +37,12 @@ class HeartbeatRequest(BaseModel):
     worker_id: str
 
 
+class ClaimByIdRequest(BaseModel):
+    worker_id: str
+    job_id: str
+    profile: str | None = None
+
+
 # -- In-memory worker tracker --------------------------------------------------
 # Maps worker_id -> last heartbeat datetime.
 # A proper implementation would persist this, but for now memory is fine.
@@ -50,6 +61,23 @@ async def claim_job(req: ClaimRequest):
     if job is None:
         return Response(status_code=204)
 
+    _workers[req.worker_id] = datetime.now(UTC)
+    await broadcast_job_update(job)
+    return job
+
+
+@router.post("/claim-by-id")
+async def claim_specific(req: ClaimByIdRequest):
+    """Claim a specific pending job by id (batch sibling claim, PRD Phase 1).
+
+    Returns 204 if the job is no longer pending (already claimed by
+    another worker, cancelled, etc.). Returns the Job on success.
+    """
+    job = await claim_specific_pending_job(
+        req.worker_id, req.job_id, profile=req.profile,
+    )
+    if job is None:
+        return Response(status_code=204)
     _workers[req.worker_id] = datetime.now(UTC)
     await broadcast_job_update(job)
     return job
