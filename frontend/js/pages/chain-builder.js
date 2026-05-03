@@ -411,6 +411,34 @@
     refreshSteps();
   }
 
+  function renderEditorRail() {
+    // Show "+ Add Step" UI in NEW-CHAIN mode (no parent prefill).
+    // First step picks from FIRST_TYPES (L1 only). Subsequent steps from
+    // SUBSEQUENT_TYPES. Hidden when parentPrefill (parent already locks the
+    // first step type). Backend POST /api/chains accepts the full list at
+    // submit, so this is the multi-step "1 click → whole chain" entry.
+    if (parentPrefill) return '';
+    const isFirst = steps.length === 0;
+    const allowedTypes = isFirst ? FIRST_TYPES : SUBSEQUENT_TYPES;
+    const currentSelection = isFirst
+      ? (selectedFirstType || allowedTypes[0]?.id || '')
+      : (selectedNextType || allowedTypes[0]?.id || '');
+    const opts = renderOptions(allowedTypes, { selected: currentSelection });
+    const label = isFirst ? 'Root step' : 'Next step';
+    const helper = isFirst
+      ? 'Choose the L1 job that creates the chain\'s project.'
+      : 'Extend, insert, remove, and camera all chain off the parent media.';
+    return `
+      <p class="cbf-helper">${helper}</p>
+      <label class="cbf-rail-label">${label} <span class="required">*</span></label>
+      <select class="cbf-input" id="chain-next-type">${opts}</select>
+      <button class="cbf-pill" id="chain-add-step" style="margin-top:10px">
+        <span class="material-icons" style="font-size:16px;vertical-align:middle">add</span>
+        ${isFirst ? 'Add Root Step' : 'Add Step'}
+      </button>
+    `;
+  }
+
   function refreshSteps() {
     syncCollapsedSteps();
     const container = document.getElementById('chain-steps');
@@ -418,6 +446,23 @@
     const editor = document.getElementById('chain-editor');
     if (editor) editor.innerHTML = renderEditorRail();
     bindStepEvents();
+    // Wire the Add Step button (rebound after each refresh).
+    const addBtn = document.getElementById('chain-add-step');
+    const typeSel = document.getElementById('chain-next-type');
+    if (typeSel) {
+      typeSel.addEventListener('change', (e) => {
+        if (steps.length === 0) selectedFirstType = e.target.value;
+        else selectedNextType = e.target.value;
+      });
+    }
+    if (addBtn) {
+      addBtn.addEventListener('click', () => {
+        const isFirst = steps.length === 0;
+        const t = (typeSel?.value || (isFirst ? selectedFirstType : selectedNextType));
+        if (!t) return;
+        addStep(t);
+      });
+    }
     const btn = document.getElementById('submit-chain');
     if (btn) btn.disabled = steps.length === 0;
   }
@@ -1060,7 +1105,7 @@
 
             <div class="cbf-timeline" id="chain-steps"></div>
 
-            <div id="chain-add-buttons" style="margin-top:16px"></div>
+            <div id="chain-editor" style="margin-top:16px"></div>
             <div id="chain-result" style="margin-top:16px"></div>
           </main>
 
