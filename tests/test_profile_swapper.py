@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -180,7 +181,7 @@ def test_warm_new_profile_returns_true_on_success(
     swapper = _make_swapper(tmp_path)
 
     def fake_run(cmd, cwd, env, timeout, check):
-        assert cmd == ["python", "scripts/warm_profile.py", "fresh"]
+        assert cmd == [sys.executable, "scripts/warm_profile.py", "fresh"]
         assert cwd == swapper.repo_root
         assert timeout == 45
         cookies = swapper.profile_base_dir / "fresh" / "Default" / "Cookies"
