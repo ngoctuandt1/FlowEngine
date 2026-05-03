@@ -6,8 +6,8 @@ Public surface:
   Submits N text-to-video jobs into one freshly-created project, parallel-polls
   each generation by its captured gen_id, downloads each in turn.
 
-* `batch_dispatch_l2_siblings(...)` — Phase 2 placeholder.
-* `batch_dispatch_l3_siblings(...)` — Phase 3 placeholder.
+* `batch_dispatch_l2_siblings(...)` — Phase 2 (implemented).
+* `batch_dispatch_l3_siblings(...)` — Phase 3 (implemented; delegates to L2).
 
 All entry points share the same Phase A/B/C structure:
 
@@ -35,6 +35,7 @@ from flow.operations._l1_batch import (
     build_l1_result,
     download_l1_gen,
     download_l1_gen_at_tile,
+    snapshot_unique_tile_ids,
     submit_generate_l1,
     wait_for_all_l1_gens,
     wait_for_l1_gen,
@@ -170,6 +171,29 @@ async def batch_dispatch_l1_same_project(
     for rank, submit_idx in enumerate(completed_indices):
         submit_to_tile[submit_idx] = n_tiles - 1 - rank
 
+    # Snapshot data-tile-ids ONCE before any download. Downloads upscale
+    # tiles which Flow promotes to tile_index=0 mid-batch (live evidence:
+    # round 11 had two tiles with identical md5 because tile order shifted
+    # between the 2nd and 3rd download). Pin id-by-tile_index here so
+    # download_l1_gen_at_tile bypasses the live-list resolve.
+    pinned_tile_ids: list[str] = []
+    if n_tiles > 0:
+        try:
+            page = client.page
+            if "/project/" not in page.url or "/edit/" in page.url:
+                if project_url:
+                    await page.goto(project_url, wait_until="domcontentloaded",
+                                    timeout=20000)
+                    await asyncio.sleep(2)
+            pinned_tile_ids = await snapshot_unique_tile_ids(page)
+            logger.info(
+                "L1 batch tile snapshot: %d unique tiles pinned for download",
+                len(pinned_tile_ids),
+            )
+        except Exception as exc:
+            logger.warning("L1 batch tile snapshot failed: %s", exc)
+            pinned_tile_ids = []
+
     profile = getattr(client, "profile_name", "") or ""
     results: list[dict[str, Any]] = []
     for rec, wait in zip(submits, waits):
@@ -211,11 +235,16 @@ async def batch_dispatch_l1_same_project(
                 # the same condition. Fall back to legacy path.
                 files = await download_l1_gen(client, media_id)
             else:
+                pinned = (
+                    pinned_tile_ids[tile_index]
+                    if tile_index < len(pinned_tile_ids) else None
+                )
                 files = await download_l1_gen_at_tile(
                     client,
                     tile_index=tile_index,
                     media_id=media_id,
                     project_url=project_url,
+                    pinned_tile_id=pinned,
                 )
         except Exception as exc:
             logger.exception("L1 batch download failed for mid=%s: %s",
@@ -250,7 +279,7 @@ def _finalize_failed_batch(client, submits: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 / 3 placeholders — keep import surface stable.
+# Phase 2 / 3 orchestrators.
 # ---------------------------------------------------------------------------
 
 
@@ -475,5 +504,27 @@ async def _dispatch_l2_submit(client, job: dict, parent_synth: dict, *,
     raise RuntimeError(f"Unsupported L2 batch op type: {op!r}")
 
 
-async def batch_dispatch_l3_siblings(*args, **kwargs) -> list[dict]:
-    raise NotImplementedError("Phase 3 not yet implemented")
+async def batch_dispatch_l3_siblings(
+    client,
+    parent_edit_url: str,
+    parent_media_id: str,
+    l3_jobs: list[dict],
+) -> list[dict[str, Any]]:
+    """Submit N L3+ ops back-to-back on a shared parent L2/L3, return results.
+
+    PRD §5. Caller guarantees:
+      * all jobs have ``job_level >= 3``
+      * all share the same ``parent_job_id`` (= the direct L2 / L3 parent)
+      * all share ``profile`` = ``client.profile_name``
+      * ``parent_edit_url`` and ``parent_media_id`` come from that parent
+
+    The per-op submit/wait/download primitives don't care which level their
+    inputs are at — they operate on ``parent_edit_url + parent_media_id``.
+    Phase 3 therefore delegates to :func:`batch_dispatch_l2_siblings`. The
+    distinct entry point keeps the dispatcher / claim-loop wiring honest
+    (different gate, different DB filter) without duplicating orchestrator
+    code.
+    """
+    return await batch_dispatch_l2_siblings(
+        client, parent_edit_url, parent_media_id, l3_jobs,
+    )

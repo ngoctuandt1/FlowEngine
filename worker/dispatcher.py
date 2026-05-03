@@ -847,3 +847,89 @@ async def dispatch_batch_l2_siblings(
         if project_url:
             project_lock.release(project_url, primary_job_id)
         profile_manager.mark_available(profile)
+
+
+async def dispatch_batch_l3_siblings(
+    jobs: list[dict],
+    profile_manager: ProfileManager,
+    project_lock: ProjectLock,
+) -> list[dict]:
+    """Open one Chrome, batch-submit N L3+ ops sharing one direct L2/L3 parent.
+
+    PRD §5. Caller must guarantee:
+      * all jobs share `profile`
+      * all jobs share `parent_job_id` (the direct L2 / L3 parent)
+      * all jobs have ``job_level >= 3`` and are L2-op types
+        (extend / camera / insert / remove)
+      * the first job carries usable `edit_url` + `media_id` of the parent
+
+    Mirrors :func:`dispatch_batch_l2_siblings` exactly — only the
+    underlying orchestrator entry point differs (so the wiring stays
+    honest across phases).
+    """
+    if not jobs:
+        return []
+    if len(jobs) == 1:
+        single = await dispatch_job(jobs[0], profile_manager, project_lock)
+        single.setdefault("job_id", jobs[0].get("id"))
+        return [single]
+
+    profile = jobs[0].get("profile", "") or ""
+    if not profile:
+        return [{"job_id": j.get("id"), "status": "failed",
+                 "error": "no profile assigned"} for j in jobs]
+    parent_id = jobs[0].get("parent_job_id") or ""
+    for j in jobs[1:]:
+        if (j.get("profile") or "") != profile:
+            return [{"job_id": jj.get("id"), "status": "failed",
+                     "error": "batch profile mismatch"} for jj in jobs]
+        if (j.get("parent_job_id") or "") != parent_id:
+            return [{"job_id": jj.get("id"), "status": "failed",
+                     "error": "batch parent mismatch"} for jj in jobs]
+
+    parent_edit_url = jobs[0].get("edit_url") or ""
+    parent_media_id = jobs[0].get("media_id") or ""
+    if not parent_edit_url and not parent_media_id:
+        return [{"job_id": j.get("id"), "status": "failed",
+                 "error": "missing parent edit_url + media_id"} for j in jobs]
+
+    project_url = jobs[0].get("project_url") or ""
+    primary_job_id = jobs[0]["id"]
+    if project_url:
+        if not project_lock.acquire(project_url, primary_job_id):
+            return [{"job_id": j.get("id"), "status": "failed",
+                     "error": f"project locked: {project_url}"} for j in jobs]
+    profile_manager.mark_busy(profile, primary_job_id)
+
+    from flow.operations._batch import batch_dispatch_l3_siblings
+
+    try:
+        async with _client_lease(profile) as client:
+            client._job_id = primary_job_id
+            try:
+                results = await batch_dispatch_l3_siblings(
+                    client, parent_edit_url, parent_media_id, jobs,
+                )
+            except RecaptchaError as exc:
+                kind = getattr(exc, "kind", None) or "unknown"
+                err = f"recaptcha_{kind}_burned_{profile}"
+                logger.error("Batch L3 hit reCAPTCHA kind=%s profile=%s",
+                             kind, profile)
+                await _handle_burned_profile_for_batch(profile, profile_manager)
+                return [{"job_id": j.get("id"), "status": "failed",
+                         "error": err, "error_message": err} for j in jobs]
+            except Exception as exc:
+                logger.exception("Batch L3 unexpected failure: %s", exc)
+                return [{"job_id": j.get("id"), "status": "failed",
+                         "error": f"batch error: {exc}"} for j in jobs]
+
+        out: list[dict] = []
+        for j, r in zip(jobs, results):
+            r.setdefault("job_id", j.get("id"))
+            r.setdefault("profile", profile)
+            out.append(r)
+        return out
+    finally:
+        if project_url:
+            project_lock.release(project_url, primary_job_id)
+        profile_manager.mark_available(profile)

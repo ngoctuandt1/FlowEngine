@@ -29,6 +29,7 @@ from server.db.job_store import (
     list_jobs,
     list_pending_l1_siblings,
     list_pending_l2_siblings,
+    list_pending_l3_siblings,
     recover_stale_jobs,
 )
 from server.routes.ws import broadcast_job_update
@@ -368,6 +369,22 @@ async def get_pending_l2_siblings(
     remaining siblings into one Chrome.
     """
     return await list_pending_l2_siblings(
+        parent_job_id=parent_job_id, profile=profile, limit=limit,
+    )
+
+
+@router.get("/jobs/l3-siblings")
+async def get_pending_l3_siblings(
+    parent_job_id: str = Query(..., min_length=1),
+    profile: Optional[str] = Query(None),
+    limit: int = Query(5, ge=1, le=20),
+):
+    """List pending L3+ ops sharing one direct parent — eligible for batch.
+
+    PRD §5. Worker uses this after claiming an L3+ op to fan out the
+    remaining siblings into one Chrome.
+    """
+    return await list_pending_l3_siblings(
         parent_job_id=parent_job_id, profile=profile, limit=limit,
     )
 

@@ -342,6 +342,58 @@ async def list_pending_l2_siblings(
         return [_row_to_job(r) for r in rows]
 
 
+async def list_pending_l3_siblings(
+    *,
+    parent_job_id: str,
+    profile: Optional[str] = None,
+    limit: int = 5,
+) -> list[Job]:
+    """List pending L3+ jobs sharing one direct parent — eligible for batch.
+
+    PRD §5. Worker uses this after claiming an L3+ op to discover up to
+    N-1 sibling ops that share the same direct ``parent_job_id`` (the L2
+    or L3 source clip) and the same profile.
+
+    Filters:
+      * status = 'pending'
+      * job_level >= 3
+      * type IN (extend-video / camera-move / insert-object / remove-object)
+      * parent_job_id = ?
+      * profile = ? (or any when None)
+
+    Order: created_at ASC (FIFO).
+    """
+    if not parent_job_id:
+        return []
+    if limit < 1:
+        return []
+    if limit > 20:
+        limit = 20
+
+    placeholders = ",".join("?" for _ in L2_OP_TYPES)
+    clauses = [
+        "status = 'pending'",
+        "job_level >= 3",
+        f"type IN ({placeholders})",
+        "parent_job_id = ?",
+    ]
+    params: list = list(L2_OP_TYPES) + [parent_job_id]
+    if profile is not None:
+        clauses.append("profile = ?")
+        params.append(profile)
+
+    query = (
+        f"SELECT * FROM jobs WHERE {' AND '.join(clauses)} "
+        "ORDER BY created_at ASC LIMIT ?"
+    )
+    params.append(limit)
+
+    async with get_db() as db:
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return [_row_to_job(r) for r in rows]
+
+
 async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
     """Apply partial update to a job. Returns updated Job or None if not found."""
     fields = update.model_dump(exclude_unset=True)
