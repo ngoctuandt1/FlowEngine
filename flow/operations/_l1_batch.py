@@ -894,24 +894,33 @@ async def download_l1_gen_at_tile(
                 logger.warning("download_l1_gen_at_tile: goto project failed: %s", exc)
 
     # Step 1 — resolve which data-tile-id we want to click.
-    # Live verify on debian-root 2026-05-04 round 11 showed two issues:
-    #   (a) Flow renders each tile twice in the project view (live evidence:
-    #       3 generations → 6 ``[data-tile-id^=fe_id_]`` elements, each id
-    #       in two adjacent positions). Picking by raw .nth() lands on a
-    #       duplicate.
-    #   (b) Tile ORDER changes between downloads — Flow promotes the most
-    #       recently-edited tile to position 0 after an upscale, so the
-    #       deduped index also shifts mid-batch.
-    # Caller can pin the exact data-tile-id via `pinned_tile_id` to bypass
-    # both issues; otherwise we deduplicate the live order at this call.
+    # Live verify on debian-root 2026-05-04 surfaced three contamination
+    # modes in the tile-index download path:
+    #   (a) Flow renders each tile twice in the project view (deduplicate).
+    #   (b) Tile ORDER changes between downloads (promote-on-upscale).
+    #   (c) data-tile-id values themselves can change after an upscale —
+    #       the post-upscale snapshot may not contain a tile-id we pinned
+    #       before any download. Fall back to live tile_index in that case.
     try:
+        chosen_via = "live"
         if pinned_tile_id:
-            target_tile_id = pinned_tile_id
-            logger.info(
-                "download_l1_gen_at_tile: using pinned tile id=%s",
-                target_tile_id[:25],
-            )
+            try:
+                await page.locator(
+                    f"[data-tile-id='{pinned_tile_id}']"
+                ).first.wait_for(state="attached", timeout=2500)
+                target_tile_id = pinned_tile_id
+                chosen_via = "pinned"
+            except Exception:
+                logger.warning(
+                    "download_l1_gen_at_tile: pinned id %s not found post-upscale; "
+                    "falling back to live tile_index=%d",
+                    pinned_tile_id[:30], tile_index,
+                )
+                target_tile_id = None
         else:
+            target_tile_id = None
+
+        if target_tile_id is None:
             unique_tile_ids = await snapshot_unique_tile_ids(page)
             logger.info(
                 "download_l1_gen_at_tile: %d unique tiles, target idx=%d, ids=%s",
@@ -924,6 +933,11 @@ async def download_l1_gen_at_tile(
                     f"{len(unique_tile_ids)} unique tiles rendered"
                 )
             target_tile_id = unique_tile_ids[tile_index]
+
+        logger.info(
+            "download_l1_gen_at_tile: clicking tile id=%s via=%s",
+            target_tile_id[:30], chosen_via,
+        )
         target = page.locator(f"[data-tile-id='{target_tile_id}']").first
         await target.wait_for(state="attached", timeout=8000)
         await target.scroll_into_view_if_needed(timeout=2000)
