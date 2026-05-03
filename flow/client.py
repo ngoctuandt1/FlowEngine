@@ -324,7 +324,22 @@ class FlowClient:
         self.profile_name = profile_name
         self.profile_path = Path(profile_base_dir).resolve() / profile_name
         self.headless = headless
-        self.debug_port = debug_port
+        # Per-instance CDP port: when multiple FlowClients run concurrently
+        # (same-profile clone path or cross-profile pool), they MUST bind
+        # different debug ports — otherwise the second Chrome silently
+        # fails to bind / Playwright attaches to the wrong instance and
+        # network events leak across operations. Pick a free port unless
+        # the caller explicitly pinned one.
+        if debug_port == 19300:
+            try:
+                import socket
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("127.0.0.1", 0))
+                    self.debug_port = s.getsockname()[1]
+            except OSError:
+                self.debug_port = debug_port
+        else:
+            self.debug_port = debug_port
         self.action_delay_ms = max(0, min(5000, action_delay_ms))
         self.download_dir = Path(download_dir).resolve()
 
