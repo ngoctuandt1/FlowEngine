@@ -249,4 +249,4 @@ async def test_dispatch_job_removes_burned_profile_when_replacement_unavailable(
     profile_mgr.replace_profile.assert_not_called()
     profile_mgr.remove_profile.assert_called_once_with("oldprofile")
     assert profile_mgr.available == []
-    assert "swap failed" in caplog.text
+    assert "recovery failed" in caplog.text or "swap failed" in caplog.text

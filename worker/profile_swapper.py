@@ -103,6 +103,84 @@ class ProfileSwapper:
                 return entry.profile_name
         return None
 
+    def kill_chrome_for_profile(self, profile_name: str) -> int:
+        """Kill any Chrome / Playwright drivers using this profile's --user-data-dir.
+
+        Returns count of processes killed. Best-effort; never raises.
+        """
+        target = str(self.profile_base_dir / profile_name)
+        killed = 0
+        # Walk /proc on Linux to find pids whose cmdline contains the profile path.
+        proc_root = Path("/proc")
+        if not proc_root.exists():
+            return 0
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                cmdline = (entry / "cmdline").read_bytes()
+            except OSError:
+                continue
+            if not cmdline:
+                continue
+            if target.encode() not in cmdline:
+                continue
+            pid = int(entry.name)
+            try:
+                os.kill(pid, 9)
+                killed += 1
+            except OSError:
+                pass
+        if killed:
+            time.sleep(1.5)
+            logger.warning(
+                "Killed %d chrome process(es) for profile %s before wipe",
+                killed,
+                profile_name,
+            )
+        return killed
+
+    def wipe_profile(self, profile_name: str) -> bool:
+        """Hard-delete the profile dir AND any sibling .burned-* archives.
+
+        Pre-kills any chrome process locking the dir. Used for the
+        same-account re-warm flow per user policy: when a profile burns,
+        we wipe it cleanly and re-warm under the same name (no rotation).
+        """
+        self.kill_chrome_for_profile(profile_name)
+        target = self.profile_base_dir / profile_name
+        if target.exists():
+            try:
+                shutil.rmtree(target)
+                logger.warning("Wiped profile dir: %s", target)
+            except OSError:
+                logger.exception("Failed to wipe profile dir: %s", target)
+                return False
+        # Also clear any historical .burned-* archives so the next warm
+        # has zero residual state, including OS keyring-cached automation
+        # signals tied to that profile path.
+        for archive in self.profile_base_dir.glob(f"{profile_name}.burned-*"):
+            try:
+                shutil.rmtree(archive)
+                logger.info("Removed burned archive: %s", archive)
+            except OSError:
+                logger.exception("Failed to remove burned archive: %s", archive)
+        return True
+
+    def wipe_and_rewarm(
+        self,
+        profile_name: str,
+        timeout: int = 180,
+    ) -> bool:
+        """Same-account recovery: kill+wipe+re-warm under the SAME profile name.
+
+        Returns True if Cookies file lands at expected path after warm.
+        Use this instead of swap_burned() when policy is single-account.
+        """
+        if not self.wipe_profile(profile_name):
+            return False
+        return self.warm_new_profile(profile_name, timeout=timeout)
+
     def warm_new_profile(self, profile_name: str, timeout: int = 180) -> bool:
         env = os.environ.copy()
         # Keep warm_profile on this swapper's profile root, provide a DISPLAY
