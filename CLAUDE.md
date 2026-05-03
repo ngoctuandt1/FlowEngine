@@ -65,8 +65,10 @@ Communication is plain HTTP — worker calls `worker/remote_api.py` to claim job
 ## 4. Job System
 
 ### Job levels
-- **L1** (`job_level=1`): `text-to-video` — creates a new project; any available profile
-- **L2+** (`job_level≥2`): extend / insert / remove / camera — requires `project_url` + `media_id` + **same profile as parent**
+- **Project**: Flow project = container, identified by `project_url`. Created either via UI (empty) or implicitly by the first L1 in it. Holds N L1 generations.
+- **L1** (`job_level=1`): generation inside a project (`text-to-video` / `text-to-image` / `frames-to-video` / `ingredients-to-video`). N L1 can coexist in one project (= **L1 siblings**: same `project_url`, no `parent_job_id`). Mints a new `media_id`.
+- **L2** (`job_level=2`): op on a specific L1 output (`extend-video` / `camera-move` / `insert-object` / `remove-object`). Requires `parent_job_id` = L1 job, inherits L1's `project_url` + `media_id`. N L2 sharing the same L1 parent = **L2 siblings**. Must run on **same profile as parent**.
+- **L3+** (`job_level≥3`): op stacked on L2/L3 output. `parent_job_id` = the immediate L2/L3 job, same profile + same project as the L1 root.
 
 ### Critical fields on every job
 ```
