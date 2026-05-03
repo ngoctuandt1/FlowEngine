@@ -185,8 +185,28 @@ async def claim_loop(
                 profile_mgr.mark_available(profile)
 
         try:
-            await api.update_job(job_id, result)
-            logger.info("Job %s result sent -> %s", job_id, result.get("status"))
+            if result.get("requeue"):
+                # Burn-recovery success path: dispatcher signaled this job
+                # should re-enter the queue on the freshly-warmed profile
+                # rather than terminating as failed. Reset to pending and
+                # clear claim metadata so claim_next_job picks it up again.
+                await api.update_job(
+                    job_id,
+                    {
+                        "status": "pending",
+                        "worker_id": None,
+                        "claimed_at": None,
+                        "error": None,
+                    },
+                )
+                logger.info(
+                    "Job %s requeued after burn-recovery: %s",
+                    job_id,
+                    result.get("error_message", ""),
+                )
+            else:
+                await api.update_job(job_id, result)
+                logger.info("Job %s result sent -> %s", job_id, result.get("status"))
         except Exception:
             logger.error("Failed to report result for job %s", job_id, exc_info=True)
 

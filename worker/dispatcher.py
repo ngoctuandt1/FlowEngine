@@ -562,6 +562,17 @@ async def dispatch_job(
                 )
                 if manage_profile:
                     profile = ""
+                # Requeue this job so a fresh-session claim runs it again.
+                # This honors the "all submitted jobs eventually complete"
+                # contract under same-account burn-recovery.
+                return {
+                    "status": "pending",
+                    "requeue": True,
+                    "error": None,
+                    "error_message": (
+                        f"recaptcha_{kind}_requeued_after_wipe_rewarm"
+                    ),
+                }
             else:
                 if not swap_failed_logged:
                     logger.error(
