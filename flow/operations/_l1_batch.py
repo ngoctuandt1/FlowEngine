@@ -821,12 +821,38 @@ async def download_l1_gen(
     return files
 
 
+async def snapshot_unique_tile_ids(page) -> list[str]:
+    """Return the live list of distinct data-tile-id values on /project/.
+
+    Flow renders each tile twice (main grid + side rail). Visible tiles
+    are de-duped here in DOM order so callers can lock a stable mapping
+    of submit-index → tile-id BEFORE any tile is clicked (downloads
+    promote the most-recently-edited tile to position 0, breaking any
+    index that's resolved fresh per call).
+    """
+    return await page.evaluate(
+        """() => {
+            const seen = new Set(); const out = [];
+            for (const el of document.querySelectorAll('[data-tile-id^="fe_id_"]')) {
+                const tid = el.getAttribute('data-tile-id');
+                if (!tid || seen.has(tid)) continue;
+                seen.add(tid);
+                const r = el.getBoundingClientRect();
+                if (r.width < 50 || r.height < 50) continue;
+                out.push(tid);
+            }
+            return out;
+        }"""
+    )
+
+
 async def download_l1_gen_at_tile(
     client,
     *,
     tile_index: int,
     media_id: str,
     project_url: str,
+    pinned_tile_id: str | None = None,
     prefix: str = "t2v",
     quality: str = "1080p",
 ) -> list[str]:
@@ -867,40 +893,37 @@ async def download_l1_gen_at_tile(
             except Exception as exc:
                 logger.warning("download_l1_gen_at_tile: goto project failed: %s", exc)
 
-    # Step 1 — click the i-th UNIQUE tile.
-    # Live verify on debian-root 2026-05-04 showed Flow renders each tile
-    # twice in the project view (live evidence: 3 generations → 6
-    # ``[data-tile-id^=fe_id_]`` elements, each id appearing in two
-    # adjacent positions). Picking by raw .nth() index lands on a
-    # duplicate of an earlier tile and downloads the wrong video.
-    # Resolve to the first DOM occurrence per data-tile-id, then index
-    # into the deduped list.
+    # Step 1 — resolve which data-tile-id we want to click.
+    # Live verify on debian-root 2026-05-04 round 11 showed two issues:
+    #   (a) Flow renders each tile twice in the project view (live evidence:
+    #       3 generations → 6 ``[data-tile-id^=fe_id_]`` elements, each id
+    #       in two adjacent positions). Picking by raw .nth() lands on a
+    #       duplicate.
+    #   (b) Tile ORDER changes between downloads — Flow promotes the most
+    #       recently-edited tile to position 0 after an upscale, so the
+    #       deduped index also shifts mid-batch.
+    # Caller can pin the exact data-tile-id via `pinned_tile_id` to bypass
+    # both issues; otherwise we deduplicate the live order at this call.
     try:
-        unique_tile_ids = await page.evaluate(
-            """() => {
-                const seen = new Set(); const out = [];
-                for (const el of document.querySelectorAll('[data-tile-id^="fe_id_"]')) {
-                    const tid = el.getAttribute('data-tile-id');
-                    if (!tid || seen.has(tid)) continue;
-                    seen.add(tid);
-                    const r = el.getBoundingClientRect();
-                    if (r.width < 50 || r.height < 50) continue;  // skip non-render
-                    out.push(tid);
-                }
-                return out;
-            }"""
-        )
-        logger.info(
-            "download_l1_gen_at_tile: %d unique tiles, target idx=%d, ids=%s",
-            len(unique_tile_ids), tile_index,
-            [t[:25] for t in unique_tile_ids[:10]],
-        )
-        if tile_index >= len(unique_tile_ids):
-            raise RuntimeError(
-                f"download_l1_gen_at_tile: tile_index={tile_index} but only "
-                f"{len(unique_tile_ids)} unique tiles rendered"
+        if pinned_tile_id:
+            target_tile_id = pinned_tile_id
+            logger.info(
+                "download_l1_gen_at_tile: using pinned tile id=%s",
+                target_tile_id[:25],
             )
-        target_tile_id = unique_tile_ids[tile_index]
+        else:
+            unique_tile_ids = await snapshot_unique_tile_ids(page)
+            logger.info(
+                "download_l1_gen_at_tile: %d unique tiles, target idx=%d, ids=%s",
+                len(unique_tile_ids), tile_index,
+                [t[:25] for t in unique_tile_ids[:10]],
+            )
+            if tile_index >= len(unique_tile_ids):
+                raise RuntimeError(
+                    f"download_l1_gen_at_tile: tile_index={tile_index} but only "
+                    f"{len(unique_tile_ids)} unique tiles rendered"
+                )
+            target_tile_id = unique_tile_ids[tile_index]
         target = page.locator(f"[data-tile-id='{target_tile_id}']").first
         await target.wait_for(state="attached", timeout=8000)
         await target.scroll_into_view_if_needed(timeout=2000)
