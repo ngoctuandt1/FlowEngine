@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Optional
@@ -469,6 +470,17 @@ async def claim_next_job(
     placeholders = ", ".join("?" for _ in effective_profiles)
     now = _now_iso()
 
+    # Project-inflight cap: how many claimed/running L2+ jobs may share a
+    # single Flow project_url at once. Default 1 = legacy mutex; raise via
+    # FLOW_PROJECT_INFLIGHT to allow concurrent fan-out (e.g. 1 L1 → multi
+    # L2 branches running in parallel on the same Flow project page).
+    try:
+        project_inflight_cap = max(
+            1, int(os.environ.get("FLOW_PROJECT_INFLIGHT", "1").strip() or 1)
+        )
+    except ValueError:
+        project_inflight_cap = 1
+
     async with get_db() as db:
         await db.execute("BEGIN IMMEDIATE")
         try:
@@ -483,16 +495,16 @@ async def claim_next_job(
                   AND parent.profile IN ({placeholders})
                   AND parent.project_url IS NOT NULL
                   AND parent.media_id IS NOT NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM jobs active
+                  AND (
+                      SELECT COUNT(*) FROM jobs active
                       WHERE active.project_url = parent.project_url
                         AND active.project_url IS NOT NULL
                         AND active.status IN ('claimed', 'running')
-                  )
+                  ) < ?
                 ORDER BY j.created_at ASC
                 LIMIT 1
                 """,
-                effective_profiles,
+                effective_profiles + [project_inflight_cap],
             )
             row = await cursor.fetchone()
 

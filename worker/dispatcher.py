@@ -640,6 +640,6 @@ async def dispatch_job(
     finally:
         # --- Post-dispatch cleanup ---
         if needs_lock:
-            project_lock.release(project_url)
+            project_lock.release(project_url, job_id)
         if manage_profile and profile:
             profile_manager.mark_available(profile)
