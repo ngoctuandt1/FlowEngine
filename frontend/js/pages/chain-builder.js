@@ -322,8 +322,12 @@
   function renderOptions(items, { selected } = {}) {
     return items
       .map((o) => {
-        const value = typeof o === 'string' ? o : o.value;
-        const label = typeof o === 'string' ? o : o.label;
+        // Accept both string entries, {value,label} option objects, AND
+        // {id,label,icon} JOB_TYPES entries — the constants module uses
+        // `id` as the canonical option key. Without this `o.id` fallback
+        // every step-type select rendered <option value="undefined">.
+        const value = typeof o === 'string' ? o : (o.value ?? o.id ?? '');
+        const label = typeof o === 'string' ? o : (o.label ?? o.value ?? o.id ?? '');
         const isSelected = value === selected ? ' selected' : '';
         return `<option value="${App.escapeHtml(value)}"${isSelected}>${App.escapeHtml(label)}</option>`;
       })
