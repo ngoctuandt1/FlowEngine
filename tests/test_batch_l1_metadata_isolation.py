@@ -32,6 +32,7 @@ class _FakeClient:
 
     def __init__(self):
         self._calls: list[dict] = []
+        self._batch_responses: list[dict] = []
         self._media_id_events: list[dict] = []
         # Sentinel: any test that incorrectly reads this attribute will see
         # the canary string and fail the explicit assertion below.
@@ -72,7 +73,7 @@ def test_capture_gen_id_only_sees_window_slice():
     calls_before = len(c._calls)  # 1
     c.push_op("operations/SUBMIT_B_id_222", progress=5)
 
-    gen = _capture_gen_id_from_window(c, calls_before)
+    gen = _capture_gen_id_from_window(c, calls_before, batch_resp_before=0)
     assert gen == "operations/SUBMIT_B_id_222", (
         "must pick up the post-window operation, not the prior one"
     )
@@ -85,7 +86,28 @@ def test_capture_gen_id_returns_empty_when_no_window_op():
     # No new operations/ entries after this point.
     c._calls.append({"url": "/v1/credits", "body": {"credits": 10}, "status": 200})
 
-    assert _capture_gen_id_from_window(c, calls_before) == ""
+    assert _capture_gen_id_from_window(c, calls_before, batch_resp_before=0) == ""
+
+
+def test_capture_gen_id_uses_batch_resp_buffer_clock():
+    """Side-channel _batch_responses index is the authoritative clock.
+
+    Reproduces the live-verify regression where two successive submits
+    each saw the previous submit's gen_id because `len(_calls)` did not
+    advance between them. Slicing `_batch_responses[batch_resp_before:]`
+    is the correct disambiguator.
+    """
+    c = _FakeClient()
+    c._batch_responses = [
+        # submit 1's response
+        {"body": {"operations": [{"operation": {"name": "GEN_AAA"}}]}},
+        # submit 2's response (different gen_id)
+        {"body": {"operations": [{"operation": {"name": "GEN_BBB"}}]}},
+    ]
+    # Submit 1's window: starts at index 0 → sees GEN_AAA first.
+    assert _capture_gen_id_from_window(c, 0, batch_resp_before=0) == "GEN_AAA"
+    # Submit 2's window: starts at index 1 → must see GEN_BBB, not GEN_AAA.
+    assert _capture_gen_id_from_window(c, 0, batch_resp_before=1) == "GEN_BBB"
 
 
 def test_scan_api_for_gen_filters_to_target_only():
@@ -208,11 +230,12 @@ def test_three_isolated_submits_do_not_cross_contaminate():
     parent = None
     for tag in ("AAA", "BBB", "CCC"):
         before = len(c._calls)
+        batch_before = len(c._batch_responses)
         ts = time.time()
         # simulate Flow emitting the operations/ POST response after submit
         c.push_op(f"operations/{tag}_id", progress=2)
         submit_ts.append(ts)
-        gen = _capture_gen_id_from_window(c, before)
+        gen = _capture_gen_id_from_window(c, before, batch_resp_before=batch_before)
         captured.append(gen)
         # interleaved noise from siblings
         c.push_op("operations/AAA_id", progress=10)

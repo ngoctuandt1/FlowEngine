@@ -25,6 +25,27 @@ class _FakeClient:
     profile_name = "ngoctuandt20"
 
 
+def _make_collective_wait(per_gen_fake):
+    """Adapt a per-gen fake (used in tests) into a collective wait stub.
+
+    The orchestrator calls ``wait_for_all_l1_gens(client, submits)`` and
+    expects a list of N result dicts in submission order. Tests still find
+    it more readable to define one ``fake_wait(client, gen_id, ...)`` and
+    have this adapter dispatch the calls.
+    """
+    async def _collective(client, submits, **kw):
+        out = []
+        for sub in submits:
+            res = await per_gen_fake(
+                client, sub["gen_id"],
+                calls_before=sub.get("calls_before", 0),
+                submit_ts=sub.get("submit_ts", 0.0),
+            )
+            out.append(res)
+        return out
+    return _collective
+
+
 def _job(jid: str, prompt: str = "x") -> dict:
     return {"id": jid, "type": "text-to-video", "prompt": prompt,
             "profile": "ngoctuandt20", "job_level": 1}
@@ -60,7 +81,7 @@ async def test_batch_full_success_returns_three_distinct_results(monkeypatch):
         return [f"downloads/t2v_{media_id}.mp4"]
 
     monkeypatch.setattr(batch_mod, "submit_generate_l1", fake_submit)
-    monkeypatch.setattr(batch_mod, "wait_for_l1_gen", fake_wait)
+    monkeypatch.setattr(batch_mod, "wait_for_all_l1_gens", _make_collective_wait(fake_wait))
     monkeypatch.setattr(batch_mod, "download_l1_gen", fake_download)
 
     jobs = [_job("aa", "red cat"), _job("bb", "blue dog"), _job("cc", "yellow bird")]
@@ -99,7 +120,7 @@ async def test_batch_mid_submit_failure_does_not_abort(monkeypatch):
         return [f"downloads/{media_id}.mp4"]
 
     monkeypatch.setattr(batch_mod, "submit_generate_l1", fake_submit)
-    monkeypatch.setattr(batch_mod, "wait_for_l1_gen", fake_wait)
+    monkeypatch.setattr(batch_mod, "wait_for_all_l1_gens", _make_collective_wait(fake_wait))
     monkeypatch.setattr(batch_mod, "download_l1_gen", fake_download)
 
     results = await batch_mod.batch_dispatch_l1_same_project(
@@ -152,7 +173,7 @@ async def test_batch_wait_failure_does_not_block_other_completions(monkeypatch):
         return [f"downloads/{media_id}.mp4"]
 
     monkeypatch.setattr(batch_mod, "submit_generate_l1", fake_submit)
-    monkeypatch.setattr(batch_mod, "wait_for_l1_gen", fake_wait)
+    monkeypatch.setattr(batch_mod, "wait_for_all_l1_gens", _make_collective_wait(fake_wait))
     monkeypatch.setattr(batch_mod, "download_l1_gen", fake_download)
 
     results = await batch_mod.batch_dispatch_l1_same_project(
@@ -214,7 +235,7 @@ async def test_batch_results_in_input_order_under_concurrent_waits(monkeypatch):
         return [f"downloads/{media_id}.mp4"]
 
     monkeypatch.setattr(batch_mod, "submit_generate_l1", fake_submit)
-    monkeypatch.setattr(batch_mod, "wait_for_l1_gen", fake_wait)
+    monkeypatch.setattr(batch_mod, "wait_for_all_l1_gens", _make_collective_wait(fake_wait))
     monkeypatch.setattr(batch_mod, "download_l1_gen", fake_download)
 
     async def signaller():

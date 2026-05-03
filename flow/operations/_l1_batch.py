@@ -96,6 +96,10 @@ async def submit_generate_l1(
     page = client.page
     locale = ""
 
+    # Side-channel response listener — the canonical capture path because
+    # Flow's modern submit endpoint isn't covered by `flow.client._on_response`.
+    install_batch_response_capture(client)
+
     if not project_already_open:
         homepage = flow_url(locale)
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
@@ -202,9 +206,17 @@ async def submit_generate_l1(
     # --- Snapshot before submit, then submit. ---
     # Do NOT call client.clear_captures() here — for batch mode the captures
     # from previous siblings must remain so this submit can window them out
-    # by index slice, while the wait_for_l1_gen() call later still sees the
-    # pre-submit context (e.g. the project's first operations response).
+    # by index slice, while the wait_for_all_l1_gens() call later still sees
+    # the pre-submit context (e.g. the project's first operations response).
+    #
+    # We snapshot two clocks:
+    #   * len(_calls) — the legacy buffer from flow.client._on_response
+    #   * len(_batch_responses) — our side-channel listener buffer.
+    # `_batch_responses` is the authoritative clock for batch isolation
+    # because flow.client doesn't fetch the body of v1/video:batchAsync...
+    # responses, so its length doesn't always advance between submits.
     calls_before = len(getattr(client, "_calls", []))
+    batch_resp_before = len(getattr(client, "_batch_responses", []) or [])
     before_cards = await _count_visible_cards(page)
     submit_ts = time.time()
 
@@ -223,15 +235,20 @@ async def submit_generate_l1(
         raise RuntimeError(msg)
 
     # --- Capture THIS submit's gen_id from its own window slice. ---
-    gen_id = _capture_gen_id_from_window(client, calls_before)
-    if not gen_id:
-        # Fall back to legacy single-attribute (still set by submit_with_confirmation
-        # via flow.client's _on_response). Better than nothing on first submit.
-        gen_id = getattr(client, "_gen_id", None) or ""
+    # `submit_with_confirmation` may return on a UI signal (cards count
+    # increased) BEFORE the operations/ POST response lands in
+    # `client._calls`. Poll briefly so the per-submit window contains the
+    # network event before we move on.
+    gen_id = await _await_gen_id_in_window(
+        client, calls_before,
+        batch_resp_before=batch_resp_before,
+        timeout_sec=15.0,
+    )
     if not gen_id:
         msg = await message_with_failure_capture(
             client, "batch_no_gen_id_captured",
-            "Submit confirmed but no gen_id appeared in operations/ network calls",
+            "Submit confirmed but no gen_id appeared in operations/ network calls "
+            "within 15s",
         )
         raise RuntimeError(msg)
 
@@ -248,25 +265,214 @@ async def submit_generate_l1(
     }
 
 
-def _capture_gen_id_from_window(client, calls_before: int) -> str:
-    """Find the operations/ POST response inside this submit's window.
+async def _await_gen_id_in_window(
+    client,
+    calls_before: int,
+    *,
+    batch_resp_before: int = 0,
+    timeout_sec: float = 15.0,
+    poll_sec: float = 0.3,
+) -> str:
+    """Poll until this submit's operation response lands.
 
-    Walks `client._calls[calls_before:]` for an entry whose URL contains
-    `operations/` and whose body has a `name` field — that name is the
-    canonical gen_id Flow uses for this generation.
+    Flow's submit endpoint is one of:
+      * legacy ``operations/...`` (older Flow builds — body has ``name``)
+      * current ``v1/video:batchAsyncGenerateVideoText`` (the body is
+        opaque to ``flow.client._on_response`` because that handler only
+        fetches JSON for ``operations/`` / ``/v1/credits`` URLs).
+
+    We install a side-channel listener at batch-start (see
+    :func:`install_batch_response_capture`) that records full response
+    bodies for the new URL pattern into ``client._batch_responses``.
+    Both sources are inspected here.
+
+    Bounded by ``timeout_sec``.
     """
-    calls = getattr(client, "_calls", [])
-    for entry in calls[calls_before:]:
-        url = entry.get("url", "") or ""
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while True:
+        gen = _capture_gen_id_from_window(
+            client, calls_before, batch_resp_before=batch_resp_before,
+        )
+        if gen:
+            return gen
+        if asyncio.get_event_loop().time() >= deadline:
+            return ""
+        await asyncio.sleep(poll_sec)
+
+
+_BATCH_GEN_URL_HINTS = (
+    "operations/",
+    "v1/video:batchasyncgeneratevideotext",
+    "v1/video:batchasyncgenerate",
+    "v1/video:asyncgenerate",
+    ":generatevideo",
+)
+
+
+def _capture_gen_id_from_window(
+    client,
+    calls_before: int,
+    *,
+    batch_resp_before: int = 0,
+) -> str:
+    """Find this submit's operation id inside its own window slice.
+
+    Inspects two sources in order:
+
+      1. ``client._batch_responses[batch_resp_before:]`` — set up by
+         :func:`install_batch_response_capture`. This is the authoritative
+         clock for batch isolation: each new submit advances the buffer
+         length, even when ``client._calls`` doesn't (because legacy
+         flow.client only fetches body for ``operations/`` URLs).
+      2. ``client._calls[calls_before:]`` — useful when Flow falls back
+         to the old ``operations/`` endpoint.
+
+    Returns the first non-empty operation name found, or ``""``.
+    """
+    batch_responses = getattr(client, "_batch_responses", None) or []
+    for entry in batch_responses[batch_resp_before:]:
         body = entry.get("body")
-        if "operations/" not in url:
-            continue
         if not isinstance(body, dict):
             continue
-        name = body.get("name") or ""
+        name = _extract_op_name(body)
         if name:
-            return str(name)
+            return name
+
+    calls = getattr(client, "_calls", [])
+    for entry in calls[calls_before:]:
+        url = (entry.get("url", "") or "").lower()
+        if not any(hint in url for hint in _BATCH_GEN_URL_HINTS):
+            continue
+        body = entry.get("body")
+        if isinstance(body, dict):
+            name = _extract_op_name(body)
+            if name:
+                return name
     return ""
+
+
+def _extract_op_name(body: dict) -> str:
+    """Extract a stable per-generation identifier from a Flow response body.
+
+    Flow uses several shapes across builds:
+
+      * legacy: ``{"name": "operations/abc"}``
+      * current ``v1/video:batchAsyncGenerateVideoText`` (verified live
+        2026-05-04 on ngoctuandt20)::
+
+            {
+              "operations": [
+                {
+                  "operation": {"name": "<uuid>"},   # ← gen_id
+                  "sceneId": "...",
+                  "status": "MEDIA_GENERATION_STATUS_PENDING"
+                }, ...
+              ],
+              "remainingCredits": ...,
+              "workflows": [...],
+              "media": [...]
+            }
+      * newer build flat: ``{"id": "...", "operationName": "operations/abc"}``
+
+    Returns the first plausible name. Empty string when nothing matches.
+    """
+    direct = body.get("name") or body.get("operationName") or ""
+    if direct:
+        return str(direct)
+    ops = body.get("operations")
+    if isinstance(ops, list) and ops:
+        first = ops[0]
+        if isinstance(first, dict):
+            # Current schema: nested under "operation".
+            inner = first.get("operation")
+            if isinstance(inner, dict):
+                n = inner.get("name") or inner.get("operationName") or ""
+                if n:
+                    return str(n)
+            # Legacy / future flat schema.
+            n = first.get("name") or first.get("operationName") or ""
+            if n:
+                return str(n)
+    raw_id = body.get("id") or ""
+    if raw_id:
+        return str(raw_id)
+    return ""
+
+
+def install_batch_response_capture(client) -> None:
+    """Install a Playwright response listener that records batch-submit
+    response bodies into ``client._batch_responses``.
+
+    Required because :func:`flow.client.FlowClient._on_response` only
+    fetches JSON bodies for legacy ``operations/`` URLs, leaving the
+    new ``v1/video:batchAsyncGenerateVideoText`` body un-parsed. We
+    layer this side-channel without modifying ``flow/client.py``.
+
+    Safe to call multiple times; subsequent calls are no-ops because
+    Playwright would otherwise duplicate the listener per call.
+    """
+    if getattr(client, "_batch_capture_installed", False):
+        return
+    if not hasattr(client, "_batch_responses"):
+        client._batch_responses = []
+    client._batch_capture_installed = True
+    page = client.page
+
+    async def _on_response(response):
+        try:
+            url_l = (response.url or "").lower()
+        except Exception:
+            return
+        if not any(hint in url_l for hint in _BATCH_GEN_URL_HINTS):
+            return
+        try:
+            status = response.status
+        except Exception:
+            status = 0
+        body: Any = None
+        body_err: str | None = None
+        try:
+            if status == 200:
+                body = await response.json()
+        except Exception as e1:
+            body_err = f"json: {e1!r}"
+            try:
+                body = await response.text()
+            except Exception as e2:
+                body_err += f" / text: {e2!r}"
+                body = None
+        client._batch_responses.append({
+            "url": response.url,
+            "status": status,
+            "body": body,
+            "body_err": body_err,
+            "calls_index": len(getattr(client, "_calls", [])),
+            "ts": time.time(),
+        })
+        logger.info(
+            "batch capture: url=%s status=%s body_type=%s body_err=%s",
+            response.url[:100], status, type(body).__name__, body_err,
+        )
+        if isinstance(body, dict):
+            logger.info("batch capture body keys: %s", list(body.keys())[:10])
+            # Deep dump for diagnostic
+            ops = body.get("operations")
+            if isinstance(ops, list) and ops:
+                logger.info("batch capture ops[0] type=%s sample_keys=%s",
+                            type(ops[0]).__name__,
+                            list(ops[0].keys())[:15] if isinstance(ops[0], dict) else "n/a")
+                if isinstance(ops[0], dict):
+                    # Drop a single full repr so we can see the schema in logs.
+                    import json as _json
+                    try:
+                        logger.info("batch capture ops[0] json: %s",
+                                    _json.dumps(ops[0])[:600])
+                    except Exception:
+                        logger.info("batch capture ops[0] str: %s", str(ops[0])[:600])
+
+    page.on("response", _on_response)
+    logger.info("Batch response capture installed for client profile=%s",
+                getattr(client, "profile_name", "?"))
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +485,139 @@ L1_HARD_TIMEOUT_SEC = 900     # 15 min
 L1_NO_SIGNAL_SEC = 300        # 5 min idle
 
 
+async def wait_for_all_l1_gens(
+    client,
+    submits: list[dict],
+    *,
+    parent_media_id: str | None = None,
+    hard_timeout: int = L1_HARD_TIMEOUT_SEC,
+    no_signal_timeout: int = L1_NO_SIGNAL_SEC,
+) -> list[dict]:
+    """Collective wait for N concurrent L1 gens, then assign in submit order.
+
+    Flow's modern submit endpoint (``v1/video:batchAsyncGenerateVideoText``)
+    does not emit per-operation polling responses that
+    :mod:`flow.client._on_response` records — so we cannot filter
+    completion signals by ``gen_id``. Instead we wait for **N distinct
+    new media_ids** to appear post-submit and assign them in submission
+    order (FIFO assumption: for L1 t2v on the same project, Flow
+    processes submits sequentially in the order they were clicked).
+
+    Returns one result dict per submit, in submission order::
+
+        {"status": "completed", "media_id": ..., "media_ids": [..],
+         "error": None}
+        # or
+        {"status": "failed", "media_id": None, "media_ids": [],
+         "error": "timeout|no_signal_timeout|recaptcha_*"}
+
+    On any RecaptchaError the function raises immediately so the
+    dispatcher can mark the profile burned for the whole batch.
+    """
+    n = len(submits)
+    if n == 0:
+        return []
+    earliest_submit_ts = min(s["submit_ts"] for s in submits)
+
+    start = time.monotonic()
+    last_count = 0
+    last_signal_time = start
+    last_recaptcha_check = 0.0
+
+    while True:
+        elapsed = time.monotonic() - start
+        if elapsed > hard_timeout:
+            err = f"timeout after {hard_timeout}s waiting for {n} L1 gens"
+            await capture_failure_nonblocking(
+                client, "timeout",
+                extra={"want": n, "got": last_count, "elapsed": int(elapsed)},
+            )
+            return _all_failed(submits, err)
+
+        # reCAPTCHA via network → propagate.
+        network_kind = await detect_recaptcha_in_network(client)
+        if network_kind:
+            call = first_recaptcha_call(client) or {}
+            err = RecaptchaError(kind=network_kind, url=str(call.get("url") or ""))
+            cap = await capture_failure_nonblocking(client, f"recaptcha_{network_kind}")
+            if cap:
+                setattr(err, "capture_path", cap)
+            raise err
+
+        # New media events post-submit (excluding parent).
+        mids = _collect_media_ids_after(
+            client, since_ts=earliest_submit_ts, exclude=parent_media_id,
+        )
+        if len(mids) > last_count:
+            last_count = len(mids)
+            last_signal_time = time.monotonic()
+        if len(mids) >= n:
+            # All done — assign first N in chronological order to submits[i].
+            return [
+                {
+                    "status": "completed",
+                    "media_id": mids[i],
+                    "media_ids": [mids[i]],
+                    "error": None,
+                }
+                for i in range(n)
+            ]
+
+        # DOM reCAPTCHA throttled probe.
+        now = time.monotonic()
+        if now - last_recaptcha_check >= 10:
+            last_recaptcha_check = now
+            if await detect_recaptcha(client.page):
+                err = RecaptchaError(kind="v2_visible", url=client.page.url)
+                cap = await capture_failure_nonblocking(client, "recaptcha_v2_visible")
+                if cap:
+                    setattr(err, "capture_path", cap)
+                raise err
+
+        # Idle watchdog.
+        silence = time.monotonic() - last_signal_time
+        if silence > no_signal_timeout:
+            err = (
+                f"no_signal_timeout after {int(silence)}s "
+                f"waiting for {n - last_count} more L1 gens"
+            )
+            await capture_failure_nonblocking(
+                client, "no_signal_timeout",
+                extra={"want": n, "got": last_count, "silent_sec": int(silence)},
+            )
+            # Partial: completed ones get their mid, the rest fail.
+            return [
+                (
+                    {
+                        "status": "completed",
+                        "media_id": mids[i],
+                        "media_ids": [mids[i]],
+                        "error": None,
+                    }
+                    if i < last_count
+                    else {
+                        "status": "failed",
+                        "media_id": None,
+                        "media_ids": [],
+                        "error": err,
+                    }
+                )
+                for i in range(n)
+            ]
+
+        await asyncio.sleep(0.6)
+
+
+def _all_failed(submits: list[dict], err: str) -> list[dict]:
+    return [
+        {"status": "failed", "media_id": None, "media_ids": [], "error": err}
+        for _ in submits
+    ]
+
+
+# Backwards-compat per-gen wait (legacy path, single submit). Phase 1
+# orchestrator uses :func:`wait_for_all_l1_gens` instead. Kept so unit tests
+# that exercise the per-gen helper continue to work.
 async def wait_for_l1_gen(
     client,
     gen_id: str,

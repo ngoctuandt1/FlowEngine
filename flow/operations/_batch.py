@@ -35,6 +35,7 @@ from flow.operations._l1_batch import (
     build_l1_result,
     download_l1_gen,
     submit_generate_l1,
+    wait_for_all_l1_gens,
     wait_for_l1_gen,
 )
 from flow.recaptcha import RecaptchaError
@@ -100,28 +101,41 @@ async def batch_dispatch_l1_same_project(
         )
 
     # ----------------------------------------------------------------- B
-    async def _one_wait(rec: dict[str, Any]) -> dict[str, Any]:
-        if rec.get("error") or not rec.get("submit"):
-            return {"status": "failed", "error": rec.get("error") or "no submit"}
-        sub = rec["submit"]
+    # Collective wait: under Flow's modern ``v1/video:batchAsyncGenerate``
+    # endpoint the per-operation polling responses are not captured by
+    # ``flow.client._on_response`` — so we cannot filter completions by
+    # gen_id. Wait for N distinct new media_ids and assign them to
+    # successful submits in submission order (FIFO assumption holds for
+    # L1 t2v on the same project).
+    successful_subs = [rec["submit"] for rec in submits if rec.get("submit") and not rec.get("error")]
+    if successful_subs:
         try:
-            return await wait_for_l1_gen(
-                client,
-                sub["gen_id"],
-                calls_before=sub["calls_before"],
-                submit_ts=sub["submit_ts"],
-            )
+            collective = await wait_for_all_l1_gens(client, successful_subs)
         except RecaptchaError:
             raise
         except Exception as exc:
-            logger.exception("L1 batch wait failed for gen=%s: %s",
-                             sub["gen_id"][-12:], exc)
-            return {"status": "failed", "error": str(exc)}
+            logger.exception("L1 batch collective wait failed: %s", exc)
+            collective = [
+                {"status": "failed", "error": str(exc), "media_id": None,
+                 "media_ids": []}
+                for _ in successful_subs
+            ]
+    else:
+        collective = []
 
-    waits = await asyncio.gather(
-        *[_one_wait(rec) for rec in submits],
-        return_exceptions=False,
-    )
+    waits: list[dict[str, Any]] = []
+    coll_iter = iter(collective)
+    for rec in submits:
+        if rec.get("submit") and not rec.get("error"):
+            try:
+                waits.append(next(coll_iter))
+            except StopIteration:
+                waits.append({"status": "failed", "error": "wait result missing",
+                              "media_id": None, "media_ids": []})
+        else:
+            waits.append({"status": "failed",
+                          "error": rec.get("error") or "no submit",
+                          "media_id": None, "media_ids": []})
 
     # ----------------------------------------------------------------- C
     profile = getattr(client, "profile_name", "") or ""
@@ -129,6 +143,11 @@ async def batch_dispatch_l1_same_project(
     for rec, wait in zip(submits, waits):
         job = rec["job"]
         sub = rec.get("submit") or {}
+
+        # Each successful submit's result inherits the project_url from the
+        # first submit (collective wait erases per-submit project context).
+        if sub and not sub.get("project_url") and project_url:
+            sub["project_url"] = project_url
 
         if rec.get("error"):
             results.append(_attach_job_id(job, build_l1_result(
