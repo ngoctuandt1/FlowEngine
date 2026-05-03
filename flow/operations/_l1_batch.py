@@ -306,6 +306,10 @@ _BATCH_GEN_URL_HINTS = (
     "v1/video:batchasyncgenerate",
     "v1/video:asyncgenerate",
     ":generatevideo",
+    "v1/video:batchcheckasync",       # status polling
+    "v1/video:batchcheckasyncvideo",
+    "v1/media:batchasync",            # download URL fetch (variant)
+    ":batchcheckasync",
 )
 
 
