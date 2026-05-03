@@ -534,10 +534,17 @@ class FlowClient:
         logger.info("Launching Chrome CDP: port=%d  profile=%s", self.debug_port, self._temp_profile)
         self._chrome_proc = subprocess.Popen(cmd, **popen_kwargs)
 
-        # Wait for the debug port to become available.
-        if not await self._wait_for_port(self.debug_port, timeout_sec=20.0):
+        # Wait for the debug port to become available. 60s ceiling
+        # because under concurrent dispatch (3+ Chromes launching
+        # simultaneously on Xvfb) cold start can exceed 30s — the
+        # original 20s killed parallel L2 fan-out runs.
+        port_ready_timeout = float(
+            os.environ.get("FLOW_CHROME_PORT_READY_TIMEOUT", "60")
+        )
+        if not await self._wait_for_port(self.debug_port, timeout_sec=port_ready_timeout):
             raise RuntimeError(
-                f"Chrome debug port {self.debug_port} not ready after 20 s"
+                f"Chrome debug port {self.debug_port} not ready after "
+                f"{port_ready_timeout:.0f} s"
             )
 
         # Connect Playwright over CDP.
