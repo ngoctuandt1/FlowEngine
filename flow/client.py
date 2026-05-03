@@ -324,7 +324,22 @@ class FlowClient:
         self.profile_name = profile_name
         self.profile_path = Path(profile_base_dir).resolve() / profile_name
         self.headless = headless
-        self.debug_port = debug_port
+        # Per-instance CDP port: when multiple FlowClients run concurrently
+        # (same-profile clone path or cross-profile pool), they MUST bind
+        # different debug ports — otherwise the second Chrome silently
+        # fails to bind / Playwright attaches to the wrong instance and
+        # network events leak across operations. Pick a free port unless
+        # the caller explicitly pinned one.
+        if debug_port == 19300:
+            try:
+                import socket
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("127.0.0.1", 0))
+                    self.debug_port = s.getsockname()[1]
+            except OSError:
+                self.debug_port = debug_port
+        else:
+            self.debug_port = debug_port
         self.action_delay_ms = max(0, min(5000, action_delay_ms))
         self.download_dir = Path(download_dir).resolve()
 
@@ -519,10 +534,17 @@ class FlowClient:
         logger.info("Launching Chrome CDP: port=%d  profile=%s", self.debug_port, self._temp_profile)
         self._chrome_proc = subprocess.Popen(cmd, **popen_kwargs)
 
-        # Wait for the debug port to become available.
-        if not await self._wait_for_port(self.debug_port, timeout_sec=20.0):
+        # Wait for the debug port to become available. 60s ceiling
+        # because under concurrent dispatch (3+ Chromes launching
+        # simultaneously on Xvfb) cold start can exceed 30s — the
+        # original 20s killed parallel L2 fan-out runs.
+        port_ready_timeout = float(
+            os.environ.get("FLOW_CHROME_PORT_READY_TIMEOUT", "60")
+        )
+        if not await self._wait_for_port(self.debug_port, timeout_sec=port_ready_timeout):
             raise RuntimeError(
-                f"Chrome debug port {self.debug_port} not ready after 20 s"
+                f"Chrome debug port {self.debug_port} not ready after "
+                f"{port_ready_timeout:.0f} s"
             )
 
         # Connect Playwright over CDP.

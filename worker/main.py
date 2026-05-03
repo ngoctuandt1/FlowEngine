@@ -39,6 +39,14 @@ WORKER_PROFILES = [
 ]
 POLL_INTERVAL_SEC = int(os.getenv("POLL_INTERVAL_SEC", "5"))
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
+# When ALLOW_SAME_PROFILE_CONCURRENCY=1, the dispatcher clones the profile
+# directory per Chrome launch (FLOW_USE_BASE_PROFILE=0 path) so the
+# legacy "1 job per profile" cap no longer applies. Set this to 1
+# alongside MAX_CONCURRENT_JOBS≥2 + FLOW_USE_BASE_PROFILE=0 to allow N
+# concurrent Chromes on the same Google account / profile.
+ALLOW_SAME_PROFILE_CONCURRENCY = os.getenv(
+    "ALLOW_SAME_PROFILE_CONCURRENCY", "0"
+).strip() in ("1", "true", "yes")
 HEARTBEAT_INTERVAL_SEC = 30
 
 # ======================================================================
@@ -157,10 +165,19 @@ async def claim_loop(
     last_heartbeat = datetime.now(UTC)
     heartbeat_delta = timedelta(seconds=HEARTBEAT_INTERVAL_SEC)
     in_flight: set[asyncio.Task[None]] = set()
-    max_concurrent = max(
-        1,
-        min(len(profile_mgr.profiles), MAX_CONCURRENT_JOBS),
-    )
+    # Default cap = MAX_CONCURRENT_JOBS bounded by profile count (legacy:
+    # one Chrome per profile dir). With ALLOW_SAME_PROFILE_CONCURRENCY,
+    # the cap is MAX_CONCURRENT_JOBS regardless of profile count — the
+    # dispatcher is expected to clone each profile to a per-job temp dir
+    # (FLOW_USE_BASE_PROFILE=0) so multiple Chromes don't share a
+    # single user-data-dir.
+    if ALLOW_SAME_PROFILE_CONCURRENCY:
+        max_concurrent = max(1, MAX_CONCURRENT_JOBS)
+    else:
+        max_concurrent = max(
+            1,
+            min(len(profile_mgr.profiles), MAX_CONCURRENT_JOBS),
+        )
 
     logger.info(
         "Starting claim loop  server=%s  worker=%s  profiles=%s  poll=%ds  max=%d",
@@ -240,12 +257,29 @@ async def claim_loop(
                 except Exception:
                     logger.warning("Heartbeat failed", exc_info=True)
 
-            available = profile_mgr.get_available()
+            # In same-profile concurrency mode the busy/available split no
+            # longer maps 1:1 to Chrome instances — each dispatch clones
+            # the profile dir to a temp path so multiple jobs can share a
+            # single registered profile name. Feed the claim API the raw
+            # profile list (busy or not) up to the remaining concurrency
+            # budget; the per-project lock and claim SQL still enforce
+            # safe ordering.
+            if ALLOW_SAME_PROFILE_CONCURRENCY:
+                available = list(profile_mgr.profiles.keys())
+            else:
+                available = profile_mgr.get_available()
             if not available or len(in_flight) >= max_concurrent:
                 await wait_for_capacity()
                 continue
 
-            claim_profiles = available[: max_concurrent - len(in_flight)]
+            slots = max_concurrent - len(in_flight)
+            if ALLOW_SAME_PROFILE_CONCURRENCY:
+                # Repeat the available pool until we fill the remaining
+                # slots — server claim_next_job picks one job per call;
+                # the client fires up to `slots` claim requests below.
+                claim_profiles = (available * slots)[:slots]
+            else:
+                claim_profiles = available[:slots]
             try:
                 job = await api.claim_job(claim_profiles)
             except Exception:
