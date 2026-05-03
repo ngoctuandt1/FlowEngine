@@ -192,6 +192,16 @@ class ProfileSwapper:
         env.setdefault("FLOW_REAL_CHROME", "1")
         env.setdefault("FLOW_PROFILE_LIST_FILE", str(self.credentials_file))
         env.setdefault("FLOW_USE_BASE_PROFILE", "1")
+        # warm_profile.py invokes _find_chrome_executable() which only looks at
+        # Windows install paths by default. On Linux we need to point at the
+        # system Chrome explicitly so the headful CDP launcher succeeds.
+        # Fall back to the conventional Debian path if the operator did not
+        # set FLOW_WARM_CHROME_PATH at the worker process level.
+        if not env.get("FLOW_WARM_CHROME_PATH"):
+            for candidate in ("/usr/bin/google-chrome", "/usr/bin/chromium"):
+                if Path(candidate).exists():
+                    env["FLOW_WARM_CHROME_PATH"] = candidate
+                    break
         try:
             result = subprocess.run(
                 [sys.executable, "scripts/warm_profile.py", profile_name],
