@@ -61,20 +61,26 @@ async def run(profile: str) -> int:
     log.info("Download dir: %s", download_dir)
     log.info("=" * 64)
 
+    n = int(os.environ.get("LIVE_VERIFY_L1_N", "3"))
+    all_prompts = [
+        "a red cat walking through a field of yellow flowers",
+        "a blue dog running on a sandy beach at sunset",
+        "a yellow bird flying over a green forest in the rain",
+        "a white horse galloping across a snowy mountain pass",
+        "a purple jellyfish drifting through deep ocean currents",
+        "a golden eagle soaring above misty alpine peaks",
+        "a black panther prowling at dusk in a moonlit jungle",
+    ]
     jobs = [
         {
             "id": f"live-verify-{int(time.time())}-{i}",
             "type": "text-to-video",
-            "prompt": prompt,
+            "prompt": all_prompts[i % len(all_prompts)],
             "profile": profile,
             "job_level": 1,
             "aspect_ratio": "16:9",
         }
-        for i, prompt in enumerate([
-            "a red cat walking through a field of yellow flowers",
-            "a blue dog running on a sandy beach at sunset",
-            "a yellow bird flying over a green forest in the rain",
-        ])
+        for i in range(n)
     ]
     log.info("Submitting %d L1 jobs:", len(jobs))
     for j in jobs:

@@ -415,8 +415,35 @@ def install_batch_response_capture(client) -> None:
         return
     if not hasattr(client, "_batch_responses"):
         client._batch_responses = []
+    if not hasattr(client, "_batch_requests"):
+        client._batch_requests = []
     client._batch_capture_installed = True
     page = client.page
+
+    def _on_request(request):
+        try:
+            url_l = (request.url or "").lower()
+        except Exception:
+            return
+        if not any(hint in url_l for hint in _BATCH_GEN_URL_HINTS):
+            return
+        try:
+            body = request.post_data
+        except Exception:
+            body = None
+        try:
+            headers = dict(request.headers)
+        except Exception:
+            headers = {}
+        client._batch_requests.append({
+            "url": request.url,
+            "method": request.method,
+            "headers": headers,
+            "post_data": body,
+            "ts": time.time(),
+        })
+
+    page.on("request", _on_request)
 
     async def _on_response(response):
         try:
