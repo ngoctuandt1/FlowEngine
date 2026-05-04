@@ -38,10 +38,87 @@ _STATUS_URL = (
 )
 
 
+def _adapt_flow_template(template: dict, pending: list[str]) -> dict:
+    """Replace the gen_ids inside a scraped UI status template.
+
+    Live verify 2026-05-04 confirmed Flow's status request shape::
+
+        {"media": [{"name": "<gen_id>", "projectId": "<uuid>"}, ...]}
+
+    The list field is ``media`` (not ``operations``). We replicate the
+    template's first entry as a proto and swap ``name`` for each
+    pending gen_id.
+    """
+    body = dict(template)
+    list_key = None
+    for k in ("media", "operations"):
+        if isinstance(template.get(k), list) and template[k]:
+            list_key = k
+            break
+    if list_key is None:
+        # Last-ditch fallback to the legacy guess shape.
+        body["media"] = [{"name": g} for g in pending]
+        return body
+    proto = template[list_key][0]
+    if not isinstance(proto, dict):
+        body[list_key] = [{"name": g} for g in pending]
+        return body
+    new_entries = []
+    for g in pending:
+        entry = json.loads(json.dumps(proto))
+        _set_gen_id_in_entry(entry, g)
+        new_entries.append(entry)
+    body[list_key] = new_entries
+    return body
+
+
+def _set_gen_id_in_entry(entry: dict, gen_id: str) -> None:
+    """In-place swap of any name/id field in an AsyncOperation entry."""
+    inner = entry.get("operation")
+    if isinstance(inner, dict):
+        for k in ("name", "operationName", "id"):
+            if k in inner:
+                inner[k] = gen_id
+                return
+        inner["name"] = gen_id
+        return
+    for k in ("name", "operationName", "id", "operationId"):
+        if k in entry:
+            entry[k] = gen_id
+            return
+    entry["name"] = gen_id
+
+
+def _harvest_flow_status_request_template(client) -> dict | None:
+    """Try to scrape a real Flow-UI status request body from the captures.
+
+    When Flow's own React state polls `batchCheckAsyncVideoGenerationStatus`,
+    the side-channel listener (`install_batch_response_capture`) records
+    the request body. Reusing that as the template removes the need to
+    guess the AsyncOperation proto shape.
+    """
+    requests = getattr(client, "_batch_requests", None) or []
+    for entry in reversed(requests):
+        url_l = (entry.get("url") or "").lower()
+        if "batchcheckasync" not in url_l:
+            continue
+        if entry.get("method") != "POST":
+            continue
+        raw = entry.get("post_data")
+        if not isinstance(raw, str) or not raw:
+            continue
+        try:
+            return json.loads(raw)
+        except Exception:
+            continue
+    return None
+
+
 async def poll_status_via_api(
     client,
     *,
     gen_ids: list[str],
+    project_id: str | None = None,
     poll_interval_sec: float = 6.0,
     hard_timeout_sec: float = 900.0,
 ) -> dict[str, dict[str, Any]]:
@@ -69,17 +146,46 @@ async def poll_status_via_api(
         g: {"status": "pending", "media_id": None, "media_url": None}
         for g in gen_ids
     }
+    out_dump_done: dict[str, bool] = {}
 
     headers = _build_headers(client)
     deadline = time.monotonic() + hard_timeout_sec
     request_shape = None  # discovered after first non-error poll
+    flow_template = _harvest_flow_status_request_template(client)
+    if flow_template is not None:
+        logger.info(
+            "status poll: scraped Flow's own request template (keys=%s)",
+            list(flow_template.keys())[:8],
+        )
 
     while time.monotonic() < deadline:
         pending = [g for g, v in out.items() if v["status"] == "pending"]
         if not pending:
             break
 
-        body, request_shape = _build_status_body(pending, request_shape)
+        # Re-harvest each iteration — Flow UI starts polling a few
+        # seconds after submit, so the template may not exist on our
+        # first try but appear on a later one.
+        if flow_template is None:
+            flow_template = _harvest_flow_status_request_template(client)
+            if flow_template is not None:
+                logger.info(
+                    "status poll: harvested Flow template mid-run keys=%s",
+                    list(flow_template.keys())[:8],
+                )
+        if flow_template is not None:
+            body = _adapt_flow_template(flow_template, pending)
+        elif project_id:
+            # Direct shape verified live 2026-05-04:
+            #   {"media": [{"name": "<gen_id>", "projectId": "<uuid>"}, ...]}
+            body = {
+                "media": [
+                    {"name": g, "projectId": project_id}
+                    for g in pending
+                ]
+            }
+        else:
+            body, request_shape = _build_status_body(pending, request_shape)
         try:
             resp = await page.context.request.post(
                 _STATUS_URL,
@@ -116,6 +222,22 @@ async def poll_status_via_api(
             if v["status"] in ("completed", "failed")
         )
         logger.info("status poll: %d/%d resolved", n_done, len(out))
+        # When nothing resolved, log the response keys + first item shape so
+        # we can iterate on the parser without burning credits on full
+        # generations. Cap to first few status polls only.
+        if n_done == 0 and out_dump_done.get("count", 0) < 2:
+            try:
+                ops_first = (data.get("operations") or [None])[0]
+                med_first = (data.get("media") or [None])[0]
+                logger.info(
+                    "status poll: response keys=%s ops[0]=%s media[0]=%s",
+                    list(data.keys())[:8],
+                    json.dumps(ops_first)[:500] if ops_first else "null",
+                    json.dumps(med_first)[:500] if med_first else "null",
+                )
+            except Exception:
+                pass
+            out_dump_done["count"] = out_dump_done.get("count", 0) + 1
 
         if n_done == len(out):
             return out
@@ -147,7 +269,21 @@ def _build_headers(client) -> dict[str, str]:
     return headers
 
 
-_REQUEST_SHAPES = ("operationNames", "operations_str", "operations_obj")
+# Shape candidates rotated until Flow's status endpoint stops returning
+# 400. Live verify 2026-05-04 narrowed it down: the request expects a
+# field named ``operations`` whose entries are
+# ``type.googleapis.com/google.internal.labs.aisandbox.v1.AsyncOperation``
+# protos (so plain strings and ``{name:...}`` both 400). Try each known-
+# plausible shape.
+_REQUEST_SHAPES = (
+    "operations_obj_operation",   # [{"operation": {"name": gid}}]   — mirrors submit response
+    "operations_obj_id",          # [{"id": gid}]
+    "operations_obj_op_name",     # [{"operationName": gid}]
+    "operations_obj_with_status", # [{"operation": {"name": gid}, "status": "PENDING"}]
+    "operations_str",             # [gid, ...]
+    "operations_obj_name",        # [{"name": gid}]
+    "operationNames",             # {"operationNames": [gid, ...]}
+)
 
 
 def _build_status_body(
@@ -159,8 +295,19 @@ def _build_status_body(
         return {"operationNames": pending}, use
     if use == "operations_str":
         return {"operations": pending}, use
-    if use == "operations_obj":
+    if use == "operations_obj_name":
         return {"operations": [{"name": g} for g in pending]}, use
+    if use == "operations_obj_id":
+        return {"operations": [{"id": g} for g in pending]}, use
+    if use == "operations_obj_op_name":
+        return {"operations": [{"operationName": g} for g in pending]}, use
+    if use == "operations_obj_operation":
+        return {"operations": [{"operation": {"name": g}} for g in pending]}, use
+    if use == "operations_obj_with_status":
+        return {"operations": [
+            {"operation": {"name": g}, "status": "MEDIA_GENERATION_STATUS_PENDING"}
+            for g in pending
+        ]}, use
     return {"operationNames": pending}, "operationNames"
 
 
@@ -183,33 +330,112 @@ _TERMINAL_STATUSES_FAILED = {
 
 
 def _ingest_response(data: dict, out: dict[str, dict[str, Any]]) -> None:
-    """Walk the response and update `out` with new statuses."""
-    operations = data.get("operations") or data.get("statuses") or []
-    if not isinstance(operations, list):
-        return
-    for entry in operations:
+    """Walk the response and update `out` with new statuses.
+
+    Flow's response has either:
+      * ``{"operations": [...]}`` — older shape, each entry is an
+        ``AsyncOperation``-ish dict with ``operation.name`` + ``status``.
+      * ``{"media": [...]}`` — current shape (live verify 2026-05-04),
+        each entry carries the gen_id alongside the resolved media data.
+
+    We try both. Each entry is matched to one of our pending gen_ids
+    via deep-walk on any string field that equals (or ends with) a
+    pending id; the matching slot is updated with status + media_id +
+    media_url.
+    """
+    candidates = []
+    if isinstance(data.get("operations"), list):
+        candidates += data["operations"]
+    if isinstance(data.get("media"), list):
+        candidates += data["media"]
+    if isinstance(data.get("statuses"), list):
+        candidates += data["statuses"]
+    for entry in candidates:
         if not isinstance(entry, dict):
             continue
-        gen_id = _extract_gen_id(entry)
-        if not gen_id or gen_id not in out:
-            # try matching on suffix (some responses return short ids)
-            short = (gen_id or "")[-12:]
-            for k in out.keys():
-                if k.endswith(short) and short:
-                    gen_id = k
-                    break
-        if not gen_id or gen_id not in out:
+        gen_id = _match_pending_gen_id(entry, out.keys())
+        if not gen_id:
             continue
         slot = out[gen_id]
         slot["raw"] = entry
-        status = (entry.get("status") or "").upper()
-        if status in _TERMINAL_STATUSES_OK or entry.get("done") is True:
+        status = _extract_status(entry)
+        # Done indicator: in addition to status enum, presence of a
+        # media URL field (videoOutputs / fifeUrl / downloadUrl) implies
+        # completion. Keep enum check for early failures.
+        media_url = _extract_media_url(entry)
+        media_id = _extract_media_id(entry)
+        is_done = (
+            status in _TERMINAL_STATUSES_OK
+            or entry.get("done") is True
+            or bool(media_url)
+        )
+        if is_done:
             slot["status"] = "completed"
-            slot["media_id"] = _extract_media_id(entry)
-            slot["media_url"] = _extract_media_url(entry)
+            slot["media_id"] = media_id
+            slot["media_url"] = media_url
+            logger.info(
+                "status: gen=%s -> completed (mid=%s, url=%s)",
+                gen_id[-12:], (media_id or "")[:12],
+                "yes" if media_url else "no",
+            )
         elif status in _TERMINAL_STATUSES_FAILED:
             slot["status"] = "failed"
             slot["error"] = entry.get("error") or status
+            logger.info("status: gen=%s -> failed (%s)", gen_id[-12:], status)
+        else:
+            # Still pending — log entry keys + status periodically so we
+            # can iterate on the parser if Flow surfaces completion
+            # under an unfamiliar field.
+            logger.debug(
+                "status: gen=%s pending status=%r keys=%s",
+                gen_id[-12:], status, list(entry.keys())[:10],
+            )
+
+
+def _match_pending_gen_id(entry: dict, pending_ids) -> str | None:
+    """Find the first pending gen_id referenced anywhere in `entry`."""
+    direct = _extract_gen_id(entry)
+    if direct:
+        for k in pending_ids:
+            if direct == k or direct.endswith(k[-12:]) or k.endswith(direct[-12:]):
+                return k
+    # Deep-walk every string value for a suffix match — Flow's status
+    # response may bury the gen id under nested keys we haven't named.
+    suffix_to_id = {k[-12:]: k for k in pending_ids}
+    return _walk_for_suffix(entry, suffix_to_id)
+
+
+def _walk_for_suffix(node: Any, suffix_to_id: dict[str, str]) -> str | None:
+    if isinstance(node, str):
+        for suf, full in suffix_to_id.items():
+            if suf and suf in node:
+                return full
+        return None
+    if isinstance(node, dict):
+        for v in node.values():
+            hit = _walk_for_suffix(v, suffix_to_id)
+            if hit:
+                return hit
+        return None
+    if isinstance(node, list):
+        for v in node:
+            hit = _walk_for_suffix(v, suffix_to_id)
+            if hit:
+                return hit
+    return None
+
+
+def _extract_status(entry: dict) -> str:
+    """Pull a status string out of any common location in the entry."""
+    direct = entry.get("status")
+    if isinstance(direct, str):
+        return direct.upper()
+    nested = entry.get("operation") or {}
+    if isinstance(nested, dict):
+        s = nested.get("status")
+        if isinstance(s, str):
+            return s.upper()
+    return ""
 
 
 def _extract_gen_id(entry: dict) -> str:

@@ -63,38 +63,62 @@ async def run(profile: str, parent_edit_url: str, parent_media_id: str) -> int:
 
     ts = int(time.time())
     parent_job_id = f"live-verify-l1-{ts}"
-    l2_jobs = [
-        {
-            "id": f"live-l2-extend-{ts}",
-            "type": "extend-video",
-            "prompt": "the camera pulls back to reveal a wide horizon",
-            "profile": profile,
-            "job_level": 2,
-            "parent_job_id": parent_job_id,
-            "edit_url": parent_edit_url,
-            "media_id": parent_media_id,
-        },
-        {
-            "id": f"live-l2-camera-dolly-{ts}",
-            "type": "camera-move",
-            "direction": "Dolly in",
-            "profile": profile,
-            "job_level": 2,
-            "parent_job_id": parent_job_id,
-            "edit_url": parent_edit_url,
-            "media_id": parent_media_id,
-        },
-        {
-            "id": f"live-l2-camera-orbit-{ts}",
-            "type": "camera-move",
-            "direction": "Orbit left",
-            "profile": profile,
-            "job_level": 2,
-            "parent_job_id": parent_job_id,
-            "edit_url": parent_edit_url,
-            "media_id": parent_media_id,
-        },
-    ]
+    # Mixed-type validates the orchestrator's per-op dispatch; all-extend
+    # is the cleaner first verification because camera/insert/remove have
+    # their own selector idiosyncrasies in Flow's panel UI.
+    job_mode = os.environ.get("LIVE_VERIFY_L2_MODE", "extend-only")
+    if job_mode == "extend-only":
+        prompts = [
+            "the camera pulls back to reveal a wide horizon",
+            "a soft warm light fades in from the left",
+            "the scene transitions to a slow forward tracking shot",
+        ]
+        l2_jobs = [
+            {
+                "id": f"live-l2-extend-{i}-{ts}",
+                "type": "extend-video",
+                "prompt": p,
+                "profile": profile,
+                "job_level": 2,
+                "parent_job_id": parent_job_id,
+                "edit_url": parent_edit_url,
+                "media_id": parent_media_id,
+            }
+            for i, p in enumerate(prompts)
+        ]
+    else:
+        l2_jobs = [
+            {
+                "id": f"live-l2-extend-{ts}",
+                "type": "extend-video",
+                "prompt": "the camera pulls back to reveal a wide horizon",
+                "profile": profile,
+                "job_level": 2,
+                "parent_job_id": parent_job_id,
+                "edit_url": parent_edit_url,
+                "media_id": parent_media_id,
+            },
+            {
+                "id": f"live-l2-camera-dolly-{ts}",
+                "type": "camera-move",
+                "direction": "Dolly in",
+                "profile": profile,
+                "job_level": 2,
+                "parent_job_id": parent_job_id,
+                "edit_url": parent_edit_url,
+                "media_id": parent_media_id,
+            },
+            {
+                "id": f"live-l2-camera-orbit-{ts}",
+                "type": "camera-move",
+                "direction": "Orbit left",
+                "profile": profile,
+                "job_level": 2,
+                "parent_job_id": parent_job_id,
+                "edit_url": parent_edit_url,
+                "media_id": parent_media_id,
+            },
+        ]
 
     log.info("Submitting %d L2 jobs:", len(l2_jobs))
     for j in l2_jobs:

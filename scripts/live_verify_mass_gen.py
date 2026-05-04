@@ -40,7 +40,10 @@ async def run(profile: str) -> int:
     log = logging.getLogger("live-verify-mass-gen")
 
     from flow.client import FlowClient
-    from flow.operations._burn_recovery import with_recaptcha_recovery
+    from flow.operations._burn_recovery import (
+        prime_flow_session,
+        with_recaptcha_recovery,
+    )
     from flow.operations._l1_inflate_batch import submit_l1_batch_via_inflate
     from flow.operations._l1_status_poll import (
         download_via_url,
@@ -69,6 +72,14 @@ async def run(profile: str) -> int:
         "CHROME_USER_DATA_DIR", "./chrome-profiles"
     )
 
+    # No pre-flight prime: launching two Chrome instances back-to-back
+    # on the same FLOW_USE_BASE_PROFILE=1 directory races on cookie
+    # flushes and disposes route contexts mid-fetch. submit_generate_l1
+    # now drives OAuth login itself when the marketing landing CTA
+    # bounces to signin/identifier — see flow/operations/_l1_batch.py.
+    # The wipe+rewarm fallback in with_recaptcha_recovery still kicks
+    # in if a real RecaptchaError fires.
+
     async def _full_pipeline() -> list[dict]:
         client = FlowClient(
             profile_name=profile,
@@ -90,6 +101,7 @@ async def run(profile: str) -> int:
             log.info("polling status for %d gen_ids...", len(gen_ids))
             statuses = await poll_status_via_api(
                 client, gen_ids=gen_ids,
+                project_id=submits[0].get("project_id") or None,
                 poll_interval_sec=8.0,
                 hard_timeout_sec=900.0,
             )

@@ -135,6 +135,23 @@ async def submit_generate_l1(
 
         if not await _new_btn_attached(1000):
             await dismiss_flow_marketing_landing(page, logger, _new_btn_attached)
+        # Marketing-landing CTAs sometimes bounce to OAuth signin/identifier
+        # (cookies insufficient for Flow's client_id even when Gmail is
+        # logged in — the freshly-warmed-profile case). Drive the login
+        # flow once, then re-goto the homepage and re-attempt.
+        if not await _new_btn_attached(2000) and is_login_page(page.url):
+            logger.warning("Marketing CTA bounced to signin — driving login")
+            try:
+                await handle_login_redirect(
+                    page, timeout=90, profile_name=client.profile_name,
+                    client=client,
+                )
+            except Exception as exc:
+                logger.warning("login redirect drive failed: %s", exc)
+            await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
+            if not await _new_btn_attached(2000):
+                await dismiss_flow_marketing_landing(page, logger, _new_btn_attached)
         if not await _new_btn_attached(15000):
             logger.warning("New-project button did not attach within 15s")
         await asyncio.sleep(1)
@@ -239,10 +256,13 @@ async def submit_generate_l1(
     # increased) BEFORE the operations/ POST response lands in
     # `client._calls`. Poll briefly so the per-submit window contains the
     # network event before we move on.
+    # 30s — inflate-batch rewrites the body to N requests, and Flow's
+    # response time scales with N. Round 11 PASS measured 15s for N=3;
+    # leave headroom for N≤5 or slow-day fluctuations.
     gen_id = await _await_gen_id_in_window(
         client, calls_before,
         batch_resp_before=batch_resp_before,
-        timeout_sec=15.0,
+        timeout_sec=30.0,
     )
     if not gen_id:
         msg = await message_with_failure_capture(
@@ -446,6 +466,12 @@ def install_batch_response_capture(client) -> None:
             "post_data": body,
             "ts": time.time(),
         })
+        body_str = body if isinstance(body, str) else ""
+        logger.info(
+            "batch request capture: %s %s body_len=%d body[:300]=%s",
+            request.method, request.url[:100],
+            len(body_str), body_str[:300],
+        )
 
     page.on("request", _on_request)
 

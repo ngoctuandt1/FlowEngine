@@ -150,71 +150,16 @@ async def submit_l1_batch_via_inflate(
                 request.url[:100], len(existing), len(body["requests"]),
             )
 
-            # Use route.fetch() so we can SEE the response and decide
-            # whether the rewrite was accepted. If Flow signs/verifies
-            # the body and rejects, fall back to the original request so
-            # the primer submit still goes through.
-            try:
-                api_resp = await route.fetch(post_data=new_post_data)
-            except Exception as exc:
-                logger.error("inflate: route.fetch failed: %s — falling back", exc)
-                inflate_state["error"] = f"fetch: {exc}"
-                await route.continue_()
-                return
-
-            try:
-                status = api_resp.status
-                resp_body_text = await api_resp.text()
-            except Exception as exc:
-                logger.error("inflate: read response failed: %s", exc)
-                inflate_state["error"] = f"read: {exc}"
-                await route.continue_()
-                return
-
-            if status != 200:
-                logger.error(
-                    "inflate: rewritten POST returned HTTP %d — falling back. "
-                    "Body[:200]=%s",
-                    status, resp_body_text[:200],
-                )
-                inflate_state["error"] = f"status {status}: {resp_body_text[:200]}"
-                # Fallback: re-issue the ORIGINAL request so the primer
-                # submit still produces a usable single gen.
-                try:
-                    fb = await route.fetch(post_data=raw)
-                    fb_body = await fb.body()
-                    await route.fulfill(
-                        status=fb.status,
-                        headers=dict(fb.headers),
-                        body=fb_body,
-                    )
-                except Exception as exc:
-                    logger.exception("inflate: fallback fulfill failed: %s", exc)
-                    try:
-                        await route.continue_()
-                    except Exception:
-                        pass
-                return
-
-            # Success — fulfill with the rewritten response. The body
-            # carries N operations.
-            inflate_state["accepted"] = True
-            try:
-                parsed = json.loads(resp_body_text)
-                ops_n = len(parsed.get("operations") or [])
-                logger.info(
-                    "inflate: ACCEPTED — Flow returned %d operations for %d requested",
-                    ops_n, len(body["requests"]),
-                )
-                inflate_state["response_body"] = parsed
-            except Exception:
-                logger.warning("inflate: response not JSON; passing raw body")
-
-            await route.fulfill(
-                status=status,
-                headers=dict(api_resp.headers),
-                body=resp_body_text,
-            )
+            # Use route.continue_(post_data=...) — proven to work in
+            # round 11 (3 distinct gen_ids returned). The earlier
+            # route.fetch + route.fulfill approach raced with the
+            # FlowClient context lifecycle when wrapped in
+            # with_recaptcha_recovery (RequestContext disposed mid-
+            # fetch). The downside of route.continue_ is we can't
+            # inspect the response status here; the caller polls
+            # `client._batch_responses` for the response (which carries
+            # the N operations the rewritten body asked for).
+            await route.continue_(post_data=new_post_data)
         except Exception as exc:
             inflate_state["error"] = repr(exc)
             logger.exception("inflate: route handler crashed: %s", exc)

@@ -114,6 +114,26 @@ async def with_recaptcha_recovery(
     return None
 
 
+async def prime_flow_session(profile: str) -> bool:
+    """Ensure the profile has a usable Flow session before a batch run.
+
+    Tries a minimal Flow visit first (cheap if cookies are already good).
+    On any auth-bouncing or marketing-landing-persistent failure, falls
+    back to wipe+rewarm + Flow OAuth seal.
+
+    Use as the first step of a standalone batch script so the run does
+    not enter ``submit_generate_l1`` only to die in the marketing
+    landing → signin/identifier loop.
+
+    Returns True when the Flow app is reachable, False otherwise.
+    """
+    if await _seal_flow_oauth_consent(profile):
+        logger.info("prime_flow_session: existing cookies OK")
+        return True
+    logger.info("prime_flow_session: cookies insufficient — wipe+rewarm")
+    return await _wipe_and_rewarm(profile)
+
+
 async def _wipe_and_rewarm(profile: str) -> bool:
     profile_base_dir = Path(
         os.environ.get("CHROME_USER_DATA_DIR", "./chrome-profiles")
@@ -132,11 +152,135 @@ async def _wipe_and_rewarm(profile: str) -> bool:
             profile_base_dir=profile_base_dir,
             credentials_file=cred_file,
         )
-        return bool(
+        ok = bool(
             await asyncio.to_thread(swapper.wipe_and_rewarm, profile)
         )
     except Exception:
         logger.exception("ProfileSwapper.wipe_and_rewarm crashed")
+        return False
+    if not ok:
+        return False
+
+    # warm_profile.py only drives Gmail login, so Flow's OAuth consent
+    # cookies are not established. Visit labs.google/fx/tools/flow once
+    # via a real Chrome to seal the Flow session before returning.
+    # Without this, the next /flow nav lands on the marketing landing
+    # which the live verify script can't dismiss (the "Create with Flow"
+    # CTA bounces to the OAuth signin/identifier page).
+    try:
+        consented = await _seal_flow_oauth_consent(profile)
+        if not consented:
+            logger.warning("Flow OAuth consent step did not confirm; "
+                           "proceeding anyway")
+    except Exception:
+        logger.exception("Flow OAuth consent step crashed; proceeding anyway")
+    return True
+
+
+async def _seal_flow_oauth_consent(profile: str) -> bool:
+    """One-shot Flow visit on the freshly-warmed profile.
+
+    Drives FlowClient just far enough to land on /project/ or the
+    composer — enough for Google's OAuth flow to consent and persist
+    the labs.google session cookies. Closes the client immediately.
+    """
+    from flow.client import FlowClient
+
+    profile_base_dir = os.environ.get(
+        "CHROME_USER_DATA_DIR", "./chrome-profiles"
+    )
+    download_dir = os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")
+    client = FlowClient(
+        profile_name=profile,
+        profile_base_dir=profile_base_dir,
+        download_dir=download_dir,
+    )
+    try:
+        async with client:
+            page = client.page
+            try:
+                await page.goto(
+                    "https://labs.google/fx/tools/flow",
+                    wait_until="domcontentloaded", timeout=30000,
+                )
+                await asyncio.sleep(3)
+            except Exception as exc:
+                logger.warning("seal: initial Flow goto failed: %s", exc)
+
+            # If marketing landing showed up, click through; the gmail
+            # cookies should drive the OAuth handshake near-instantly.
+            from flow.landing import dismiss_flow_marketing_landing
+            from flow.login import handle_login_redirect, is_login_page
+
+            async def _flow_app_attached(timeout_ms: int = 1000) -> bool:
+                try:
+                    await page.wait_for_selector(
+                        "text=/New project|Dự án mới|Tạo dự án/",
+                        state="attached", timeout=timeout_ms,
+                    )
+                    return True
+                except Exception:
+                    return False
+
+            if not await _flow_app_attached(2000):
+                await dismiss_flow_marketing_landing(
+                    page, logger, _flow_app_attached,
+                )
+
+            if is_login_page(page.url):
+                logger.info("seal: login redirect — driving handle_login_redirect")
+                await handle_login_redirect(
+                    page, timeout=60, profile_name=profile, client=client,
+                )
+                await page.goto(
+                    "https://labs.google/fx/tools/flow",
+                    wait_until="domcontentloaded", timeout=30000,
+                )
+                await asyncio.sleep(3)
+                if not await _flow_app_attached(8000):
+                    await dismiss_flow_marketing_landing(
+                        page, logger, _flow_app_attached,
+                    )
+
+            attached = await _flow_app_attached(8000)
+            logger.info("seal: marketing CTA attached=%s url=%s",
+                        attached, page.url[:120])
+            if not attached:
+                return False
+
+            # Click "New project" to enter the actual app — that
+            # navigation persists Flow's OAuth consent cookies in a way
+            # the marketing landing alone does not. Verify by URL
+            # containing /project/ within 15 s.
+            clicked = False
+            for name in ("New project", "Dự án mới", "Tạo dự án"):
+                try:
+                    btn = page.get_by_role(
+                        "button", name=name,
+                    ).filter(visible=True).first
+                    if await btn.is_visible(timeout=2000):
+                        await btn.click(timeout=5000)
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+            if not clicked:
+                logger.warning("seal: could not click 'New project'; "
+                               "session may still be incomplete")
+                return False
+            try:
+                await page.wait_for_url("**/project/**", timeout=20000)
+            except Exception:
+                logger.warning(
+                    "seal: did not reach /project/ after click; "
+                    "url=%s", page.url[:120],
+                )
+                return False
+            logger.info("seal: reached /project/ — Flow OAuth fully sealed")
+            await asyncio.sleep(2)
+            return True
+    except Exception as exc:
+        logger.warning("seal: client lifecycle error: %s", exc)
         return False
 
 
