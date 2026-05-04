@@ -215,6 +215,39 @@ def _build_window_geometry_args() -> list[str]:
     return args
 
 
+def _build_perf_args() -> list[str]:
+    """CPU/memory hygiene flags always safe to apply, env-gated by
+    ``FLOW_CHROME_PERF`` (default ``on`` — opt-out only).
+
+    Zero-risk additions for an automation-only Chrome:
+
+      * ``--mute-audio`` — Flow's editor decodes audio for video previews
+        we never play; muting drops a renderer thread.
+      * ``--no-pings`` — silences hyperlink ping beacons.
+      * ``--disable-extensions`` / ``--disable-default-apps`` — clean
+        profile, no extension event loops.
+      * ``--disable-component-update`` — Chrome auto-update pings.
+      * ``--disable-features=Translate,MediaRouter,GlobalMediaControls``
+        — Flow doesn't use translation; MediaRouter/GMC drive Cast
+        infrastructure we don't need.
+      * ``--disable-background-timer-throttling=false`` is omitted on
+        purpose — we WANT background tabs throttled when multi-tab.
+
+    Set ``FLOW_CHROME_PERF=off`` to skip (e.g. when diagnosing).
+    """
+    mode = (os.environ.get("FLOW_CHROME_PERF", "on") or "on").strip().lower()
+    if mode in ("0", "off", "false", "no"):
+        return []
+    return [
+        "--mute-audio",
+        "--no-pings",
+        "--disable-extensions",
+        "--disable-default-apps",
+        "--disable-component-update",
+        "--disable-features=Translate,MediaRouter,GlobalMediaControls,OptimizationHints",
+    ]
+
+
 def _build_gpu_args() -> list[str]:
     """GPU / hardware-accel flags, env-gated.
 
@@ -602,6 +635,7 @@ class FlowClient:
             "--new-window",
             *_build_window_geometry_args(),
             *_build_gpu_args(),
+            *_build_perf_args(),
         ]
         popen_kwargs: dict[str, Any] = {
             "stdout": subprocess.DEVNULL,
@@ -706,6 +740,7 @@ class FlowClient:
             "--no-default-browser-check",
             *_build_window_geometry_args(),
             *_build_gpu_args(),
+            *_build_perf_args(),
         ]
         args = _apply_root_sandbox_guard(args)
 
