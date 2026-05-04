@@ -265,10 +265,27 @@ async def submit_generate_l1(
         timeout_sec=30.0,
     )
     if not gen_id:
+        # Look at the side-channel responses for a 403/429 on the
+        # submit URL. Flow returns those when reCAPTCHA throttles or
+        # blocks; we want burn_recovery (catches RecaptchaError) to
+        # wipe+rewarm and retry rather than failing as a generic
+        # RuntimeError.
+        block_status = _detect_block_in_window(client, batch_resp_before)
+        if block_status:
+            cap = await capture_failure_nonblocking(
+                client, f"recaptcha_blocked_{block_status}",
+            )
+            err = RecaptchaError(
+                kind=f"blocked_{block_status}",
+                url="v1/video:batchAsyncGenerateVideoText",
+            )
+            if cap:
+                setattr(err, "capture_path", cap)
+            raise err
         msg = await message_with_failure_capture(
             client, "batch_no_gen_id_captured",
             "Submit confirmed but no gen_id appeared in operations/ network calls "
-            "within 15s",
+            "within 30s",
         )
         raise RuntimeError(msg)
 
@@ -283,6 +300,25 @@ async def submit_generate_l1(
         "submit_ts": submit_ts,
         "prompt": prompt,
     }
+
+
+def _detect_block_in_window(client, batch_resp_before: int) -> int:
+    """Return the HTTP status code (403/429) if the most recent submit
+    response in this window indicates a Flow-side block; 0 otherwise.
+
+    Used by submit_generate_l1 to translate "no gen_id captured because
+    Flow returned 403" into a RecaptchaError that the burn-recovery
+    wrapper can react to (wipe+rewarm + retry).
+    """
+    responses = getattr(client, "_batch_responses", None) or []
+    for entry in responses[batch_resp_before:]:
+        url_l = (entry.get("url") or "").lower()
+        if "batchasyncgenerate" not in url_l:
+            continue
+        status = entry.get("status") or 0
+        if status in (403, 429):
+            return int(status)
+    return 0
 
 
 async def _await_gen_id_in_window(

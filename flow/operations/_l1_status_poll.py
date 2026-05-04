@@ -225,19 +225,28 @@ async def poll_status_via_api(
         # When nothing resolved, log the response keys + first item shape so
         # we can iterate on the parser without burning credits on full
         # generations. Cap to first few status polls only.
-        if n_done == 0 and out_dump_done.get("count", 0) < 2:
+        # Periodically dump per-media status so we can SEE Flow's
+        # generation progress (PENDING → OK or FAILED). Every 30s
+        # while no resolution.
+        out_dump_done["count"] = out_dump_done.get("count", 0) + 1
+        if n_done == 0 and out_dump_done["count"] % 4 == 1:
             try:
-                ops_first = (data.get("operations") or [None])[0]
-                med_first = (data.get("media") or [None])[0]
+                media_list = data.get("media") or []
+                statuses_summary = []
+                for m in media_list:
+                    if not isinstance(m, dict):
+                        continue
+                    mm = m.get("mediaMetadata") or {}
+                    ms = (mm.get("mediaStatus") or {}).get(
+                        "mediaGenerationStatus", "?"
+                    )
+                    statuses_summary.append(ms.replace("MEDIA_GENERATION_STATUS_", ""))
                 logger.info(
-                    "status poll: response keys=%s ops[0]=%s media[0]=%s",
-                    list(data.keys())[:8],
-                    json.dumps(ops_first)[:500] if ops_first else "null",
-                    json.dumps(med_first)[:500] if med_first else "null",
+                    "status poll: per-gen statuses=%s (poll #%d)",
+                    statuses_summary, out_dump_done["count"],
                 )
             except Exception:
                 pass
-            out_dump_done["count"] = out_dump_done.get("count", 0) + 1
 
         if n_done == len(out):
             return out
@@ -426,7 +435,25 @@ def _walk_for_suffix(node: Any, suffix_to_id: dict[str, str]) -> str | None:
 
 
 def _extract_status(entry: dict) -> str:
-    """Pull a status string out of any common location in the entry."""
+    """Pull a status string out of any common location in the entry.
+
+    Live verify 2026-05-04 confirmed Flow's status response buries the
+    real status at::
+
+        entry["mediaMetadata"]["mediaStatus"]["mediaGenerationStatus"]
+
+    e.g. ``MEDIA_GENERATION_STATUS_PENDING`` while running,
+    ``MEDIA_GENERATION_STATUS_OK`` (or similar terminal value) when
+    done. We check that path first, then fall back to flatter shapes
+    in case Flow rotates the schema.
+    """
+    media_meta = entry.get("mediaMetadata") or {}
+    if isinstance(media_meta, dict):
+        mstatus = media_meta.get("mediaStatus") or {}
+        if isinstance(mstatus, dict):
+            s = mstatus.get("mediaGenerationStatus")
+            if isinstance(s, str):
+                return s.upper()
     direct = entry.get("status")
     if isinstance(direct, str):
         return direct.upper()
@@ -448,6 +475,12 @@ def _extract_gen_id(entry: dict) -> str:
 
 
 def _extract_media_id(entry: dict) -> str | None:
+    # The status-response media[i].name IS the canonical media uuid
+    # (verified live 2026-05-04 — Flow surfaces the same uuid on the
+    # download URL).
+    name = entry.get("name")
+    if isinstance(name, str) and name:
+        return name
     media = entry.get("media") or entry.get("result") or {}
     if isinstance(media, list) and media:
         media = media[0]
