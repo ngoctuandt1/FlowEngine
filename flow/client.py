@@ -245,6 +245,13 @@ def _build_perf_args() -> list[str]:
         "--disable-default-apps",
         "--disable-component-update",
         "--disable-features=Translate,MediaRouter,GlobalMediaControls,OptimizationHints",
+        # Stop Flow's editor from auto-looping its 13+ camera-preset
+        # and history thumbnail <video> tags. Worker drives by clicks
+        # only — never watches playback — so requiring a user gesture
+        # before any media plays drops the renderer's per-frame paint
+        # loop and the audio-decode thread (which still wakes even
+        # with --mute-audio because ``muted`` ≠ ``no decode``).
+        "--autoplay-policy=user-gesture-required",
     ]
 
 
