@@ -89,6 +89,70 @@ def _set_gen_id_in_entry(entry: dict, gen_id: str) -> None:
     entry["name"] = gen_id
 
 
+_PER_TILE_SCRAPE_JS = """() => {
+    // Walk every project tile and pull out its progress + visible
+    // state cues. Flow renders each generation as a `[data-tile-id]`
+    // wrapper; the running cards have a `<progressbar>`-style
+    // element with aria-valuenow OR an inner element whose textContent
+    // includes "<NN>%". Done cards have a <video> element. Failed
+    // cards show a Material Icon "warning" or text "Failed".
+    const out = [];
+    const seenIds = new Set();
+    const tiles = document.querySelectorAll('[data-tile-id]');
+    for (const t of tiles) {
+        const id = t.getAttribute('data-tile-id') || '';
+        if (!id || seenIds.has(id)) continue;
+        seenIds.add(id);
+
+        const r = t.getBoundingClientRect();
+        if (r.width < 40 || r.height < 40) continue; // skip rail mirrors
+
+        // Progress %: prefer aria-valuenow, then any text matching N%
+        let progress = -1;
+        const progressEl = t.querySelector('[aria-valuenow]');
+        if (progressEl) {
+            const v = parseInt(progressEl.getAttribute('aria-valuenow') || '');
+            if (!isNaN(v) && v >= 0 && v <= 100) progress = v;
+        }
+        if (progress < 0) {
+            const txt = (t.innerText || '').match(/(\\d{1,3})\\s*%/);
+            if (txt) {
+                const v = parseInt(txt[1]);
+                if (!isNaN(v) && v >= 0 && v <= 100) progress = v;
+            }
+        }
+
+        // Done = has visible <video>
+        const hasVideo = t.querySelector('video') !== null;
+
+        // Failed = Material warning icon or text "Failed"/"Lỗi"
+        const failed = /failed|error|lỗi|loi/i.test(t.innerText || '')
+            || t.querySelector('i.google-symbols')?.textContent?.includes('warning');
+
+        let state = 'pending';
+        if (failed) state = 'failed';
+        else if (hasVideo) state = 'done';
+        else if (progress >= 0) state = 'running';
+
+        out.push({tile_id: id, progress: progress, state: state});
+    }
+    return out;
+}"""
+
+
+async def scrape_dom_progress(page) -> list[dict]:
+    """Return per-tile progress + state read from the project DOM.
+
+    Used to render real-time % progress for the user. Combined with the
+    API's authoritative state enum in :func:`poll_status_via_api`.
+    """
+    try:
+        return await page.evaluate(_PER_TILE_SCRAPE_JS)
+    except Exception as exc:
+        logger.debug("scrape_dom_progress failed: %s", exc)
+        return []
+
+
 _PROGRESS_KEY_HINTS = (
     "progress", "percent", "complete", "elapsed", "remaining",
     "eta", "duration", "fraction",
@@ -171,7 +235,13 @@ async def poll_status_via_api(
 
     page = client.page
     out: dict[str, dict[str, Any]] = {
-        g: {"status": "pending", "media_id": None, "media_url": None}
+        g: {
+            "status": "pending",
+            "media_id": None,
+            "media_url": None,
+            "progress_pct": -1,    # filled by DOM scrape per poll
+            "dom_state": "unknown",
+        }
         for g in gen_ids
     }
     out_dump_done: dict[str, bool] = {}
@@ -249,7 +319,36 @@ async def poll_status_via_api(
             1 for v in out.values()
             if v["status"] in ("completed", "failed")
         )
-        logger.info("status poll: %d/%d resolved", n_done, len(out))
+
+        # Layer DOM-scraped per-tile progress on top of API state.
+        # Per-tile order on /project/ is most-recent-first; submission
+        # order is i=0..N-1 so tile_index = N-1-i for our gens.
+        try:
+            dom_tiles = await scrape_dom_progress(page)
+        except Exception:
+            dom_tiles = []
+        if dom_tiles:
+            n = len(out)
+            ordered_keys = list(out.keys())  # submission order
+            for submit_idx, gen_id in enumerate(ordered_keys):
+                tile_idx = n - 1 - submit_idx
+                if 0 <= tile_idx < len(dom_tiles):
+                    tile = dom_tiles[tile_idx]
+                    pct = tile.get("progress", -1)
+                    if isinstance(pct, int) and pct >= 0:
+                        out[gen_id]["progress_pct"] = pct
+                    state = tile.get("state")
+                    if isinstance(state, str):
+                        out[gen_id]["dom_state"] = state
+
+        logger.info(
+            "status poll: %d/%d resolved | %s",
+            n_done, len(out),
+            " ".join(
+                f"[{i}]{out[g]['status'][0].upper()}{out[g]['progress_pct']:>3}%"
+                for i, g in enumerate(out.keys())
+            ),
+        )
         # When nothing resolved, log the response keys + first item shape so
         # we can iterate on the parser without burning credits on full
         # generations. Cap to first few status polls only.
