@@ -145,9 +145,20 @@ async def scrape_dom_progress(page) -> list[dict]:
 
     Used to render real-time % progress for the user. Combined with the
     API's authoritative state enum in :func:`poll_status_via_api`.
+
+    Bounded by a 3s timeout: ``page.evaluate`` has no default deadline,
+    and a wedged page (observed live 2026-05-04 chain v6 poll #4) silently
+    stalls the entire poll loop. Returning [] on timeout lets the API-
+    side polling continue without DOM enrichment.
     """
     try:
-        return await page.evaluate(_PER_TILE_SCRAPE_JS)
+        return await asyncio.wait_for(
+            page.evaluate(_PER_TILE_SCRAPE_JS),
+            timeout=3.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("scrape_dom_progress: page.evaluate timed out (>3s)")
+        return []
     except Exception as exc:
         logger.debug("scrape_dom_progress failed: %s", exc)
         return []

@@ -124,6 +124,27 @@ async def text_to_video(
     # === Step 2: Click "+ New project" ===
     logger.info("Step 2: Create new project")
 
+    async def _recover_homepage_login_redirect() -> bool:
+        current_url = page.url
+        if not is_login_page(current_url):
+            return False
+        logger.warning("Login redirect before Create click — attempting auto-resolve")
+        login_ok = await handle_login_redirect(
+            page, timeout=90, profile_name=client.profile_name, client=client,
+        )
+        if not login_ok:
+            message = "Google login required — profile session expired."
+            message = await message_with_failure_capture(
+                client,
+                "google_login_required",
+                message,
+            )
+            raise RuntimeError(message)
+        await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(2)
+        logger.info("Homepage restored after login redirect: %s", page.url)
+        return True
+
     # Flow sometimes serves the marketing landing ("Create with Flow" CTA)
     # instead of the editor home — even for logged-in sessions. Click the
     # hero CTA (not the nav scroll-anchor sharing the same text — issue
@@ -164,12 +185,14 @@ async def text_to_video(
         return False
 
     if not await _new_project_button_attached(timeout_ms=1000):
+        await _recover_homepage_login_redirect()
         await dismiss_flow_marketing_landing(
             page, logger, _new_project_button_attached
         )
 
     # Final settle — give slow renders a second chance before click.
     if not await _new_project_button_attached(timeout_ms=15000):
+        await _recover_homepage_login_redirect()
         logger.warning("New-project button did not attach within 15s — continuing")
     await asyncio.sleep(2)
 

@@ -548,20 +548,38 @@ def install_batch_response_capture(client) -> None:
         )
         if isinstance(body, dict):
             logger.info("batch capture body keys: %s", list(body.keys())[:10])
-            # Deep dump for diagnostic
-            ops = body.get("operations")
-            if isinstance(ops, list) and ops:
-                logger.info("batch capture ops[0] type=%s sample_keys=%s",
-                            type(ops[0]).__name__,
-                            list(ops[0].keys())[:15] if isinstance(ops[0], dict) else "n/a")
-                if isinstance(ops[0], dict):
-                    # Drop a single full repr so we can see the schema in logs.
-                    import json as _json
+            import json as _json
+            ops = body.get("operations") or []
+            media = body.get("media") or []
+            workflows = body.get("workflows") or []
+            logger.info(
+                "batch capture array sizes: ops=%d media=%d workflows=%d",
+                len(ops) if isinstance(ops, list) else -1,
+                len(media) if isinstance(media, list) else -1,
+                len(workflows) if isinstance(workflows, list) else -1,
+            )
+            if isinstance(ops, list):
+                for i, op in enumerate(ops[:5]):
                     try:
-                        logger.info("batch capture ops[0] json: %s",
-                                    _json.dumps(ops[0])[:600])
+                        logger.info("batch capture ops[%d]: %s", i,
+                                    _json.dumps(op)[:500])
                     except Exception:
-                        logger.info("batch capture ops[0] str: %s", str(ops[0])[:600])
+                        logger.info("batch capture ops[%d] str: %s", i,
+                                    str(op)[:500])
+            if isinstance(media, list) and media:
+                try:
+                    logger.info("batch capture media[0]: %s",
+                                _json.dumps(media[0])[:500])
+                except Exception:
+                    logger.info("batch capture media[0] str: %s",
+                                str(media[0])[:500])
+            if isinstance(workflows, list) and workflows:
+                try:
+                    logger.info("batch capture workflows[0]: %s",
+                                _json.dumps(workflows[0])[:500])
+                except Exception:
+                    logger.info("batch capture workflows[0] str: %s",
+                                str(workflows[0])[:500])
 
     page.on("response", _on_response)
     logger.info("Batch response capture installed for client profile=%s",
