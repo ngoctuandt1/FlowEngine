@@ -89,6 +89,34 @@ def _set_gen_id_in_entry(entry: dict, gen_id: str) -> None:
     entry["name"] = gen_id
 
 
+_PROGRESS_KEY_HINTS = (
+    "progress", "percent", "complete", "elapsed", "remaining",
+    "eta", "duration", "fraction",
+)
+
+
+def _walk_for_progress(node, prefix: str = "") -> list[str]:
+    """Find any leaf whose key name suggests progress %.
+
+    Returns list of "path=value" strings for any matching leaf. Used to
+    discover Flow's progress field at run-time without guessing the
+    schema name.
+    """
+    out: list[str] = []
+    if isinstance(node, dict):
+        for k, v in node.items():
+            p = f"{prefix}.{k}" if prefix else k
+            kl = k.lower()
+            if any(h in kl for h in _PROGRESS_KEY_HINTS) and not isinstance(v, (dict, list)):
+                out.append(f"{p}={v!r}")
+            elif isinstance(v, (dict, list)):
+                out.extend(_walk_for_progress(v, p))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            out.extend(_walk_for_progress(v, f"{prefix}[{i}]"))
+    return out[:8]  # cap
+
+
 def _harvest_flow_status_request_template(client) -> dict | None:
     """Try to scrape a real Flow-UI status request body from the captures.
 
@@ -225,14 +253,17 @@ async def poll_status_via_api(
         # When nothing resolved, log the response keys + first item shape so
         # we can iterate on the parser without burning credits on full
         # generations. Cap to first few status polls only.
-        # Periodically dump per-media status so we can SEE Flow's
-        # generation progress (PENDING → OK or FAILED). Every 30s
-        # while no resolution.
+        # Per-poll status summary + progress field probe (every poll
+        # until at least one transitions; then every 4th).
         out_dump_done["count"] = out_dump_done.get("count", 0) + 1
-        if n_done == 0 and out_dump_done["count"] % 4 == 1:
+        should_log = (
+            n_done == 0
+            or out_dump_done["count"] % 4 == 1
+        )
+        if should_log:
             try:
                 media_list = data.get("media") or []
-                statuses_summary = []
+                summary = []
                 for m in media_list:
                     if not isinstance(m, dict):
                         continue
@@ -240,11 +271,30 @@ async def poll_status_via_api(
                     ms = (mm.get("mediaStatus") or {}).get(
                         "mediaGenerationStatus", "?"
                     )
-                    statuses_summary.append(ms.replace("MEDIA_GENERATION_STATUS_", ""))
+                    summary.append(ms.replace("MEDIA_GENERATION_STATUS_", ""))
+                # Hunt for any progress-bearing field anywhere in the
+                # response. Walks string/number leaves whose key name
+                # contains "progress" or "percent" or "complete".
+                progress_hits = _walk_for_progress(data)
                 logger.info(
-                    "status poll: per-gen statuses=%s (poll #%d)",
-                    statuses_summary, out_dump_done["count"],
+                    "status poll #%d: per-gen=%s progress=%s",
+                    out_dump_done["count"], summary,
+                    progress_hits if progress_hits else "no-field",
                 )
+            except Exception:
+                pass
+
+        # On FIRST poll, dump full media[0] so we can see whether the
+        # status endpoint exposes a numeric progress. Caps at one dump.
+        if not out_dump_done.get("full_dumped"):
+            try:
+                m0 = (data.get("media") or [None])[0]
+                if isinstance(m0, dict):
+                    logger.info(
+                        "status poll FULL media[0]:\n%s",
+                        json.dumps(m0, indent=2)[:8000],
+                    )
+                    out_dump_done["full_dumped"] = True
             except Exception:
                 pass
 
@@ -329,8 +379,11 @@ def _next_shape(current: str) -> str:
 
 
 _TERMINAL_STATUSES_OK = {
+    # Verified live 2026-05-04 11:21: Flow uses
+    # MEDIA_GENERATION_STATUS_SUCCESSFUL on completion.
+    "MEDIA_GENERATION_STATUS_SUCCESSFUL",
     "MEDIA_GENERATION_STATUS_OK", "STATUS_OK", "DONE", "SUCCEEDED",
-    "MEDIA_GENERATION_STATUS_DONE",
+    "SUCCESSFUL", "MEDIA_GENERATION_STATUS_DONE",
 }
 _TERMINAL_STATUSES_FAILED = {
     "MEDIA_GENERATION_STATUS_FAILED", "STATUS_FAILED", "FAILED",
@@ -493,22 +546,36 @@ def _extract_media_id(entry: dict) -> str | None:
 
 
 def _extract_media_url(entry: dict) -> str | None:
-    media = entry.get("media") or entry.get("result") or {}
-    if isinstance(media, list) and media:
-        media = media[0]
-    if isinstance(media, dict):
-        for key in ("downloadUrl", "url", "videoUrl", "fifeUrl"):
-            v = media.get(key)
-            if v:
-                return str(v)
-        # nested under a 'video' key
-        v = media.get("video") or {}
-        if isinstance(v, dict):
-            for key in ("url", "downloadUrl"):
-                u = v.get(key)
-                if u:
-                    return str(u)
-    return None
+    """Walk the entry for any URL-bearing field that points to the
+    finished media. Field name varies across Flow builds — known names
+    include ``fifeUrl`` / ``downloadUrl`` / ``url`` / ``videoUrl``,
+    sometimes nested under ``video`` / ``generatedVideo`` / ``media``.
+    """
+    seen: list[str] = []
+    _walk_for_media_url(entry, seen)
+    return seen[0] if seen else None
+
+
+def _walk_for_media_url(node, out: list[str]) -> None:
+    if not isinstance(node, (dict, list)) and not out:
+        return
+    if isinstance(node, dict):
+        for k, v in node.items():
+            kl = str(k).lower()
+            if isinstance(v, str) and v.startswith("http") and any(
+                t in kl for t in ("url", "fife", "uri", "download")
+            ):
+                out.append(v)
+                return
+            if isinstance(v, (dict, list)):
+                _walk_for_media_url(v, out)
+                if out:
+                    return
+    elif isinstance(node, list):
+        for v in node:
+            _walk_for_media_url(v, out)
+            if out:
+                return
 
 
 async def download_via_url(

@@ -44,6 +44,10 @@ async def run(profile: str) -> int:
         prime_flow_session,
         with_recaptcha_recovery,
     )
+    from flow.operations._l1_batch import (
+        download_l1_gen_at_tile,
+        snapshot_unique_tile_ids,
+    )
     from flow.operations._l1_inflate_batch import submit_l1_batch_via_inflate
     from flow.operations._l1_status_poll import (
         download_via_url,
@@ -129,24 +133,50 @@ async def run(profile: str) -> int:
                     })
                     continue
                 url = sst.get("media_url")
-                if not url:
-                    results.append({
-                        "gen_id": g,
-                        "status": "failed",
-                        "media_id": sst.get("media_id"),
-                        "file": None,
-                        "error": "no media_url in status response",
-                    })
-                    continue
-                out_path = str(download_dir / f"mass_{ts}_{i}.mp4")
-                saved = await download_via_url(
-                    client, url=url, out_path=out_path,
-                )
+                saved: str | None = None
+                if url:
+                    out_path = str(download_dir / f"mass_{ts}_{i}.mp4")
+                    saved = await download_via_url(
+                        client, url=url, out_path=out_path,
+                    )
+                else:
+                    # Fallback: drive the UI tile-pinned upscale path
+                    # (Phase 1 verified). Status endpoint doesn't expose
+                    # the download URL — only state — so we route through
+                    # Flow's project-tile + Download menu.
+                    if "/edit/" in client.page.url:
+                        try:
+                            await client.page.goto(
+                                submits[0]["project_url"],
+                                wait_until="domcontentloaded",
+                                timeout=20000,
+                            )
+                            await asyncio.sleep(2)
+                        except Exception:
+                            pass
+                    try:
+                        pinned = await snapshot_unique_tile_ids(client.page)
+                    except Exception:
+                        pinned = []
+                    pinned_id = pinned[i] if i < len(pinned) else None
+                    try:
+                        files = await download_l1_gen_at_tile(
+                            client,
+                            tile_index=i,
+                            media_id=sst.get("media_id") or g,
+                            project_url=submits[0].get("project_url", ""),
+                            pinned_tile_id=pinned_id,
+                        )
+                        saved = files[0] if files else None
+                    except Exception as exc:
+                        log.warning("UI tile download failed for [%d]: %s", i, exc)
+                        saved = None
                 results.append({
                     "gen_id": g,
                     "status": "completed" if saved else "failed",
                     "media_id": sst.get("media_id"),
                     "file": saved,
+                    "error": None if saved else "download failed (no URL + UI fallback failed)",
                 })
             return results
 
