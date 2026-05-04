@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """Live verify full mass-gen path: inflate-batch + status poll + direct download.
 
-End-to-end test of the recaptcha-bypass mass-gen pipeline:
+Auto-recovers from reCAPTCHA via wipe+rewarm (mirrors the production
+worker's burn-recovery loop). Pipeline:
 
   1. Composer setup once + 1 user click → inflated POST with N requests.
   2. Backend returns N gen_ids in 1 response (1 high-score recaptcha
      token validates the whole batch).
-  3. Poll batchCheckAsyncVideoGenerationStatus for each gen_id directly
-     until completed/failed.
+  3. Poll batchCheckAsyncVideoGenerationStatus per gen_id until
+     completed/failed.
   4. Download each gen's media URL via direct GET.
-
-No DOM tile dependency, no wait_for_all_l1_gens. Pure backend path
-after the single primer click.
 
 Usage::
 
@@ -42,6 +40,7 @@ async def run(profile: str) -> int:
     log = logging.getLogger("live-verify-mass-gen")
 
     from flow.client import FlowClient
+    from flow.operations._burn_recovery import with_recaptcha_recovery
     from flow.operations._l1_inflate_batch import submit_l1_batch_via_inflate
     from flow.operations._l1_status_poll import (
         download_via_url,
@@ -66,84 +65,95 @@ async def run(profile: str) -> int:
     log.info("=" * 64)
 
     t0 = time.time()
-    client = FlowClient(
-        profile_name=profile,
-        profile_base_dir=os.environ.get(
-            "CHROME_USER_DATA_DIR", "./chrome-profiles"
-        ),
-        download_dir=str(download_dir),
+    profile_base_dir = os.environ.get(
+        "CHROME_USER_DATA_DIR", "./chrome-profiles"
     )
 
-    async with client:
-        client._job_id = "mass-gen"
-        try:
-            submits = await submit_l1_batch_via_inflate(client, prompts=prompts)
-        except Exception:
-            log.exception("inflate submit crashed")
-            return 3
-
-        log.info("submitted %d / %d", len(submits), n)
-        for i, s in enumerate(submits):
-            log.info("  [%d] gen=%s prompt=%.55s",
-                     i, s["gen_id"][-12:], s["prompt"])
-        if not submits:
-            return 3
-
-        gen_ids = [s["gen_id"] for s in submits]
-        log.info("polling status for %d gen_ids...", len(gen_ids))
-        statuses = await poll_status_via_api(
-            client, gen_ids=gen_ids,
-            poll_interval_sec=8.0,
-            hard_timeout_sec=900.0,
+    async def _full_pipeline() -> list[dict]:
+        client = FlowClient(
+            profile_name=profile,
+            profile_base_dir=profile_base_dir,
+            download_dir=str(download_dir),
         )
-
-        log.info("status poll complete. Summary:")
-        for g in gen_ids:
-            s = statuses.get(g, {})
-            log.info(
-                "  gen=%s status=%s mid=%s url=%s",
-                g[-12:], s.get("status"),
-                (s.get("media_id") or "")[:12],
-                "yes" if s.get("media_url") else "no",
+        async with client:
+            client._job_id = "mass-gen"
+            submits = await submit_l1_batch_via_inflate(
+                client, prompts=prompts,
             )
-
-        # Direct download per completed gen.
-        results = []
-        ts = int(time.time())
-        for i, s in enumerate(submits):
-            g = s["gen_id"]
-            sst = statuses.get(g, {})
-            if sst.get("status") != "completed":
+            log.info("submitted %d / %d", len(submits), n)
+            for i, s in enumerate(submits):
+                log.info("  [%d] gen=%s prompt=%.55s",
+                         i, s["gen_id"][-12:], s["prompt"])
+            if not submits:
+                return []
+            gen_ids = [s["gen_id"] for s in submits]
+            log.info("polling status for %d gen_ids...", len(gen_ids))
+            statuses = await poll_status_via_api(
+                client, gen_ids=gen_ids,
+                poll_interval_sec=8.0,
+                hard_timeout_sec=900.0,
+            )
+            log.info("status poll complete:")
+            for g in gen_ids:
+                s = statuses.get(g, {})
+                log.info(
+                    "  gen=%s status=%s mid=%s url=%s",
+                    g[-12:], s.get("status"),
+                    (s.get("media_id") or "")[:12],
+                    "yes" if s.get("media_url") else "no",
+                )
+            ts = int(time.time())
+            results: list[dict] = []
+            for i, s in enumerate(submits):
+                g = s["gen_id"]
+                sst = statuses.get(g, {})
+                if sst.get("status") != "completed":
+                    results.append({
+                        "gen_id": g,
+                        "status": sst.get("status"),
+                        "media_id": None,
+                        "file": None,
+                        "error": sst.get("error") or "no media url",
+                    })
+                    continue
+                url = sst.get("media_url")
+                if not url:
+                    results.append({
+                        "gen_id": g,
+                        "status": "failed",
+                        "media_id": sst.get("media_id"),
+                        "file": None,
+                        "error": "no media_url in status response",
+                    })
+                    continue
+                out_path = str(download_dir / f"mass_{ts}_{i}.mp4")
+                saved = await download_via_url(
+                    client, url=url, out_path=out_path,
+                )
                 results.append({
                     "gen_id": g,
-                    "status": sst.get("status"),
-                    "media_id": None,
-                    "file": None,
-                    "error": sst.get("error") or "no media url",
-                })
-                continue
-            url = sst.get("media_url")
-            if not url:
-                results.append({
-                    "gen_id": g,
-                    "status": "failed",
+                    "status": "completed" if saved else "failed",
                     "media_id": sst.get("media_id"),
-                    "file": None,
-                    "error": "no media_url in status response",
+                    "file": saved,
                 })
-                continue
-            out_path = str(download_dir / f"mass_{ts}_{i}.mp4")
-            saved = await download_via_url(client, url=url, out_path=out_path)
-            results.append({
-                "gen_id": g,
-                "status": "completed" if saved else "failed",
-                "media_id": sst.get("media_id"),
-                "file": saved,
-            })
+            return results
+
+    try:
+        results = await with_recaptcha_recovery(
+            profile,
+            _full_pipeline,
+            attempts=2,
+        )
+    except Exception:
+        log.exception("mass-gen pipeline crashed")
+        return 3
 
     wall = time.time() - t0
     log.info("=" * 64)
     log.info("Wall-time: %.1fs", wall)
+    if not results:
+        log.error("FAIL — no results")
+        return 3
     completed = [r for r in results if r["status"] == "completed"]
     media_ids = [r["media_id"] for r in completed if r.get("media_id")]
     files = [r["file"] for r in completed if r.get("file")]
