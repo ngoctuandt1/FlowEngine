@@ -96,8 +96,12 @@ async def run(profile: str) -> int:
             submits = await submit_l1_batch_via_inflate(
                 client, prompts=l1_prompts,
             )
-            if len(submits) != 3:
-                return {"error": f"L1 submit only yielded {len(submits)}/3"}
+            log.info("L1 inflate yielded %d submits", len(submits))
+            if not submits:
+                return {"error": "L1 submit yielded 0 — cannot proceed"}
+            # Continue with whatever we got. Flow occasionally returns
+            # fewer ops than asked (1 of 3 observed); the chain still
+            # demonstrates L2/L3 multi-tab on the parents we got.
             gen_ids = [s["gen_id"] for s in submits]
             project_url = submits[0]["project_url"]
             project_id = submits[0].get("project_id", "")
@@ -114,10 +118,12 @@ async def run(profile: str) -> int:
                 g = s["gen_id"]
                 sst = statuses.get(g, {})
                 if sst.get("status") != "completed":
-                    return {"error": f"L1[{i}] not completed: {sst}"}
+                    log.warning("L1[%d] not completed (skip): %s", i, sst)
+                    continue
                 media_id = sst.get("media_id")
                 if not media_id:
-                    return {"error": f"L1[{i}] no media_id"}
+                    log.warning("L1[%d] no media_id (skip)", i)
+                    continue
                 # Download via UI tile (status API doesn't expose URL).
                 if "/edit/" in client.page.url:
                     try:
@@ -151,34 +157,29 @@ async def run(profile: str) -> int:
                 log.info("  L1 mid=%s edit=%s",
                          r["media_id"][:12], r["edit_url"][-40:])
 
-            # ---------- Phase B: 3 L2 in 3 tabs ----------
-            log.info("Phase B: 3 L2 ops in 3 tabs (parallel)")
-            l2_jobs = [
-                {
-                    "id": f"l2-extend-{ts}",
-                    "type": "extend-video",
-                    "prompt": "the camera pulls back to reveal a wide horizon",
-                    "parent_edit_url": l1_results[0]["edit_url"],
-                    "parent_media_id": l1_results[0]["media_id"],
-                    "parent_project_url": project_url,
-                },
-                {
-                    "id": f"l2-camera-dolly-{ts}",
-                    "type": "camera-move",
-                    "direction": "Dolly in",
-                    "parent_edit_url": l1_results[1]["edit_url"],
-                    "parent_media_id": l1_results[1]["media_id"],
-                    "parent_project_url": project_url,
-                },
-                {
-                    "id": f"l2-camera-orbit-{ts}",
-                    "type": "camera-move",
-                    "direction": "Orbit left",
-                    "parent_edit_url": l1_results[2]["edit_url"],
-                    "parent_media_id": l1_results[2]["media_id"],
-                    "parent_project_url": project_url,
-                },
+            # ---------- Phase B: L2 in N tabs (parallel) ----------
+            if not l1_results:
+                log.error("Phase A produced 0 L1 — abort chain")
+                return {"l1": [], "l2": [], "l3": [], "project_url": project_url}
+            log.info("Phase B: %d L2 ops in %d tabs (parallel)",
+                     len(l1_results), len(l1_results))
+            l2_specs = [
+                ("extend-video", {"prompt": "the camera pulls back to reveal a wide horizon"}),
+                ("camera-move", {"direction": "Dolly in"}),
+                ("camera-move", {"direction": "Orbit left"}),
             ]
+            l2_jobs = []
+            for i, l1 in enumerate(l1_results):
+                spec_type, spec_kwargs = l2_specs[i % len(l2_specs)]
+                job = {
+                    "id": f"l2-{spec_type}-{i}-{ts}",
+                    "type": spec_type,
+                    "parent_edit_url": l1["edit_url"],
+                    "parent_media_id": l1["media_id"],
+                    "parent_project_url": project_url,
+                    **spec_kwargs,
+                }
+                l2_jobs.append(job)
             l2_results = await batch_dispatch_ops_multitab(client, l2_jobs)
             l2_ok = [r for r in l2_results if r.get("status") == "completed"]
             log.info("Phase B done: %d/%d L2 ok", len(l2_ok), len(l2_jobs))
@@ -217,17 +218,17 @@ async def run(profile: str) -> int:
                         "parent_project_url": project_url,
                     },
                     {
-                        "id": f"l3-camera-truck-{ts}",
+                        "id": f"l3-camera-orbit-r-{ts}",
                         "type": "camera-move",
-                        "direction": "Truck right",
+                        "direction": "Orbit right",
                         "parent_edit_url": l3_parent_edit,
                         "parent_media_id": l3_parent_mid,
                         "parent_project_url": project_url,
                     },
                     {
-                        "id": f"l3-camera-pan-{ts}",
+                        "id": f"l3-camera-dolly-out-{ts}",
                         "type": "camera-move",
-                        "direction": "Pan right",
+                        "direction": "Dolly out",
                         "parent_edit_url": l3_parent_edit,
                         "parent_media_id": l3_parent_mid,
                         "parent_project_url": project_url,

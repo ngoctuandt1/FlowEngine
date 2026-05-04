@@ -192,21 +192,38 @@ async def submit_l1_batch_via_inflate(
 
     # If the route handler captured the response body in-place that's the
     # authoritative source. Otherwise fall back to the side-channel
-    # listener (which fires on the fulfilled response).
+    # listener: accept ANY response on the submit URL — Flow may return
+    # fewer ops than asked (1 of 3 observed live 2026-05-04). We wait a
+    # brief grace period for more, then take what we have.
     response_body = inflate_state.get("response_body")
     if response_body is None:
         deadline = asyncio.get_event_loop().time() + intercept_timeout_sec
+        last_count = 0
+        first_seen_at: float | None = None
         while asyncio.get_event_loop().time() < deadline:
-            body = _latest_inflated_response(client, expected=target_count)
+            body = _latest_inflated_response(client, expected=1)
             if body is not None:
+                ops_now = len(body.get("operations") or [])
+                if ops_now > last_count:
+                    last_count = ops_now
+                    logger.info(
+                        "inflate: response carries %d/%d operations",
+                        ops_now, target_count,
+                    )
                 response_body = body
-                break
+                if first_seen_at is None:
+                    first_seen_at = asyncio.get_event_loop().time()
+                if ops_now >= target_count:
+                    break
+                # Wait up to 5s extra for additional ops to land.
+                if asyncio.get_event_loop().time() - first_seen_at > 5.0:
+                    break
             await asyncio.sleep(0.3)
 
     if response_body is None:
         logger.error(
-            "inflate: no response with %d operations within %.0fs (err=%s)",
-            target_count, intercept_timeout_sec, inflate_state.get("error"),
+            "inflate: no response on submit URL within %.0fs (err=%s)",
+            intercept_timeout_sec, inflate_state.get("error"),
         )
         return [_record(prompts[0], primer)]
 
