@@ -10,6 +10,7 @@ from typing import Optional
 import pytest
 
 from server.db.job_store import claim_next_batch, create_job, get_job
+import server.routes.worker as worker_module
 from server.db.profile_store import create_profile
 from server.models.job import Job, JobStatus, JobType
 from server.models.profile import Profile, ProfileStatus
@@ -357,3 +358,44 @@ async def test_http_claim_no_batch_size_returns_bare_job(api_client, db):
         "Omitting batch_size must preserve legacy bare-Job response shape"
     )
     assert body.get("id") == "b9-compat"
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — _effective_batch_cap() honours FLOW_CLAIM_BATCH_MAX env var
+# ---------------------------------------------------------------------------
+
+
+def test_effective_batch_cap_env_unset(monkeypatch):
+    """FLOW_CLAIM_BATCH_MAX unset → cap equals the hardcoded ceiling (16)."""
+    monkeypatch.delenv("FLOW_CLAIM_BATCH_MAX", raising=False)
+    assert worker_module._effective_batch_cap() == worker_module._CLAIM_BATCH_HARD_CAP
+
+
+def test_effective_batch_cap_env_smaller_than_hard_cap(monkeypatch):
+    """FLOW_CLAIM_BATCH_MAX=3 → cap = 3 (env wins because 3 < 16)."""
+    monkeypatch.setenv("FLOW_CLAIM_BATCH_MAX", "3")
+    assert worker_module._effective_batch_cap() == 3
+
+
+def test_effective_batch_cap_env_larger_than_hard_cap(monkeypatch):
+    """FLOW_CLAIM_BATCH_MAX=20 → cap = 16 (hard ceiling prevails)."""
+    monkeypatch.setenv("FLOW_CLAIM_BATCH_MAX", "20")
+    assert worker_module._effective_batch_cap() == worker_module._CLAIM_BATCH_HARD_CAP
+
+
+def test_effective_batch_cap_env_invalid_string(monkeypatch):
+    """FLOW_CLAIM_BATCH_MAX=abc → cap = 16 (invalid value ignored)."""
+    monkeypatch.setenv("FLOW_CLAIM_BATCH_MAX", "abc")
+    assert worker_module._effective_batch_cap() == worker_module._CLAIM_BATCH_HARD_CAP
+
+
+def test_effective_batch_cap_env_zero(monkeypatch):
+    """FLOW_CLAIM_BATCH_MAX=0 → cap = 16 (zero rejected, must be ≥1)."""
+    monkeypatch.setenv("FLOW_CLAIM_BATCH_MAX", "0")
+    assert worker_module._effective_batch_cap() == worker_module._CLAIM_BATCH_HARD_CAP
+
+
+def test_effective_batch_cap_env_negative(monkeypatch):
+    """FLOW_CLAIM_BATCH_MAX=-5 → cap = 16 (negative rejected, must be ≥1)."""
+    monkeypatch.setenv("FLOW_CLAIM_BATCH_MAX", "-5")
+    assert worker_module._effective_batch_cap() == worker_module._CLAIM_BATCH_HARD_CAP
