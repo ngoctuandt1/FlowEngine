@@ -15,7 +15,11 @@ EnvironmentFile=/etc/flowengine/flowengine.env
 # created by a root-launched Chrome session.  The '+' prefix runs this command
 # as root regardless of the User= directive above, so stale root-owned
 # subdirs (e.g. Default/blob_storage/<uuid>) do not block wipe_profile().
-ExecStartPre=+/bin/chown -R flowengine:flowengine /opt/flowengine/chrome-profiles
+# -h: affect each symbolic link itself, not the referenced file (GNU chown
+#     --no-dereference).  Without -h, a symlink planted by a root Chrome
+#     session could redirect chown to follow the link to an arbitrary target
+#     (e.g. /etc/shadow), enabling a symlink-traversal privilege escalation.
+ExecStartPre=+/bin/chown -Rh flowengine:flowengine /opt/flowengine/chrome-profiles
 
 ExecStart=/opt/flowengine/.venv/bin/python run_worker.py
 

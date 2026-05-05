@@ -194,6 +194,11 @@ class ProfileSwapper:
         files left by a root-launched Chrome session), falls back to invoking
         ``sudo -n /usr/local/bin/flowengine-purge-profile`` which runs as root
         via a sudoers(5) drop-in and handles the deletion.
+
+        Returns ``True`` when the **main profile directory** has been
+        successfully removed (the critical path).  Burned-archive cleanup
+        failures are degraded-but-non-blocking: they are logged as errors but
+        do NOT cause this method to return ``False``.
         """
         self.kill_chrome_for_profile(profile_name)
         target = self.profile_base_dir / profile_name
@@ -230,6 +235,17 @@ class ProfileSwapper:
                     logger.exception(
                         "Privileged purge of burned archive %s failed", archive
                     )
+                else:
+                    # Verify the archive is actually gone — the helper may have
+                    # exited 0 without removing it (e.g. wrong sudoers rule).
+                    # A leftover archive keeps _has_burned_archive() returning
+                    # True, which silently blocks future re-warm attempts for
+                    # this profile name.
+                    if archive.exists():
+                        logger.error(
+                            "Sudo fallback failed to remove burned archive: %s",
+                            archive,
+                        )
             except OSError:
                 logger.exception("Failed to remove burned archive: %s", archive)
         return True
