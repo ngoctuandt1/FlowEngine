@@ -241,7 +241,7 @@ async def run_l2_multitab_mixed(
         {
             "type": "camera-move",
             "job_level": 2,
-            "direction": "Pan right",
+            "direction": "Orbit right",
             "profile": profile,
         },
         {
