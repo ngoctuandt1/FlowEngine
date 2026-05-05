@@ -1,5 +1,6 @@
 """Worker interaction endpoints."""
 
+import os
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -30,6 +31,28 @@ router = APIRouter(
 # -- Request bodies ------------------------------------------------------------
 
 _CLAIM_BATCH_HARD_CAP = 16
+
+
+def _effective_batch_cap() -> int:
+    """Return the effective server-side batch cap.
+
+    Reads ``FLOW_CLAIM_BATCH_MAX`` at call-time (not import-time) so that
+    tests can monkeypatch the env var without reloading the module.
+
+    Logic:
+    - env unset or invalid → fall back to ``_CLAIM_BATCH_HARD_CAP`` (16).
+    - env value ``n ≥ 1``  → ``min(_CLAIM_BATCH_HARD_CAP, n)``.
+    - env value ``n < 1``  → ignored, fall back to hard cap.
+    """
+    env = os.environ.get("FLOW_CLAIM_BATCH_MAX")
+    if env:
+        try:
+            n = int(env)
+            if n >= 1:
+                return min(_CLAIM_BATCH_HARD_CAP, n)
+        except ValueError:
+            pass
+    return _CLAIM_BATCH_HARD_CAP
 
 
 class ClaimRequest(BaseModel):
@@ -82,7 +105,7 @@ async def claim_job(req: ClaimRequest):
         await broadcast_job_update(job)
         return job
 
-    capped = min(max(1, requested), _CLAIM_BATCH_HARD_CAP)
+    capped = min(max(1, requested), _effective_batch_cap())
     jobs = await claim_next_batch(req.worker_id, req.profiles, capped)
     if not jobs:
         return Response(status_code=204)

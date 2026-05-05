@@ -53,11 +53,12 @@ L1 và L2+ không bao giờ mix trong 1 batch (step 1 ưu tiên L2+; nếu step 
 
 ```
 FLOW_CLAIM_BATCH=1            # bật path mới (default 0)
-FLOW_CLAIM_BATCH_MAX=3        # max job/claim
+FLOW_CLAIM_BATCH_MAX=3        # max job/claim (worker side; server also reads this)
 ```
 
 Khi `FLOW_CLAIM_BATCH=1`:
 - Worker request `batch_size=FLOW_CLAIM_BATCH_MAX` mỗi cycle.
+- Server also reads `FLOW_CLAIM_BATCH_MAX` and applies `min(_CLAIM_BATCH_HARD_CAP=16, FLOW_CLAIM_BATCH_MAX)` as the effective cap, allowing operators to throttle all workers via a single env knob without rebuilding. If `FLOW_CLAIM_BATCH_MAX` is unset or invalid the server falls back to the hardcoded ceiling of 16.
 - Bỏ peek-claim cũ (`_maybe_claim_*_siblings`) — server đã trả batch.
 - `MAX_CONCURRENT_JOBS` = số **batch** in-flight, không phải số job.
 
