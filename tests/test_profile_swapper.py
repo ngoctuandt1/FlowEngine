@@ -318,3 +318,91 @@ def test_swap_burned_returns_none_when_pool_exhausted(
     )
 
     assert swapper.swap_burned("burned") is None
+
+
+# ---------------------------------------------------------------------------
+# wipe_profile — PermissionError fallback to privileged helper
+# ---------------------------------------------------------------------------
+
+
+def test_wipe_profile_falls_back_on_permission_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """shutil.rmtree raises PermissionError → sudo helper called, returns True."""
+    swapper = _make_swapper(tmp_path)
+    profile_dir = swapper.profile_base_dir / "ngoctuandt20"
+    profile_dir.mkdir(parents=True)
+
+    subprocess_calls: list[list[str]] = []
+
+    def fake_rmtree(path, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    def fake_subprocess_run(cmd, *, check, timeout):
+        subprocess_calls.append(list(cmd))
+        # Simulate successful removal by deleting the dir ourselves.
+        import shutil as _shutil
+        if profile_dir.exists():
+            _shutil.rmtree.__wrapped__(profile_dir) if hasattr(_shutil.rmtree, "__wrapped__") else None
+        profile_dir.rmdir() if profile_dir.exists() else None
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("worker.profile_swapper.shutil.rmtree", fake_rmtree)
+    monkeypatch.setattr("worker.profile_swapper.subprocess.run", fake_subprocess_run)
+
+    result = swapper.wipe_profile("ngoctuandt20")
+
+    assert result is True
+    assert subprocess_calls == [
+        ["sudo", "-n", swapper._PURGE_HELPER, "ngoctuandt20"],
+    ]
+
+
+def test_wipe_profile_returns_false_if_fallback_also_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rmtree raises PermissionError AND helper fails → returns False."""
+    swapper = _make_swapper(tmp_path)
+    profile_dir = swapper.profile_base_dir / "ngoctuandt20"
+    profile_dir.mkdir(parents=True)
+
+    def fake_rmtree(path, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    def fake_subprocess_run(cmd, *, check, timeout):
+        # Helper returns non-zero; dir still exists.
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr("worker.profile_swapper.shutil.rmtree", fake_rmtree)
+    monkeypatch.setattr("worker.profile_swapper.subprocess.run", fake_subprocess_run)
+
+    result = swapper.wipe_profile("ngoctuandt20")
+
+    assert result is False
+    # Profile dir was NOT removed (helper didn't clean it up).
+    assert profile_dir.exists()
+
+
+def test_wipe_profile_no_subprocess_when_rmtree_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: rmtree succeeds → subprocess.run is never called."""
+    swapper = _make_swapper(tmp_path)
+    profile_dir = swapper.profile_base_dir / "ngoctuandt20"
+    profile_dir.mkdir(parents=True)
+
+    subprocess_calls: list[list[str]] = []
+
+    def fake_subprocess_run(cmd, **kwargs):
+        subprocess_calls.append(list(cmd))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("worker.profile_swapper.subprocess.run", fake_subprocess_run)
+
+    result = swapper.wipe_profile("ngoctuandt20")
+
+    assert result is True
+    assert subprocess_calls == [], "subprocess.run must not be called when rmtree succeeds"

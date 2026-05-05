@@ -140,12 +140,60 @@ class ProfileSwapper:
             )
         return killed
 
+    # Path to the privileged helper installed on Debian production hosts.
+    # The helper validates its argument and runs as root via sudoers drop-in.
+    _PURGE_HELPER = "/usr/local/bin/flowengine-purge-profile"
+
+    def _sudo_purge(self, profile_name: str) -> bool:
+        """Invoke the privileged helper to remove a root-owned profile dir.
+
+        Returns True only when the target directory no longer exists after the
+        helper exits (regardless of the helper's own exit code — the helper may
+        also remove .burned-* archives which we check separately).
+        """
+        target = self.profile_base_dir / profile_name
+        logger.warning(
+            "Falling back to privileged purge for %s (PermissionError on rmtree)",
+            target,
+        )
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", self._PURGE_HELPER, profile_name],
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            logger.exception(
+                "Privileged purge invocation failed for profile %s", profile_name
+            )
+            return False
+
+        if target.exists():
+            logger.error(
+                "Privileged purge returned %d but %s still exists",
+                result.returncode,
+                target,
+            )
+            return False
+
+        logger.info(
+            "Privileged purge succeeded for profile %s (helper exit=%d)",
+            profile_name,
+            result.returncode,
+        )
+        return True
+
     def wipe_profile(self, profile_name: str) -> bool:
         """Hard-delete the profile dir AND any sibling .burned-* archives.
 
         Pre-kills any chrome process locking the dir. Used for the
         same-account re-warm flow per user policy: when a profile burns,
         we wipe it cleanly and re-warm under the same name (no rotation).
+
+        When ``shutil.rmtree`` raises ``PermissionError`` (e.g. root-owned
+        files left by a root-launched Chrome session), falls back to invoking
+        ``sudo -n /usr/local/bin/flowengine-purge-profile`` which runs as root
+        via a sudoers(5) drop-in and handles the deletion.
         """
         self.kill_chrome_for_profile(profile_name)
         target = self.profile_base_dir / profile_name
@@ -153,6 +201,9 @@ class ProfileSwapper:
             try:
                 shutil.rmtree(target)
                 logger.warning("Wiped profile dir: %s", target)
+            except PermissionError:
+                if not self._sudo_purge(profile_name):
+                    return False
             except OSError:
                 logger.exception("Failed to wipe profile dir: %s", target)
                 return False
@@ -163,6 +214,22 @@ class ProfileSwapper:
             try:
                 shutil.rmtree(archive)
                 logger.info("Removed burned archive: %s", archive)
+            except PermissionError:
+                # Best-effort: burned archives are not critical — log and continue.
+                logger.warning(
+                    "PermissionError removing burned archive %s; invoking privileged purge",
+                    archive,
+                )
+                try:
+                    subprocess.run(
+                        ["sudo", "-n", self._PURGE_HELPER, archive.name],
+                        check=False,
+                        timeout=30,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    logger.exception(
+                        "Privileged purge of burned archive %s failed", archive
+                    )
             except OSError:
                 logger.exception("Failed to remove burned archive: %s", archive)
         return True

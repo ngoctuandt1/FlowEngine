@@ -1,0 +1,32 @@
+[Unit]
+Description=FlowEngine worker (Chrome automation)
+Documentation=https://github.com/ngoctuandt1/FlowEngine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=flowengine
+Group=flowengine
+WorkingDirectory=/opt/flowengine
+EnvironmentFile=/etc/flowengine/flowengine.env
+
+# Reclaim any root-owned files in the profiles directory that may have been
+# created by a root-launched Chrome session.  The '+' prefix runs this command
+# as root regardless of the User= directive above, so stale root-owned
+# subdirs (e.g. Default/blob_storage/<uuid>) do not block wipe_profile().
+ExecStartPre=+/bin/chown -R flowengine:flowengine /opt/flowengine/chrome-profiles
+
+ExecStart=/opt/flowengine/.venv/bin/python run_worker.py
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+# Allow the worker enough file descriptors for many concurrent Chrome
+# processes and Playwright WebSocket connections.
+LimitNOFILE=65536
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

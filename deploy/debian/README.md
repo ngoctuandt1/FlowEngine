@@ -161,6 +161,71 @@ export FLOW_ALLOW_ROOT_NO_SANDBOX=1
 python run_worker.py
 ```
 
+## Hardening: root-owned file recovery
+
+When Chrome is launched as `root` against a profile directory owned by `flowengine`, it
+creates root-owned subdirs (e.g. `Default/blob_storage/<uuid>`, `Local State`) that the
+worker cannot delete when reCAPTCHA recovery runs `wipe_profile()`.
+
+Three layers of defence are shipped in this repo:
+
+### Layer 1 — Worker startup chown (systemd ExecStartPre)
+
+`deploy/debian/systemd/flowengine-worker.service` includes:
+
+```
+ExecStartPre=+/bin/chown -R flowengine:flowengine /opt/flowengine/chrome-profiles
+```
+
+The `+` prefix runs this command as root, so any root-owned files leaked between
+sessions are reclaimed the next time the worker starts.
+
+Install the worker service unit:
+
+```bash
+sudo install -m 0644 \
+    /opt/flowengine/deploy/debian/systemd/flowengine-worker.service \
+    /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now flowengine-worker
+```
+
+### Layer 2 — Privileged purge helper
+
+When `wipe_profile()` encounters a `PermissionError`, it falls back to:
+
+```
+sudo -n /usr/local/bin/flowengine-purge-profile <profile-name>
+```
+
+The helper validates the profile name against a strict allowlist
+(`[A-Za-z0-9._-]+`), resolves the path under the hardcoded prefix
+`/opt/flowengine/chrome-profiles/`, and `rm -rf`s the directory plus any
+`.burned-*` archives.
+
+Install the helper and sudoers drop-in:
+
+```bash
+sudo install -o root -g root -m 0755 \
+    /opt/flowengine/deploy/debian/flowengine-purge-profile.sh \
+    /usr/local/bin/flowengine-purge-profile
+
+sudo tee /etc/sudoers.d/flowengine-purge >/dev/null <<'EOF'
+flowengine ALL=(root) NOPASSWD: /usr/local/bin/flowengine-purge-profile *
+EOF
+sudo chmod 440 /etc/sudoers.d/flowengine-purge
+# Validate the new rule before reloading sudo
+sudo visudo -c
+```
+
+### Layer 3 — Code fallback in wipe_profile()
+
+`worker/profile_swapper.py::wipe_profile()` catches `PermissionError` from
+`shutil.rmtree`, logs a warning, and invokes the helper.  If the helper also
+fails (helper not installed, sudo rule absent, helper returns non-zero and the
+dir still exists), `wipe_profile()` returns `False` and the error is surfaced
+to the caller — no silent degradation.
+
 ## Auto-replace burned profiles
 
 When Flow trips reCAPTCHA v3 invisible bot protection, the worker marks the current Chrome profile as burned, fails the active job, then tries to replace that profile automatically before the next claim cycle. The replacement path is: detect reCAPTCHA -> archive the burned profile -> pick the next fresh credential from `profiles_ultra.txt` -> warm that profile -> resume with the refreshed pool.
