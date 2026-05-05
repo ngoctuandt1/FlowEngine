@@ -406,3 +406,100 @@ def test_wipe_profile_no_subprocess_when_rmtree_succeeds(
 
     assert result is True
     assert subprocess_calls == [], "subprocess.run must not be called when rmtree succeeds"
+
+
+# ---------------------------------------------------------------------------
+# wipe_profile — burned-archive sudo fallback verification
+# ---------------------------------------------------------------------------
+
+
+def test_wipe_profile_archive_sudo_fallback_logged_but_does_not_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Archive PermissionError + sudo helper invoked but archive persists
+    → error is logged but wipe_profile still returns True (non-blocking).
+
+    The main profile dir is gone (critical path succeeds).  The leftover
+    archive is logged as an error so operators can investigate, but it must
+    NOT cause wipe_profile to return False — doing so would prevent re-warm.
+    """
+    import logging
+
+    swapper = _make_swapper(tmp_path)
+    # Main profile dir — will be removed by real rmtree (only archive is broken).
+    profile_dir = swapper.profile_base_dir / "ngoctuandt20"
+    profile_dir.mkdir(parents=True)
+    # Burned archive that will survive the sudo helper call.
+    archive_dir = swapper.profile_base_dir / "ngoctuandt20.burned-1714000000"
+    archive_dir.mkdir(parents=True)
+
+    real_rmtree = __import__("shutil").rmtree
+
+    def selective_rmtree(path, *args, **kwargs):
+        # Allow removal of the main profile dir; raise for the archive.
+        if Path(path) == archive_dir:
+            raise PermissionError(13, "Permission denied", str(path))
+        real_rmtree(path, *args, **kwargs)
+
+    def fake_subprocess_run(cmd, *, check, timeout):
+        # Helper exits 0 but does NOT actually remove the archive.
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("worker.profile_swapper.shutil.rmtree", selective_rmtree)
+    monkeypatch.setattr("worker.profile_swapper.subprocess.run", fake_subprocess_run)
+
+    with caplog.at_level(logging.ERROR, logger="worker.profile_swapper"):
+        result = swapper.wipe_profile("ngoctuandt20")
+
+    assert result is True, "archive cleanup failure must not block wipe_profile"
+    assert archive_dir.exists(), "archive was intentionally left in place by fake helper"
+    assert any(
+        "Sudo fallback failed to remove burned archive" in record.message
+        for record in caplog.records
+        if record.levelno == logging.ERROR
+    ), "must log an ERROR when the sudo fallback leaves the archive in place"
+
+
+def test_wipe_profile_archive_sudo_fallback_success_no_error_logged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Archive PermissionError + sudo helper actually removes the archive
+    → no 'Sudo fallback failed' error is logged and wipe_profile returns True.
+    """
+    import logging
+
+    swapper = _make_swapper(tmp_path)
+    profile_dir = swapper.profile_base_dir / "ngoctuandt20"
+    profile_dir.mkdir(parents=True)
+    archive_dir = swapper.profile_base_dir / "ngoctuandt20.burned-1714000000"
+    archive_dir.mkdir(parents=True)
+
+    real_rmtree = __import__("shutil").rmtree
+
+    def selective_rmtree(path, *args, **kwargs):
+        if Path(path) == archive_dir:
+            raise PermissionError(13, "Permission denied", str(path))
+        real_rmtree(path, *args, **kwargs)
+
+    def fake_subprocess_run(cmd, *, check, timeout):
+        # Helper exits 0 AND removes the archive.
+        real_rmtree(str(archive_dir))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("worker.profile_swapper.shutil.rmtree", selective_rmtree)
+    monkeypatch.setattr("worker.profile_swapper.subprocess.run", fake_subprocess_run)
+
+    with caplog.at_level(logging.ERROR, logger="worker.profile_swapper"):
+        result = swapper.wipe_profile("ngoctuandt20")
+
+    assert result is True
+    assert not archive_dir.exists()
+    assert not any(
+        "Sudo fallback failed to remove burned archive" in record.message
+        for record in caplog.records
+        if record.levelno == logging.ERROR
+    ), "must NOT log an error when the sudo fallback successfully removes the archive"
