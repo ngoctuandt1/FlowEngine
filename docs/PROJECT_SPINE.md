@@ -2,10 +2,11 @@
 
 > This is the canonical spine. Read first. Update whenever architecture, code map, or deploy topology changes.
 
-- Last synced: `244e895` (`origin/master`) on 2026-05-02 after the IdeaStudio web-clone + perf cluster.
-- Scope: tracks current `master` through the 2026-05-02 IdeaStudio overhaul.
+- Last synced: `34d95c2` (`origin/master`) on 2026-05-05 after claim-batch follow-up + infra hardening.
+- Scope: tracks current `master` through the 2026-05-05 infra hardening cluster.
 - Purpose: one 5-minute sync doc for future feature work.
 - Recent epics:
+  - 2026-05-05 claim-batch follow-up + infra hardening: 3 PRs (#200-#202). Live-verified L3 batch claim+dispatch (3 jobs, 314s, PASS). PR #200: `FLOW_CLAIM_BATCH_MAX` env knob for server-side batch cap. PR #201: 3-layer fix for root-owned file poisoning in profile dirs (sudo purge helper + systemd `chown -Rh` self-heal + `ProfileSwapper` fallback). PR #202: `LeafLockoutError` hard-fail for B28 extend-chain leaf-lockout (8s timeout, working URL poll, `_click_video_tile` fallback). See [session-reports/2026-05-05_claim-batch-followup-infra-hardening.md](session-reports/2026-05-05_claim-batch-followup-infra-hardening.md).
   - 2026-05-02 IdeaStudio web clone + perf cluster: 59 merged PRs in span #117-#176 (one PR, #157, still open at close). DAG canvas project view, Ý TƯỞNG idea/chat right rail, Setup page (Gemini SDK + Veo accounts + Nano API), multi-track timeline shell, project-first data model + `/api/projects` CRUD, render-compose backend, gold theme. Perf round drops thumbnail bandwidth ~200x (mp4 → poster.jpg) and initial eager JS ~9x (5 eager scripts vs 21; ratios from in-session DOM probes, not benchmark-grade). See [session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md](session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md).
   - 2026-05-01 -> 2026-05-02 SPINE workstream: 14 PRs (#109-#125 span; #117, #118, #124 unrelated), 4 review rounds (25 reviewer codex), 6 real bugs surfaced from doc review, all linked canon docs (SPEC/DESIGN/FLOW_UI/WORKPLAN) synced.
 - Not here: deep rationale lives in [docs/DESIGN.md](DESIGN.md), invariants/test contract in [docs/SPEC.md](SPEC.md), and roadmap in [docs/WORKPLAN.md](WORKPLAN.md).
@@ -291,7 +292,7 @@ Every file below was read directly when this spine was written.
 | [worker/dispatcher.py](../worker/dispatcher.py) | Maps `job.type` to handler, acquires/releases project/profile guards, and translates handler results to update payloads. |
 | [worker/profile_manager.py](../worker/profile_manager.py) | Tracks which worker-owned Chrome profiles are available versus busy. |
 | [worker/project_lock.py](../worker/project_lock.py) | Prevents concurrent L2+ work on the same `project_url` inside one worker process. |
-| [worker/profile_swapper.py](../worker/profile_swapper.py) | Archives burned profiles and swaps in fresh credentials after reCAPTCHA damage. |
+| [worker/profile_swapper.py](../worker/profile_swapper.py) | Archives burned profiles and swaps in fresh credentials after reCAPTCHA damage. Also handles root-owned file poisoning via sudo purge helper fallback when `shutil.rmtree` raises `PermissionError`. |
 | [worker/remote_api.py](../worker/remote_api.py) | Async HTTP client for `/api/worker/*` claim/update/heartbeat calls. |
 | [worker/browser_pool.py](../worker/browser_pool.py) | Optional warm browser/client pool keyed by profile to avoid per-job Chrome startup cost. |
 
@@ -608,6 +609,7 @@ Frontend pages are plain global scripts, not bundled modules: wrap page-local st
 - [docs/CHROME_LAUNCH_SECURITY.md](CHROME_LAUNCH_SECURITY.md) - Chrome anti-detection and launch-security notes.
 - [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md) - why the 3-level safety filter is legacy only.
 - [docs/session-reports/INDEX.md](session-reports/INDEX.md) - chronological session report index.
+- Latest session report: [docs/session-reports/2026-05-05_claim-batch-followup-infra-hardening.md](session-reports/2026-05-05_claim-batch-followup-infra-hardening.md).
 - Latest IdeaStudio clone + perf report: [docs/session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md](session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md).
 - Latest SPINE canon-sync report: [docs/session-reports/2026-05-02_spine-doc-canon-sync.md](session-reports/2026-05-02_spine-doc-canon-sync.md).
 - Latest public-cutover report: [docs/session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md).
