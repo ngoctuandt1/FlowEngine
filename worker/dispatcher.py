@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Coroutine
 
+from flow.operations._base import LeafLockoutError
 from flow.recaptcha import RecaptchaError
 from flow.retry import with_retry
 from profile_list import configured_profile_list_file
@@ -589,6 +590,32 @@ async def dispatch_job(
                 "FLOW_AUTO_REPLACE_PROFILES=0; profile %s burned and removed from pool; manual recovery needed",
                 old_profile,
             )
+        return {
+            "status": "failed",
+            "error": error_message,
+            "error_message": error_message,
+        }
+
+    except LeafLockoutError as exc:
+        # B28 leaf-lockout: Flow's SPA landed on a leaf extend-output clip
+        # whose Camera/Insert/Remove buttons are disabled by Flow's UI rules.
+        # Both tile-activation paths (JS dispatch + real click) failed.
+        # This is a UI-state issue — NOT a profile burn. Do NOT touch
+        # ProfileSwapper here; the profile is healthy.
+        error_message = (
+            f"b28_leaf_lockout_{exc.target_media_id}: "
+            f"{exc.op_type} tile activation failed on leaf "
+            f"(url={exc.current_url[:60]}, "
+            f"leaf_media={exc.current_media_id[:20] if exc.current_media_id else 'unknown'})"
+        )
+        logger.error(
+            "Job %s B28 leaf-lockout: op=%s target=%s leaf=%s url=%s",
+            job_id,
+            exc.op_type,
+            exc.target_media_id[:20],
+            (exc.current_media_id or "unknown")[:20],
+            exc.current_url[:80],
+        )
         return {
             "status": "failed",
             "error": error_message,
