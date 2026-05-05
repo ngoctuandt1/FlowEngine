@@ -67,6 +67,35 @@ class RemoteAPI:
         resp.raise_for_status()
         return resp.json()
 
+    async def claim_batch(self, profiles: list[str], batch_size: int) -> list[dict]:
+        """POST /api/worker/claim -- claim up to ``batch_size`` jobs in one round-trip.
+
+        Returns the list of job dicts (length 1..batch_size) or [] when the
+        queue is empty (HTTP 204). When ``batch_size <= 1`` falls back to
+        the legacy single-claim wire shape — the server returns a bare Job
+        object instead of {"jobs": [...]}.
+        """
+        payload = {
+            "worker_id": self.worker_id,
+            "profiles": profiles,
+            "batch_size": batch_size,
+        }
+        resp = await self._request("POST", "/api/worker/claim", json=payload)
+        if resp is None:
+            return []
+        if resp.status_code == 204:
+            return []
+        resp.raise_for_status()
+        body = resp.json()
+        if batch_size <= 1:
+            # Back-compat: server returns a bare Job dict for single-claim shape.
+            return [body] if body else []
+        if isinstance(body, dict) and "jobs" in body:
+            return body["jobs"]
+        # Defensive fallback: bare Job dict returned even for batch_size > 1
+        # (e.g. older server version). Wrap so callers always get a list.
+        return [body] if body else []
+
     async def claim_job_by_id(
         self,
         job_id: str,
