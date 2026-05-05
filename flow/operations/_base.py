@@ -21,6 +21,47 @@ from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.download import download_video
 
+
+class LeafLockoutError(RuntimeError):
+    """Raised when Flow's SPA auto-navigates to a leaf extend-output clip.
+
+    On projects with an existing extend chain, the SPA may land on the
+    leaf (most recent extend output) whose Camera/Insert/Remove buttons
+    are disabled by Flow's own UI rules — only Extend is available on
+    extend-output clips.
+
+    Both recovery strategies failed:
+    1. JS MouseEvent dispatch on the target tile (_activate_clip_tile)
+    2. Real Playwright .click() on [data-tile-id] (_click_video_tile edit branch)
+
+    This is a UI-state issue, not a profile/reCAPTCHA problem.
+    DO NOT trigger ProfileSwapper on this error.
+
+    Attributes:
+        target_media_id: The media UUID the job was trying to edit.
+        current_url: The page URL when both recovery attempts failed.
+        current_media_id: The media UUID reflected in the current URL/DOM.
+        op_type: The operation type (e.g. "insert-object", "camera-move").
+    """
+
+    def __init__(
+        self,
+        *,
+        target_media_id: str,
+        current_url: str,
+        current_media_id: str,
+        op_type: str,
+    ) -> None:
+        self.target_media_id = target_media_id
+        self.current_url = current_url
+        self.current_media_id = current_media_id
+        self.op_type = op_type
+        super().__init__(
+            f"b28_leaf_lockout: {op_type} on target={target_media_id[:20]} "
+            f"but SPA is on leaf={current_media_id[:20] if current_media_id else 'unknown'} "
+            f"url={current_url[:80]}; tile activation failed on both JS-dispatch and click paths"
+        )
+
 logger = logging.getLogger(__name__)
 
 
@@ -180,10 +221,59 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             )
         activated = await _activate_clip_tile(page, media_id)
         if not activated and current_media != media_id:
-            logger.warning(
-                "Could not activate target clip tile for media=%s — sidebar may be disabled (B28 lockout)",
+            # Primary recovery failed. Attempt secondary: Playwright real click
+            # on [data-tile-id="fe_id_{media_id}"] inside the /edit/ sidebar.
+            # This differs from the /project/ branch _click_video_tile call
+            # above — here the page IS on /edit/ but the wrong clip is active.
+            # We need _click_video_tile to navigate-within-editor, not to enter
+            # edit mode. The function searches for matching data-tile-id/link so
+            # it works in both /project/ and /edit/ contexts.
+            logger.info(
+                "JS-dispatch tile activation failed for media=%s — trying real click fallback",
                 media_id[:20],
             )
+            clicked = await _click_video_tile(page, media_id)
+            if clicked:
+                # Verify the switch landed on the right media after click
+                await asyncio.sleep(1)
+                post_click_media = extract_media_id(page.url)
+                if post_click_media and post_click_media == media_id:
+                    logger.info(
+                        "Real-click fallback succeeded for media=%s", media_id[:20]
+                    )
+                else:
+                    # URL may not change on sidebar-only tile activation (same
+                    # as JS dispatch path). The click still fired — trust it and
+                    # let click_action_button's _wait_button_enabled decide.
+                    logger.info(
+                        "Real-click fallback dispatched for media=%s "
+                        "(URL still shows %s — button poll will confirm)",
+                        media_id[:20],
+                        (post_click_media or "unknown")[:20],
+                    )
+            else:
+                # Both activation paths failed AND we know the active clip is
+                # the wrong one. Continuing would hit a disabled button (B28
+                # forensic evidence: Camera/Insert/Remove greyed out on leaf).
+                # Hard-fail now with a specific error that operators can act on
+                # without chasing "Failed to find button" false leads.
+                current_media_now = extract_media_id(page.url) or current_media or ""
+                op_type = job.get("type", "unknown")
+                message = (
+                    f"b28_leaf_lockout_{media_id}: {op_type} cannot activate "
+                    f"target clip tile; SPA stuck on leaf {current_media_now[:20]}"
+                )
+                message = await message_with_failure_capture(
+                    client,
+                    "b28_leaf_lockout",
+                    message,
+                )
+                raise LeafLockoutError(
+                    target_media_id=media_id,
+                    current_url=page.url,
+                    current_media_id=current_media_now,
+                    op_type=op_type,
+                )
 
     # B39 (2026-04-23): the URL-strip branch above catches the SPA bouncing
     # to /project/ on stale media, but Flow's other failure mode keeps
@@ -255,7 +345,7 @@ async def _recover_editor_landing(page, target_url: str) -> bool:
     return await recover_from_flow_landing(page, logger, target_url)
 
 
-async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 3.0) -> bool:
+async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 8.0) -> bool:
     """Click the history-panel clip tile for `media_id` to activate it.
 
     Used after `navigate_to_edit` when the URL's media differs from the
@@ -270,17 +360,42 @@ async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 3.0) -> 
     real MouseEvent (not `.click()` which may not trigger styled-
     components) re-enables Insert/Remove/Camera for the targeted clip.
 
+    Change A (B28 2026-05-05): attachment timeout raised 3s → 8s to match
+    `_wait_button_enabled`'s poll budget. On heavily-loaded projects (6+
+    tiles in sidebar from prior runs) the history panel's DOM can take
+    4-7s to fully render, causing the old 3s wait to abort before the tile
+    attaches.
+
+    Change B (B28 2026-05-05): after the JS MouseEvent sequence, poll up
+    to 5s for ``extract_media_id(page.url)`` to equal `media_id`. If the
+    URL still shows the wrong clip after 5s we return False rather than
+    optimistically claiming success.
+
+    NOTE: Flow's SPA sometimes switches the ACTIVE CLIP without changing
+    the URL (observed on sidebar-only tile activation). In that case
+    ``extract_media_id(page.url)`` continues to return the old value even
+    after a successful switch. We treat this as a successful activation
+    because the JS dispatch fired on the correct DOM node — the mode
+    buttons' enabled state (polled by `_wait_button_enabled`) is the
+    ultimate arbiter. Only return False when the JS evaluate itself
+    returns falsy (tile not found in DOM), which is a genuine miss.
+
     Args:
       page: Playwright Page inside the /edit/ composer.
       media_id: Target media UUID — typically from `job["media_id"]` after
         B30 walk-up (the nearest non-extend ancestor).
+      timeout_sec: Seconds to wait for the tile DOM node to attach
+        (default 8s, matches `_wait_button_enabled`'s poll window).
 
     Returns:
-      True if the tile was found and clicked, False otherwise.
+      True if the tile was found and the JS dispatch confirmed it in DOM,
+      False if the tile was not found within `timeout_sec` or JS returned
+      falsy (tile detached between locator resolve and evaluate).
     """
     if not media_id:
         return False
-    # Wait briefly for the history panel to render
+    # Change A: 8s attachment wait — matches _wait_button_enabled poll budget.
+    # On projects with 6+ sidebar tiles the history panel DOM can lag 4-7s.
     try:
         tile = page.locator(f"[data-tile-id='fe_id_{media_id}']").first
         await tile.wait_for(state="attached", timeout=int(timeout_sec * 1000))
@@ -309,11 +424,42 @@ async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 3.0) -> 
             }""",
             media_id,
         )
-        if ok:
-            # Give Flow a beat to swap active clip + re-enable sidebar
-            await asyncio.sleep(1)
-            logger.info("Activated clip tile for media=%s", media_id[:20])
-            return True
+        if not ok:
+            # JS could not find the tile in the DOM (it may have detached
+            # between wait_for(attached) and evaluate — race on SPA re-render).
+            logger.warning(
+                "Tile JS-dispatch returned false for media=%s (tile detached during evaluate?)",
+                media_id[:20],
+            )
+            return False
+
+        # Change B: verify the media switch happened.
+        # Poll up to 5s for URL to reflect the target clip. If Flow updates
+        # the URL on tile activation we confirm the switch; if it does NOT
+        # update the URL (sidebar-only switch observed on some SPA versions)
+        # the poll times out and we still return True — the JS dispatch fired
+        # on the correct DOM node and we rely on _wait_button_enabled to catch
+        # genuine lockouts.
+        #
+        # We do NOT return False on URL-mismatch-after-timeout because:
+        # 1. Flow may switch active clip WITHOUT updating the URL route.
+        # 2. The URL could legitimately show the target if _extract_media_id
+        #    itself returns stale data (cache / SPA routing lag).
+        # 3. The authoritative signal for "can we proceed?" is whether the mode
+        #    button is enabled — that is checked downstream in click_action_button.
+        for _ in range(20):  # 20 × 0.25s = 5s
+            if extract_media_id(page.url) == media_id:
+                logger.info("Activated clip tile (URL confirmed) for media=%s", media_id[:20])
+                return True
+            await asyncio.sleep(0.25)
+
+        # URL still shows old media after 5s — sidebar-only switch path.
+        # Return True anyway; downstream button poll is authoritative.
+        logger.info(
+            "Activated clip tile for media=%s (URL not updated — sidebar-only switch assumed)",
+            media_id[:20],
+        )
+        return True
     except Exception as e:
         logger.warning("Tile click dispatch failed for media=%s: %s", media_id[:20], e)
     return False
