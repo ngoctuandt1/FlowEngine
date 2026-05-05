@@ -933,3 +933,240 @@ async def dispatch_batch_l3_siblings(
         if project_url:
             project_lock.release(project_url, primary_job_id)
         profile_manager.mark_available(profile)
+
+
+async def dispatch_batch_multitab(
+    jobs: list[dict],
+    profile_manager: ProfileManager,
+    project_lock: ProjectLock,
+) -> list[dict]:
+    """Open one Chrome, run N L2+ ops each in its own tab concurrently.
+
+    PRD §4.3. Caller guarantees:
+      * all jobs share ``profile``
+      * all jobs have ``job_level >= 2``
+      * each job carries ``parent_edit_url`` + ``parent_media_id`` bound at
+        claim time by ``server/db/job_store.py:claim_next_batch``
+
+    Jobs with missing context fields are failed individually without
+    poisoning the rest of the batch.  L1 jobs are failed defensively.
+    ProjectLocks are acquired in lexicographic URL order to prevent
+    deadlocks; each acquired lock is released on exit in reverse order.
+    """
+    if not jobs:
+        return []
+
+    # Defensive: L1 jobs must not reach this primitive.
+    if any((j.get("job_level") or 1) < 2 for j in jobs):
+        return [
+            {"job_id": j.get("id"), "status": "failed",
+             "error": "L1 job must not reach dispatch_batch_multitab"}
+            for j in jobs
+        ]
+
+    # Profile coherence.
+    profile = jobs[0].get("profile", "") or ""
+    if not profile:
+        return [{"job_id": j.get("id"), "status": "failed",
+                 "error": "no profile assigned"} for j in jobs]
+    for j in jobs[1:]:
+        if (j.get("profile") or "") != profile:
+            return [{"job_id": jj.get("id"), "status": "failed",
+                     "error": "batch profile mismatch"} for jj in jobs]
+
+    # Per-job pre-validation. Server claim binds the parent's edit_url +
+    # media_id onto the job itself (see job_store.claim_next_batch step 1),
+    # so we accept either the explicit `parent_*` keys or the bare aliases
+    # — same fallback as `flow.operations._multitab.dispatch_op_in_new_tab`.
+    # Both fields must resolve to non-empty: an empty `edit_url` blocks
+    # navigation, and an empty `media_id` blocks the per-tab submit-response
+    # canonicalization.
+    runnable: list[dict] = []
+    pre_failed: list[dict] = []
+    for j in jobs:
+        edit_url = j.get("parent_edit_url") or j.get("edit_url") or ""
+        media_id = j.get("parent_media_id") or j.get("media_id") or ""
+        if not edit_url or not media_id:
+            pre_failed.append({"job_id": j.get("id"), "status": "failed",
+                                "error": "missing parent_edit_url / parent_media_id"})
+        else:
+            runnable.append(j)
+
+    if not runnable:
+        return pre_failed
+
+    # Acquire ProjectLocks in sorted URL order to prevent deadlocks.
+    primary_job_id = runnable[0]["id"]
+    distinct_urls = sorted(
+        {j.get("project_url") or "" for j in runnable} - {""}
+    )
+    acquired: list[str] = []
+    locked_failed: list[dict] = []
+    blocked_urls: set[str] = set()
+
+    for url in distinct_urls:
+        if not project_lock.acquire(url, primary_job_id):
+            logger.warning("dispatch_batch_multitab: project locked %s", url)
+            blocked_urls.add(url)
+            locked_failed.extend(
+                {"job_id": j.get("id"), "status": "failed",
+                 "error": f"project locked: {url}"}
+                for j in runnable if (j.get("project_url") or "") == url
+            )
+        else:
+            acquired.append(url)
+
+    # Jobs with no project_url have no lock requirement and pass through.
+    dispatching = [
+        j for j in runnable
+        if (j.get("project_url") or "") not in blocked_urls
+    ]
+
+    if not dispatching:
+        for url in reversed(acquired):
+            project_lock.release(url, primary_job_id)
+        return pre_failed + locked_failed
+
+    profile_manager.mark_busy(profile, primary_job_id)
+
+    from flow.operations._multitab import batch_dispatch_ops_multitab
+
+    try:
+        async with _client_lease(profile) as client:
+            client._job_id = primary_job_id
+
+            # Translate to the shape batch_dispatch_ops_multitab expects
+            # (see flow/operations/_multitab.py lines 21-36).
+            op_jobs = [
+                {
+                    "id": j.get("id"),
+                    "type": j.get("type"),
+                    "parent_edit_url": (
+                        j.get("parent_edit_url") or j.get("edit_url") or ""
+                    ),
+                    "parent_media_id": (
+                        j.get("parent_media_id") or j.get("media_id") or ""
+                    ),
+                    "parent_project_url": (
+                        j.get("parent_project_url") or j.get("project_url") or ""
+                    ),
+                    "prompt": j.get("prompt"),
+                    "direction": j.get("direction"),
+                    "bbox": j.get("bbox"),
+                }
+                for j in dispatching
+            ]
+
+            try:
+                results = await batch_dispatch_ops_multitab(client, op_jobs)
+            except RecaptchaError as exc:
+                kind = getattr(exc, "kind", None) or "unknown"
+                err = f"recaptcha_{kind}_burned_{profile}"
+                logger.error("Batch multitab hit reCAPTCHA kind=%s profile=%s",
+                             kind, profile)
+                await _handle_burned_profile_for_batch(profile, profile_manager)
+                return pre_failed + locked_failed + [
+                    {"job_id": j.get("id"), "status": "failed",
+                     "error": err, "error_message": err}
+                    for j in dispatching
+                ]
+            except Exception as exc:
+                logger.exception("Batch multitab unexpected failure: %s", exc)
+                return pre_failed + locked_failed + [
+                    {"job_id": j.get("id"), "status": "failed",
+                     "error": f"batch error: {exc}"}
+                    for j in dispatching
+                ]
+
+        dispatched_index: dict[object, dict] = {}
+        for j, r in zip(dispatching, results):
+            r.setdefault("job_id", j.get("id"))
+            r.setdefault("profile", profile)
+            dispatched_index[j.get("id")] = r
+
+        # Reconstruct output preserving original jobs order.
+        pre_failed_index = {d["job_id"]: d for d in pre_failed}
+        locked_index = {d["job_id"]: d for d in locked_failed}
+        out: list[dict] = []
+        for j in jobs:
+            jid = j.get("id")
+            if jid in pre_failed_index:
+                out.append(pre_failed_index[jid])
+            elif jid in locked_index:
+                out.append(locked_index[jid])
+            else:
+                out.append(dispatched_index[jid])
+        return out
+
+    finally:
+        for url in reversed(acquired):
+            project_lock.release(url, primary_job_id)
+        profile_manager.mark_available(profile)
+
+
+# Single source of truth for the L2-batch op-type set. Imported by
+# worker/main.py — duplicating it there silently diverges routing if one
+# side gains a new op type.
+L2_BATCH_OPS: frozenset[str] = frozenset(
+    {"extend-video", "camera-move", "insert-object", "remove-object"}
+)
+_L2_BATCH_OPS = L2_BATCH_OPS  # legacy alias, internal use
+
+
+async def dispatch_batch(
+    jobs: list[dict],
+    profile_manager: ProfileManager,
+    project_lock: ProjectLock,
+) -> list[dict]:
+    """Top-level routing entry for a server-claimed batch.
+
+    PRD §4.2 routing table::
+
+        N == 0                          → []
+        N == 1                          → dispatch_job (legacy, full burn-recovery)
+        all L1 t2v, no project_url      → dispatch_batch_l1_same_project
+        all L2+ in L2_BATCH_OPS         → dispatch_batch_multitab
+        mixed / unsupported             → sequential per-job dispatch_job
+
+    The L1-fresh check MUST come before the L2+ check so that intent is
+    explicit and future changes to either condition cannot silently
+    overlap.
+    """
+    if not jobs:
+        return []
+
+    if len(jobs) == 1:
+        single = await dispatch_job(jobs[0], profile_manager, project_lock)
+        single.setdefault("job_id", jobs[0].get("id"))
+        return [single]
+
+    # All-L1 text-to-video fresh-project batch.
+    if all(
+        (j.get("job_level") or 1) == 1
+        and j.get("type") == "text-to-video"
+        and not (j.get("project_url") or "")
+        for j in jobs
+    ):
+        return await dispatch_batch_l1_same_project(jobs, profile_manager, project_lock)
+
+    # All L2+ ops supported by the multi-tab orchestrator.
+    if all(
+        (j.get("job_level") or 1) >= 2
+        and (j.get("type") or "") in _L2_BATCH_OPS
+        for j in jobs
+    ):
+        return await dispatch_batch_multitab(jobs, profile_manager, project_lock)
+
+    # Mixed or unsupported batch — degrade gracefully to sequential dispatch.
+    logger.warning(
+        "dispatch_batch: mixed or unsupported batch (types=%s levels=%s); "
+        "falling back to sequential dispatch_job",
+        [j.get("type") for j in jobs],
+        [j.get("job_level") for j in jobs],
+    )
+    results: list[dict] = []
+    for j in jobs:
+        r = await dispatch_job(j, profile_manager, project_lock)
+        r.setdefault("job_id", j.get("id"))
+        results.append(r)
+    return results

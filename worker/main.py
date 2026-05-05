@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 
 from worker.browser_pool import init_pool, shutdown_pool
 from worker.dispatcher import (
+    L2_BATCH_OPS,
+    dispatch_batch,
     dispatch_batch_l1_same_project,
     dispatch_batch_l2_siblings,
     dispatch_batch_l3_siblings,
@@ -70,7 +72,14 @@ try:
 except ValueError:
     FLOW_BATCH_L3_MAX = 3
 
-L2_BATCH_OPS = {"extend-video", "camera-move", "insert-object", "remove-object"}
+FLOW_CLAIM_BATCH = os.getenv("FLOW_CLAIM_BATCH", "0").strip() == "1"
+try:
+    FLOW_CLAIM_BATCH_MAX = max(1, int(
+        os.getenv("FLOW_CLAIM_BATCH_MAX", "3").strip() or 3
+    ))
+except ValueError:
+    FLOW_CLAIM_BATCH_MAX = 3
+
 
 HEARTBEAT_INTERVAL_SEC = 30
 
@@ -208,6 +217,44 @@ async def claim_loop(
         "Starting claim loop  server=%s  worker=%s  profiles=%s  poll=%ds  max=%d",
         SERVER_URL, WORKER_ID, WORKER_PROFILES, POLL_INTERVAL_SEC, max_concurrent,
     )
+
+    if FLOW_CLAIM_BATCH and FLOW_BATCH_DISPATCH:
+        # Both flags set: new server-side batch claim fully supersedes the
+        # legacy peek-and-claim siblings dance — warn once and proceed.
+        logger.warning(
+            "FLOW_CLAIM_BATCH=1 supersedes FLOW_BATCH_DISPATCH; legacy path disabled"
+        )
+
+    async def run_claimed_batch_generic(jobs: list[dict]) -> None:
+        """Dispatch a server-batch-claimed job list via ``dispatch_batch``.
+
+        Called only when FLOW_CLAIM_BATCH=1. ``dispatch_batch`` routes
+        internally (N=1 → single-job, all-L1 → inflate, all-L2+ → multitab)
+        so this helper stays thin. Profile release is the responsibility of
+        ``dispatch_batch`` (it mirrors how dispatch_batch_l2_siblings works).
+        """
+        ids = [j.get("id") for j in jobs]
+        profile = jobs[0].get("profile") or "" if jobs else ""
+        logger.info("Dispatching generic batch %s on profile %s", ids, profile)
+        try:
+            results = await dispatch_batch(jobs, profile_mgr, project_lock)
+        except Exception as exc:
+            logger.exception("Generic batch dispatch crashed for jobs %s", ids)
+            results = [
+                {"job_id": j.get("id"), "status": "failed", "error": str(exc)}
+                for j in jobs
+            ]
+        for r in results:
+            jid = r.pop("job_id", None) or r.get("id")
+            if not jid:
+                continue
+            try:
+                await api.update_job(jid, r)
+                logger.info("Generic batch job %s -> %s", jid, r.get("status"))
+            except Exception:
+                logger.error(
+                    "Failed to report generic batch result for %s", jid, exc_info=True
+                )
 
     async def _maybe_claim_l1_siblings(claimed: dict) -> list[dict]:
         """Peek + claim up to FLOW_BATCH_L1_MAX-1 sibling L1 t2v jobs.
@@ -505,73 +552,102 @@ async def claim_loop(
                 claim_profiles = (available * slots)[:slots]
             else:
                 claim_profiles = available[:slots]
-            try:
-                job = await api.claim_job(claim_profiles)
-            except Exception:
-                logger.warning("Claim request failed", exc_info=True)
-                job = None
+            if FLOW_CLAIM_BATCH:
+                # New server-side batch claim: one round-trip returns up to
+                # FLOW_CLAIM_BATCH_MAX jobs that are already profile-coherent
+                # and have parent_edit_url/parent_media_id pre-bound by the
+                # server. The legacy peek-claim siblings dance is skipped
+                # entirely because the server already did that work atomically.
+                try:
+                    jobs = await api.claim_batch(claim_profiles, FLOW_CLAIM_BATCH_MAX)
+                except Exception:
+                    logger.warning("Batch claim request failed", exc_info=True)
+                    jobs = []
 
-            if job is None:
-                await wait_for_capacity()
-                continue
+                if not jobs:
+                    await wait_for_capacity()
+                    continue
 
-            job_id = job.get("id", "?")
-            job_type = job.get("type", "?")
-            job_profile = job.get("profile", "")
-            logger.info("Claimed job %s [%s] profile=%s", job_id, job_type, job_profile)
+                # Mark every claimed job's profile busy. All jobs in the batch
+                # share the same profile (guaranteed by server claim coherence),
+                # but we iterate defensively in case the server ever adds mixed
+                # batches — each mark_busy call is idempotent for the same
+                # (profile, job_id) pair.
+                for j in jobs:
+                    jp = j.get("profile") or ""
+                    if jp:
+                        profile_mgr.mark_busy(jp, j.get("id", "?"))
 
-            if job_profile:
-                profile_mgr.mark_busy(job_profile, job_id)
-
-            # FLOW_BATCH_DISPATCH=1: opportunistically claim L1 t2v siblings
-            # so 1 Chrome handles up to FLOW_BATCH_L1_MAX jobs in a single
-            # /project/{id} session. Default OFF preserves the legacy 1-1-1.
-            siblings: list[dict] = []
-            if (
-                FLOW_BATCH_DISPATCH
-                and job.get("job_level", 1) == 1
-                and job.get("type") == "text-to-video"
-                and (job.get("project_url") or "") == ""
-            ):
-                siblings = await _maybe_claim_l1_siblings(job)
-                for sib in siblings:
-                    sp = sib.get("profile") or ""
-                    if sp:
-                        profile_mgr.mark_busy(sp, sib.get("id", "?"))
-
-            l2_siblings: list[dict] = []
-            l3_siblings: list[dict] = []
-            claimed_level = job.get("job_level", 1)
-            if (
-                FLOW_BATCH_DISPATCH
-                and not siblings
-                and claimed_level >= 2
-                and (job.get("type") or "") in L2_BATCH_OPS
-                and (job.get("parent_job_id") or "") != ""
-            ):
-                if claimed_level == 2:
-                    l2_siblings = await _maybe_claim_l2_siblings(job)
-                    sib_pool = l2_siblings
-                else:  # L3+: siblings disambiguated by direct parent_job_id
-                    l3_siblings = await _maybe_claim_l3_siblings(job)
-                    sib_pool = l3_siblings
-                for sib in sib_pool:
-                    sp = sib.get("profile") or ""
-                    if sp:
-                        profile_mgr.mark_busy(sp, sib.get("id", "?"))
-
-            if siblings:
-                batch_jobs = [job, *siblings]
-                task = asyncio.create_task(run_claimed_batch(batch_jobs))
-            elif l2_siblings:
-                batch_jobs = [job, *l2_siblings]
-                task = asyncio.create_task(run_claimed_batch_l2(batch_jobs))
-            elif l3_siblings:
-                batch_jobs = [job, *l3_siblings]
-                task = asyncio.create_task(run_claimed_batch_l3(batch_jobs))
+                task = asyncio.create_task(run_claimed_batch_generic(jobs))
+                in_flight.add(task)
             else:
-                task = asyncio.create_task(run_claimed_job(job))
-            in_flight.add(task)
+                try:
+                    job = await api.claim_job(claim_profiles)
+                except Exception:
+                    logger.warning("Claim request failed", exc_info=True)
+                    job = None
+
+                if job is None:
+                    await wait_for_capacity()
+                    continue
+
+                job_id = job.get("id", "?")
+                job_type = job.get("type", "?")
+                job_profile = job.get("profile", "")
+                logger.info("Claimed job %s [%s] profile=%s", job_id, job_type, job_profile)
+
+                if job_profile:
+                    profile_mgr.mark_busy(job_profile, job_id)
+
+                # FLOW_BATCH_DISPATCH=1: opportunistically claim L1 t2v siblings
+                # so 1 Chrome handles up to FLOW_BATCH_L1_MAX jobs in a single
+                # /project/{id} session. Default OFF preserves the legacy 1-1-1.
+                siblings: list[dict] = []
+                if (
+                    FLOW_BATCH_DISPATCH
+                    and job.get("job_level", 1) == 1
+                    and job.get("type") == "text-to-video"
+                    and (job.get("project_url") or "") == ""
+                ):
+                    siblings = await _maybe_claim_l1_siblings(job)
+                    for sib in siblings:
+                        sp = sib.get("profile") or ""
+                        if sp:
+                            profile_mgr.mark_busy(sp, sib.get("id", "?"))
+
+                l2_siblings: list[dict] = []
+                l3_siblings: list[dict] = []
+                claimed_level = job.get("job_level", 1)
+                if (
+                    FLOW_BATCH_DISPATCH
+                    and not siblings
+                    and claimed_level >= 2
+                    and (job.get("type") or "") in L2_BATCH_OPS
+                    and (job.get("parent_job_id") or "") != ""
+                ):
+                    if claimed_level == 2:
+                        l2_siblings = await _maybe_claim_l2_siblings(job)
+                        sib_pool = l2_siblings
+                    else:  # L3+: siblings disambiguated by direct parent_job_id
+                        l3_siblings = await _maybe_claim_l3_siblings(job)
+                        sib_pool = l3_siblings
+                    for sib in sib_pool:
+                        sp = sib.get("profile") or ""
+                        if sp:
+                            profile_mgr.mark_busy(sp, sib.get("id", "?"))
+
+                if siblings:
+                    batch_jobs = [job, *siblings]
+                    task = asyncio.create_task(run_claimed_batch(batch_jobs))
+                elif l2_siblings:
+                    batch_jobs = [job, *l2_siblings]
+                    task = asyncio.create_task(run_claimed_batch_l2(batch_jobs))
+                elif l3_siblings:
+                    batch_jobs = [job, *l3_siblings]
+                    task = asyncio.create_task(run_claimed_batch_l3(batch_jobs))
+                else:
+                    task = asyncio.create_task(run_claimed_job(job))
+                in_flight.add(task)
 
     finally:
         if in_flight:

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from server.auth import require_worker_token
 from server.models.job import JobUpdate
 from server.db.job_store import (
+    claim_next_batch,
     claim_next_job,
     claim_specific_pending_job,
     get_job,
@@ -28,9 +29,16 @@ router = APIRouter(
 
 # -- Request bodies ------------------------------------------------------------
 
+_CLAIM_BATCH_HARD_CAP = 16
+
+
 class ClaimRequest(BaseModel):
     worker_id: str
     profiles: list[str]   # Chrome profiles this worker can use
+    # PRD docs/PRD_CLAIM_BATCH_DISPATCH.md — server returns up to N jobs.
+    # Default 1 keeps the legacy bare-Job response shape (back-compat).
+    # Hard-capped server-side at 16 regardless of client value.
+    batch_size: int = 1
 
 
 class HeartbeatRequest(BaseModel):
@@ -53,17 +61,35 @@ _workers: dict[str, datetime] = {}
 
 @router.post("/claim")
 async def claim_job(req: ClaimRequest):
-    """Claim the next available job matching one of the worker's profiles.
+    """Claim the next available job(s) matching one of the worker's profiles.
 
-    Returns the claimed Job, or 204 No Content if nothing is available.
+    * ``batch_size <= 1`` (default) — returns a bare ``Job`` object on
+      success or ``204`` when the queue is empty. Wire format unchanged
+      from pre-batch clients.
+    * ``batch_size > 1`` — returns ``{"jobs": [Job, ...]}`` with length
+      1..min(batch_size, hard_cap), or ``204`` when nothing qualifies.
+      All jobs in the response share one profile (PRD §3.2).
     """
-    job = await claim_next_job(req.worker_id, req.profiles)
-    if job is None:
-        return Response(status_code=204)
+    # `batch_size <= 1` (including 0 or negative from misconfigured client)
+    # always takes the legacy bare-Job path. Avoid the `or 1` idiom which
+    # treats explicit-zero as 1 — be explicit about the comparison.
+    requested = req.batch_size if req.batch_size is not None else 1
+    if requested <= 1:
+        job = await claim_next_job(req.worker_id, req.profiles)
+        if job is None:
+            return Response(status_code=204)
+        _workers[req.worker_id] = datetime.now(UTC)
+        await broadcast_job_update(job)
+        return job
 
+    capped = min(max(1, requested), _CLAIM_BATCH_HARD_CAP)
+    jobs = await claim_next_batch(req.worker_id, req.profiles, capped)
+    if not jobs:
+        return Response(status_code=204)
     _workers[req.worker_id] = datetime.now(UTC)
-    await broadcast_job_update(job)
-    return job
+    for j in jobs:
+        await broadcast_job_update(j)
+    return {"jobs": jobs}
 
 
 @router.post("/claim-by-id")

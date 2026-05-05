@@ -780,6 +780,297 @@ async def claim_next_job(
             raise
 
 
+async def claim_next_batch(
+    worker_id: str,
+    available_profiles: list[str],
+    batch_size: int,
+) -> list[Job]:
+    """Atomically claim up to ``batch_size`` jobs in one transaction.
+
+    PRD: docs/PRD_CLAIM_BATCH_DISPATCH.md.
+
+    Mirrors :func:`claim_next_job` selection logic but loops within one
+    ``BEGIN IMMEDIATE`` transaction. Constraints:
+
+    * **Profile-coherent.** First claim locks ``profile``; subsequent rows
+      on a different profile are skipped (left pending), not failed.
+    * **Project-inflight cap honoured in-transaction.** ``FLOW_PROJECT_INFLIGHT``
+      counts both already-running jobs *and* rows claimed earlier in this
+      same batch.
+    * **L2+ priority.** Step 1 fills as many L2+ ready-parent rows as it
+      can; step 2 fills the remainder with L1 fresh rows. L1 and L2+ may
+      coexist in a batch only if step 1 came up short of N — which the
+      caller routes via the singleton path.
+    """
+    if batch_size <= 0:
+        return []
+
+    allowed_profile_set = set(await get_available_profiles(worker_id))
+    effective_profiles = [p for p in available_profiles if p in allowed_profile_set]
+    blocked_profiles = [p for p in available_profiles if p not in allowed_profile_set]
+    if blocked_profiles:
+        logger.warning(
+            "Worker %s advertised unavailable or quarantined profiles: %s",
+            worker_id,
+            blocked_profiles,
+        )
+    if not effective_profiles:
+        return []
+
+    try:
+        project_inflight_cap = max(
+            1, int(os.environ.get("FLOW_PROJECT_INFLIGHT", "1").strip() or 1)
+        )
+    except ValueError:
+        project_inflight_cap = 1
+
+    claimed_ids: list[str] = []
+    locked_profile: Optional[str] = None
+    # Per-project_url counter for L2+ rows already claimed in *this* tx —
+    # added on top of the SQL `(active count)` so a 3-job batch on a single
+    # project_url never overshoots FLOW_PROJECT_INFLIGHT.
+    project_inflight_local: dict[str, int] = {}
+
+    async with get_db() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            columns = await _job_columns(db)
+            include_project_id = "project_id" in columns
+            project_id_set = ", project_id = ?" if include_project_id else ""
+
+            # ---- Step 1: L2+ ready-parent rows -----------------------
+            while len(claimed_ids) < batch_size:
+                profile_filter = effective_profiles
+                if locked_profile is not None:
+                    if locked_profile not in profile_filter:
+                        break
+                    profile_filter = [locked_profile]
+                ph = ", ".join("?" for _ in profile_filter)
+
+                # SQLite quirk: `x NOT IN (NULL)` evaluates to NULL → row
+                # is filtered. Only emit the NOT IN clause when we have
+                # ids to exclude.
+                excluded_clause = ""
+                if claimed_ids:
+                    excluded_ph = ", ".join("?" for _ in claimed_ids)
+                    excluded_clause = f"AND j.id NOT IN ({excluded_ph})"
+                cursor = await db.execute(
+                    f"""
+                    SELECT j.*
+                    FROM jobs j
+                    JOIN jobs parent ON j.parent_job_id = parent.id
+                    WHERE j.status = 'pending'
+                      AND j.job_level >= 2
+                      {excluded_clause}
+                      AND parent.status = 'completed'
+                      AND parent.profile IN ({ph})
+                      AND parent.project_url IS NOT NULL
+                      AND parent.media_id IS NOT NULL
+                      AND (
+                          SELECT COUNT(*) FROM jobs active
+                          WHERE active.project_url = parent.project_url
+                            AND active.project_url IS NOT NULL
+                            AND active.status IN ('claimed', 'running')
+                      ) < ?
+                    ORDER BY j.created_at ASC
+                    LIMIT ?
+                    """,
+                    [
+                        *claimed_ids,
+                        *profile_filter,
+                        project_inflight_cap,
+                        # Over-fetch a few rows so we can skip ones that
+                        # would breach the in-tx project_url counter.
+                        max(batch_size, 8),
+                    ],
+                )
+                rows = await cursor.fetchall()
+                if not rows:
+                    break
+
+                progressed = False
+                for row in rows:
+                    if len(claimed_ids) >= batch_size:
+                        break
+                    job_dict = dict(row)
+                    parent_select = "SELECT profile, project_url, media_id, edit_url"
+                    if include_project_id:
+                        parent_select += ", project_id"
+                    parent_select += " FROM jobs WHERE id = ?"
+                    parent_cur = await db.execute(
+                        parent_select, (job_dict["parent_job_id"],),
+                    )
+                    parent_row = await parent_cur.fetchone()
+                    if parent_row is None:
+                        continue
+                    bound_profile = parent_row["profile"]
+                    bound_project_url = parent_row["project_url"]
+                    bound_media_id = parent_row["media_id"]
+                    bound_edit_url = parent_row["edit_url"]
+                    bound_project_id = (
+                        parent_row["project_id"] if include_project_id else None
+                    )
+
+                    if locked_profile is None:
+                        locked_profile = bound_profile
+                    elif bound_profile != locked_profile:
+                        continue
+
+                    inflight_local = project_inflight_local.get(
+                        bound_project_url or "", 0,
+                    )
+                    # SQL `(active count)` gave the floor; add what we've
+                    # claimed in this tx already.
+                    if bound_project_url and (
+                        inflight_local + 1 > project_inflight_cap
+                    ):
+                        # Defensive: already at cap inside this batch.
+                        # Skip; the SQL also filters but it doesn't see
+                        # in-tx claims.
+                        continue
+
+                    now = _now_iso()
+                    project_id_param = (
+                        (bound_project_id,) if include_project_id else ()
+                    )
+                    update_cur = await db.execute(
+                        f"""
+                        UPDATE jobs
+                        SET status = 'claimed',
+                            worker_id = ?,
+                            claimed_at = ?,
+                            profile = ?,
+                            project_url = ?,
+                            media_id = ?,
+                            edit_url = ?{project_id_set},
+                            updated_at = ?
+                        WHERE id = ? AND status = 'pending'
+                        """,
+                        (
+                            worker_id,
+                            now,
+                            bound_profile,
+                            bound_project_url,
+                            bound_media_id,
+                            bound_edit_url,
+                            *project_id_param,
+                            now,
+                            job_dict["id"],
+                        ),
+                    )
+                    # `BEGIN IMMEDIATE` already serializes writers, so
+                    # rowcount=0 here is unreachable. Belt-and-braces:
+                    # if a future refactor weakens isolation, this skip
+                    # prevents a stale profile pointer from sticking.
+                    if update_cur.rowcount == 0:
+                        continue
+                    if bound_profile:
+                        await db.execute(
+                            """
+                            UPDATE profiles
+                            SET current_job_id = ?, worker_id = ?, last_used_at = ?
+                            WHERE name = ?
+                            """,
+                            (job_dict["id"], worker_id, now, bound_profile),
+                        )
+                    claimed_ids.append(job_dict["id"])
+                    if bound_project_url:
+                        project_inflight_local[bound_project_url] = (
+                            inflight_local + 1
+                        )
+                    progressed = True
+                if not progressed:
+                    break
+
+            # ---- Step 2: L1 fresh rows -------------------------------
+            # Only run if we still have slots AND step 1 produced no L2+
+            # rows. L1 + L2+ never share a batch (PRD §2): mixing would
+            # require multi-tab routing semantics that don't exist for L1.
+            if not claimed_ids:
+                while len(claimed_ids) < batch_size:
+                    profile_filter = effective_profiles
+                    if locked_profile is not None:
+                        if locked_profile not in profile_filter:
+                            break
+                        profile_filter = [locked_profile]
+                    ph = ", ".join("?" for _ in profile_filter)
+
+                    excluded_clause = ""
+                    if claimed_ids:
+                        excluded_ph = ", ".join("?" for _ in claimed_ids)
+                        excluded_clause = f"AND id NOT IN ({excluded_ph})"
+                    cursor = await db.execute(
+                        f"""
+                        SELECT *
+                        FROM jobs
+                        WHERE status = 'pending'
+                          AND job_level = 1
+                          {excluded_clause}
+                          AND (profile IS NULL OR profile IN ({ph}))
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                        """,
+                        [*claimed_ids, *profile_filter],
+                    )
+                    row = await cursor.fetchone()
+                    if row is None:
+                        break
+
+                    job_dict = dict(row)
+                    assigned_profile = (
+                        job_dict["profile"]
+                        or locked_profile
+                        or effective_profiles[0]
+                    )
+                    if locked_profile is None:
+                        locked_profile = assigned_profile
+                    elif assigned_profile != locked_profile:
+                        # Skipping should not happen given the WHERE clause
+                        # restricts to locked_profile once set; defensive.
+                        break
+
+                    now = _now_iso()
+                    update_cur = await db.execute(
+                        """
+                        UPDATE jobs
+                        SET status = 'claimed',
+                            worker_id = ?,
+                            claimed_at = ?,
+                            profile = ?,
+                            updated_at = ?
+                        WHERE id = ? AND status = 'pending'
+                        """,
+                        (
+                            worker_id, now, assigned_profile, now, job_dict["id"],
+                        ),
+                    )
+                    if update_cur.rowcount == 0:
+                        # See step 1 — defensive against a future weakening
+                        # of `BEGIN IMMEDIATE` isolation.
+                        continue
+                    await db.execute(
+                        """
+                        UPDATE profiles
+                        SET current_job_id = ?, worker_id = ?, last_used_at = ?
+                        WHERE name = ?
+                        """,
+                        (job_dict["id"], worker_id, now, assigned_profile),
+                    )
+                    claimed_ids.append(job_dict["id"])
+
+            await db.commit()
+        except Exception:
+            await db.execute("ROLLBACK")
+            raise
+
+    out: list[Job] = []
+    for jid in claimed_ids:
+        job = await get_job(jid)
+        if job is not None:
+            out.append(job)
+    return out
+
+
 async def claim_specific_pending_job(
     worker_id: str,
     job_id: str,
