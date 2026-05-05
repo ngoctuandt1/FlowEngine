@@ -67,7 +67,7 @@ batch-claim returned 3 jobs in 1 transaction; worker dispatched via
 
 ### Mode 2 — L2 multitab mixed (3 ops on 3 parents)
 
-⚠️ **PARTIAL (1/3)** — 11:44:07 → 11:49:27 (5m20s)
+⚠️ **PARTIAL (1/3)** — 11:44:07 → 11:49:27 (5m20s); retest with defensive fix at 12:36:32 → 12:41:52 produced identical 1/3 result.
 
 | Job | type | parent | new media | status |
 |---|---|---|---|---|
@@ -76,17 +76,34 @@ batch-claim returned 3 jobs in 1 transaction; worker dispatched via
 | `755dc0b8-fd5` | insert-object | `cb0cc542-498` | (parent mid) | ❌ failed |
 
 **Multi-tab dispatch path verified working** — 3 tabs opened in 1 Chrome,
-3 ops dispatched //, batch claim atomic. The 2 failures are **Flow UI
-domain issues** unrelated to claim-batch:
+3 ops dispatched //, batch claim atomic. Both failures hit the same
+diagnostic:
 
-- camera-move error: `Mode button 'Camera' disabled — extend-child lockout (FLOW_BUTTON_EXACT §5.1). Check B22 inheritance`
-- insert-object error: `Mode button 'Insert' disabled — extend-child lockout`
+- camera-move: `Mode button 'Camera' disabled — extend-child lockout (FLOW_BUTTON_EXACT §5.1). Check B22 inheritance`
+- insert-object: `Mode button 'Insert' disabled — extend-child lockout`
 
-These are pre-existing constraints when navigating to t2v-generated
-edit views (Camera/Insert modes lock when the parent is a fresh L1 t2v —
-B22 inheritance work-in-progress). Pure framework regression check
-needs a parent that allows all 3 op types, which the current Flow UI
-won't honour for fresh t2v parents.
+**Failure root cause — confirmed Flow UI domain (not claim-batch):**
+forensic screenshot
+(`error-captures/1777959425_24ea1f52_extend_child_lockout.png`) shows
+the Flow editor on a leaf clip with sidebar history of 4 extend
+children — Camera/Insert/Remove buttons are visibly greyed out, only
+Extend is enabled. Flow's SPA navigates `/edit/{parent_l1_mid}` to the
+**latest leaf** of the chain when the parent has been extended; on
+that leaf, Flow itself locks Camera/Insert/Remove (B22 inheritance —
+pre-existing issue, see memory `feedback_flow_edit_nav_click.md` and
+`docs/SPEC.md` INV-5).
+
+Initial diagnosis ("multi-tab race in framework") was wrong: defensive
+fix `_wait_button_enabled` (poll up to 8s before raising) + per-tab
+`bring_to_front()` was applied speculatively and the retest (12:36:32)
+failed identically — the lock is genuine, not transient. The defensive
+fix is kept anyway as cheap insurance against future races.
+
+To get a clean Case B regression check we'd need 3 parents that have
+no extends yet (or a different Flow surface that exposes
+camera/insert without the leaf-only constraint). Mode 1 (L1 batch) and
+Mode 3 (L2 siblings, all extend) are the regression-clean live
+evidence for the new path.
 
 ### Mode 3 — L2 multitab siblings (3 extend on 1 parent)
 

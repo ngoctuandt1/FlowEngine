@@ -270,7 +270,19 @@ async def dispatch_op_in_new_tab(
 
         # Navigate first so the Slate composer + edit panel mount
         # before the op handler probes the DOM.
+        # bring_to_front() before navigate: Chrome throttles background
+        # tabs (visibility=hidden), which lazes React's state-flush and
+        # leaves Insert/Camera buttons in a transient `disabled` state
+        # the legacy probe misread as B28 lockout. Bringing each tab
+        # forward briefly lets React commit before we probe; the actual
+        # network/submit phase still races across tabs because we
+        # gather() them concurrently — only the per-tab UI setup is
+        # foreground.
         try:
+            try:
+                await tab.bring_to_front()
+            except Exception as exc:
+                logger.debug("multitab: bring_to_front failed: %s", exc)
             await tab.goto(
                 parent_edit_url,
                 wait_until="domcontentloaded", timeout=30000,

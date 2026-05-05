@@ -343,6 +343,28 @@ _MODE_ICON_BY_TITLE = {
 }
 
 
+async def _wait_button_enabled(btn, timeout_ms: int = 8000) -> bool:
+    """Poll ``btn.is_enabled`` until True, or timeout.
+
+    A freshly-mounted button on a backgrounded multi-tab page can flash
+    ``disabled`` for a few hundred ms while React commits Flow's state
+    update. The legacy single-`is_enabled` probe converted that window
+    into a permanent ``extend-child lockout`` diagnostic. Polling absorbs
+    the transient. Real lockouts (B28) keep the button disabled past
+    the timeout and still propagate the diagnostic upward.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
+    while True:
+        try:
+            if await btn.is_enabled():
+                return True
+        except Exception:
+            pass
+        if asyncio.get_event_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.25)
+
+
 async def click_action_button(
     page,
     button_texts: list[str],
@@ -366,6 +388,14 @@ async def click_action_button(
     Do NOT use fuzzy ``:has-text`` — the Camera button's textContent is
     "videocam\\nCamera" and matched ``:has-text('videocam')`` in B26,
     causing a silent URL revert from /edit/ to /project/.
+
+    Multi-tab note: in a backgrounded tab, Chrome throttles React
+    rendering — a freshly-mounted button can briefly read disabled
+    before Flow flushes the state update. ``_wait_button_enabled``
+    polls for up to ~8s before raising the lockout diagnostic, so a
+    transient disabled flash doesn't poison genuine multi-tab work.
+    Real extend-child lockouts persist past the poll window and still
+    surface as ``RuntimeError``.
     """
     # Pass 1 — exact title match (VI labels are unique, stable)
     for text in button_texts:
@@ -377,7 +407,7 @@ async def click_action_button(
                 # disabled ("extend-child lockout"). Pre-B28 the click would
                 # time out with a misleading "Failed to find button" error.
                 # Raise early with the B22-inheritance diagnostic instead.
-                if not await btn.is_enabled():
+                if not await _wait_button_enabled(btn):
                     message = (
                         f"Mode button {text!r} disabled — extend-child lockout "
                         f"(FLOW_BUTTON_EXACT §5.1). Check B22 inheritance."
@@ -406,7 +436,7 @@ async def click_action_button(
         try:
             btn = page.locator(f"button:has(i:text-is('{icon}'))").first
             if await btn.is_visible(timeout=1500):
-                if not await btn.is_enabled():
+                if not await _wait_button_enabled(btn):
                     message = (
                         f"Mode button {text!r} disabled — extend-child lockout "
                         f"(FLOW_BUTTON_EXACT §5.1). Check B22 inheritance."
