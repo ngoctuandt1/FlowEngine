@@ -588,8 +588,12 @@ async def test_activate_clip_tile_dispatches_mouse_events():
     (pointerdown → mousedown → pointerup → mouseup → click) via JS, not
     `.click()` — Flow's tile handler is on a `<div>` without a button
     ancestor and ignores plain `.click()` calls. Confirms the helper
-    calls `page.evaluate` with the target media_id and returns True."""
-    client, page = _make_client(_edit_url(MEDIA_ID_B))
+    calls `page.evaluate` with the target media_id and returns True.
+
+    URL is set to match MEDIA_ID_A (the target) so the post-dispatch
+    re-entry shortcut fires and returns True without the 5s poll loop.
+    """
+    client, page = _make_client(_edit_url(MEDIA_ID_A))
     tile_locator = MagicMock()
     tile_locator.first.wait_for = AsyncMock()
     page.locator = MagicMock(return_value=tile_locator)
