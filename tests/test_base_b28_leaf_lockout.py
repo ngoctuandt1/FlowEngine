@@ -187,29 +187,57 @@ async def test_activate_clip_tile_verifies_media_switch_via_url():
     assert result is True
 
 
-async def test_activate_clip_tile_accepts_sidebar_only_switch_no_url_change():
-    """Change B: URL stays on old media after 5s poll → still returns True.
+async def test_activate_clip_tile_returns_false_when_url_never_updates():
+    """Change B (r2 fix): URL stays on old media after 5s poll → returns False.
 
-    Flow's SPA sometimes switches the ACTIVE CLIP in the sidebar without
-    updating the URL route (sidebar-only switch). Observed on some SPA
-    versions where the URL reflects the last navigation target not the
-    sidebar selection. We trust the JS dispatch fired on the correct node
-    and let _wait_button_enabled (downstream) be the authoritative gate.
+    If JS dispatch fires on the wrong tile (stale data-tile-id on SPA
+    re-render) the URL will not confirm the switch. The old code returned
+    True optimistically ("sidebar-only switch assumed"), which was the root
+    cause of the silent-fail pattern: code continued to click_action_button
+    with mode buttons still disabled.
+
+    After r2 fix: 5s poll exhausted without URL match → False, so the
+    caller falls through to the real Playwright click fallback or raises
+    LeafLockoutError.
     """
     page = MagicMock()
     tile_loc = MagicMock()
     tile_loc.first.wait_for = AsyncMock()
     page.locator = MagicMock(return_value=tile_loc)
     page.evaluate = AsyncMock(return_value=True)
-    # URL shows DIFFERENT media — simulates sidebar-only switch where URL
-    # never updates to the target
+    # URL shows DIFFERENT media and never changes — URL-poll exhausts
     page.url = _edit_url(MEDIA_ID_B)
 
     result = await _activate_clip_tile(page, MEDIA_ID_A)
 
+    assert result is False, (
+        "URL-poll timeout (5s without URL confirming switch to target) "
+        "must return False, not True. The old optimistic 'sidebar-only switch' "
+        "path was removed in r2 to prevent silent-fail into disabled buttons."
+    )
+
+
+async def test_activate_clip_tile_returns_true_when_url_already_matches():
+    """Change B (r2 fix): re-entry — URL already shows target media → True immediately.
+
+    When navigate_to_edit calls _activate_clip_tile and the current URL
+    already reflects the target media_id (direct edit URL navigation
+    landed on the correct clip), skip the poll and return True without
+    dispatching JS or waiting.
+    """
+    page = MagicMock()
+    tile_loc = MagicMock()
+    tile_loc.first.wait_for = AsyncMock()
+    page.locator = MagicMock(return_value=tile_loc)
+    page.evaluate = AsyncMock(return_value=True)
+    # URL already shows the target — re-entry / already on correct clip
+    page.url = _edit_url(MEDIA_ID_A)
+
+    result = await _activate_clip_tile(page, MEDIA_ID_A)
+
     assert result is True, (
-        "Sidebar-only tile switch must still return True even when URL "
-        "does not update to target media_id after 5s poll"
+        "When current URL already matches target media_id, "
+        "_activate_clip_tile must return True immediately (re-entry shortcut)"
     )
 
 

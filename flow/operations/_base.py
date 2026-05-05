@@ -368,17 +368,14 @@ async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 8.0) -> 
 
     Change B (B28 2026-05-05): after the JS MouseEvent sequence, poll up
     to 5s for ``extract_media_id(page.url)`` to equal `media_id`. If the
-    URL still shows the wrong clip after 5s we return False rather than
-    optimistically claiming success.
+    URL still shows the wrong clip after 5s → return False so the caller
+    can fall through to the real Playwright click fallback or raise
+    ``LeafLockoutError``. This turns Change B from a diagnostic-only check
+    into a genuine gate.
 
-    NOTE: Flow's SPA sometimes switches the ACTIVE CLIP without changing
-    the URL (observed on sidebar-only tile activation). In that case
-    ``extract_media_id(page.url)`` continues to return the old value even
-    after a successful switch. We treat this as a successful activation
-    because the JS dispatch fired on the correct DOM node — the mode
-    buttons' enabled state (polled by `_wait_button_enabled`) is the
-    ultimate arbiter. Only return False when the JS evaluate itself
-    returns falsy (tile not found in DOM), which is a genuine miss.
+    Re-entry shortcut: if the URL already shows ``media_id`` before the JS
+    dispatch (caller navigated directly to the right clip), return True
+    immediately without polling.
 
     Args:
       page: Playwright Page inside the /edit/ composer.
@@ -388,9 +385,12 @@ async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 8.0) -> 
         (default 8s, matches `_wait_button_enabled`'s poll window).
 
     Returns:
-      True if the tile was found and the JS dispatch confirmed it in DOM,
-      False if the tile was not found within `timeout_sec` or JS returned
-      falsy (tile detached between locator resolve and evaluate).
+      True if the tile was found, the JS dispatch fired, AND the URL
+      confirmed the switch to ``media_id`` within 5s (or the URL already
+      showed ``media_id`` at entry).
+      False if: (a) the tile was not found within ``timeout_sec``, (b) JS
+      returned falsy (tile detached between locator resolve and evaluate),
+      or (c) 5s elapsed without the URL reflecting ``media_id``.
     """
     if not media_id:
         return False
@@ -433,33 +433,36 @@ async def _activate_clip_tile(page, media_id: str, timeout_sec: float = 8.0) -> 
             )
             return False
 
-        # Change B: verify the media switch happened.
-        # Poll up to 5s for URL to reflect the target clip. If Flow updates
-        # the URL on tile activation we confirm the switch; if it does NOT
-        # update the URL (sidebar-only switch observed on some SPA versions)
-        # the poll times out and we still return True — the JS dispatch fired
-        # on the correct DOM node and we rely on _wait_button_enabled to catch
-        # genuine lockouts.
+        # Change B (r2 fix): after JS dispatch, URL confirmation is a hard gate.
         #
-        # We do NOT return False on URL-mismatch-after-timeout because:
-        # 1. Flow may switch active clip WITHOUT updating the URL route.
-        # 2. The URL could legitimately show the target if _extract_media_id
-        #    itself returns stale data (cache / SPA routing lag).
-        # 3. The authoritative signal for "can we proceed?" is whether the mode
-        #    button is enabled — that is checked downstream in click_action_button.
+        # Re-entry shortcut: if the current URL already matches the target
+        # media (caller navigated directly to the right edit URL), we are
+        # already on the right clip — skip polling and return True immediately.
+        if extract_media_id(page.url) == media_id:
+            logger.info(
+                "Activated clip tile (URL already matches) for media=%s", media_id[:20]
+            )
+            return True
+
+        # Poll up to 5s for URL to confirm the switch. If Flow updates the
+        # URL on tile activation we return True immediately. If 5s elapse
+        # without the URL reflecting the target → return False so navigate_to_edit
+        # can fall through to the real Playwright click fallback or raise
+        # LeafLockoutError. The old "sidebar-only switch assumed" optimistic
+        # path is removed — if JS dispatch fires on the wrong tile (stale
+        # data-tile-id on SPA re-render) that optimistic path was the root
+        # cause of the silent-fail pattern this fix addresses.
         for _ in range(20):  # 20 × 0.25s = 5s
+            await asyncio.sleep(0.25)
             if extract_media_id(page.url) == media_id:
                 logger.info("Activated clip tile (URL confirmed) for media=%s", media_id[:20])
                 return True
-            await asyncio.sleep(0.25)
 
-        # URL still shows old media after 5s — sidebar-only switch path.
-        # Return True anyway; downstream button poll is authoritative.
-        logger.info(
-            "Activated clip tile for media=%s (URL not updated — sidebar-only switch assumed)",
+        logger.debug(
+            "Tile click fired but URL did not confirm switch to %s after 5s",
             media_id[:20],
         )
-        return True
+        return False
     except Exception as e:
         logger.warning("Tile click dispatch failed for media=%s: %s", media_id[:20], e)
     return False
