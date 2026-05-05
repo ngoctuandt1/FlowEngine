@@ -643,3 +643,293 @@ async def dispatch_job(
             project_lock.release(project_url, job_id)
         if manage_profile and profile:
             profile_manager.mark_available(profile)
+
+
+# ======================================================================
+# Batch dispatch (FLOW_BATCH_DISPATCH=1, default OFF)
+# ======================================================================
+
+async def dispatch_batch_l1_same_project(
+    jobs: list[dict],
+    profile_manager: ProfileManager,
+    project_lock: ProjectLock,
+) -> list[dict]:
+    """Open one Chrome, batch-submit N L1 t2v jobs into a fresh project.
+
+    PRD §3.2 Phase 1. Caller must guarantee:
+      * all jobs share the same `profile`
+      * all jobs are L1 `text-to-video` with `status='pending'`
+
+    Returns one result dict per input job in the same order. Each result
+    is shaped for `remote_api.update_job` (carries `job_id`, `status`, etc.)
+    """
+    if not jobs:
+        return []
+    if len(jobs) == 1:
+        # Degenerate batch — fall back to legacy single-job path so we don't
+        # carry a duplicate code surface for N=1.
+        single = await dispatch_job(jobs[0], profile_manager, project_lock)
+        single.setdefault("job_id", jobs[0].get("id"))
+        return [single]
+
+    profile = jobs[0].get("profile", "") or ""
+    if not profile:
+        return [{"job_id": j.get("id"), "status": "failed",
+                 "error": "no profile assigned"} for j in jobs]
+    for j in jobs[1:]:
+        if (j.get("profile") or "") != profile:
+            return [{"job_id": jj.get("id"), "status": "failed",
+                     "error": "batch profile mismatch"} for jj in jobs]
+
+    # Mark every job's profile slot busy (single profile reused N times in
+    # ProfileManager's accounting model — claim it under the FIRST job_id
+    # so release at the end is symmetric).
+    primary_job_id = jobs[0]["id"]
+    profile_manager.mark_busy(profile, primary_job_id)
+
+    from flow.operations._batch import batch_dispatch_l1_same_project
+
+    try:
+        async with _client_lease(profile) as client:
+            client._job_id = primary_job_id
+            try:
+                results = await batch_dispatch_l1_same_project(client, jobs)
+            except RecaptchaError as exc:
+                # Whole batch is poisoned by a profile burn. Mark every job
+                # failed with the standard recaptcha sentinel; let the caller
+                # handle the single profile burn (one swap covers all jobs).
+                kind = getattr(exc, "kind", None) or "unknown"
+                err = f"recaptcha_{kind}_burned_{profile}"
+                logger.error("Batch L1 hit reCAPTCHA kind=%s profile=%s",
+                             kind, profile)
+                # Trigger swap once for the burned profile (mirrors single-job logic).
+                await _handle_burned_profile_for_batch(profile, profile_manager)
+                return [{"job_id": j.get("id"), "status": "failed",
+                         "error": err, "error_message": err} for j in jobs]
+            except Exception as exc:
+                logger.exception("Batch L1 unexpected failure: %s", exc)
+                return [{"job_id": j.get("id"), "status": "failed",
+                         "error": f"batch error: {exc}"} for j in jobs]
+
+        # Normalize: ensure every result carries job_id + profile.
+        out: list[dict] = []
+        for j, r in zip(jobs, results):
+            r.setdefault("job_id", j.get("id"))
+            r.setdefault("profile", profile)
+            out.append(r)
+        return out
+    finally:
+        profile_manager.mark_available(profile)
+
+
+async def _handle_burned_profile_for_batch(
+    profile: str,
+    profile_manager: ProfileManager,
+) -> None:
+    """Swap or wipe the burned profile for batch context.
+
+    Mirrors the recovery branch of `dispatch_job` but without the per-job
+    requeue handshake — batch caller marks all N jobs failed and the worker
+    claim loop re-picks them later under the new (or wiped) profile.
+    """
+    if not _auto_replace_profiles_enabled():
+        profile_manager.remove_profile(profile)
+        return
+    recovery_mode = os.environ.get("FLOW_BURN_RECOVERY_MODE", "swap").strip().lower()
+    try:
+        from worker.profile_swapper import ProfileSwapper
+
+        swapper = ProfileSwapper(
+            profile_base_dir=_profile_base_dir(),
+            credentials_file=_credentials_file_path(),
+        )
+        if recovery_mode == "wipe":
+            rewarmed = await asyncio.to_thread(swapper.wipe_and_rewarm, profile)
+            new_profile = profile if rewarmed else None
+        else:
+            new_profile = await asyncio.to_thread(swapper.swap_burned, profile)
+    except Exception:
+        logger.exception("Batch profile burn recovery failed")
+        new_profile = None
+
+    if new_profile and new_profile != profile:
+        profile_manager.replace_profile(profile, new_profile)
+        logger.info("Batch profile burned, auto-replaced: %s -> %s",
+                    profile, new_profile)
+    elif new_profile == profile:
+        profile_manager.mark_available(profile)
+        logger.info("Batch profile burned, wiped and re-warmed in place: %s",
+                    profile)
+    else:
+        profile_manager.remove_profile(profile)
+
+
+async def dispatch_batch_l2_siblings(
+    jobs: list[dict],
+    profile_manager: ProfileManager,
+    project_lock: ProjectLock,
+) -> list[dict]:
+    """Open one Chrome, batch-submit N L2 ops sharing one parent L1.
+
+    PRD §4.2. Caller must guarantee:
+      * all jobs share `profile`
+      * all jobs share `parent_job_id`
+      * all jobs are L2 ops (extend / camera / insert / remove)
+      * the first job carries usable `edit_url` + `media_id` of the parent
+
+    Returns one result dict per input job in the same order.
+    """
+    if not jobs:
+        return []
+    if len(jobs) == 1:
+        single = await dispatch_job(jobs[0], profile_manager, project_lock)
+        single.setdefault("job_id", jobs[0].get("id"))
+        return [single]
+
+    profile = jobs[0].get("profile", "") or ""
+    if not profile:
+        return [{"job_id": j.get("id"), "status": "failed",
+                 "error": "no profile assigned"} for j in jobs]
+    parent_id = jobs[0].get("parent_job_id") or ""
+    for j in jobs[1:]:
+        if (j.get("profile") or "") != profile:
+            return [{"job_id": jj.get("id"), "status": "failed",
+                     "error": "batch profile mismatch"} for jj in jobs]
+        if (j.get("parent_job_id") or "") != parent_id:
+            return [{"job_id": jj.get("id"), "status": "failed",
+                     "error": "batch parent mismatch"} for jj in jobs]
+
+    parent_edit_url = jobs[0].get("edit_url") or ""
+    parent_media_id = jobs[0].get("media_id") or ""
+    if not parent_edit_url and not parent_media_id:
+        return [{"job_id": j.get("id"), "status": "failed",
+                 "error": "missing parent edit_url + media_id"} for j in jobs]
+
+    # The whole batch holds the parent's project_url under one lock — same
+    # invariant as legacy dispatch_job per-job locking.
+    project_url = jobs[0].get("project_url") or ""
+    primary_job_id = jobs[0]["id"]
+    if project_url:
+        if not project_lock.acquire(project_url, primary_job_id):
+            return [{"job_id": j.get("id"), "status": "failed",
+                     "error": f"project locked: {project_url}"} for j in jobs]
+    profile_manager.mark_busy(profile, primary_job_id)
+
+    from flow.operations._batch import batch_dispatch_l2_siblings
+
+    try:
+        async with _client_lease(profile) as client:
+            client._job_id = primary_job_id
+            try:
+                results = await batch_dispatch_l2_siblings(
+                    client, parent_edit_url, parent_media_id, jobs,
+                )
+            except RecaptchaError as exc:
+                kind = getattr(exc, "kind", None) or "unknown"
+                err = f"recaptcha_{kind}_burned_{profile}"
+                logger.error("Batch L2 hit reCAPTCHA kind=%s profile=%s",
+                             kind, profile)
+                await _handle_burned_profile_for_batch(profile, profile_manager)
+                return [{"job_id": j.get("id"), "status": "failed",
+                         "error": err, "error_message": err} for j in jobs]
+            except Exception as exc:
+                logger.exception("Batch L2 unexpected failure: %s", exc)
+                return [{"job_id": j.get("id"), "status": "failed",
+                         "error": f"batch error: {exc}"} for j in jobs]
+
+        out: list[dict] = []
+        for j, r in zip(jobs, results):
+            r.setdefault("job_id", j.get("id"))
+            r.setdefault("profile", profile)
+            out.append(r)
+        return out
+    finally:
+        if project_url:
+            project_lock.release(project_url, primary_job_id)
+        profile_manager.mark_available(profile)
+
+
+async def dispatch_batch_l3_siblings(
+    jobs: list[dict],
+    profile_manager: ProfileManager,
+    project_lock: ProjectLock,
+) -> list[dict]:
+    """Open one Chrome, batch-submit N L3+ ops sharing one direct L2/L3 parent.
+
+    PRD §5. Caller must guarantee:
+      * all jobs share `profile`
+      * all jobs share `parent_job_id` (the direct L2 / L3 parent)
+      * all jobs have ``job_level >= 3`` and are L2-op types
+        (extend / camera / insert / remove)
+      * the first job carries usable `edit_url` + `media_id` of the parent
+
+    Mirrors :func:`dispatch_batch_l2_siblings` exactly — only the
+    underlying orchestrator entry point differs (so the wiring stays
+    honest across phases).
+    """
+    if not jobs:
+        return []
+    if len(jobs) == 1:
+        single = await dispatch_job(jobs[0], profile_manager, project_lock)
+        single.setdefault("job_id", jobs[0].get("id"))
+        return [single]
+
+    profile = jobs[0].get("profile", "") or ""
+    if not profile:
+        return [{"job_id": j.get("id"), "status": "failed",
+                 "error": "no profile assigned"} for j in jobs]
+    parent_id = jobs[0].get("parent_job_id") or ""
+    for j in jobs[1:]:
+        if (j.get("profile") or "") != profile:
+            return [{"job_id": jj.get("id"), "status": "failed",
+                     "error": "batch profile mismatch"} for jj in jobs]
+        if (j.get("parent_job_id") or "") != parent_id:
+            return [{"job_id": jj.get("id"), "status": "failed",
+                     "error": "batch parent mismatch"} for jj in jobs]
+
+    parent_edit_url = jobs[0].get("edit_url") or ""
+    parent_media_id = jobs[0].get("media_id") or ""
+    if not parent_edit_url and not parent_media_id:
+        return [{"job_id": j.get("id"), "status": "failed",
+                 "error": "missing parent edit_url + media_id"} for j in jobs]
+
+    project_url = jobs[0].get("project_url") or ""
+    primary_job_id = jobs[0]["id"]
+    if project_url:
+        if not project_lock.acquire(project_url, primary_job_id):
+            return [{"job_id": j.get("id"), "status": "failed",
+                     "error": f"project locked: {project_url}"} for j in jobs]
+    profile_manager.mark_busy(profile, primary_job_id)
+
+    from flow.operations._batch import batch_dispatch_l3_siblings
+
+    try:
+        async with _client_lease(profile) as client:
+            client._job_id = primary_job_id
+            try:
+                results = await batch_dispatch_l3_siblings(
+                    client, parent_edit_url, parent_media_id, jobs,
+                )
+            except RecaptchaError as exc:
+                kind = getattr(exc, "kind", None) or "unknown"
+                err = f"recaptcha_{kind}_burned_{profile}"
+                logger.error("Batch L3 hit reCAPTCHA kind=%s profile=%s",
+                             kind, profile)
+                await _handle_burned_profile_for_batch(profile, profile_manager)
+                return [{"job_id": j.get("id"), "status": "failed",
+                         "error": err, "error_message": err} for j in jobs]
+            except Exception as exc:
+                logger.exception("Batch L3 unexpected failure: %s", exc)
+                return [{"job_id": j.get("id"), "status": "failed",
+                         "error": f"batch error: {exc}"} for j in jobs]
+
+        out: list[dict] = []
+        for j, r in zip(jobs, results):
+            r.setdefault("job_id", j.get("id"))
+            r.setdefault("profile", profile)
+            out.append(r)
+        return out
+    finally:
+        if project_url:
+            project_lock.release(project_url, primary_job_id)
+        profile_manager.mark_available(profile)

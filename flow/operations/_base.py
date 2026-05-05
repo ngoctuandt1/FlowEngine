@@ -192,13 +192,13 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     # media had been consumed by a sibling extend. Catch it here with a
     # bounded video wait and fall back to first-tile click (the same
     # recovery the /project/ branch above uses) to land on /edit/{latest}.
-    if not await _editor_mounted(page, timeout_ms=8000):
+    if not await _editor_mounted(page, timeout_ms=15000):
         logger.warning(
             "Editor did not mount after nav to %s — falling back to first-tile click",
             edit_url_val[:80],
         )
         recovered = await _click_video_tile(page, "")
-        if not recovered or not await _editor_mounted(page, timeout_ms=8000):
+        if not recovered or not await _editor_mounted(page, timeout_ms=15000):
             message = (
                 f"Editor did not mount for {edit_url_val} and first-tile recovery "
                 f"failed. Parent media may be stale (consumed by sibling op)."
@@ -218,15 +218,33 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     return edit_url_val, project_id, locale
 
 
-async def _editor_mounted(page, timeout_ms: int = 8000) -> bool:
+async def _editor_mounted(page, timeout_ms: int = 15000) -> bool:
     """Return True when the /edit/ composer has rendered its <video>.
 
     Used as a post-navigation sanity check — distinguishes a truly
     mounted editor from the SPA's half-loaded state where the URL
     reads /edit/{media} but no editor DOM is present.
+
+    Two independent mount signals (race; first to hit wins):
+
+      1. ``<video>`` element visible — Flow's editor mounts a player
+         tag for the current clip.
+      2. The "Hide history" / "Ẩn lịch sử" toggle button — only
+         present when the editor's history sidebar is up, which is a
+         strong signal that the SPA is past its half-loaded state.
+
+    Either is sufficient. Why both: on heavily-loaded projects (many
+    L2 children, ~10–15s mount time observed on chain v4 2026-05-04),
+    the ``<video>`` tag can lag behind the toggle's render — and the
+    old 8 s timeout produced false negatives that retried 2–3× before
+    eventually mounting. MCP probe 2026-05-05 measured the main
+    player at ~5–9 s on a fresh navigate; the 15 s ceiling
+    accommodates the slow path without changing the error semantics.
     """
     try:
-        await page.locator("video").first.wait_for(state="visible", timeout=timeout_ms)
+        await page.locator(
+            "video, button:has-text('Hide history'), button:has-text('Ẩn lịch sử')"
+        ).first.wait_for(state="visible", timeout=timeout_ms)
         return True
     except Exception:
         return False

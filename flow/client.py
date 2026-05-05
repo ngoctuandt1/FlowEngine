@@ -215,6 +215,131 @@ def _build_window_geometry_args() -> list[str]:
     return args
 
 
+def _build_perf_args() -> list[str]:
+    """CPU/memory hygiene flags always safe to apply, env-gated by
+    ``FLOW_CHROME_PERF`` (default ``on`` — opt-out only).
+
+    Zero-risk additions for an automation-only Chrome:
+
+      * ``--mute-audio`` — Flow's editor decodes audio for video previews
+        we never play; muting drops a renderer thread.
+      * ``--no-pings`` — silences hyperlink ping beacons.
+      * ``--disable-extensions`` / ``--disable-default-apps`` — clean
+        profile, no extension event loops.
+      * ``--disable-component-update`` — Chrome auto-update pings.
+      * ``--disable-features=Translate,MediaRouter,GlobalMediaControls``
+        — Flow doesn't use translation; MediaRouter/GMC drive Cast
+        infrastructure we don't need.
+      * ``--disable-background-timer-throttling=false`` is omitted on
+        purpose — we WANT background tabs throttled when multi-tab.
+
+    Set ``FLOW_CHROME_PERF=off`` to skip (e.g. when diagnosing).
+    """
+    mode = (os.environ.get("FLOW_CHROME_PERF", "on") or "on").strip().lower()
+    if mode in ("0", "off", "false", "no"):
+        return []
+    return [
+        "--mute-audio",
+        "--no-pings",
+        "--disable-extensions",
+        "--disable-default-apps",
+        "--disable-component-update",
+        "--disable-features=Translate,MediaRouter,GlobalMediaControls,OptimizationHints",
+        # Stop Flow's editor from auto-looping its 13+ camera-preset
+        # and history thumbnail <video> tags. Worker drives by clicks
+        # only — never watches playback — so requiring a user gesture
+        # before any media plays drops the renderer's per-frame paint
+        # loop and the audio-decode thread (which still wakes even
+        # with --mute-audio because ``muted`` ≠ ``no decode``).
+        "--autoplay-policy=user-gesture-required",
+    ]
+
+
+def _build_gpu_args() -> list[str]:
+    """GPU / hardware-accel flags, env-gated.
+
+    ``FLOW_CHROME_GPU`` (default off — keeps prior behaviour stable):
+
+      ``off`` / unset            → no extra flags (legacy SwiftShader path)
+      ``vaapi``                  → VAAPI HW video decode only. Lightest
+                                   touch — leaves Chrome's GL choice to
+                                   defaults. Best for CPU-loaded Xvfb
+                                   hosts where the bottleneck is video
+                                   element decode (13+ history clips
+                                   on the Flow editor page).
+      ``full`` / ``1`` / ``on``  → VAAPI + GPU rasterization + zero-copy
+                                   + accelerated video decode. Lets
+                                   Chrome pick the system GL backend
+                                   (Intel iHD / Mesa via DRI). DOES NOT
+                                   force ``--use-gl=angle`` — that
+                                   indirection on Xvfb burned 277 %
+                                   CPU on the gpu-process during a
+                                   2026-05-05 test (ANGLE→Mesa SW
+                                   double-emulation). Stay native.
+      ``headless``               → ``--headless=new`` (no X server
+                                   required). Lowest CPU but breaks
+                                   any code that asserts on a visible
+                                   window.
+
+    Requires (linux): ``/dev/dri/renderD*`` present; Chrome user in
+    the ``render`` group; ``libva2`` + Intel/Mesa VAAPI driver.
+
+    Linux-only; on Windows / macOS Chrome already picks the system GPU
+    by default and these flags would force-enable paths the platform
+    blocks for security or compatibility.
+    """
+    if _IS_WINDOWS or platform.system() != "Linux":
+        return []
+    mode = (os.environ.get("FLOW_CHROME_GPU", "") or "").strip().lower()
+    if mode in ("", "0", "off", "false", "no"):
+        return []
+    if mode == "headless":
+        return ["--headless=new"]
+    if mode in ("swiftshader", "sw", "soft"):
+        # Magic combo for headless / Xvfb hosts without a real GPU
+        # passthrough — forces ANGLE to deterministically use the
+        # SwiftShader CPU rasterizer instead of probing for a hardware
+        # GL surface (which Xvfb cannot provide and which sends the
+        # gpu-process into a 250 %+ CPU spin-loop, measured 2026-05-05).
+        # Documented in Chromium dev list / Intel community as the
+        # only stable path on Xvfb.
+        return ["--use-gl=angle", "--use-angle=swiftshader"]
+    if mode in ("disable", "no-gpu"):
+        # Xvfb can't expose DRM/GLX, so Chrome's gpu-process spin-loops
+        # when it tries to negotiate a GPU surface — 250 %+ CPU on the
+        # gpu-process even with VAAPI (measured 2026-05-05). Killing
+        # the gpu-process entirely (renderer falls back to in-process
+        # SwiftShader) reclaims that core. Pragmatic default for any
+        # Xvfb host without DRM passthrough.
+        return ["--disable-gpu"]
+    if mode == "egl":
+        # Direct EGL via GBM, bypassing X11. Talks to /dev/dri/renderD*
+        # without needing an X server's GLX bridge — the only path that
+        # actually engages the iGPU on a software X server like Xvfb.
+        # Requires libgbm + libegl1 + driver (mesa-vulkan-drivers /
+        # intel-media-va-driver) and Chrome user in the ``render`` group.
+        return [
+            "--ozone-platform=headless",
+            "--use-gl=egl",
+            "--enable-features=VaapiVideoDecoder",
+            "--enable-gpu-rasterization",
+        ]
+    if mode == "vaapi":
+        return [
+            "--ignore-gpu-blocklist",
+            "--enable-features=VaapiVideoDecoder",
+            "--enable-accelerated-video-decode",
+        ]
+    # ``full`` / ``1`` / ``on``
+    return [
+        "--ignore-gpu-blocklist",
+        "--enable-gpu-rasterization",
+        "--enable-zero-copy",
+        "--enable-features=VaapiVideoDecoder,VaapiVideoEncoder",
+        "--enable-accelerated-video-decode",
+    ]
+
+
 def _apply_root_sandbox_guard(args: list[str]) -> list[str]:
     """Return launch args after enforcing the Linux root sandbox policy."""
     if _IS_WINDOWS or platform.system() != "Linux":
@@ -516,6 +641,8 @@ class FlowClient:
             "--no-default-browser-check",
             "--new-window",
             *_build_window_geometry_args(),
+            *_build_gpu_args(),
+            *_build_perf_args(),
         ]
         popen_kwargs: dict[str, Any] = {
             "stdout": subprocess.DEVNULL,
@@ -619,6 +746,8 @@ class FlowClient:
             "--no-first-run",
             "--no-default-browser-check",
             *_build_window_geometry_args(),
+            *_build_gpu_args(),
+            *_build_perf_args(),
         ]
         args = _apply_root_sandbox_guard(args)
 

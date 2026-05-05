@@ -389,7 +389,7 @@ async def select_model(
                     logger.info("Selected free model: %s", selected_text.strip()[:80])
                     await asyncio.sleep(0.5)
                     ok = await _verify_credits(page, expected=0)
-                    await _close_model_panel(page, dropdown_opened)
+                    await _close_model_panel_with_timeout(page, dropdown_opened)
                     if not ok:
                         raise RuntimeError(
                             _build_free_model_failure_message(
@@ -416,7 +416,7 @@ async def select_model(
                     await items.first.click(timeout=3000, force=True)
                     logger.info("Selected model: %s", target_text)
                     await asyncio.sleep(0.5)
-                    await _close_model_panel(page, dropdown_opened)
+                    await _close_model_panel_with_timeout(page, dropdown_opened)
                     return True
 
         except Exception as e:
@@ -442,7 +442,7 @@ async def select_model(
             if visible_model_labels:
                 last_visible_model_labels = visible_model_labels
             ok = await _verify_credits(page, expected=0)
-            await _close_model_panel(page, dropdown_opened)
+            await _close_model_panel_with_timeout(page, dropdown_opened)
             if not ok:
                 raise RuntimeError(
                     _build_free_model_failure_message(
@@ -456,7 +456,7 @@ async def select_model(
         visible_model_labels = await _collect_visible_model_labels(page)
         if visible_model_labels:
             last_visible_model_labels = visible_model_labels
-        await _close_model_panel(page, dropdown_opened)
+        await _close_model_panel_with_timeout(page, dropdown_opened)
         if not free_model_candidate_found:
             if last_visible_model_labels:
                 raise RuntimeError(
@@ -488,11 +488,11 @@ async def select_model(
     js_ok = await _select_model_js(page, base_name)
     if js_ok:
         ok = await _verify_credits(page, expected=0) if is_lp else True
-        await _close_model_panel(page, dropdown_opened)
+        await _close_model_panel_with_timeout(page, dropdown_opened)
         return ok
 
     # Close menu
-    await _close_model_panel(page, dropdown_opened)
+    await _close_model_panel_with_timeout(page, dropdown_opened)
 
     logger.error("Failed to select model after all attempts")
     return False
@@ -726,6 +726,21 @@ async def _close_model_panel(page, dropdown_was_opened: bool = True) -> None:
         await asyncio.sleep(0.3)
     except Exception:
         pass
+
+
+async def _close_model_panel_with_timeout(
+    page,
+    dropdown_was_opened: bool = True,
+    timeout_sec: float = 1.5,
+) -> None:
+    """Best-effort wrapper so panel dismissal can't wedge the whole job."""
+    try:
+        await asyncio.wait_for(
+            _close_model_panel(page, dropdown_was_opened),
+            timeout=timeout_sec,
+        )
+    except Exception as exc:
+        logger.warning("Model panel close timed out/skipped: %s", exc)
 
 
 async def _debug_model_options(page) -> None:
