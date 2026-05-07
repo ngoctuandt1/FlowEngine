@@ -2,10 +2,11 @@
 
 > This is the canonical spine. Read first. Update whenever architecture, code map, or deploy topology changes.
 
-- Last synced: `34d95c2` (`origin/master`) on 2026-05-05 after claim-batch follow-up + infra hardening.
-- Scope: tracks current `master` through the 2026-05-05 infra hardening cluster.
+- Last synced: `be9ab96` (`origin/master`) on 2026-05-08 after canvas recovery + perf hardening cluster.
+- Scope: tracks current `master` through the 2026-05-08 canvas/perf session.
 - Purpose: one 5-minute sync doc for future feature work.
 - Recent epics:
+  - 2026-05-08 canvas recovery + perf hardening: 10 commits (`838bcf5`–`be9ab96`). Canvas page detection + recovery in `flow/landing.py` (new `is_flow_canvas_page`, `recover_from_flow_canvas_page`); wired into `generate.py` after marketing-landing bypass. GZip middleware subclass (`_APIGZipMiddleware`) excludes `/downloads/` and `/uploads/` to preserve `Accept-Ranges: bytes` on 206 partial-content video responses. Composite index `(status, created_at DESC)` on `jobs`. Home page unified gallery (one tile per chain, type badge, L1 prompt, `groupByChain`). Event-driven settle waits replacing `asyncio.sleep` across 4 L1 ops (generate, image, frames_to_video, ingredients) — estimated ~6-10s per L1 job. See [session-reports/2026-05-08_canvas-recovery-perf-hardening.md](session-reports/2026-05-08_canvas-recovery-perf-hardening.md).
   - 2026-05-05 claim-batch follow-up + infra hardening: 3 PRs (#200-#202). Live-verified L3 batch claim+dispatch (3 jobs, 314s, PASS). PR #200: `FLOW_CLAIM_BATCH_MAX` env knob for server-side batch cap. PR #201: 3-layer fix for root-owned file poisoning in profile dirs (sudo purge helper + systemd `chown -Rh` self-heal + `ProfileSwapper` fallback). PR #202: `LeafLockoutError` hard-fail for B28 extend-chain leaf-lockout (8s timeout, working URL poll, `_click_video_tile` fallback). See [session-reports/2026-05-05_claim-batch-followup-infra-hardening.md](session-reports/2026-05-05_claim-batch-followup-infra-hardening.md).
   - 2026-05-02 IdeaStudio web clone + perf cluster: 59 merged PRs in span #117-#176 (one PR, #157, still open at close). DAG canvas project view, Ý TƯỞNG idea/chat right rail, Setup page (Gemini SDK + Veo accounts + Nano API), multi-track timeline shell, project-first data model + `/api/projects` CRUD, render-compose backend, gold theme. Perf round drops thumbnail bandwidth ~200x (mp4 → poster.jpg) and initial eager JS ~9x (5 eager scripts vs 21; ratios from in-session DOM probes, not benchmark-grade). See [session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md](session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md).
   - 2026-05-01 -> 2026-05-02 SPINE workstream: 14 PRs (#109-#125 span; #117, #118, #124 unrelated), 4 review rounds (25 reviewer codex), 6 real bugs surfaced from doc review, all linked canon docs (SPEC/DESIGN/FLOW_UI/WORKPLAN) synced.
@@ -243,7 +244,7 @@ Every file below was read directly when this spine was written.
 
 | File | Responsibility |
 |---|---|
-| [server/app.py](../server/app.py) | Builds the FastAPI app, initializes DB, mounts static frontend assets plus `/downloads` and `/uploads`, wires dashboard auth, and registers routers. |
+| [server/app.py](../server/app.py) | Builds the FastAPI app, initializes DB, mounts static frontend assets plus `/downloads` and `/uploads`, wires dashboard auth, and registers routers. Uses `_APIGZipMiddleware` (GZip subclass) to compress API/asset responses while excluding `/downloads/` and `/uploads/` — those paths need `Accept-Ranges: bytes` for HTML5 video seeking; compressing 206 partial-content replies corrupts byte offsets. |
 | [server/dashboard_auth.py](../server/dashboard_auth.py) | Implements the optional signed-cookie dashboard password gate plus `/login`, `/api/auth/login`, and `/api/auth/logout`. |
 | [server/auth.py](../server/auth.py) | Enforces bearer-token auth for privileged `/api/worker/*` endpoints. |
 | [server/config.py](../server/config.py) | Loads env/config defaults, data paths, database path, and logging setup. |
@@ -302,7 +303,7 @@ Every file below was read directly when this spine was written.
 |---|---|
 | [flow/client.py](../flow/client.py) | Launches and owns the Playwright/Chrome session for one Flow profile. |
 | [flow/login.py](../flow/login.py) | Detects Google sign-in redirects and performs credential/TOTP login when needed. |
-| [flow/landing.py](../flow/landing.py) | Recovers from the Flow marketing landing page and CTA misroutes back into the app. |
+| [flow/landing.py](../flow/landing.py) | Recovers from two distinct broken states: (1) the Flow marketing landing page / CTA misroutes (`dismiss_flow_marketing_landing`, `recover_from_flow_landing`); (2) the new Flow Canvas/Workflow builder page (`is_flow_canvas_page`, `recover_from_flow_canvas_page`). Canvas page signals: text "No chain nodes yet" / "This chain does not have any jobs to render yet" / "Open gallery" / "Batch Run", or `/chain/` in URL. Canvas recovery clicks nav Gallery/Open-jobs if visible, then falls back to `page.goto(homepage_url)` + reload + marketing dismiss. |
 | [flow/navigation.py](../flow/navigation.py) | Builds Flow URLs and extracts project/media identifiers from URLs. |
 | [flow/model_selector.py](../flow/model_selector.py) | Selects the requested Flow model from the live DOM in a version-aware way. |
 | [flow/submit.py](../flow/submit.py) | Finds the real generate/submit button and confirms that submission was accepted. |
@@ -317,7 +318,7 @@ Every file below was read directly when this spine was written.
 | File | Responsibility |
 |---|---|
 | [flow/operations/_base.py](../flow/operations/_base.py) | Shared L2 helpers for navigate-to-edit, clip activation, finalize/store, and media-id propagation. |
-| [flow/operations/generate.py](../flow/operations/generate.py) | L1 text-to-video operation from the Flow homepage/new-project flow. |
+| [flow/operations/generate.py](../flow/operations/generate.py) | L1 text-to-video operation from the Flow homepage/new-project flow. After marketing-landing bypass it calls `recover_from_flow_canvas_page` to handle the new Canvas builder. Fixed settle waits: `sleep(2)` after goto → `wait_for_selector` on New Project button; `_wait_for_composer` is event-driven (tries 3 `[data-slate-editor]`-family selectors + placeholder-text `wait_for_function`). |
 | [flow/operations/extend.py](../flow/operations/extend.py) | L2 extend-video operation on an existing clip edit page. |
 | [flow/operations/insert.py](../flow/operations/insert.py) | L2 insert-object operation with prompt plus bounding box. |
 | [flow/operations/remove.py](../flow/operations/remove.py) | L2 remove-object operation with bounding box targeting. |
@@ -596,6 +597,7 @@ Frontend pages are plain global scripts, not bundled modules: wrap page-local st
 | `ProfileSwapper` | Worker helper that archives a burned profile and replaces it with the next fresh credential. |
 | `capture_failure` | Best-effort async diagnostic-bundle helper that writes screenshot/HTML/network artifacts and may return the screenshot path later surfaced as `[cap=...]`. |
 | `Flow landing` | The marketing/CTA page at `labs.google/fx/...` that sometimes appears instead of the real Flow app and must be recovered from. |
+| `Flow Canvas page` | The new Canvas/Workflow builder UI introduced in Flow ~2026-05; shows "No chain nodes yet" / "Run Workflow" / "Open gallery" signals. Landing here instead of the project list causes workers to time-out waiting for "+ New project". Detected by `is_flow_canvas_page` and recovered by `recover_from_flow_canvas_page` in `flow/landing.py`. |
 
 ## 13. Pointers
 
@@ -609,7 +611,8 @@ Frontend pages are plain global scripts, not bundled modules: wrap page-local st
 - [docs/CHROME_LAUNCH_SECURITY.md](CHROME_LAUNCH_SECURITY.md) - Chrome anti-detection and launch-security notes.
 - [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md) - why the 3-level safety filter is legacy only.
 - [docs/session-reports/INDEX.md](session-reports/INDEX.md) - chronological session report index.
-- Latest session report: [docs/session-reports/2026-05-05_claim-batch-followup-infra-hardening.md](session-reports/2026-05-05_claim-batch-followup-infra-hardening.md).
+- Latest session report: [docs/session-reports/2026-05-08_canvas-recovery-perf-hardening.md](session-reports/2026-05-08_canvas-recovery-perf-hardening.md).
+- Previous session report: [docs/session-reports/2026-05-05_claim-batch-followup-infra-hardening.md](session-reports/2026-05-05_claim-batch-followup-infra-hardening.md).
 - Latest IdeaStudio clone + perf report: [docs/session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md](session-reports/2026-05-02_IDEA-CLONE_ideastudio-clone-perf-cluster.md).
 - Latest SPINE canon-sync report: [docs/session-reports/2026-05-02_spine-doc-canon-sync.md](session-reports/2026-05-02_spine-doc-canon-sync.md).
 - Latest public-cutover report: [docs/session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md](session-reports/2026-05-01_web-ai-hassio-flowengine-cutover.md).
