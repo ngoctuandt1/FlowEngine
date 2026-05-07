@@ -207,8 +207,10 @@ async def list_jobs(
     type: Optional[str] = None,
     profile: Optional[str] = None,
     chain_id: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
 ) -> list[Job]:
-    """List jobs with optional filters."""
+    """List jobs with optional filters. limit=None returns all rows (internal use only)."""
     clauses: list[str] = []
     params: list = []
 
@@ -227,6 +229,12 @@ async def list_jobs(
 
     where = " AND ".join(clauses) if clauses else "1"
     query = f"SELECT * FROM jobs WHERE {where} ORDER BY created_at DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+        if offset:
+            query += " OFFSET ?"
+            params.append(offset)
 
     async with get_db() as db:
         cursor = await db.execute(query, params)

@@ -325,9 +325,11 @@ async def list_all_jobs(
     type: Optional[str] = Query(None),
     profile: Optional[str] = Query(None),
     chain_id: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
 ):
-    """List jobs with optional filters."""
-    filters = {}
+    """List jobs with optional filters. Default limit 200, max 2000."""
+    filters: dict = {"limit": limit, "offset": offset}
     if status:
         filters["status"] = status
     if type:

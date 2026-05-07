@@ -1,8 +1,11 @@
 /**
- * Home page — one tile per chain, showing the latest completed output.
+ * Home page — one tile per chain, showing the latest output thumbnail
+ * and the root L1 prompt as the tile label.
  */
 (() => {
-  const GALLERY_LIMIT = 60;
+  const FETCH_LIMIT = 400;   // server-side cap; grouping reduces visible tiles further
+  const GALLERY_LIMIT = 60;  // max chains shown after dedup
+  const WS_DEBOUNCE_MS = 800;
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
 
@@ -21,16 +24,11 @@
     chains: [],
     creating: false,
     wsUnsubs: [],
+    wsRefreshTimer: null,
   };
 
   function apiClient() { return App.api || API; }
   function mediaTileHelper() { return App.mediaTile || window.MediaUtil; }
-
-  function formatTileDate(value) {
-    if (typeof App.formatTileDate === 'function') return App.formatTileDate(value);
-    if (typeof App.formatDate === 'function') return App.formatDate(value);
-    return '-';
-  }
 
   function timestampMs(value) {
     const parsed = Date.parse(value || '');
@@ -48,7 +46,10 @@
   }
 
   function mediaKindFromFile(file) {
-    const ext = String(file || '').replace(/\\/g, '/').split('.').pop().toLowerCase();
+    const normalized = String(file || '').replace(/\\/g, '/');
+    const base = normalized.split('/').pop();
+    const dot = base.lastIndexOf('.');
+    const ext = dot >= 0 ? base.slice(dot + 1).toLowerCase() : '';
     if (VIDEO_EXTENSIONS.has(ext)) return 'video';
     if (IMAGE_EXTENSIONS.has(ext)) return 'image';
     return null;
@@ -72,28 +73,57 @@
     };
   }
 
-  // One tile per chain — the most-recently-created job in the chain wins.
-  // This avoids duplicates when a chain has L1 + multiple L2 children.
+  /**
+   * Group completed jobs by chain_id.
+   *
+   * Per chain we keep:
+   *   - `latest`: job with the most-recent created_at (for the thumbnail)
+   *   - `root`:   job_level === 1 root (for the prompt / title text)
+   *
+   * The returned synthetic object merges both so renderJobTile gets a single item.
+   */
   function groupByChain(jobs) {
-    const map = new Map();
+    const latestByChain = new Map();
+    const rootByChain = new Map();
+
     for (const job of jobs) {
       const key = job.chain_id || job.id;
-      const prev = map.get(key);
+
+      const prev = latestByChain.get(key);
       if (!prev || timestampMs(job.created_at) > timestampMs(prev.created_at)) {
-        map.set(key, job);
+        latestByChain.set(key, job);
+      }
+
+      if ((job.job_level || 1) === 1) {
+        rootByChain.set(key, job);
       }
     }
-    return [...map.values()].sort(compareByCreatedDesc);
+
+    return [...latestByChain.entries()]
+      .map(([, latest]) => {
+        const root = rootByChain.get(latest.chain_id || latest.id);
+        return {
+          ...latest,
+          _displayPrompt: (root?.prompt || latest.prompt || '').trim(),
+        };
+      })
+      .sort(compareByCreatedDesc)
+      .slice(0, GALLERY_LIMIT);
   }
 
   async function loadData() {
     try {
-      const result = await apiClient().jobs.list({ status: 'completed' });
-      state.chains = groupByChain(normalizeJobs(result)).slice(0, GALLERY_LIMIT);
+      const result = await apiClient().jobs.list({ status: 'completed', limit: FETCH_LIMIT });
+      state.chains = groupByChain(normalizeJobs(result));
     } catch (err) {
       console.warn('[Home] jobs fetch failed:', err?.message || err);
       state.chains = [];
     }
+  }
+
+  function scheduleRefresh() {
+    clearTimeout(state.wsRefreshTimer);
+    state.wsRefreshTimer = setTimeout(() => App._refreshCurrentPage(), WS_DEBOUNCE_MS);
   }
 
   function attachWS() {
@@ -101,20 +131,22 @@
     state.wsUnsubs.push(WS.on('job_update', (job) => {
       if (App.currentPage !== 'home') return;
       if (String(job?.status || '').toLowerCase() !== 'completed') return;
-      App._refreshCurrentPage();
+      scheduleRefresh();
     }));
   }
 
   function detachWS() {
+    clearTimeout(state.wsRefreshTimer);
+    state.wsRefreshTimer = null;
     state.wsUnsubs.forEach((fn) => { try { fn?.(); } catch (_) {} });
     state.wsUnsubs = [];
   }
 
   function renderJobTile(job) {
-    const prompt = String(job?.prompt || '').trim();
+    const prompt = job._displayPrompt;
     const typeLabel = JOB_TYPE_LABELS[job?.type] || job?.type || '';
     const displayText = prompt || typeLabel || 'Completed job';
-    const truncated = displayText.length > 72 ? displayText.slice(0, 72) + '…' : displayText;
+    const truncated = displayText.length > 80 ? displayText.slice(0, 80) + '…' : displayText;
     const media = primaryMedia(job);
 
     const thumbnail = media
@@ -124,6 +156,9 @@
       : '';
 
     const routeKey = encodeURIComponent(String(job?.chain_id || job?.id || '').trim());
+    const dateStr = typeof App.formatDate === 'function'
+      ? App.formatDate(job?.created_at)
+      : (job?.created_at || '').slice(0, 10);
 
     return `
       <a class="project-tile"
@@ -136,7 +171,7 @@
         </div>
         <div class="tile-overlay tile-overlay--job">
           <span class="tile-prompt">${App.escapeHtml(truncated)}</span>
-          <span class="tile-date">${App.escapeHtml(formatTileDate(job?.created_at))}</span>
+          <span class="tile-date">${App.escapeHtml(dateStr)}</span>
         </div>
       </a>
     `;
@@ -171,7 +206,7 @@
 
   async function handleCreateProject() {
     if (state.creating) return;
-    const name = `Project · ${App.formatTileDate(new Date().toISOString())}`;
+    const name = `Project · ${App.formatDate ? App.formatDate(new Date().toISOString()) : new Date().toLocaleDateString()}`;
     const button = document.getElementById('home-create-project');
     state.creating = true;
     if (button) button.disabled = true;

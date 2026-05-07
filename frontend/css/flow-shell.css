@@ -311,9 +311,6 @@ body.route-home #top-bar { display: none; }
   font-size: 16px;
   font-weight: 400;
 }
-.project-tile {
-  transition: transform 180ms ease, box-shadow 180ms ease;
-}
 .project-tile:hover {
   transform: translateY(-3px);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
@@ -382,7 +379,9 @@ body.route-home #top-bar { display: none; }
 }
 .tile-type-badge:empty { display: none; }
 
-/* Job overlay — 2-row: prompt + date. Replaces single-row height:48px strip. */
+/* Job overlay — 2-row: prompt + date. Replaces single-row height:48px strip.
+   min-width: 0 on the flex container is required so children can shrink
+   below their content width and trigger text-overflow: ellipsis. */
 .tile-overlay--job {
   flex-direction: column;
   justify-content: center;
@@ -390,6 +389,7 @@ body.route-home #top-bar { display: none; }
   gap: 3px;
   height: auto;
   min-height: 52px;
+  min-width: 0;
   padding: 8px 12px 10px 16px;
 }
 .tile-prompt {
@@ -399,7 +399,7 @@ body.route-home #top-bar { display: none; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 100%;
+  width: 100%;
   line-height: 1.35;
 }
 .tile-overlay--job .tile-date {
