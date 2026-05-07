@@ -139,19 +139,42 @@ async def recover_from_flow_canvas_page(page, logger, homepage_url: str) -> bool
 
     try:
         await page.goto(homepage_url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
+    except Exception as exc:
+        # ERR_ABORTED is normal for SPA navigations — the browser cancels the
+        # in-flight request when the SPA router intercepts. Treat it as a
+        # soft failure and continue to the reload attempt below.
+        if getattr(page, "is_closed", lambda: False)():
+            logger.warning("Flow Canvas homepage recovery: page closed during goto: %s", exc)
+            return False
+        logger.warning("Flow Canvas goto raised (continuing): %s", exc)
+
+    await asyncio.sleep(3)
+    try:
         await page.reload(wait_until="domcontentloaded", timeout=15000)
         await asyncio.sleep(3)
     except Exception as exc:
-        logger.warning("Flow Canvas homepage recovery navigation failed: %s", exc)
+        logger.warning("Flow Canvas reload failed: %s", exc)
         return False
 
-    recovered = await _new_project_button_visible(page, timeout_ms=15000)
-    if recovered:
+    if await _new_project_button_visible(page, timeout_ms=15000):
         logger.info("Recovered from Flow Canvas via homepage reload")
+        return True
+
+    # Homepage may have served the marketing landing variant instead of the
+    # project list. Try dismissing it the same way the generate path does.
+    logger.info("New project button not visible after reload — trying marketing landing dismiss")
+    dismissed = await dismiss_flow_marketing_landing(
+        page,
+        logger,
+        is_ready=lambda: _new_project_button_visible(page, timeout_ms=3000),
+        per_click_timeout_sec=8.0,
+        max_reloads=1,
+    )
+    if dismissed:
+        logger.info("Recovered from Flow Canvas via marketing landing dismiss")
     else:
         logger.warning("Flow Canvas recovery did not reveal New project button")
-    return recovered
+    return dismissed
 
 
 async def _find_landing_cta(page):
