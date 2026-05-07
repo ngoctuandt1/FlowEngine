@@ -6,7 +6,7 @@ import re
 
 from flow.navigation import flow_url, extract_project_id
 from flow.login import is_login_page, handle_login_redirect
-from flow.landing import dismiss_flow_marketing_landing
+from flow.landing import dismiss_flow_marketing_landing, recover_from_flow_canvas_page
 from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.selector_chain import click_first_visible
 from flow.submit import submit_with_confirmation
@@ -189,6 +189,8 @@ async def text_to_video(
         await dismiss_flow_marketing_landing(
             page, logger, _new_project_button_attached
         )
+        if not await _new_project_button_attached(timeout_ms=1000):
+            await recover_from_flow_canvas_page(page, logger, homepage)
 
     # Final settle — give slow renders a second chance before click.
     if not await _new_project_button_attached(timeout_ms=15000):

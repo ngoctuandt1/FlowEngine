@@ -28,6 +28,34 @@ _ANCHOR_SCROLL_FRAGMENTS: tuple[str, ...] = (
 )
 
 
+_FLOW_CANVAS_TEXT_SIGNALS: tuple[str, ...] = (
+    "no chain nodes yet",
+    "this chain does not have any jobs to render yet",
+    "run workflow",
+    "batch run",
+    "open gallery",
+)
+
+
+_FLOW_CANVAS_NAV_SELECTORS: tuple[str, ...] = (
+    "a[href*='gallery' i]",
+    "a:has-text('Gallery')",
+    "button:has-text('Gallery')",
+    "[role='link']:has-text('Gallery')",
+    "[role='button']:has-text('Gallery')",
+    "a:has-text('Open jobs')",
+    "button:has-text('Open jobs')",
+    "[role='link']:has-text('Open jobs')",
+    "[role='button']:has-text('Open jobs')",
+)
+
+
+_NEW_PROJECT_TEXT_SELECTOR = "text=/New project|Dự án mới|Tạo dự án/"
+_NEW_PROJECT_ROLE_NAMES: tuple[str, ...] = (
+    "New project", "Dự án mới", "Tạo dự án",
+)
+
+
 def is_flow_landing_url(url: str) -> bool:
     current = (url or "").lower()
     return (
@@ -50,6 +78,80 @@ def is_marketing_anchor_url(url: str) -> bool:
         return False
     lowered = url.lower()
     return any(frag in lowered for frag in _ANCHOR_SCROLL_FRAGMENTS)
+
+
+def is_flow_canvas_page(url: str, page_text: str) -> bool:
+    """Return True when Flow shows the Canvas/Workflow builder shell."""
+    current = (url or "").lower()
+    if "labs.google/fx" in current and "/tools/flow" in current and "/chain/" in current:
+        return True
+
+    normalized_text = " ".join((page_text or "").lower().split())
+    return any(signal in normalized_text for signal in _FLOW_CANVAS_TEXT_SIGNALS)
+
+
+async def _new_project_button_visible(page, timeout_ms: int = 1000) -> bool:
+    try:
+        await page.wait_for_selector(
+            _NEW_PROJECT_TEXT_SELECTOR,
+            state="visible",
+            timeout=timeout_ms,
+        )
+        return True
+    except Exception:
+        pass
+
+    per_name = max(250, timeout_ms // len(_NEW_PROJECT_ROLE_NAMES))
+    for name in _NEW_PROJECT_ROLE_NAMES:
+        try:
+            button = page.get_by_role("button", name=name).filter(visible=True).first
+            if await button.is_visible(timeout=per_name):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def recover_from_flow_canvas_page(page, logger, homepage_url: str) -> bool:
+    """Leave the Flow Canvas/Workflow builder and wait for the project list."""
+    try:
+        page_text = await page.evaluate("document.body?.innerText || ''")
+    except Exception:
+        page_text = ""
+
+    if not is_flow_canvas_page(page.url, page_text):
+        return False
+
+    logger.warning("Flow Canvas page detected — recovering to project list")
+
+    for selector in _FLOW_CANVAS_NAV_SELECTORS:
+        try:
+            target = page.locator(selector).first
+            if not await target.is_visible(timeout=1000):
+                continue
+            await target.click(timeout=5000)
+            await asyncio.sleep(3)
+            if await _new_project_button_visible(page, timeout_ms=5000):
+                logger.info("Recovered from Flow Canvas via selector: %s", selector)
+                return True
+        except Exception:
+            continue
+
+    try:
+        await page.goto(homepage_url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(3)
+        await page.reload(wait_until="domcontentloaded", timeout=15000)
+        await asyncio.sleep(3)
+    except Exception as exc:
+        logger.warning("Flow Canvas homepage recovery navigation failed: %s", exc)
+        return False
+
+    recovered = await _new_project_button_visible(page, timeout_ms=15000)
+    if recovered:
+        logger.info("Recovered from Flow Canvas via homepage reload")
+    else:
+        logger.warning("Flow Canvas recovery did not reveal New project button")
+    return recovered
 
 
 async def _find_landing_cta(page):
