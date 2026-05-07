@@ -4,7 +4,7 @@
 > session report under `docs/session-reports/`. Update when adding a new
 > report. The `_TEMPLATE.md` defines the report skeleton (do not list it).
 
-**Last regenerated:** 2026-05-02 (covers 57 reports across `2026-04-17 -> 2026-05-02`).
+**Last regenerated:** 2026-05-08 (covers 58+ reports across `2026-04-17 -> 2026-05-08`).
 
 ---
 
@@ -48,6 +48,18 @@
 ---
 
 ## 3. Timeline
+
+### Canvas recovery + perf hardening (2026-05-08)
+
+| Date | Report | Type | Status | Outcome |
+|---|---|---|---|---|
+| 05-08 | [canvas-recovery-perf-hardening](2026-05-08_canvas-recovery-perf-hardening.md) | flow recovery + perf | 🟡 | Canvas page detection + recovery (`flow/landing.py`); GZip media exclusion fix (`server/app.py`); composite DB index; home gallery unification; event-driven settle waits across 4 L1 ops (~6-10s gain per L1). Live test pending (profile needs rewarm). LP→Lite deadline 2026-05-10. |
+
+### Claim-batch follow-up + infra hardening (2026-05-05)
+
+| Date | Report | Type | Status | Outcome |
+|---|---|---|---|---|
+| 05-05 | [claim-batch-followup-infra-hardening](2026-05-05_claim-batch-followup-infra-hardening.md) | infra + flow fix | ✅ | 3 PRs (#200-#202). `FLOW_CLAIM_BATCH_MAX` env knob, root-owned file poisoning 3-layer fix, `LeafLockoutError` hard-fail. Live-verified L3 batch (3 jobs, 314s, PASS). |
 
 ### IdeaStudio web clone + perf cluster (2026-05-02 cont.)
 
