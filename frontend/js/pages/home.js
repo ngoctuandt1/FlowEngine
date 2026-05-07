@@ -96,11 +96,6 @@
       .slice()
       .sort(compareByUpdatedDesc);
 
-    if (state.projects.length) {
-      state.recentJobs = [];
-      return;
-    }
-
     try {
       const jobs = await apiClient().jobs.list({ limit: RECENT_LIMIT, status: 'completed' });
       state.recentJobs = normalizeJobs(jobs)
@@ -116,7 +111,7 @@
   function attachWS() {
     if (!window.WS || typeof WS.on !== 'function') return;
     state.wsUnsubs.push(WS.on('job_update', (job) => {
-      if (App.currentPage !== 'home' || state.projects.length) return;
+      if (App.currentPage !== 'home') return;
       if (String(job?.status || '').toLowerCase() !== 'completed') return;
       App._refreshCurrentPage();
     }));
