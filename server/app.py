@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -116,6 +117,10 @@ else:
 # middleware.
 if DASHBOARD_AUTH_ENABLED:
     app.add_middleware(DashboardAuthMiddleware)
+
+# GZip API responses >= 1 KB. Must be added before CORS so the
+# Content-Encoding header is set before CORS headers are appended.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # CORSMiddleware must stay outermost so browser preflight OPTIONS requests
 # are answered with Access-Control-Allow-* headers before auth runs.
