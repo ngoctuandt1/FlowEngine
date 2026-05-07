@@ -311,9 +311,6 @@ body.route-home #top-bar { display: none; }
   font-size: 16px;
   font-weight: 400;
 }
-.project-tile {
-  transition: transform 180ms ease, box-shadow 180ms ease;
-}
 .project-tile:hover {
   transform: translateY(-3px);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
@@ -360,6 +357,69 @@ body.route-home #top-bar { display: none; }
 /* Legacy alias kept for any code still referencing the old grid-slot pill. */
 .new-project-pill { display: none; }
 .new-project-tile { display: none; }
+
+/* Job type badge — top-right corner of tile thumb. */
+.tile-type-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.52);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: rgba(255, 255, 255, 0.88);
+  z-index: 2;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.tile-type-badge:empty { display: none; }
+
+/* Job overlay — 2-row: prompt + date. Replaces single-row height:48px strip.
+   min-width: 0 on the flex container is required so children can shrink
+   below their content width and trigger text-overflow: ellipsis. */
+.tile-overlay--job {
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 3px;
+  height: auto;
+  min-height: 52px;
+  min-width: 0;
+  padding: 8px 12px 10px 16px;
+}
+.tile-prompt {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-flow);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+  line-height: 1.35;
+}
+.tile-overlay--job .tile-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Home empty state */
+.home-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 80px 24px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.home-empty .material-icons { font-size: 56px; opacity: 0.35; }
+.home-empty p { font-size: 15px; margin: 0; }
 
 /* ---- Project view -------------------------------------------------------- */
 

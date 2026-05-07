@@ -130,15 +130,16 @@ CREATE TABLE IF NOT EXISTS veo_accounts (
 );
 
 -- Indices for hot query paths
-CREATE INDEX IF NOT EXISTS idx_jobs_status      ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_chain_id    ON jobs(chain_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_parent      ON jobs(parent_job_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_profile     ON jobs(profile);
-CREATE INDEX IF NOT EXISTS idx_jobs_project_url ON jobs(project_url);
-CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_profiles_status  ON profiles(status);
-CREATE INDEX IF NOT EXISTS idx_characters_name  ON characters(name);
-CREATE INDEX IF NOT EXISTS idx_render_jobs_status ON render_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_status           ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created   ON jobs(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_chain_id         ON jobs(chain_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_parent           ON jobs(parent_job_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_profile          ON jobs(profile);
+CREATE INDEX IF NOT EXISTS idx_jobs_project_url      ON jobs(project_url);
+CREATE INDEX IF NOT EXISTS idx_projects_updated      ON projects(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_profiles_status       ON profiles(status);
+CREATE INDEX IF NOT EXISTS idx_characters_name       ON characters(name);
+CREATE INDEX IF NOT EXISTS idx_render_jobs_status    ON render_jobs(status);
 """
 
 logger = logging.getLogger(__name__)

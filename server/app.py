@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -116,6 +117,27 @@ else:
 # middleware.
 if DASHBOARD_AUTH_ENABLED:
     app.add_middleware(DashboardAuthMiddleware)
+
+class _APIGZipMiddleware(GZipMiddleware):
+    """GZip middleware scoped to non-media paths.
+
+    /downloads/ and /uploads/ are served with Accept-Ranges support for HTML5
+    <video> seeking. Compressing those responses would corrupt the byte offsets
+    inside Content-Range headers on 206 Partial Content replies, breaking video
+    playback. All other paths (API JSON, JS, CSS) are compressed normally.
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            path: str = scope.get("path", "")
+            if any(path.startswith(p) for p in MEDIA_PREFIXES):
+                await self.app(scope, receive, send)
+                return
+        await super().__call__(scope, receive, send)
+
+
+# GZip API/asset responses >= 1 KB. Media paths are excluded (see above).
+app.add_middleware(_APIGZipMiddleware, minimum_size=1000)
 
 # CORSMiddleware must stay outermost so browser preflight OPTIONS requests
 # are answered with Access-Control-Allow-* headers before auth runs.
