@@ -1,26 +1,30 @@
 /**
- * Home page
- * Project-first gallery backed by /api/projects.
+ * Home page — one tile per chain, showing the latest completed output.
  */
 (() => {
-  const RECENT_LIMIT = 12;
+  const GALLERY_LIMIT = 60;
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
 
+  const JOB_TYPE_LABELS = {
+    'text-to-video':        'Text → Video',
+    'text-to-image':        'Text → Image',
+    'frames-to-video':      'Frames → Video',
+    'ingredients-to-video': 'Image → Video',
+    'extend-video':         'Extend',
+    'camera-move':          'Camera',
+    'insert-object':        'Insert',
+    'remove-object':        'Remove',
+  };
+
   const state = {
-    projects: [],
-    recentJobs: [],
+    chains: [],
     creating: false,
     wsUnsubs: [],
   };
 
-  function apiClient() {
-    return App.api || API;
-  }
-
-  function mediaTileHelper() {
-    return App.mediaTile || window.MediaUtil;
-  }
+  function apiClient() { return App.api || API; }
+  function mediaTileHelper() { return App.mediaTile || window.MediaUtil; }
 
   function formatTileDate(value) {
     if (typeof App.formatTileDate === 'function') return App.formatTileDate(value);
@@ -33,16 +37,9 @@
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
-  function compareByUpdatedDesc(a, b) {
-    const updatedDiff = timestampMs(b?.updated_at || b?.created_at) - timestampMs(a?.updated_at || a?.created_at);
-    if (updatedDiff !== 0) return updatedDiff;
-    return String(b?.id || '').localeCompare(String(a?.id || ''));
-  }
-
   function compareByCreatedDesc(a, b) {
-    const createdDiff = timestampMs(b?.created_at || b?.createdAt) - timestampMs(a?.created_at || a?.createdAt);
-    if (createdDiff !== 0) return createdDiff;
-    return String(b?.id || '').localeCompare(String(a?.id || ''));
+    const diff = timestampMs(b?.created_at) - timestampMs(a?.created_at);
+    return diff !== 0 ? diff : String(b?.id || '').localeCompare(String(a?.id || ''));
   }
 
   function normalizeJobs(result) {
@@ -51,11 +48,9 @@
   }
 
   function mediaKindFromFile(file) {
-    const normalized = String(file || '').replace(/\\/g, '/');
-    const filename = normalized.split('/').pop() || normalized;
-    const extension = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
-    if (VIDEO_EXTENSIONS.has(extension)) return 'video';
-    if (IMAGE_EXTENSIONS.has(extension)) return 'image';
+    const ext = String(file || '').replace(/\\/g, '/').split('.').pop().toLowerCase();
+    if (VIDEO_EXTENSIONS.has(ext)) return 'video';
+    if (IMAGE_EXTENSIONS.has(ext)) return 'image';
     return null;
   }
 
@@ -67,44 +62,37 @@
   function primaryMedia(job) {
     const files = Array.isArray(job?.output_files) ? job.output_files : [];
     const renderable = files
-      .map((file) => {
-        const kind = mediaKindFromFile(file);
-        if (!kind) return null;
-        return {
-          kind,
-          url: mediaUrlFor(file),
-        };
-      })
+      .map((f) => { const kind = mediaKindFromFile(f); return kind ? { kind, url: mediaUrlFor(f) } : null; })
       .filter(Boolean);
-
     if (!renderable.length) return null;
-
     const primary = renderable[0];
-    const poster = primary.kind === 'video'
-      ? renderable.find((file) => file.kind === 'image')?.url || ''
-      : '';
-
     return {
       ...primary,
-      poster,
+      poster: primary.kind === 'video' ? (renderable.find((f) => f.kind === 'image')?.url || '') : '',
     };
   }
 
-  async function loadData() {
-    const projects = await apiClient().projects.list();
-    state.projects = (Array.isArray(projects) ? projects : [])
-      .slice()
-      .sort(compareByUpdatedDesc);
+  // One tile per chain — the most-recently-created job in the chain wins.
+  // This avoids duplicates when a chain has L1 + multiple L2 children.
+  function groupByChain(jobs) {
+    const map = new Map();
+    for (const job of jobs) {
+      const key = job.chain_id || job.id;
+      const prev = map.get(key);
+      if (!prev || timestampMs(job.created_at) > timestampMs(prev.created_at)) {
+        map.set(key, job);
+      }
+    }
+    return [...map.values()].sort(compareByCreatedDesc);
+  }
 
+  async function loadData() {
     try {
-      const jobs = await apiClient().jobs.list({ limit: RECENT_LIMIT, status: 'completed' });
-      state.recentJobs = normalizeJobs(jobs)
-        .slice()
-        .sort(compareByCreatedDesc)
-        .slice(0, RECENT_LIMIT);
+      const result = await apiClient().jobs.list({ status: 'completed' });
+      state.chains = groupByChain(normalizeJobs(result)).slice(0, GALLERY_LIMIT);
     } catch (err) {
-      console.warn('[Home] recent jobs fetch failed:', err?.message || err);
-      state.recentJobs = [];
+      console.warn('[Home] jobs fetch failed:', err?.message || err);
+      state.chains = [];
     }
   }
 
@@ -118,82 +106,52 @@
   }
 
   function detachWS() {
-    state.wsUnsubs.forEach((unsubscribe) => {
-      try {
-        unsubscribe?.();
-      } catch (_) {
-        // Ignore WS cleanup failures.
-      }
-    });
+    state.wsUnsubs.forEach((fn) => { try { fn?.(); } catch (_) {} });
     state.wsUnsubs = [];
   }
 
-  function renderProjectTile(project) {
-    const id = String(project?.id || '').trim();
-    const name = String(project?.name || 'Untitled project').trim() || 'Untitled project';
-    const coverThumbUrl = String(project?.cover_thumb_url || '').trim();
-    const thumbnail = coverThumbUrl
-      ? mediaTileHelper().imgTag({ src: coverThumbUrl, alt: name })
-      : '';
-
-    return `
-      <a class="project-tile"
-         href="#project-view/${encodeURIComponent(id)}"
-         title="${App.escapeHtml(name)}">
-        <div class="tile-thumb">
-          ${thumbnail}
-        </div>
-        <div class="tile-overlay" style="display:grid; justify-content:initial; align-items:start; gap:4px; height:auto; min-height:60px; padding:10px 12px 12px 16px;">
-          <strong style="font-size:16px; line-height:1.35; font-weight:600; color:var(--text-flow);">${App.escapeHtml(name)}</strong>
-          <span class="tile-date" style="font-size:12px; color:var(--text-muted);">${App.escapeHtml(formatTileDate(project?.updated_at || project?.created_at))}</span>
-        </div>
-      </a>
-    `;
-  }
-
-  function renderRecentJobTile(job) {
-    const title = job?.prompt || job?.direction || job?.type || 'Completed job';
+  function renderJobTile(job) {
+    const prompt = String(job?.prompt || '').trim();
+    const typeLabel = JOB_TYPE_LABELS[job?.type] || job?.type || '';
+    const displayText = prompt || typeLabel || 'Completed job';
+    const truncated = displayText.length > 72 ? displayText.slice(0, 72) + '…' : displayText;
     const media = primaryMedia(job);
+
     const thumbnail = media
       ? (media.kind === 'video'
-        ? mediaTileHelper().videoTag({ src: media.url, poster: media.poster, alt: title })
-        : mediaTileHelper().imgTag({ src: media.url, alt: title }))
+          ? mediaTileHelper().videoTag({ src: media.url, poster: media.poster, alt: displayText })
+          : mediaTileHelper().imgTag({ src: media.url, alt: displayText }))
       : '';
+
     const routeKey = encodeURIComponent(String(job?.chain_id || job?.id || '').trim());
 
     return `
-      <a class="project-tile status-completed"
+      <a class="project-tile"
          href="#project-view/${routeKey}"
          data-job-id="${App.escapeHtml(String(job?.id || ''))}"
-         title="${App.escapeHtml(title)}"
-         style="flex:0 0 calc((100% - 48px) / 4); min-width:220px; max-width:280px;">
+         title="${App.escapeHtml(displayText)}">
         <div class="tile-thumb">
           ${thumbnail}
+          ${typeLabel ? `<span class="tile-type-badge">${App.escapeHtml(typeLabel)}</span>` : ''}
         </div>
-        <div class="tile-overlay" style="height:auto; min-height:44px; padding:8px 10px 10px 12px;">
-          <span class="tile-date" style="font-size:12px;">${App.escapeHtml(formatTileDate(job?.created_at || job?.createdAt))}</span>
+        <div class="tile-overlay tile-overlay--job">
+          <span class="tile-prompt">${App.escapeHtml(truncated)}</span>
+          <span class="tile-date">${App.escapeHtml(formatTileDate(job?.created_at))}</span>
         </div>
       </a>
     `;
   }
 
-  function renderProjectsSection() {
-    if (!state.projects.length) return '';
-    return `<div class="project-grid" id="home-project-grid">${state.projects.map(renderProjectTile).join('')}</div>`;
-  }
-
-  function renderEmptyState() {
-    // Empty state suppressed by design \u2014 match Flow's gallery, which jumps
-    // straight to the tile grid without a "no projects yet" placeholder.
-    return '';
-  }
-
-  function renderRecentJobsSection() {
-    // Render recent jobs as the primary grid when no projects exist (and
-    // mix them in below the projects when both exist). No section header,
-    // no "Recent jobs" label \u2014 just tiles, like Flow.
-    if (!state.recentJobs.length) return '';
-    return `<div class="project-grid" id="home-recent-jobs">${state.recentJobs.map(renderRecentJobTile).join('')}</div>`;
+  function renderGallery() {
+    if (!state.chains.length) {
+      return `
+        <div class="home-empty">
+          <span class="material-icons">movie_filter</span>
+          <p>Chưa có video nào. Tạo project để bắt đầu.</p>
+        </div>
+      `;
+    }
+    return `<div class="project-grid">${state.chains.map(renderJobTile).join('')}</div>`;
   }
 
   function renderCreateProjectFab() {
@@ -201,37 +159,29 @@
       <button type="button"
               class="new-project-fab"
               id="home-create-project"
-              title="T\u1ea1o project"
-              aria-label="T\u1ea1o project"
+              title="Tạo project"
+              aria-label="Tạo project"
               ${state.creating ? 'disabled' : ''}
               style="cursor:pointer; border:0; appearance:none; -webkit-appearance:none; font:inherit;">
         <span class="material-icons">add</span>
-        <span>T\u1ea1o project</span>
+        <span>Tạo project</span>
       </button>
     `;
   }
 
   async function handleCreateProject() {
     if (state.creating) return;
-
-    // Auto-name with the current date so a click goes straight to the canvas.
-    // Users can rename later from the project view (PUT /api/projects/{id}).
-    const name = `Project \u00b7 ${App.formatTileDate(new Date().toISOString())}`;
-
+    const name = `Project · ${App.formatTileDate(new Date().toISOString())}`;
     const button = document.getElementById('home-create-project');
     state.creating = true;
     if (button) button.disabled = true;
-
     try {
       const created = await apiClient().projects.create({ name });
       const projectId = String(created?.id || '').trim();
-      if (!projectId) {
-        throw new Error('Project created but response missing id');
-      }
-      state.projects = [{ ...created }, ...state.projects.filter((project) => String(project?.id || '') !== projectId)];
+      if (!projectId) throw new Error('Project created but response missing id');
       location.hash = `#project-view/${encodeURIComponent(projectId)}`;
     } catch (err) {
-      App.toast(`T\u1ea1o project th\u1ea5t b\u1ea1i: ${err?.message || err}`, 'error');
+      App.toast(`Tạo project thất bại: ${err?.message || err}`, 'error');
       state.creating = false;
       if (button) button.disabled = false;
     }
@@ -247,9 +197,7 @@
       await loadData();
       return `
         <div class="home-canvas home-canvas-gallery">
-          ${renderProjectsSection()}
-          ${renderEmptyState()}
-          ${renderRecentJobsSection()}
+          ${renderGallery()}
           ${renderCreateProjectFab()}
         </div>
       `;
@@ -257,9 +205,8 @@
 
     mount() {
       attachWS();
-      document.getElementById('home-create-project')?.addEventListener('click', () => {
-        handleCreateProject();
-      });
+      document.getElementById('home-create-project')
+        ?.addEventListener('click', handleCreateProject);
     },
 
     destroy() {
