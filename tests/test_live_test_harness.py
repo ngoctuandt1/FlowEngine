@@ -64,7 +64,7 @@ def test_l2_chain_payload_has_four_new_l1_heads():
     children = [step for step in steps if step["job_level"] > 1]
 
     assert len(heads) == 4
-    assert len(children) == 8
+    assert len(children) == 10  # 4 extend (L2-L5) + 2 camera + 2 insert + 2 remove
     assert {step["chain_name"] for step in heads} == {"extend", "camera", "insert", "remove"}
     assert all(step["payload"]["type"] == "text-to-video" for step in heads)
     assert all(step["parent_job_id"] is None for step in heads)

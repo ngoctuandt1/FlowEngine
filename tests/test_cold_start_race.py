@@ -56,27 +56,28 @@ async def test_finalize_dom_completion_returns_existing_buffer_without_scraping(
     page.evaluate.assert_not_called()
 
 
-async def test_finalize_dom_completion_scrapes_from_data_tile_when_buffer_empty():
+async def test_finalize_dom_completion_returns_empty_when_buffer_empty_no_scrape():
+    # DOM-scraped tile IDs are intentionally NOT returned by _finalize_dom_completion
+    # to prevent multi-tile projects from returning stale parent IDs in Step 1
+    # of resolve_final_media_id (see wait.py fix for L3+ extend bug).
     client = _fake_client(media_events=[])
     page = _fake_page(evaluate_values=[UUID_A, UUID_B])
 
     ids = await _finalize_dom_completion(client, page)
 
-    assert set(ids) == {UUID_A, UUID_B}
-    # Scraped ids were persisted on the client so download.py can see them.
-    recorded = {ev["mid"] for ev in client._media_id_events}
-    assert recorded == {UUID_A, UUID_B}
-    assert all(ev.get("source") == "dom_scrape" for ev in client._media_id_events)
+    assert ids == []
+    # No side-effects on client
+    assert client._media_id_events == []
 
 
-async def test_finalize_dom_completion_scrapes_from_edit_href_when_buffer_empty():
+async def test_finalize_dom_completion_returns_empty_when_only_href_available():
     href = f"https://labs.google/fx/tools/flow/project/xyz/edit/{UUID_C}"
     client = _fake_client(media_events=[])
     page = _fake_page(evaluate_values=[href])
 
     ids = await _finalize_dom_completion(client, page)
 
-    assert ids == [UUID_C]
+    assert ids == []
 
 
 async def test_finalize_dom_completion_returns_empty_when_nothing_found():

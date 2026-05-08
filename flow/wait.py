@@ -273,7 +273,10 @@ async def wait_for_completion(
                     "Completion via DOM (stalled at %d%% & new media card) after %.0fs",
                     last_progress, elapsed,
                 )
-                await asyncio.sleep(3)
+                # Extra settle time: deep-chain extends take longer for the
+                # backend to commit the new media before getMediaUrlRedirect
+                # returns 200.  3 s was too short (L4+ extend → 404).
+                await asyncio.sleep(10)
                 media_ids = await _finalize_dom_completion(client, page)
                 return _result(
                     True,
@@ -403,24 +406,14 @@ def _collect_media_ids(client, start_index: int = 0) -> list[str]:
 async def _finalize_dom_completion(client, page) -> list[str]:
     """Return media_ids for a DOM-detected completion.
 
-    The three passive-network detectors can be empty if ``page.on('response')``
-    missed the events (cold-start race, issue #45). When the network buffer is
-    empty we scrape the just-rendered tile DOM and record any discovered ids
-    on the client so downstream code sees a normal media-event list.
+    Returns only IDs captured from real network events (``_media_id_events``).
+    DOM-scraped tile IDs are intentionally NOT returned here because the tile
+    strip contains ALL tiles in the project (including parent and older clips),
+    and ``resolve_final_media_id`` Step 1 would pick the wrong one.
+    ``resolve_final_media_id`` Step 2 (``find_latest_tile_slug`` — last tile in
+    DOM order) handles the no-network-capture case correctly.
     """
-    ids = _collect_media_ids(client)
-    if ids:
-        return ids
-
-    scraped = await _scrape_media_ids_from_dom(page)
-    if not scraped:
-        return []
-
-    record = getattr(client, "_record_media_id", None)
-    if callable(record):
-        for mid in scraped:
-            record(mid, source="dom_scrape")
-    return _collect_media_ids(client) or scraped
+    return _collect_media_ids(client)
 
 
 # Match a UUID or 24+ hex-char string embedded in a /edit/<id>[?#/] URL.
