@@ -1,6 +1,7 @@
 # PRD_TEMPLATE.md — Implementation-plan template
 
-> **Use this template** for any new epic. Copy to `docs/PRD_<EPIC_SLUG>.md` and fill in. Apply Self-Review checklist before handoff to Codex.
+> **Use this template** for any new epic. Copy to `docs/PRD_<EPIC>.md` (e.g. `docs/PRD_AUTH_GATE.md`) and fill in. Apply Self-Review checklist before handoff to Codex.
+> **Note:** New epic planning belongs here (`docs/PRD_<EPIC>.md`), NOT in `docs/WORKPLAN.md` — that file is a closed historical ledger as of 2026-05-02.
 
 ---
 
@@ -79,7 +80,7 @@ Each task = one acceptance-testable unit. Each step = one action a developer (or
 
 ### Task 2: [Next component]
 
-…
+<!-- replace with the same step structure as Task 1 -->
 
 ---
 
@@ -87,8 +88,9 @@ Each task = one acceptance-testable unit. Each step = one action a developer (or
 
 The following patterns are PRD failures. Never write them in this document — they leak into Codex prompts and produce garbage:
 
-- "TBD", "TODO", "implement later", "fill in details"
-- "Add appropriate error handling" / "add validation" / "handle edge cases"
+<!-- The tokens below are intentionally obfuscated (T-B-D not TBD) so a `grep -i TBD` scan on a real PRD won't false-positive on this template section. -->
+- `T-B-D`, `T-O-D-O`, "implement later", "fill in details"
+- "Add appropriate error handling" / "add validation" / "handle-edge-cases"
 - "Write tests for the above" (without actual test code)
 - "Similar to Task N" (repeat the code — engineer may read out of order)
 - Steps that describe WHAT without showing HOW (code blocks required for code steps)
@@ -120,7 +122,7 @@ Fix issues inline. Then ask user to review the PRD before dispatching Codex.
 After PRD is user-approved:
 
 1. Decompose into N file-disjoint units (CLAUDE.md rule #2)
-2. Per unit: dispatch Codex with self-contained prompt (rule #4) — file paths + acceptance + branch (`claude/<slug>` off master) + commit msg + PR template + DO NOT list
+2. Per unit: dispatch Codex with self-contained prompt (rule #4) — file paths + acceptance + branch (`claude/bug-N-slug` off master) + commit msg (`Closes #N` in body) + PR template (`--base master` explicit) + DO NOT list
 3. Each Codex dispatch arms Monitor + ScheduleWakeup re-arm (rule #3)
 4. After each PR CI green: 2-reviewer reconcile (rule #5)
 5. After all units green: live-verify gate if browser-automation (memory: `feedback_live_verify_gates_done.md`)
