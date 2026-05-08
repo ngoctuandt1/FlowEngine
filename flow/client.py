@@ -1048,8 +1048,16 @@ class FlowClient:
                         os.killpg(pgid, signal.SIGKILL)
                     else:
                         proc.kill()
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
                 else:
                     proc.kill()
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         finally:
