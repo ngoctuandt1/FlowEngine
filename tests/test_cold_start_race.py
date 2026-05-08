@@ -132,6 +132,9 @@ class _HookedPage:
     async def goto(self, url, *a, **kw):
         self.calls.append(("goto", url))
 
+    async def route(self, pattern, handler):
+        pass
+
 
 def _new_client():
     # Bypass FlowClient.__init__ entirely — we only exercise lifecycle methods.

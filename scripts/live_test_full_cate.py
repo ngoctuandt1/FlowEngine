@@ -15,8 +15,8 @@ Topology submitted:
     - ingredients-to-video x 2  (requires FLOW_TEST_INGREDIENTS_DIR with
                                  images; otherwise SKIPPED with a warning)
 
-  L2 sweep (8 jobs total, split across 4 independent Flow projects):
-    - extend chain:  text-to-video -> extend-video -> extend-video
+  L2+ sweep (12 jobs total, split across 4 independent Flow projects):
+    - extend chain:  text-to-video -> extend x5 (L2→L3→L4→L5)
     - camera chain:  text-to-video -> camera-move -> camera-move
     - insert chain:  text-to-video -> insert-object -> insert-object
     - remove chain:  text-to-video -> remove-object -> remove-object
@@ -339,6 +339,26 @@ def _l2_chain_payload() -> list[dict[str, Any]]:
                 "prompt": "Continue the scene as a slow push-in develops",
             },
             parent_job_id="l2_extend_1",
+        ),
+        _plan_step(
+            "l4_extend_3",
+            "extend",
+            4,
+            {
+                "type": "extend-video",
+                "prompt": "Hold on a tight close-up of the neon reflections",
+            },
+            parent_job_id="l3_extend_2",
+        ),
+        _plan_step(
+            "l5_extend_4",
+            "extend",
+            5,
+            {
+                "type": "extend-video",
+                "prompt": "Fade slowly to black as the camera drifts upward",
+            },
+            parent_job_id="l4_extend_3",
         ),
         _plan_step(
             "l1_t2v_camera",
