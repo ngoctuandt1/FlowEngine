@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # Default timeouts per job type (seconds)
 TIMEOUTS: dict[str, int] = {
     "text-to-video": 900,   # 15 min (LP can be slow)
+    "text-to-image": 120,   # 2 min -- Nano Banana image gen is ~10-20s
+    "frames-to-video": 300,  # 5 min
+    "ingredients-to-video": 300,  # 5 min
     "extend-video": 600,    # 10 min
     "insert-object": 300,   # 5 min
     "remove-object": 300,
@@ -36,6 +39,9 @@ TIMEOUTS: dict[str, int] = {
 # Abort if zero progress signals for this many seconds (per job type)
 NO_SIGNAL_TIMEOUTS: dict[str, int] = {
     "text-to-video": 300,   # 5 min — video gen can stall at certain %
+    "text-to-image": 60,    # 1 min no-signal abort
+    "frames-to-video": 180,
+    "ingredients-to-video": 180,
     "extend-video": 300,    # 5 min
     "insert-object": 180,   # 3 min
     "remove-object": 180,
@@ -107,6 +113,8 @@ async def wait_for_completion(
         }
 
     Detection methods (checked every 500 ms):
+      0. Image API -- scan ``client._image_names`` for new
+         ``batchGenerateImages`` media names.
       1. Reverse API -- scan ``client._calls`` for ``operations/``
          responses with ``done: true``.
       2. Network -- new video URLs in ``client._video_urls``.
@@ -123,6 +131,7 @@ async def wait_for_completion(
 
     initial_video_count = len(getattr(client, "_video_urls", []))
     initial_media_count = len(getattr(client, "_media_id_events", []))
+    initial_image_count = len(getattr(client, "_image_names", []))
     initial_url = page.url
     start = time.monotonic()
     last_progress = 0
@@ -148,6 +157,18 @@ async def wait_for_completion(
                 client,
                 _build_network_recaptcha_error(client, network_kind),
             )
+
+        # --- Method 0: batchGenerateImages fast path (text-to-image only) ---
+        if job_type == "text-to-image":
+            image_names = getattr(client, "_image_names", [])
+            new_images = image_names[initial_image_count:]
+            if new_images:
+                logger.info(
+                    "Image generation complete via batchGenerateImages (%.0fs, %d images)",
+                    elapsed,
+                    len(new_images),
+                )
+                return _result(True, media_ids=list(new_images))
 
         # --- Method 1: reverse API inspection ---
         api = await _check_api_signals(client)

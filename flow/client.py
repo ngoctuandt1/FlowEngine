@@ -524,6 +524,7 @@ class FlowClient:
         self._calls: list[dict[str, Any]] = []
         self._media_id_events: list[dict[str, Any]] = []
         self._gen_id: str | None = None
+        self._image_names: list[str] = []
         self._account_info: dict[str, Any] | None = None
         self._hooks_bound: bool = False
 
@@ -638,6 +639,7 @@ class FlowClient:
         self._calls.clear()
         self._media_id_events.clear()
         self._gen_id = None
+        self._image_names.clear()
         # Keep _account_info — it's a cached read of /v1/credits and
         # stays valid across jobs on the same session.
 
@@ -761,6 +763,7 @@ class FlowClient:
         )
         # Bind before any caller-driven navigation so the first generation's
         # response events can't slip past an unbound hook (issue #45).
+        await self._setup_route_blocking()
         self._setup_network_hooks()
 
     # ------------------------------------------------------------------
@@ -805,6 +808,7 @@ class FlowClient:
         self.page = pages[0] if pages else await self.context.new_page()
         # Bind before any caller-driven navigation so the first generation's
         # response events can't slip past an unbound hook (issue #45).
+        await self._setup_route_blocking()
         self._setup_network_hooks()
 
     # ------------------------------------------------------------------
@@ -842,6 +846,24 @@ class FlowClient:
         self.page.on("response", self._on_response)
         self._hooks_bound = True
 
+    async def _setup_route_blocking(self) -> None:
+        """Block font CDN requests to reduce bandwidth and render work.
+
+        Safe for all launch modes — operates at Playwright route level,
+        not via Chrome flags, so it does not affect anti-bot fingerprinting.
+        Idempotent: repeated calls are harmless (Playwright deduplicates).
+        """
+        if self.page is None:
+            return
+        for pattern in (
+            "**/fonts.googleapis.com/**",
+            "**/fonts.gstatic.com/**",
+            "**/*.{woff,woff2,ttf,eot}",
+        ):
+            await self.page.route(
+                pattern, lambda route: asyncio.ensure_future(route.abort())
+            )
+
     async def _on_response(self, response: Any) -> None:
         """Classify and store interesting network responses.
 
@@ -868,6 +890,7 @@ class FlowClient:
                 "operations/" in url_l
                 or "/v1/credits" in url_l
                 or "getmediaurlredirect" in url_l
+                or "batchgenerateimages" in url_l
             ):
                 try:
                     call_entry["body"] = await response.json()
@@ -924,6 +947,18 @@ class FlowClient:
                         self._gen_id = str(name)
                         logger.debug("Captured gen_id: %s", self._gen_id)
 
+            # --- Image media names (text-to-image fast path) ---
+            if "batchgenerateimages" in url_l and status == 200:
+                body = call_entry.get("body")
+                if isinstance(body, dict):
+                    for m in body.get("media", []):
+                        if not isinstance(m, dict):
+                            continue
+                        name = m.get("name")
+                        if name and name not in self._image_names:
+                            self._image_names.append(name)
+                            logger.debug("Captured image media name: %s", name[:20])
+
         except Exception as exc:
             logger.debug("_on_response error: %s", exc)
 
@@ -954,6 +989,11 @@ class FlowClient:
         self._calls.clear()
         self._media_id_events.clear()
         self._gen_id = None
+        self._image_names.clear()
+
+    def pop_image_names(self, before_count: int = 0) -> list[str]:
+        """Return new image media names captured since before_count."""
+        return list(self._image_names[before_count:])
 
     # ------------------------------------------------------------------
     # Internal helpers

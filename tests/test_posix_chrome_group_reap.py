@@ -33,7 +33,7 @@ def _new_client() -> client_module.FlowClient:
 
 
 def _fake_browser_stack():
-    page = SimpleNamespace(url="about:blank", on=MagicMock())
+    page = SimpleNamespace(url="about:blank", on=MagicMock(), route=AsyncMock())
     context = SimpleNamespace(pages=[page])
     browser = SimpleNamespace(contexts=[context])
     return page, context, browser
