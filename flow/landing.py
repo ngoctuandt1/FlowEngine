@@ -90,6 +90,11 @@ def is_flow_canvas_page(url: str, page_text: str) -> bool:
     return any(signal in normalized_text for signal in _FLOW_CANVAS_TEXT_SIGNALS)
 
 
+def _is_flow_auth_url(url: str) -> bool:
+    current = (url or "").lower()
+    return "labs.google/fx/api/auth/signin" in current or "accounts.google." in current
+
+
 async def _new_project_button_visible(page, timeout_ms: int = 1000) -> bool:
     try:
         await page.wait_for_selector(
@@ -138,15 +143,39 @@ async def recover_from_flow_canvas_page(page, logger, homepage_url: str) -> bool
             continue
 
     try:
-        await page.goto(homepage_url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
-        await page.reload(wait_until="domcontentloaded", timeout=15000)
-        await asyncio.sleep(3)
+        await page.goto(homepage_url, wait_until="commit", timeout=30000)
     except Exception as exc:
-        logger.warning("Flow Canvas homepage recovery navigation failed: %s", exc)
+        if "ERR_ABORTED" not in str(exc):
+            logger.warning("Flow Canvas homepage recovery navigation failed: %s", exc)
+            return False
+        logger.warning("Flow Canvas homepage recovery navigation aborted; continuing: %s", exc)
+    await asyncio.sleep(3)
+
+    try:
+        await page.reload(wait_until="domcontentloaded", timeout=15000)
+    except Exception as exc:
+        if "ERR_ABORTED" not in str(exc):
+            logger.warning("Flow Canvas homepage recovery reload failed: %s", exc)
+        else:
+            logger.warning("Flow Canvas homepage recovery reload aborted; continuing: %s", exc)
+    await asyncio.sleep(3)
+
+    if getattr(page, "is_closed", lambda: False)() or _is_flow_auth_url(page.url):
+        logger.warning("Flow Canvas recovery stopped at auth/login page: %s", page.url[:120])
         return False
 
     recovered = await _new_project_button_visible(page, timeout_ms=15000)
+    if not recovered:
+        if getattr(page, "is_closed", lambda: False)() or _is_flow_auth_url(page.url):
+            logger.warning("Flow Canvas recovery stopped at auth/login page: %s", page.url[:120])
+            return False
+
+        async def _ready() -> bool:
+            return await _new_project_button_visible(page, timeout_ms=2000)
+
+        if await dismiss_flow_marketing_landing(page, logger, _ready):
+            recovered = await _new_project_button_visible(page, timeout_ms=15000)
+
     if recovered:
         logger.info("Recovered from Flow Canvas via homepage reload")
     else:
