@@ -90,6 +90,11 @@ def is_flow_canvas_page(url: str, page_text: str) -> bool:
     return any(signal in normalized_text for signal in _FLOW_CANVAS_TEXT_SIGNALS)
 
 
+def _is_flow_auth_url(url: str) -> bool:
+    current = (url or "").lower()
+    return "labs.google/fx/api/auth/signin" in current or "accounts.google." in current
+
+
 async def _new_project_button_visible(page, timeout_ms: int = 1000) -> bool:
     try:
         await page.wait_for_selector(
@@ -138,43 +143,44 @@ async def recover_from_flow_canvas_page(page, logger, homepage_url: str) -> bool
             continue
 
     try:
-        await page.goto(homepage_url, wait_until="domcontentloaded", timeout=30000)
+        await page.goto(homepage_url, wait_until="commit", timeout=30000)
     except Exception as exc:
-        # ERR_ABORTED is normal for SPA navigations — the browser cancels the
-        # in-flight request when the SPA router intercepts. Treat it as a
-        # soft failure and continue to the reload attempt below.
-        if getattr(page, "is_closed", lambda: False)():
-            logger.warning("Flow Canvas homepage recovery: page closed during goto: %s", exc)
+        if "ERR_ABORTED" not in str(exc):
+            logger.warning("Flow Canvas homepage recovery navigation failed: %s", exc)
             return False
-        logger.warning("Flow Canvas goto raised (continuing): %s", exc)
-
+        logger.warning("Flow Canvas homepage recovery navigation aborted; continuing: %s", exc)
     await asyncio.sleep(3)
+
     try:
         await page.reload(wait_until="domcontentloaded", timeout=15000)
-        await asyncio.sleep(3)
     except Exception as exc:
-        logger.warning("Flow Canvas reload failed: %s", exc)
+        if "ERR_ABORTED" not in str(exc):
+            logger.warning("Flow Canvas homepage recovery reload failed: %s", exc)
+        else:
+            logger.warning("Flow Canvas homepage recovery reload aborted; continuing: %s", exc)
+    await asyncio.sleep(3)
+
+    if getattr(page, "is_closed", lambda: False)() or _is_flow_auth_url(page.url):
+        logger.warning("Flow Canvas recovery stopped at auth/login page: %s", page.url[:120])
         return False
 
-    if await _new_project_button_visible(page, timeout_ms=15000):
-        logger.info("Recovered from Flow Canvas via homepage reload")
-        return True
+    recovered = await _new_project_button_visible(page, timeout_ms=15000)
+    if not recovered:
+        if getattr(page, "is_closed", lambda: False)() or _is_flow_auth_url(page.url):
+            logger.warning("Flow Canvas recovery stopped at auth/login page: %s", page.url[:120])
+            return False
 
-    # Homepage may have served the marketing landing variant instead of the
-    # project list. Try dismissing it the same way the generate path does.
-    logger.info("New project button not visible after reload — trying marketing landing dismiss")
-    dismissed = await dismiss_flow_marketing_landing(
-        page,
-        logger,
-        is_ready=lambda: _new_project_button_visible(page, timeout_ms=3000),
-        per_click_timeout_sec=8.0,
-        max_reloads=1,
-    )
-    if dismissed:
-        logger.info("Recovered from Flow Canvas via marketing landing dismiss")
+        async def _ready() -> bool:
+            return await _new_project_button_visible(page, timeout_ms=2000)
+
+        if await dismiss_flow_marketing_landing(page, logger, _ready):
+            recovered = await _new_project_button_visible(page, timeout_ms=15000)
+
+    if recovered:
+        logger.info("Recovered from Flow Canvas via homepage reload")
     else:
         logger.warning("Flow Canvas recovery did not reveal New project button")
-    return dismissed
+    return recovered
 
 
 async def _find_landing_cta(page):
