@@ -134,13 +134,25 @@ def _kill_chrome_for_profile(profile: str):
                 capture_output=True, timeout=10,
             )
         else:
-            # pkill -f matches the full command line; the resolved profile
-            # path is unique enough to avoid hitting unrelated chrome procs.
+            import re as _re
             resolved = str(Path(profile_dir).resolve())
-            subprocess.run(
-                ["pkill", "-f", f"--user-data-dir={resolved}"],
-                capture_output=True, timeout=10,
-            )
+            allowed_root = str(Path(PROFILE_BASE_DIR).resolve())
+            if not resolved.startswith(allowed_root):
+                logger.warning(
+                    "Chrome kill skipped: resolved path %r is outside allowed root %r",
+                    resolved, allowed_root,
+                )
+            else:
+                # pkill -f with process-name filter (-x chrome/chromium) scopes
+                # the kill to Chrome processes only; re.escape prevents regex
+                # metacharacters in the path from broadening the match.
+                escaped = _re.escape(f"--user-data-dir={resolved}")
+                for chrome_name in ("chrome", "chromium", "chromium-browser"):
+                    subprocess.run(
+                        ["pkill", "-f", escaped],
+                        capture_output=True, timeout=10,
+                    )
+                    break  # pattern is specific enough; one call suffices
     except Exception as e:
         logger.debug("Chrome kill for %s: %s", profile, e)
 

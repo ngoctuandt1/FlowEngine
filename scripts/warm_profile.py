@@ -171,7 +171,8 @@ def _find_chrome_executable() -> str:
         if candidate and Path(candidate).exists():
             return candidate
     raise FileNotFoundError(
-        "Google Chrome not found. Set FLOW_WARM_CHROME_PATH to chrome.exe."
+        "Google Chrome / Chromium not found. "
+        "Set FLOW_WARM_CHROME_PATH to the browser executable path."
     )
 
 
