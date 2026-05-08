@@ -891,6 +891,8 @@ class FlowClient:
                 or "/v1/credits" in url_l
                 or "getmediaurlredirect" in url_l
                 or "batchgenerateimages" in url_l
+                or "batchasyncgeneratevideo" in url_l
+                or "aisandbox-pa.googleapis.com/v1" in url_l
             ):
                 try:
                     call_entry["body"] = await response.json()
@@ -938,14 +940,35 @@ class FlowClient:
                     self._account_info = body
                     logger.debug("Captured account info: %s", body)
 
-            # --- Generation ID capture ---
-            if "operations/" in url_l and status == 200:
+            # --- Generation ID / async video operation capture ---
+            if status == 200 and (
+                "operations/" in url_l or "batchasyncgeneratevideo" in url_l
+            ):
                 body = call_entry.get("body")
                 if isinstance(body, dict):
+                    # LRO submit response: {"name": "operations/xyz"}
+                    # OR polling response with same field
                     name = body.get("name", "")
                     if name and not self._gen_id:
                         self._gen_id = str(name)
                         logger.debug("Captured gen_id: %s", self._gen_id)
+                    # Some response shapes embed generated media directly
+                    # e.g. {"media": [{"name": "<uuid>"}]} or
+                    #      {"responses": [{"media": [{"name": "<uuid>"}]}]}
+                    for top in (body, *body.get("responses", [])):
+                        if not isinstance(top, dict):
+                            continue
+                        for m in top.get("media", []):
+                            if not isinstance(m, dict):
+                                continue
+                            mname = m.get("name")
+                            if mname and looks_like_media_id(mname):
+                                self._record_media_id(
+                                    mname, source="batchasyncgeneratevideo", url=url
+                                )
+                                logger.debug(
+                                    "Captured video media_id from API: %s", mname[:20]
+                                )
 
             # --- Image media names (text-to-image fast path) ---
             if "batchgenerateimages" in url_l and status == 200:

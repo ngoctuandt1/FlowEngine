@@ -180,10 +180,11 @@ async def wait_for_completion(
                 initial_url=initial_url,
                 initial_media_count=initial_media_count,
             )
-            return _result(
-                True,
-                media_ids=_collect_media_ids(client, start_index=initial_media_count),
-            )
+            # Merge network-captured IDs with any IDs parsed directly from
+            # the API response body (batchAsyncGenerateVideo* may embed them).
+            network_ids = _collect_media_ids(client, start_index=initial_media_count)
+            all_ids = list(dict.fromkeys(network_ids + api.get("media_ids", [])))
+            return _result(True, media_ids=all_ids)
         if api["error"]:
             error_kind = _normalize_failure_kind(api["error"])
             if error_kind in {"blocked_403", "blocked_429"}:
@@ -348,7 +349,13 @@ def _build_network_recaptcha_error(client, kind: str) -> RecaptchaError:
 # ------------------------------------------------------------------
 
 async def _check_api_signals(client) -> dict:
-    """Scan ``client._calls`` for operation status."""
+    """Scan ``client._calls`` for operation status.
+
+    Checks two URL families:
+    - ``operations/`` — LRO polling responses (``done``, ``progressPercentage``)
+    - ``batchasyncgeneratevideo`` — video submit responses (may embed ``media``
+      directly or carry ``progressPercentage`` / ``done`` when done inline)
+    """
     result: dict = {
         "progress": 0,
         "done": False,
@@ -374,12 +381,24 @@ async def _check_api_signals(client) -> dict:
             result["error"] = append_capture_suffix(error, capture_path)
             return result
 
-        if "operations/" not in url or not isinstance(body, dict):
+        url_l = url.lower()
+        is_api = "operations/" in url_l or "batchasyncgeneratevideo" in url_l
+        if not is_api or not isinstance(body, dict):
             continue
 
         progress = body.get("progressPercentage", 0)
-        if progress > result["progress"]:
-            result["progress"] = progress
+        if isinstance(progress, (int, float)) and progress > result["progress"]:
+            result["progress"] = int(progress)
+
+        # Collect any media_ids embedded in the response
+        for top in (body, *body.get("responses", [])):
+            if not isinstance(top, dict):
+                continue
+            for m in top.get("media", []):
+                if isinstance(m, dict):
+                    name = m.get("name")
+                    if name and name not in result["media_ids"]:
+                        result["media_ids"].append(name)
 
         if body.get("done"):
             result["done"] = True
@@ -389,6 +408,10 @@ async def _check_api_signals(client) -> dict:
         if err:
             result["error"] = str(err)
             return result
+
+    # If any media_ids were found across all calls, treat as done
+    if result["media_ids"]:
+        result["done"] = True
 
     return result
 
