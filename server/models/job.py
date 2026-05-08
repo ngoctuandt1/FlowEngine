@@ -282,6 +282,9 @@ class JobUpdate(BaseModel):
     generation_id: Optional[str] = None
     error: Optional[str] = None
     completed_at: Optional[datetime] = None
+    # Requeue path: clear claim ownership so the job can be picked up again
+    worker_id: Optional[str] = None
+    claimed_at: Optional[datetime] = None
 
 
 class JobWithThumb(Job):
