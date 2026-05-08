@@ -62,7 +62,14 @@ async def frames_to_video(
     homepage = flow_url(locale)
 
     await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(2)
+    try:
+        await page.wait_for_selector(
+            "text=/New project|Dự án mới|Tạo dự án/",
+            state="attached",
+            timeout=4000,
+        )
+    except Exception:
+        pass  # marketing landing or slow load — recovery logic below handles it
 
     current = page.url
     if is_login_page(current):
@@ -72,22 +79,27 @@ async def frames_to_video(
         if not login_ok:
             raise RuntimeError("Google login required - profile session expired.")
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        try:
+            await page.wait_for_selector(
+                "text=/New project|Dự án mới|Tạo dự án/",
+                state="attached",
+                timeout=4000,
+            )
+        except Exception:
+            pass  # marketing landing or slow load — recovery logic below handles it
         current = page.url
 
     if "/vi/" in current:
         locale = "vi"
 
-    await asyncio.sleep(3)
     await _dismiss_overlays(page)
     await _click_new_project(page)
 
     try:
         await page.wait_for_url("**/project/**", timeout=20000)
     except Exception:
-        await asyncio.sleep(5)
+        await asyncio.sleep(1)
 
-    await asyncio.sleep(3)
     current = page.url
     if is_login_page(current):
         login_ok = await handle_login_redirect(
@@ -96,13 +108,19 @@ async def frames_to_video(
         if not login_ok:
             raise RuntimeError("Google login required - profile session expired.")
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
+        try:
+            await page.wait_for_selector(
+                "text=/New project|Dự án mới|Tạo dự án/",
+                state="attached",
+                timeout=4000,
+            )
+        except Exception:
+            pass  # marketing landing or slow load — recovery logic below handles it
         await _click_new_project(page)
         try:
             await page.wait_for_url("**/project/**", timeout=20000)
         except Exception:
-            await asyncio.sleep(5)
-        await asyncio.sleep(3)
+            await asyncio.sleep(1)
 
     project_url_full = page.url
     project_id = extract_project_id(project_url_full)

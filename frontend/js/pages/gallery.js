@@ -349,7 +349,7 @@
     resetFilters();
     const requestId = ++state.requestId;
     const [jobsResult, profilesResult] = await Promise.allSettled([
-      API.jobs.list({ status: 'completed' }),
+      API.jobs.list({ status: 'completed', limit: 500 }),
       API.profiles.list(),
     ]);
 
@@ -381,7 +381,7 @@
     }
 
     try {
-      const jobs = await API.jobs.list({ status: 'completed' });
+      const jobs = await API.jobs.list({ status: 'completed', limit: 500 });
       if (requestId !== state.requestId) return;
       state.jobs = normalizeJobList(jobs);
       repaintGallery();

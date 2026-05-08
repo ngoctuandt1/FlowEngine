@@ -1190,7 +1190,7 @@
     renderPage();
 
     try {
-      const jobsResult = await API.jobs.list();
+      const jobsResult = await API.jobs.list({ limit: 1000 });
       const summaries = groupJobsByChain(normalizeJobList(jobsResult));
 
       if (requestId !== state.listRequestId) return;

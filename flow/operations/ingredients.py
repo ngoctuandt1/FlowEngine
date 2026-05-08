@@ -61,7 +61,14 @@ async def ingredients_to_video(
     homepage = flow_url(locale)
 
     await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(2)
+    try:
+        await page.wait_for_selector(
+            "text=/New project|Dự án mới|Tạo dự án/",
+            state="attached",
+            timeout=4000,
+        )
+    except Exception:
+        pass  # marketing landing or slow load — recovery logic below handles it
 
     current = page.url
     if is_login_page(current):
@@ -71,22 +78,27 @@ async def ingredients_to_video(
         if not login_ok:
             raise RuntimeError("Google login required - profile session expired.")
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        try:
+            await page.wait_for_selector(
+                "text=/New project|Dự án mới|Tạo dự án/",
+                state="attached",
+                timeout=4000,
+            )
+        except Exception:
+            pass  # marketing landing or slow load — recovery logic below handles it
         current = page.url
 
     if "/vi/" in current:
         locale = "vi"
 
-    await asyncio.sleep(3)
     await _dismiss_overlays(page)
     await _click_new_project(page)
 
     try:
         await page.wait_for_url("**/project/**", timeout=20000)
     except Exception:
-        await asyncio.sleep(5)
+        await asyncio.sleep(1)
 
-    await asyncio.sleep(3)
     current = page.url
     if is_login_page(current):
         login_ok = await handle_login_redirect(
@@ -95,13 +107,19 @@ async def ingredients_to_video(
         if not login_ok:
             raise RuntimeError("Google login required - profile session expired.")
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
+        try:
+            await page.wait_for_selector(
+                "text=/New project|Dự án mới|Tạo dự án/",
+                state="attached",
+                timeout=4000,
+            )
+        except Exception:
+            pass  # marketing landing or slow load — recovery logic below handles it
         await _click_new_project(page)
         try:
             await page.wait_for_url("**/project/**", timeout=20000)
         except Exception:
-            await asyncio.sleep(5)
-        await asyncio.sleep(3)
+            await asyncio.sleep(1)
 
     project_url_full = page.url
     project_id = extract_project_id(project_url_full)
@@ -188,7 +206,7 @@ async def _upload_ingredient(page, image_path: str) -> None:
         await upload_item.click(timeout=3000)
     chooser = await chooser_info.value
     await chooser.set_files(image_path)
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.15)
 
 
 async def _upload_ingredient_with_retry(page, image_path: str, expected_count: int) -> None:
@@ -226,7 +244,7 @@ async def _open_ingredients_composer_menu(page) -> None:
             chip = page.locator(sel).first
             if await chip.is_visible(timeout=2000):
                 await chip.click(timeout=3000)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.15)
                 return
         except Exception:
             continue
@@ -234,7 +252,7 @@ async def _open_ingredients_composer_menu(page) -> None:
         fallback = page.locator("button[aria-haspopup='menu']").filter(has_text="x1").last
         if await fallback.is_visible(timeout=2000):
             await fallback.click(timeout=3000)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.15)
             return
     except Exception:
         pass
@@ -251,14 +269,18 @@ async def _ensure_uploaded_ingredient_count(page, expected: int) -> None:
 
 
 async def _wait_for_uploaded_ingredient_count(page, expected: int, timeout_sec: float = 60.0) -> int:
-    deadline = asyncio.get_running_loop().time() + timeout_sec
-    latest_count = 0
-    while asyncio.get_running_loop().time() < deadline:
-        latest_count = await _count_uploaded_ingredients(page)
-        if latest_count >= expected:
-            return latest_count
-        await asyncio.sleep(5)
-    return latest_count
+    visible_count = await _count_uploaded_ingredients(page)
+    if visible_count >= expected:
+        return visible_count
+
+    try:
+        await page.wait_for_function(
+            f"() => document.querySelectorAll('[data-testid*=\"ingredient\"], .ingredient-item, [aria-label*=\"ingredient\"]').length >= {expected}",
+            timeout=min(int(timeout_sec * 1000), 10000),
+        )
+    except Exception:
+        await asyncio.sleep(2)  # fallback
+    return await _count_uploaded_ingredients(page)
 
 
 async def _count_uploaded_ingredients(page) -> int:

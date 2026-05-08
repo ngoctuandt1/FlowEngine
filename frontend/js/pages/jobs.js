@@ -68,7 +68,7 @@
   }
 
   function buildJobFilters() {
-    const filters = {};
+    const filters = { limit: 500 };
     ['status', 'type', 'profile', 'chain_id'].forEach((key) => {
       if (state.filters[key]) filters[key] = state.filters[key];
     });

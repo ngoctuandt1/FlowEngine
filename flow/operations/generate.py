@@ -94,7 +94,14 @@ async def text_to_video(
     logger.info("Step 1: Navigate to Flow homepage")
     homepage = flow_url(locale)
     await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-    await asyncio.sleep(2)  # Let page settle
+    try:
+        await page.wait_for_selector(
+            "text=/New project|Dự án mới|Tạo dự án/",
+            state="attached",
+            timeout=4000,
+        )
+    except Exception:
+        pass  # marketing landing or slow load — recovery logic below handles it
 
     # Handle Google login redirect if needed
     current = page.url
@@ -113,7 +120,14 @@ async def text_to_video(
             raise RuntimeError(message)
         # Re-navigate after login resolution
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        try:
+            await page.wait_for_selector(
+                "text=/New project|Dự án mới|Tạo dự án/",
+                state="attached",
+                timeout=4000,
+            )
+        except Exception:
+            pass  # marketing landing or slow load — recovery logic below handles it
         current = page.url
 
     # Detect locale from final URL
@@ -141,7 +155,14 @@ async def text_to_video(
             )
             raise RuntimeError(message)
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        try:
+            await page.wait_for_selector(
+                "text=/New project|Dự án mới|Tạo dự án/",
+                state="attached",
+                timeout=4000,
+            )
+        except Exception:
+            pass  # marketing landing or slow load — recovery logic below handles it
         logger.info("Homepage restored after login redirect: %s", page.url)
         return True
 
@@ -192,11 +213,9 @@ async def text_to_video(
         if not await _new_project_button_attached(timeout_ms=1000):
             await recover_from_flow_canvas_page(page, logger, homepage)
 
-    # Final settle — give slow renders a second chance before click.
     if not await _new_project_button_attached(timeout_ms=15000):
         await _recover_homepage_login_redirect()
         logger.warning("New-project button did not attach within 15s — continuing")
-    await asyncio.sleep(2)
 
     # Dismiss any welcome/onboarding overlay first
     await _dismiss_overlays(page)
@@ -312,10 +331,8 @@ async def text_to_video(
         await page.wait_for_url("**/project/**", timeout=20000)
     except Exception:
         # Fallback: wait for URL to change from homepage
-        await asyncio.sleep(5)
+        await asyncio.sleep(1)
         logger.warning("URL pattern wait failed, current: %s", page.url[:100])
-
-    await asyncio.sleep(3)
 
     # Check if "Create" click redirected to Google login (session expired)
     current = page.url
@@ -334,7 +351,14 @@ async def text_to_video(
             raise RuntimeError(message)
         # Re-navigate to homepage and retry project creation
         await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
+        try:
+            await page.wait_for_selector(
+                "text=/New project|Dự án mới|Tạo dự án/",
+                state="attached",
+                timeout=4000,
+            )
+        except Exception:
+            pass  # marketing landing or slow load — recovery logic below handles it
 
         # Re-click Create
         for sel in NEW_PROJECT_SELECTORS:
@@ -350,9 +374,7 @@ async def text_to_video(
         try:
             await page.wait_for_url("**/project/**", timeout=20000)
         except Exception:
-            await asyncio.sleep(5)
-
-        await asyncio.sleep(3)
+            await asyncio.sleep(1)
 
     project_url_full = page.url
     project_id = extract_project_id(project_url_full)
@@ -551,41 +573,32 @@ async def _dismiss_overlays(page):
 
 
 async def _wait_for_composer(page, timeout_sec: float = 15.0):
-    """Wait until the Slate.js composer editor is visible on page.
-
-    Checks for data-slate-editor, contenteditable, or the placeholder text.
-    This prevents premature prompt typing on a still-loading page.
-    """
+    """Wait until the Slate.js composer editor is visible."""
     COMPOSER_SELECTORS = [
         "[data-slate-editor='true']",
         "[role='textbox'][aria-multiline='true']",
         "[data-testid='composer_input']",
     ]
-
-    deadline = asyncio.get_event_loop().time() + timeout_sec
-    while asyncio.get_event_loop().time() < deadline:
-        for sel in COMPOSER_SELECTORS:
-            try:
-                el = page.locator(sel).first
-                if await el.is_visible(timeout=500):
-                    logger.info("Composer ready via: %s", sel)
-                    return
-            except Exception:
-                continue
-
-        # Also check for placeholder text (locale-independent check)
+    timeout_ms = int(timeout_sec * 1000)
+    # Try each selector with the full timeout budget. First match wins.
+    for sel in COMPOSER_SELECTORS:
         try:
-            found = await page.evaluate("""() => {
-                const text = document.body?.innerText || '';
-                return /what do you want to create|bạn muốn tạo gì/i.test(text);
-            }""")
-            if found:
-                logger.info("Composer ready (placeholder text detected)")
-                return
+            await page.wait_for_selector(sel, state="visible", timeout=timeout_ms)
+            logger.info("Composer ready via: %s", sel)
+            return
         except Exception:
-            pass
+            continue
 
-        await asyncio.sleep(1)
+    # Fallback: check placeholder text
+    try:
+        await page.wait_for_function(
+            "() => /what do you want to create|bạn muốn tạo gì/i.test(document.body?.innerText || '')",
+            timeout=timeout_ms,
+        )
+        logger.info("Composer ready (placeholder text detected)")
+        return
+    except Exception:
+        pass
 
     logger.warning("Composer not detected after %.0fs — proceeding anyway", timeout_sec)
 

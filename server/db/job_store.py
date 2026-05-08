@@ -452,6 +452,21 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
                 """,
                 (job_id,),
             )
+        elif status_value == "pending" and (
+            fields.get("worker_id") is None and "worker_id" in fields
+        ):
+            # Requeue path: job reset to pending with cleared claim metadata —
+            # also clear the profiles table so the profile is not stuck as
+            # "claimed" while waiting for the re-warmed worker to pick it up.
+            await db.execute(
+                """
+                UPDATE profiles
+                SET current_job_id = NULL,
+                    worker_id = NULL
+                WHERE current_job_id = ?
+                """,
+                (job_id,),
+            )
 
         await db.commit()
         if cursor.rowcount == 0:

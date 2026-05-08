@@ -108,9 +108,12 @@ class ProfileSwapper:
 
         Returns count of processes killed. Best-effort; never raises.
         """
-        target = str(self.profile_base_dir / profile_name)
+        target = str((self.profile_base_dir / profile_name).resolve())
+        user_data_arg = f"--user-data-dir={target}".encode()
         killed = 0
-        # Walk /proc on Linux to find pids whose cmdline contains the profile path.
+        # Walk /proc on Linux to find pids whose cmdline has an exact
+        # --user-data-dir=<path> argument (NUL-separated), avoiding
+        # substring matches like "foo" matching "foobar".
         proc_root = Path("/proc")
         if not proc_root.exists():
             return 0
@@ -123,7 +126,8 @@ class ProfileSwapper:
                 continue
             if not cmdline:
                 continue
-            if target.encode() not in cmdline:
+            # Split on NUL to get individual argv entries and require exact match
+            if user_data_arg not in cmdline.split(b"\x00"):
                 continue
             pid = int(entry.name)
             try:

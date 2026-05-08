@@ -35,7 +35,9 @@ import platform
 import re
 import signal
 import shutil
+import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,35 @@ from flow.media_id import media_id_from_url, normalize_media_id, looks_like_medi
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+# ---- CDP port allocation ----
+# Each FlowClient instance needs a unique debug port so concurrent Chrome
+# processes on the same host don't conflict. allocate_cdp_port() picks the
+# next free port in the configured range, falling back to OS-assigned.
+_CDP_PORT_BASE = int(os.environ.get("FLOW_CDP_PORT_BASE", "19300"))
+_CDP_PORT_RANGE = int(os.environ.get("FLOW_CDP_PORT_RANGE", "100"))
+_cdp_port_lock = threading.Lock()
+_cdp_port_counter = 0
+
+
+def allocate_cdp_port() -> int:
+    """Return an available TCP port for Chrome CDP, cycling through the range."""
+    global _cdp_port_counter
+    with _cdp_port_lock:
+        for _ in range(_CDP_PORT_RANGE):
+            port = _CDP_PORT_BASE + (_cdp_port_counter % _CDP_PORT_RANGE)
+            _cdp_port_counter += 1
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind(("127.0.0.1", port))
+                    return port
+                except OSError:
+                    continue
+        # All ports in range busy — let OS pick
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
 
 # ---------------------------------------------------------------------------
 # Profile cloning
@@ -1048,8 +1079,16 @@ class FlowClient:
                         os.killpg(pgid, signal.SIGKILL)
                     else:
                         proc.kill()
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
                 else:
                     proc.kill()
+                    try:
+                        proc.wait(timeout=3)
+                    except Exception:
+                        pass
             except Exception:
                 pass
         finally:

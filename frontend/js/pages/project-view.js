@@ -1378,7 +1378,7 @@
 
   async function loadFromCompatibilityFallback(chainId) {
     const debugBadges = [];
-    const listed = normalizeJobList(await API.jobs.list({ limit: 500 }))
+    const listed = normalizeJobList(await API.jobs.list({ chain_id: chainId, limit: 200 }))
       .filter((job) => String(job?.chain_id || '').trim() === chainId)
       .sort(compareByCreatedAsc);
     if (!listed.length) {

@@ -582,8 +582,8 @@
       API.fetch('/health'),
       API.jobs.counts(),
       API.profiles.list(),
-      API.jobs.list({ status: 'pending' }),
-      API.jobs.list({ status: 'failed' }),
+      API.jobs.list({ status: 'pending', limit: 100 }),
+      API.jobs.list({ status: 'failed', limit: 100 }),
     ]);
 
     if (requestId !== state.requestId) return state.snapshot;
