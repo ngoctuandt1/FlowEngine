@@ -47,6 +47,8 @@ MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
 ALLOW_SAME_PROFILE_CONCURRENCY = os.getenv(
     "ALLOW_SAME_PROFILE_CONCURRENCY", "0"
 ).strip() in ("1", "true", "yes")
+FLOW_USE_BASE_PROFILE = os.getenv("FLOW_USE_BASE_PROFILE", "0").strip() in ("1", "true", "yes")
+FLOW_BROWSER_POOL = os.getenv("FLOW_BROWSER_POOL", "0").strip() in ("1", "true", "yes")
 HEARTBEAT_INTERVAL_SEC = 30
 
 # ======================================================================
@@ -165,6 +167,10 @@ async def claim_loop(
     last_heartbeat = datetime.now(UTC)
     heartbeat_delta = timedelta(seconds=HEARTBEAT_INTERVAL_SEC)
     in_flight: set[asyncio.Task[None]] = set()
+    # Profiles undergoing burn/wipe-rewarm: excluded from same-profile claims
+    # until recovery completes, preventing a new job from cloning a half-dead dir.
+    _draining: set[str] = set()
+    _l1_rotation_offset = 0
     # Default cap = MAX_CONCURRENT_JOBS bounded by profile count (legacy:
     # one Chrome per profile dir). With ALLOW_SAME_PROFILE_CONCURRENCY,
     # the cap is MAX_CONCURRENT_JOBS regardless of profile count — the
@@ -200,9 +206,12 @@ async def claim_loop(
         finally:
             if profile:
                 profile_mgr.mark_available(profile)
+                _draining.discard(profile)
 
         try:
             if result.get("requeue"):
+                if profile:
+                    _draining.add(profile)
                 # Burn-recovery success path: dispatcher signaled this job
                 # should re-enter the queue on the freshly-warmed profile
                 # rather than terminating as failed. Reset to pending and
@@ -265,7 +274,14 @@ async def claim_loop(
             # budget; the per-project lock and claim SQL still enforce
             # safe ordering.
             if ALLOW_SAME_PROFILE_CONCURRENCY:
-                available = list(profile_mgr.profiles.keys())
+                # Exclude profiles mid-burn/wipe so we don't clone a half-dead dir.
+                all_profiles = [p for p in profile_mgr.profiles.keys() if p not in _draining]
+                # Rotate order each iteration for L1 load balancing across profiles.
+                if all_profiles:
+                    _l1_rotation_offset = (_l1_rotation_offset + 1) % len(all_profiles)
+                    available = all_profiles[_l1_rotation_offset:] + all_profiles[:_l1_rotation_offset]
+                else:
+                    available = []
             else:
                 available = profile_mgr.get_available()
             if not available or len(in_flight) >= max_concurrent:
@@ -274,9 +290,7 @@ async def claim_loop(
 
             slots = max_concurrent - len(in_flight)
             if ALLOW_SAME_PROFILE_CONCURRENCY:
-                # Repeat the available pool until we fill the remaining
-                # slots — server claim_next_job picks one job per call;
-                # the client fires up to `slots` claim requests below.
+                # Repeat the rotated pool until we fill the remaining slots.
                 claim_profiles = (available * slots)[:slots]
             else:
                 claim_profiles = available[:slots]
@@ -318,6 +332,24 @@ async def run() -> None:
     logger.info("Profiles: %s", ", ".join(WORKER_PROFILES))
     logger.info("Poll:     %ds", POLL_INTERVAL_SEC)
     logger.info("=" * 60)
+
+    # Validate ALLOW_SAME_PROFILE_CONCURRENCY mode compatibility.
+    if ALLOW_SAME_PROFILE_CONCURRENCY:
+        if FLOW_USE_BASE_PROFILE:
+            logger.critical(
+                "ALLOW_SAME_PROFILE_CONCURRENCY=1 is incompatible with "
+                "FLOW_USE_BASE_PROFILE=1: multiple Chromes would share the same "
+                "--user-data-dir and corrupt each other's session. "
+                "Set FLOW_USE_BASE_PROFILE=0 or disable same-profile concurrency."
+            )
+            sys.exit(1)
+        if FLOW_BROWSER_POOL:
+            logger.critical(
+                "ALLOW_SAME_PROFILE_CONCURRENCY=1 is incompatible with "
+                "FLOW_BROWSER_POOL=1: the pool serialises one client per profile, "
+                "negating same-profile concurrency. Disable one or the other."
+            )
+            sys.exit(1)
 
     # Fail fast on misconfigured profile dirs — the most common DX trap
     # is running from a worktree where ./chrome-profiles is empty.

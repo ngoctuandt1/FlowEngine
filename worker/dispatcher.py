@@ -80,11 +80,12 @@ def _make_client(profile: str):
     Use :func:`_client_lease` instead — it transparently routes through
     :class:`~worker.browser_pool.BrowserPool` when ``FLOW_BROWSER_POOL=1``.
     """
-    from flow.client import FlowClient
+    from flow.client import FlowClient, allocate_cdp_port
     return FlowClient(
         profile_name=profile,
         profile_base_dir=PROFILE_BASE_DIR,
         download_dir=DOWNLOAD_DIR,
+        debug_port=allocate_cdp_port(),
     )
 
 
