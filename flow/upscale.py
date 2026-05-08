@@ -358,6 +358,26 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
     if await recover_from_flow_landing(page, logger, page.url):
         await asyncio.sleep(1)
     if "/edit/" in page.url:
+        # Verify we're on the correct tile when a target media_id is specified.
+        # After extend/insert/remove generation the page stays on the SOURCE
+        # tile (/edit/{old_mid}) while the download target is the NEW output
+        # tile (/edit/{new_mid}).  The download button is data-disabled="" on
+        # the wrong tile, so we must switch before attempting the click.
+        if media_id and media_id not in page.url:
+            from flow.operations._base import _activate_clip_tile
+
+            logger.info(
+                "[UPSCALE] Wrong /edit/ tile active (need=%s url=%s) — activating target",
+                media_id[:20], page.url[:80],
+            )
+            activated = await _activate_clip_tile(page, media_id)
+            if activated:
+                await asyncio.sleep(1)
+            else:
+                logger.warning(
+                    "[UPSCALE] Could not activate tile %s; download button may still be disabled",
+                    media_id[:20],
+                )
         return
     if "/project/" not in page.url:
         recovered = await recover_from_flow_landing(page, logger, page.url)
