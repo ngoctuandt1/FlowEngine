@@ -339,14 +339,19 @@ async def test_navigate_click_fallback_logs_info_even_when_url_unchanged(monkeyp
 
 
 async def test_navigate_raises_leaf_lockout_when_both_paths_fail(monkeypatch):
-    """Change D: _activate_clip_tile + _click_video_tile both fail → LeafLockoutError.
+    """Change D: _activate_clip_tile + _click_video_tile both fail AND editor
+    did not mount → LeafLockoutError.
 
     The B28 forensic evidence: Flow on leaf extend-output clip with
     Camera/Insert/Remove greyed out, only Extend enabled. Both recovery
-    strategies failed. Hard-fail with LeafLockoutError so operators see
-    b28_leaf_lockout_<media> in job.error_message.
+    strategies failed AND the editor is not mounted. Hard-fail with
+    LeafLockoutError so operators see b28_leaf_lockout_<media> in
+    job.error_message.
+
+    editor_mounts=False simulates the B28 scenario where the editor is
+    genuinely stuck on the wrong clip (no <video> visible).
     """
-    client, page = _make_client(_edit_url(MEDIA_ID_B))
+    client, page = _make_client(_edit_url(MEDIA_ID_B), editor_mounts=False)
     monkeypatch.setattr(_base, "_activate_clip_tile", AsyncMock(return_value=False))
     monkeypatch.setattr(_base, "_click_video_tile", AsyncMock(return_value=False))
 
@@ -373,6 +378,30 @@ async def test_navigate_raises_leaf_lockout_when_both_paths_fail(monkeypatch):
     assert "b28_leaf_lockout" in str(exc), (
         f"LeafLockoutError str must include 'b28_leaf_lockout', got: {exc!s}"
     )
+
+
+async def test_navigate_proceeds_when_both_paths_fail_but_editor_mounted(monkeypatch):
+    """Routing-slug redirect pass-through: both tile-activation paths fail but
+    the editor IS mounted → no LeafLockoutError.
+
+    goto(/edit/{media_id}) often redirects to /edit/{routing_slug} (different
+    string, same video). If the editor mounted successfully it means the SPA
+    resolved the routing correctly; we should proceed rather than raising a
+    false-positive LeafLockoutError.
+    """
+    client, page = _make_client(_edit_url(MEDIA_ID_B), editor_mounts=True)
+    monkeypatch.setattr(_base, "_activate_clip_tile", AsyncMock(return_value=False))
+    monkeypatch.setattr(_base, "_click_video_tile", AsyncMock(return_value=False))
+
+    job = {
+        "edit_url": _edit_url(MEDIA_ID_B),
+        "project_url": _project_url(),
+        "media_id": MEDIA_ID_A,
+        "type": "insert-object",
+    }
+
+    # Should not raise — editor is mounted, routing-slug redirect succeeded
+    await navigate_to_edit(client, job)
 
 
 async def test_leaf_lockout_error_fields_all_present():

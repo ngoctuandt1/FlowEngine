@@ -252,28 +252,39 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
                         (post_click_media or "unknown")[:20],
                     )
             else:
-                # Both activation paths failed AND we know the active clip is
-                # the wrong one. Continuing would hit a disabled button (B28
-                # forensic evidence: Camera/Insert/Remove greyed out on leaf).
-                # Hard-fail now with a specific error that operators can act on
-                # without chasing "Failed to find button" false leads.
-                current_media_now = extract_media_id(page.url) or current_media or ""
-                op_type = job.get("type", "unknown")
-                message = (
-                    f"b28_leaf_lockout_{media_id}: {op_type} cannot activate "
-                    f"target clip tile; SPA stuck on leaf {current_media_now[:20]}"
-                )
-                message = await message_with_failure_capture(
-                    client,
-                    "b28_leaf_lockout",
-                    message,
-                )
-                raise LeafLockoutError(
-                    target_media_id=media_id,
-                    current_url=page.url,
-                    current_media_id=current_media_now,
-                    op_type=op_type,
-                )
+                # Both activation paths failed. Before hard-failing, check
+                # whether the editor mounted anyway — goto(/edit/{media_id})
+                # often redirects to /edit/{routing_slug} (different string,
+                # same video). If the editor IS mounted the routing resolved
+                # correctly and we can proceed; click_action_button's button-
+                # enabled poll will catch any remaining state issue.
+                if await _editor_mounted(page, timeout_ms=5000):
+                    logger.info(
+                        "Tile activation failed for media=%s but editor mounted"
+                        " on %s — routing-slug redirect; proceeding",
+                        media_id[:20], page.url[:80],
+                    )
+                else:
+                    # Editor is not mounted — we are genuinely stuck on the
+                    # wrong clip. Hard-fail with a specific error (B28 pattern:
+                    # Camera/Insert/Remove greyed out on a leaf tile).
+                    current_media_now = extract_media_id(page.url) or current_media or ""
+                    op_type = job.get("type", "unknown")
+                    message = (
+                        f"b28_leaf_lockout_{media_id}: {op_type} cannot activate "
+                        f"target clip tile; SPA stuck on leaf {current_media_now[:20]}"
+                    )
+                    message = await message_with_failure_capture(
+                        client,
+                        "b28_leaf_lockout",
+                        message,
+                    )
+                    raise LeafLockoutError(
+                        target_media_id=media_id,
+                        current_url=page.url,
+                        current_media_id=current_media_now,
+                        op_type=op_type,
+                    )
 
     # B39 (2026-04-23): the URL-strip branch above catches the SPA bouncing
     # to /project/ on stale media, but Flow's other failure mode keeps
