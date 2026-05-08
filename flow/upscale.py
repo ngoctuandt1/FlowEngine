@@ -373,12 +373,26 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
             activated = await _activate_clip_tile(page, media_id)
             if activated:
                 await asyncio.sleep(1)
-            else:
-                logger.warning(
-                    "[UPSCALE] Could not activate tile %s; download button may still be disabled",
-                    media_id[:20],
-                )
-        return
+                return
+            # Sidebar tile-switch failed (routing-slug/UUID mismatch).  After
+            # extend the source tile's download button is disabled while Flow
+            # is still settling the result tile.  Navigate to the project root
+            # so the tile-click path below re-enters on the most-recent tile
+            # (the extend result whose download button is enabled).
+            logger.warning(
+                "[UPSCALE] Could not activate tile %s — backing up to project root for tile re-entry",
+                media_id[:20],
+            )
+            project_url = page.url.split("/edit/")[0]
+            try:
+                await page.goto(project_url, wait_until="domcontentloaded", timeout=10_000)
+                await asyncio.sleep(1.0)
+            except Exception as exc:
+                logger.warning("[UPSCALE] Project root nav failed (%s); giving up", exc)
+                return
+            # Fall through to tile-click logic below.
+        else:
+            return
     if "/project/" not in page.url:
         recovered = await recover_from_flow_landing(page, logger, page.url)
         if "/edit/" in page.url:
