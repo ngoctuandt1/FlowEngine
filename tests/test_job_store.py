@@ -14,8 +14,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from server.db.database import get_db
 from server.db.job_store import create_job, get_job, update_job
+from server.db.profile_store import create_profile, get_profile
 from server.models.job import Job, JobStatus, JobType, JobUpdate
+from server.models.profile import Profile, ProfileStatus
 from server.models.project import Project
 from server.db.project_store import create_project
 
@@ -115,3 +118,54 @@ async def test_delete_project_nulls_linked_job_project_ids(db):
 
     updated = await get_job("f2-project-id-b")
     assert updated.project_id is None
+
+
+async def test_requeue_clears_job_and_profile_claim_metadata(db):
+    """Requeue path: update_job(status=pending, worker_id=None, claimed_at=None) must
+    clear both the jobs table (worker_id, claimed_at) and the profiles table
+    (current_job_id) so the freshly-warmed profile is not stuck as 'claimed'.
+    """
+    profile = Profile(name="rq-profile", google_account="rq@gmail.com")
+    await create_profile(profile)
+
+    job = _make_pending_job("rq-j1")
+    job.profile = "rq-profile"
+    job.worker_id = "w-burn"
+    await create_job(job)
+
+    # Simulate claim: set profiles.current_job_id to point at this job.
+    async with get_db() as db_conn:
+        await db_conn.execute(
+            "UPDATE profiles SET current_job_id = ?, worker_id = ? WHERE name = ?",
+            ("rq-j1", "w-burn", "rq-profile"),
+        )
+        await db_conn.commit()
+
+    # Verify setup: profile is "claimed".
+    p_before = await get_profile("rq-profile")
+    assert p_before.current_job_id == "rq-j1"
+
+    # Act: requeue — reset job to pending and clear claim ownership.
+    result = await update_job(
+        "rq-j1",
+        JobUpdate(
+            status=JobStatus.PENDING,
+            worker_id=None,
+            claimed_at=None,
+            error=None,
+        ),
+    )
+
+    # Assert: job claim metadata is cleared.
+    assert result is not None
+    assert result.status == JobStatus.PENDING
+    assert result.worker_id is None
+    assert result.claimed_at is None
+
+    # Assert: profiles table is also cleared (DB-level verification).
+    p_after = await get_profile("rq-profile")
+    assert p_after.current_job_id is None, (
+        "profiles.current_job_id must be cleared on requeue so the profile "
+        "is not stuck as 'claimed' while awaiting re-warm."
+    )
+    assert p_after.worker_id is None
