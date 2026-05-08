@@ -46,9 +46,9 @@ MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
 # concurrent Chromes on the same Google account / profile.
 ALLOW_SAME_PROFILE_CONCURRENCY = os.getenv(
     "ALLOW_SAME_PROFILE_CONCURRENCY", "0"
-).strip() in ("1", "true", "yes")
-FLOW_USE_BASE_PROFILE = os.getenv("FLOW_USE_BASE_PROFILE", "0").strip() in ("1", "true", "yes")
-FLOW_BROWSER_POOL = os.getenv("FLOW_BROWSER_POOL", "0").strip() in ("1", "true", "yes")
+).strip().lower() in ("1", "true", "yes")
+FLOW_USE_BASE_PROFILE = os.getenv("FLOW_USE_BASE_PROFILE", "0").strip().lower() in ("1", "true", "yes")
+FLOW_BROWSER_POOL = os.getenv("FLOW_BROWSER_POOL", "0").strip().lower() in ("1", "true", "yes")
 HEARTBEAT_INTERVAL_SEC = 30
 
 # ======================================================================
@@ -210,21 +210,27 @@ async def claim_loop(
 
         try:
             if result.get("requeue"):
+                # Burn-recovery success path: block the profile during the API
+                # call so the claim loop cannot re-acquire it mid-update.
+                # Must discard AFTER the await to avoid a permanent-draining
+                # deadlock: wipe-rewarm keeps the same profile name in
+                # profile_mgr, so without the discard below the claim loop
+                # would exclude this profile forever.
                 if profile:
                     _draining.add(profile)
-                # Burn-recovery success path: dispatcher signaled this job
-                # should re-enter the queue on the freshly-warmed profile
-                # rather than terminating as failed. Reset to pending and
-                # clear claim metadata so claim_next_job picks it up again.
-                await api.update_job(
-                    job_id,
-                    {
-                        "status": "pending",
-                        "worker_id": None,
-                        "claimed_at": None,
-                        "error": None,
-                    },
-                )
+                try:
+                    await api.update_job(
+                        job_id,
+                        {
+                            "status": "pending",
+                            "worker_id": None,
+                            "claimed_at": None,
+                            "error": None,
+                        },
+                    )
+                finally:
+                    if profile:
+                        _draining.discard(profile)
                 logger.info(
                     "Job %s requeued after burn-recovery: %s",
                     job_id,
