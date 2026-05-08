@@ -88,7 +88,7 @@ Each task = one acceptance-testable unit. Each step = one action a developer (or
 
 The following patterns are PRD failures. Never write them in this document — they leak into Codex prompts and produce garbage:
 
-<!-- The tokens below are intentionally obfuscated (T-B-D not TBD) so a `grep -i TBD` scan on a real PRD won't false-positive on this template section. -->
+<!-- The tokens below are intentionally obfuscated (T-B-D, not the literal three-letter abbreviation) so a `grep -i TBD` scan on a real PRD won't false-positive on this template section. -->
 - `T-B-D`, `T-O-D-O`, "implement later", "fill in details"
 - "Add appropriate error handling" / "add validation" / "handle-edge-cases"
 - "Write tests for the above" (without actual test code)
