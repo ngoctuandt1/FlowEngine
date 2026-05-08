@@ -941,20 +941,26 @@ class FlowClient:
                     logger.debug("Captured account info: %s", body)
 
             # --- Generation ID / async video operation capture ---
+            # Covers batchAsyncGenerateVideo* (submit), batchCheckAsync* (poll),
+            # and operations/* (LRO poll).  Media names are recorded into
+            # _media_id_events so the download pipeline always has the ID.
+            # Completion is NOT inferred here — only Method 0 (T2I) and
+            # Method 3 (DOM new-video) are authoritative done signals for video.
             if status == 200 and (
-                "operations/" in url_l or "batchasyncgeneratevideo" in url_l
+                "operations/" in url_l
+                or "batchasyncgeneratevideo" in url_l
+                or "batchcheckasyncvideogenerationstatus" in url_l
             ):
                 body = call_entry.get("body")
                 if isinstance(body, dict):
                     # LRO submit response: {"name": "operations/xyz"}
-                    # OR polling response with same field
                     name = body.get("name", "")
                     if name and not self._gen_id:
                         self._gen_id = str(name)
                         logger.debug("Captured gen_id: %s", self._gen_id)
-                    # Some response shapes embed generated media directly
-                    # e.g. {"media": [{"name": "<uuid>"}]} or
-                    #      {"responses": [{"media": [{"name": "<uuid>"}]}]}
+                    # Extract media names from any response shape:
+                    #   {"media": [{"name": "<uuid>"}]}
+                    #   {"responses": [{"media": [{"name": "<uuid>"}]}]}
                     for top in (body, *body.get("responses", [])):
                         if not isinstance(top, dict):
                             continue
@@ -964,7 +970,7 @@ class FlowClient:
                             mname = m.get("name")
                             if mname and looks_like_media_id(mname):
                                 self._record_media_id(
-                                    mname, source="batchasyncgeneratevideo", url=url
+                                    mname, source="api_response", url=url
                                 )
                                 logger.debug(
                                     "Captured video media_id from API: %s", mname[:20]

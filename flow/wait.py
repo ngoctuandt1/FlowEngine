@@ -180,11 +180,10 @@ async def wait_for_completion(
                 initial_url=initial_url,
                 initial_media_count=initial_media_count,
             )
-            # Merge network-captured IDs with any IDs parsed directly from
-            # the API response body (batchAsyncGenerateVideo* may embed them).
-            network_ids = _collect_media_ids(client, start_index=initial_media_count)
-            all_ids = list(dict.fromkeys(network_ids + api.get("media_ids", [])))
-            return _result(True, media_ids=all_ids)
+            return _result(
+                True,
+                media_ids=_collect_media_ids(client, start_index=initial_media_count),
+            )
         if api["error"]:
             error_kind = _normalize_failure_kind(api["error"])
             if error_kind in {"blocked_403", "blocked_429"}:
@@ -353,8 +352,13 @@ async def _check_api_signals(client) -> dict:
 
     Checks two URL families:
     - ``operations/`` — LRO polling responses (``done``, ``progressPercentage``)
-    - ``batchasyncgeneratevideo`` — video submit responses (may embed ``media``
-      directly or carry ``progressPercentage`` / ``done`` when done inline)
+    - ``batchasyncgeneratevideo`` / ``batchcheckasyncvideogenerationstatus`` —
+      video submit/poll responses.  Media names are collected for the caller
+      but these URLs alone do NOT signal done (they return media[] from the
+      first poll, before generation completes).
+
+    Completion for video is always determined by Method 3 (DOM new-video).
+    Method 1 only fires for explicit ``done: true`` from operations/ responses.
     """
     result: dict = {
         "progress": 0,
@@ -382,7 +386,11 @@ async def _check_api_signals(client) -> dict:
             return result
 
         url_l = url.lower()
-        is_api = "operations/" in url_l or "batchasyncgeneratevideo" in url_l
+        is_api = (
+            "operations/" in url_l
+            or "batchasyncgeneratevideo" in url_l
+            or "batchcheckasyncvideogenerationstatus" in url_l
+        )
         if not is_api or not isinstance(body, dict):
             continue
 
@@ -390,7 +398,7 @@ async def _check_api_signals(client) -> dict:
         if isinstance(progress, (int, float)) and progress > result["progress"]:
             result["progress"] = int(progress)
 
-        # Collect any media_ids embedded in the response
+        # Collect media_ids so callers can pass them to the download pipeline.
         for top in (body, *body.get("responses", [])):
             if not isinstance(top, dict):
                 continue
@@ -400,7 +408,11 @@ async def _check_api_signals(client) -> dict:
                     if name and name not in result["media_ids"]:
                         result["media_ids"].append(name)
 
-        if body.get("done"):
+        # Only signal done on an explicit operations/ LRO done flag.
+        # batchCheckAsyncVideoGenerationStatus returns media[] from the
+        # very first poll (before generation completes), so its media
+        # presence must NOT be treated as a completion signal.
+        if "operations/" in url_l and body.get("done"):
             result["done"] = True
             return result
 
@@ -408,10 +420,6 @@ async def _check_api_signals(client) -> dict:
         if err:
             result["error"] = str(err)
             return result
-
-    # If any media_ids were found across all calls, treat as done
-    if result["media_ids"]:
-        result["done"] = True
 
     return result
 
