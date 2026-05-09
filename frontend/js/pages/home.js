@@ -205,7 +205,7 @@
   }
 
   function handleCreateProject() {
-    location.hash = '#create-job';
+    location.hash = '#create';
   }
 
   const HomePage = {
