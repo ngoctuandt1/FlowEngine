@@ -61,7 +61,7 @@ def _embed_image_metadata(filepath: Path, metadata: dict | None) -> None:
     meta_args = _metadata_args(metadata)
     if not meta_args:
         return
-    tmp = filepath.with_suffix(filepath.suffix + ".meta.tmp")
+    tmp = filepath.with_name(filepath.stem + "_meta_tmp" + filepath.suffix)
     try:
         proc = subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error",
@@ -380,7 +380,7 @@ async def _api_download_with_retry(
                 redirect_url = response.headers.get("location")
                 if redirect_url:
                     return await _fetch_and_save(
-                        page, redirect_url, prefix, quality, output_dir, media_kind
+                        page, redirect_url, prefix, quality, output_dir, media_kind, metadata=metadata
                     )
 
             elif response.status in (202, 404) and "upsampled" in url:
@@ -442,7 +442,7 @@ def _faststart_mp4(filepath: Path, metadata: dict | None = None) -> None:
     """
     if filepath.suffix.lower() != ".mp4" or not filepath.exists():
         return
-    tmp_path = filepath.with_suffix(filepath.suffix + ".faststart.tmp")
+    tmp_path = filepath.with_name(filepath.stem + "_faststart_tmp" + filepath.suffix)
     try:
         proc = subprocess.run(
             [
@@ -456,8 +456,14 @@ def _faststart_mp4(filepath: Path, metadata: dict | None = None) -> None:
             capture_output=True,
             timeout=60,
         )
-        if proc.returncode == 0 and tmp_path.exists() and tmp_path.stat().st_size > 0:
-            tmp_path.replace(filepath)
+        if proc.returncode == 0:
+            if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                tmp_path.replace(filepath)
+            else:
+                logger.warning(
+                    "faststart output missing for %s: expected %s",
+                    filepath.name, tmp_path.name,
+                )
             poster_path = filepath.with_suffix(".poster.jpg")
             try:
                 poster_proc = subprocess.run(

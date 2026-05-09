@@ -4,8 +4,8 @@ Slate selector in `flow/operations/extend.py`.
 Cherry-picks from `stash@{0}` §7.3 KEEP-4 + KEEP-5 + KEEP-6 (see
 `docs/session-reports/2026-04-17_stash-triage_flow-refinements.md`):
 
-- **KEEP-4** — `_verify_extend_panel` polls for `editors>=2` OR
-  `[data-scroll-state='START']` and is called between the Extend click
+- **KEEP-4** — `_verify_extend_panel` polls for `editors>=2` with an
+  extend placeholder (`What happens next?` / `Tiếp theo là gì?`) and is called between the Extend click
   (Step 3) and prompt typing (Step 4). Master silently fell through on a
   missed panel open and only surfaced the failure as a submit timeout with
   no diagnostic.
