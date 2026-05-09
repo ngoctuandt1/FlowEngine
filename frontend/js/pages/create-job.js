@@ -45,7 +45,7 @@
   function renderTypeSelector() {
     return `
       <div class="type-selector" id="type-selector">
-        ${JOB_TYPES.map((t) => `
+        ${JOB_TYPES.filter((t) => LEVEL_1_TYPES.has(t.id)).map((t) => `
           <div class="type-option ${t.id === selectedType ? 'selected' : ''}" data-type="${t.id}">
             <span class="material-icons">${t.icon}</span>
             <div class="type-option-label">${t.shortLabel}</div>
@@ -424,7 +424,7 @@
     async render() {
       await fetchProfiles();
       return `
-        <div class="card" style="max-width: 800px;">
+        <div class="card" style="max-width: 640px; margin: 0 auto;">
           ${renderModeTabs()}
           <div id="mode-body">
             ${mode === 'single' ? renderSingleBody() : renderBatchBody()}
