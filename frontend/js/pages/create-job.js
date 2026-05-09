@@ -512,9 +512,11 @@
 
       try {
         const result = await API.jobs.create(data);
-        const id = result?.id || result?.job_id || 'unknown';
-        showResult('ok', 'Job created', `Job ID: <code>${App.escapeHtml(String(id))}</code>`);
         App.toast('Job created', 'success');
+        const chainId = result?.chain_id || result?.id;
+        if (chainId) {
+          location.hash = `#project-view/${encodeURIComponent(chainId)}`;
+        }
       } catch (e) {
         showResult('err', 'Create failed', App.escapeHtml(e.message));
         App.toast('Failed: ' + e.message, 'error');
