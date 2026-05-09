@@ -126,16 +126,17 @@ async def frames_to_video(
     project_id = extract_project_id(project_url_full)
 
     await _wait_for_composer(page)
+    await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
+    await _set_aspect_ratio(page, aspect_ratio)
+    await _set_output_count(page, 1)
     await _ensure_frames_mode(page)
     await _close_composer_menu(page)
+    await _verify_frames_mode(page)
     await _upload_frame(page, "Start", start_image_path)
     if end_image_path:
         await _upload_frame(page, "End", end_image_path)
 
     await _type_prompt(page, prompt)
-    await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
-    await _set_aspect_ratio(page, aspect_ratio)
-    await _set_output_count(page, 1)
 
     before_cards = await _count_visible_cards(page)
     client.clear_captures()
@@ -161,15 +162,22 @@ async def frames_to_video(
     if media_id and project_id:
         edit_url_val = f"{flow_url(locale)}/project/{project_id}/edit/{media_id}"
 
+    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     output_files = await download_video(
         client,
         media_ids=captured_media_ids or ([media_id] if media_id else []),
         prefix="f2v",
+        metadata={
+            "job_type": "frames-to-video",
+            "prompt": prompt,
+            "media_id": media_id or "",
+            "project_url": project_url,
+            "profile": client.profile_name or "",
+        },
     )
     if not output_files:
         raise RuntimeError("frames-to-video: no output file captured")
 
-    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     return {
         "project_url": project_url,
         "media_id": media_id,
@@ -191,6 +199,29 @@ async def _click_new_project(page) -> None:
         except Exception:
             continue
     raise RuntimeError("Failed to find '+ New project' button on Flow homepage")
+
+
+async def _verify_frames_mode(page, timeout_sec: float = 5.0) -> None:
+    """Confirm Frames mode is active by checking Start/End upload slots are visible."""
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            visible = await page.evaluate(
+                """() => {
+                    const labels = Array.from(document.querySelectorAll('*')).filter((el) => {
+                        const t = (el.textContent || '').trim();
+                        return (t === 'Start' || t === 'End') && el.children.length === 0;
+                    });
+                    return labels.length > 0;
+                }"""
+            )
+            if visible:
+                logger.info("Frames mode verified: Start/End upload slots present")
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(0.4)
+    logger.warning("_verify_frames_mode: Start/End slots not found after %.1fs — proceeding anyway", timeout_sec)
 
 
 async def _ensure_frames_mode(page) -> None:

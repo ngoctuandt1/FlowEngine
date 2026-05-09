@@ -125,17 +125,18 @@ async def ingredients_to_video(
     project_id = extract_project_id(project_url_full)
 
     await _wait_for_composer(page)
+    await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
+    await _set_output_count(page, 1)
+    await _set_aspect_ratio(page, aspect_ratio)
     await _ensure_ingredients_mode(page)
     await _close_composer_menu(page)
+    await _verify_ingredients_mode(page)
 
     for expected_count, image_path in enumerate(ingredient_image_paths, start=1):
         await _upload_ingredient_with_retry(page, image_path, expected_count)
 
     await _ensure_uploaded_ingredient_count(page, expected=len(ingredient_image_paths))
     await _type_prompt(page, prompt)
-    await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
-    await _set_output_count(page, 1)
-    await _set_aspect_ratio(page, aspect_ratio)
 
     before_cards = await _count_visible_cards(page)
     client.clear_captures()
@@ -161,15 +162,21 @@ async def ingredients_to_video(
     if media_id and project_id:
         edit_url_val = f"{flow_url(locale)}/project/{project_id}/edit/{media_id}"
 
+    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     output_files = await download_video(
         client,
         media_ids=captured_media_ids or ([media_id] if media_id else []),
         prefix="ingredients",
+        metadata={
+            "job_type": "ingredients-to-video",
+            "prompt": prompt,
+            "media_id": media_id or "",
+            "project_url": project_url,
+            "profile": client.profile_name or "",
+        },
     )
     if not output_files:
         raise RuntimeError("ingredients-to-video: no output file captured")
-
-    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     return {
         "project_url": project_url,
         "media_id": media_id,
@@ -283,12 +290,39 @@ async def _wait_for_uploaded_ingredient_count(page, expected: int, timeout_sec: 
     return await _count_uploaded_ingredients(page)
 
 
+async def _verify_ingredients_mode(page, timeout_sec: float = 5.0) -> None:
+    """Confirm Ingredients mode by checking the + add-ingredient button is visible."""
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            btn = page.locator(INGREDIENT_PLUS_SELECTOR).first
+            if await btn.is_visible(timeout=500):
+                logger.info("Ingredients mode verified: add-ingredient button present")
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(0.4)
+    logger.warning("_verify_ingredients_mode: add button not found after %.1fs — proceeding anyway", timeout_sec)
+
+
 async def _count_uploaded_ingredients(page) -> int:
     return await page.evaluate(
         """() => {
-            return Array.from(document.querySelectorAll("img[alt='Generated image']")).filter((img) => {
+            const selectors = [
+                '[data-testid*="ingredient"]',
+                '[aria-label*="ingredient" i]',
+                '.ingredient-item',
+                '[data-upload-area] img',
+                '[class*="ingredient" i] img',
+            ];
+            for (const sel of selectors) {
+                const count = document.querySelectorAll(sel).length;
+                if (count > 0) return count;
+            }
+            return Array.from(document.querySelectorAll('img')).filter((img) => {
                 const rect = img.getBoundingClientRect();
-                return rect.width >= 100 && rect.height >= 100;
+                const r = img.closest('[role="region"], [class*="composer"], [class*="upload"]');
+                return rect.width >= 40 && rect.width <= 200 && rect.height >= 40 && r != null;
             }).length;
         }"""
     )
