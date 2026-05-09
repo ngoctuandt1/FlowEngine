@@ -51,30 +51,39 @@ def _no_sleep(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _make_panel_page(editor_count: int = 0, panel_count: int = 0):
-    """Mock `page` whose locator(...) returns a MagicMock with .count() mapped
-    to `editor_count` for the slate-editor selector and `panel_count` for the
-    scroll-state selector.
+def _make_panel_page(editor_count: int = 0, has_extend_placeholder: bool = False):
+    """Mock `page` for _verify_extend_panel tests.
+
+    - `editor_count` controls how many slate editors are "found".
+    - `has_extend_placeholder` controls whether page.evaluate returns a
+      string containing "next" (simulating the extend-prompt parent text).
     """
     page = MagicMock()
 
+    # Build a mock locator for the slate-editor selector.
     def _locator(selector):
         loc = MagicMock()
         if selector == "[data-slate-editor='true']":
             loc.count = AsyncMock(return_value=editor_count)
-        elif selector == "[data-scroll-state='START']":
-            loc.count = AsyncMock(return_value=panel_count)
+            # .last property — returns a locator-like mock
+            last = MagicMock()
+            last.get_attribute = AsyncMock(return_value="What happens next?" if has_extend_placeholder else "")
+            last.inner_text = AsyncMock(return_value="")
+            last.element_handle = AsyncMock(return_value=MagicMock())
+            loc.last = last
         else:
             loc.count = AsyncMock(return_value=0)
         return loc
 
     page.locator = MagicMock(side_effect=_locator)
+    # page.evaluate is called with (js, element_handle); return parent text
+    page.evaluate = AsyncMock(return_value="what happens next" if has_extend_placeholder else "")
     return page
 
 
 async def test_verify_returns_true_on_two_slate_editors(caplog):
-    """B15 KEEP-4: main composer editor + extend panel editor = 2 → True + INFO."""
-    page = _make_panel_page(editor_count=2)
+    """B15 KEEP-4: 2 editors + extend placeholder → True + INFO."""
+    page = _make_panel_page(editor_count=2, has_extend_placeholder=True)
 
     with caplog.at_level(logging.INFO, logger="flow.operations.extend"):
         result = await _verify_extend_panel(page, timeout_sec=0.1)
@@ -82,32 +91,27 @@ async def test_verify_returns_true_on_two_slate_editors(caplog):
     assert result is True
     infos = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
     assert any(
-        "verified" in m.lower() and "slate" in m.lower() for m in infos
-    ), f"Expected INFO mentioning slate editor verification, got: {infos}"
+        "verified" in m.lower() and "editor" in m.lower() for m in infos
+    ), f"Expected INFO mentioning editor verification, got: {infos}"
 
 
-async def test_verify_returns_true_via_scroll_state(caplog):
-    """B15 KEEP-4: only 1 editor but extend-panel `[data-scroll-state='START']`
-    present → True. Supports panels that render the slate editor lazily
-    (scroll-state attribute appears first).
+async def test_verify_returns_false_when_two_editors_no_placeholder(caplog):
+    """B15 KEEP-4: 2 editors but NO extend placeholder → False (no false positive).
+
+    Previously the data-scroll-state='START' path would return True here
+    even without a real extend panel. New logic requires the placeholder.
     """
-    page = _make_panel_page(editor_count=1, panel_count=1)
+    page = _make_panel_page(editor_count=2, has_extend_placeholder=False)
 
-    with caplog.at_level(logging.INFO, logger="flow.operations.extend"):
+    with caplog.at_level(logging.ERROR, logger="flow.operations.extend"):
         result = await _verify_extend_panel(page, timeout_sec=0.1)
 
-    assert result is True
-    infos = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
-    assert any(
-        "scroll-state" in m.lower() for m in infos
-    ), f"Expected INFO mentioning scroll-state signal, got: {infos}"
+    assert result is False
 
 
 async def test_verify_returns_false_on_timeout(caplog):
-    """B15 KEEP-4: editor count stays below 2 AND no scroll-state panel →
-    timeout, return False + ERROR with the final editor count. Fail-fast
-    signal for the caller to raise."""
-    page = _make_panel_page(editor_count=1, panel_count=0)
+    """B15 KEEP-4: editor count stays below 2 → timeout, return False + ERROR."""
+    page = _make_panel_page(editor_count=1, has_extend_placeholder=False)
 
     with caplog.at_level(logging.ERROR, logger="flow.operations.extend"):
         result = await _verify_extend_panel(page, timeout_sec=0.1)
@@ -119,10 +123,9 @@ async def test_verify_returns_false_on_timeout(caplog):
     ), f"Expected ERROR log diagnosing missing panel, got: {errors}"
 
 
-async def test_verify_checks_both_selectors():
-    """B15 KEEP-4 contract trip-wire: helper MUST probe
-    `[data-slate-editor='true']` AND `[data-scroll-state='START']`. Prevents
-    silent regression to a single-signal check.
+async def test_verify_checks_slate_selector():
+    """B15 KEEP-4 contract trip-wire: helper MUST probe [data-slate-editor='true']
+    and must NOT rely on [data-scroll-state='START'] (removed — false positive).
     """
     selectors_seen = []
     page = MagicMock()
@@ -131,17 +134,19 @@ async def test_verify_checks_both_selectors():
         selectors_seen.append(selector)
         loc = MagicMock()
         loc.count = AsyncMock(return_value=0)
+        loc.last = MagicMock()
         return loc
 
     page.locator = MagicMock(side_effect=_locator)
+    page.evaluate = AsyncMock(return_value="")
 
     await _verify_extend_panel(page, timeout_sec=0.05)
 
     assert "[data-slate-editor='true']" in selectors_seen, (
         "Helper must probe [data-slate-editor='true'] selector"
     )
-    assert "[data-scroll-state='START']" in selectors_seen, (
-        "Helper must probe [data-scroll-state='START'] selector"
+    assert "[data-scroll-state='START']" not in selectors_seen, (
+        "data-scroll-state='START' was a false-positive signal — must not be used"
     )
 
 
