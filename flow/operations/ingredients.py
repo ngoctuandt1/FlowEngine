@@ -252,15 +252,22 @@ async def ingredients_to_video(
     if media_id and project_id:
         edit_url_val = f"{flow_url(locale)}/project/{project_id}/edit/{media_id}"
 
+    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     output_files = await download_video(
         client,
         media_ids=captured_media_ids or ([media_id] if media_id else []),
         prefix="ingredients",
+        metadata={
+            "job_type": "ingredients-to-video",
+            "prompt": prompt,
+            "media_id": media_id or "",
+            "project_url": project_url,
+            "profile": client.profile_name or "",
+        },
     )
     if not output_files:
         raise RuntimeError("ingredients-to-video: no output file captured")
 
-    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     return {
         "project_url": project_url,
         "media_id": media_id,

@@ -230,10 +230,15 @@ async def batch_dispatch_l1_same_project(
         try:
             submit_index = submits.index(rec)
             tile_index = submit_to_tile.get(submit_index)
+            dl_meta = {
+                "job_type": job.get("type", "text-to-video"),
+                "prompt": job.get("prompt", ""),
+                "media_id": media_id,
+                "project_url": project_url or "",
+                "profile": profile or "",
+            }
             if tile_index is None:
-                # Should not happen — we computed completed_indices from
-                # the same condition. Fall back to legacy path.
-                files = await download_l1_gen(client, media_id)
+                files = await download_l1_gen(client, media_id, metadata=dl_meta)
             else:
                 pinned = (
                     pinned_tile_ids[tile_index]
@@ -245,6 +250,7 @@ async def batch_dispatch_l1_same_project(
                     media_id=media_id,
                     project_url=project_url,
                     pinned_tile_id=pinned,
+                    metadata=dl_meta,
                 )
         except Exception as exc:
             logger.exception("L1 batch download failed for mid=%s: %s",
@@ -446,6 +452,13 @@ async def batch_dispatch_l2_siblings(
                 media_id=media_id,
                 edit_url=edit_url_val,
                 prefix=_prefix_for_l2(job),
+                metadata={
+                    "job_type": job.get("type", ""),
+                    "prompt": job.get("prompt", ""),
+                    "media_id": media_id,
+                    "project_url": common.get("project_url", ""),
+                    "profile": common.get("profile", ""),
+                },
             )
         except Exception as exc:
             logger.exception("L2 batch download failed for mid=%s: %s",

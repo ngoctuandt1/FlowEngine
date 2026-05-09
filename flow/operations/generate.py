@@ -674,10 +674,18 @@ async def text_to_video(
     # === Step 9: Download ===
     logger.info("Step 8: Download video")
     download_media_ids = captured_media_ids or ([media_id] if media_id else [])
+    proj_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     output_files = await download_video(
         client,
         media_ids=download_media_ids,
         prefix="t2v",
+        metadata={
+            "job_type": "text-to-video",
+            "prompt": prompt,
+            "media_id": media_id or "",
+            "project_url": proj_url or "",
+            "profile": client.profile_name or "",
+        },
     )
     if not output_files:
         message = "text-to-video: no output file captured - download pipeline returned empty list"
@@ -687,11 +695,6 @@ async def text_to_video(
             message,
         )
         raise RuntimeError(message)
-
-    # Build project_url (without /edit/ part)
-    proj_url = None
-    if project_id:
-        proj_url = f"{flow_url(locale)}/project/{project_id}"
 
     return {
         "project_url": proj_url or project_url_full,
