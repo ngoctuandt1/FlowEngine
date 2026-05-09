@@ -871,11 +871,22 @@ async def finalize_operation(
         edit_url_val = f"{base}/project/{project_id}/edit/{media_id}"
 
     # Download
+    proj_url = job.get("project_url")
+    if not proj_url and project_id:
+        proj_url = f"{flow_url(locale)}/project/{project_id}"
+
     logger.info("Downloading %s result...", job_type)
     output_files = await download_video(
         client,
         media_ids=download_media_ids or ([media_id] if media_id else []),
         prefix=download_prefix,
+        metadata={
+            "job_type": job_type,
+            "prompt": job.get("prompt", ""),
+            "media_id": media_id or "",
+            "project_url": proj_url or "",
+            "profile": client.profile_name or "",
+        },
     )
     if not output_files:
         message = f"{job_type}: no output file captured"
@@ -885,11 +896,6 @@ async def finalize_operation(
             message,
         )
         raise RuntimeError(message)
-
-    # Build project_url
-    proj_url = job.get("project_url")
-    if not proj_url and project_id:
-        proj_url = f"{flow_url(locale)}/project/{project_id}"
 
     return {
         "project_url": proj_url or "",

@@ -500,6 +500,7 @@ async def download_l2_gen_at_tile(
     edit_url: str,
     prefix: str = "l2",
     quality: str = "1080p",
+    metadata: dict | None = None,
 ) -> list[str]:
     """Download the i-th UNIQUE history-tile for an L2 batch.
 
@@ -585,6 +586,7 @@ async def download_l2_gen_at_tile(
         prefix=prefix,
         quality=quality,
         media_kind="video",
+        metadata=metadata,
     )
     if not files:
         raise RuntimeError(

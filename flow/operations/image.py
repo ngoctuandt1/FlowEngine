@@ -175,17 +175,24 @@ async def text_to_image(
     if media_id and project_id:
         edit_url_val = f"{flow_url(locale)}/project/{project_id}/edit/{media_id}"
 
+    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     output_files = await download_video(
         client,
         media_ids=captured_media_ids or ([media_id] if media_id else []),
         prefix="t2i",
         quality="original",
         media_kind="image",
+        metadata={
+            "job_type": "text-to-image",
+            "prompt": prompt,
+            "media_id": media_id or "",
+            "project_url": project_url,
+            "profile": client.profile_name or "",
+        },
     )
     if not output_files:
         raise RuntimeError("text-to-image: no output file captured")
 
-    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
     return {
         "project_url": project_url,
         "media_id": media_id,

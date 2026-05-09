@@ -475,6 +475,13 @@ async def text_to_video(
         client,
         media_ids=download_media_ids,
         prefix="t2v",
+        metadata={
+            "job_type": "text-to-video",
+            "prompt": prompt,
+            "media_id": media_id or "",
+            "project_url": proj_url or "",
+            "profile": client.profile_name or "",
+        },
     )
     if not output_files:
         message = "text-to-video: no output file captured - download pipeline returned empty list"
