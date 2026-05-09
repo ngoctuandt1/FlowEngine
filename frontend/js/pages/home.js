@@ -204,22 +204,8 @@
     `;
   }
 
-  async function handleCreateProject() {
-    if (state.creating) return;
-    const name = `Project · ${App.formatDate ? App.formatDate(new Date().toISOString()) : new Date().toLocaleDateString()}`;
-    const button = document.getElementById('home-create-project');
-    state.creating = true;
-    if (button) button.disabled = true;
-    try {
-      const created = await apiClient().projects.create({ name });
-      const projectId = String(created?.id || '').trim();
-      if (!projectId) throw new Error('Project created but response missing id');
-      location.hash = `#project-view/${encodeURIComponent(projectId)}`;
-    } catch (err) {
-      App.toast(`Tạo project thất bại: ${err?.message || err}`, 'error');
-      state.creating = false;
-      if (button) button.disabled = false;
-    }
+  function handleCreateProject() {
+    location.hash = '#create-job';
   }
 
   const HomePage = {
