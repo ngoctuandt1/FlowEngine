@@ -516,33 +516,59 @@ async def extend_video(
 
 
 async def _verify_extend_panel(page, timeout_sec: float = 5.0) -> bool:
-    """Verify the extend panel opened by checking for a second Slate editor.
+    """Detect that Flow's Extend panel is open.
 
-    The extend panel adds a new Slate editor (data-slate-editor) for the
-    extend prompt. The main composer already has one, so we expect >= 2.
-    Also checks for extend-specific UI: "Bắt đầu"/"Start" toggle, or
-    scroll-state attribute on the panel.
+    Flow's current UI re-uses the SINGLE composer slate editor for Extend
+    mode (placeholder text changes to "What happens next?" / "Tiếp theo
+    là gì?") rather than mounting a second editor. So we scan ALL slate
+    editors for any node whose inner_text or placeholder mentions the
+    extend prompt — count-based detection (editors >= 2) is incorrect
+    for the current UI. Live-verified 2026-05-16 via probe_extend_panel.
     """
     deadline = asyncio.get_event_loop().time() + timeout_sec
+    extend_hints = ("what happens next", "tiếp", "tiep")
     while asyncio.get_event_loop().time() < deadline:
         try:
-            editors = await page.locator("[data-slate-editor='true']").count()
-            if editors >= 2:
-                logger.info("Extend panel verified: %d slate editors found", editors)
-                return True
-            # Also check for data-scroll-state="START" (extend panel attribute)
-            panels = await page.locator("[data-scroll-state='START']").count()
-            if panels >= 1:
-                logger.info("Extend panel verified via data-scroll-state")
-                return True
+            editors = page.locator("[data-slate-editor='true']")
+            count = await editors.count()
+            for i in range(count):
+                ed = editors.nth(i)
+                try:
+                    placeholder = (
+                        await ed.get_attribute("data-placeholder", timeout=500) or ""
+                    )
+                    inner = await ed.inner_text(timeout=500) or ""
+                    parent_text = await page.evaluate(
+                        """(el) => {
+                            let cur = el;
+                            for (let j = 0; j < 6 && cur; j++) {
+                                const t = (cur.innerText || '').toLowerCase();
+                                if (t.includes('what happens next') || t.includes('tiếp') || t.includes('tiep')) return t;
+                                cur = cur.parentElement;
+                            }
+                            return '';
+                        }""",
+                        await ed.element_handle(),
+                    ) or ""
+                    combined = (placeholder + " " + inner + " " + parent_text).lower()
+                    if any(hint in combined for hint in extend_hints):
+                        logger.info(
+                            "Extend panel verified: editor[%d/%d] shows extend placeholder",
+                            i, count,
+                        )
+                        return True
+                except Exception:
+                    continue
         except Exception:
             pass
         await asyncio.sleep(0.5)
 
-    # Log what we see for debugging
     try:
-        editors = await page.locator("[data-slate-editor='true']").count()
-        logger.error("Extend panel NOT detected: only %d slate editors", editors)
+        count = await page.locator("[data-slate-editor='true']").count()
+        logger.error(
+            "Extend panel NOT detected: %d slate editors, no extend placeholder/inner-text match",
+            count,
+        )
     except Exception:
         pass
     return False

@@ -51,47 +51,61 @@ def _no_sleep(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _make_panel_page(editor_count: int = 0, panel_count: int = 0):
-    """Mock `page` whose locator(...) returns a MagicMock with .count() mapped
-    to `editor_count` for the slate-editor selector and `panel_count` for the
-    scroll-state selector.
+def _make_slate_page(slates_data: list[dict] | None = None):
+    """Mock `page` for the inner-text-based _verify_extend_panel detector.
+
+    Each entry in ``slates_data`` is a dict ``{placeholder, inner, parent}``
+    describing what each slate editor returns from
+    ``get_attribute("data-placeholder")`` / ``inner_text()`` / the 6-level
+    parent-text JS walk respectively.
+
+    Live-verified 2026-05-16: Flow's current UI re-uses the single composer
+    slate for Extend mode, so detection is content-based (placeholder text
+    "What happens next?" / "Tiếp theo là gì?"), NOT editor count or
+    data-scroll-state. See `flow/operations/extend.py::_verify_extend_panel`.
     """
+    slates_data = slates_data or []
     page = MagicMock()
+
+    handles = []
+    slate_mocks = []
+    for entry in slates_data:
+        handle = MagicMock(name=f"slate_handle_{len(handles)}")
+        handles.append(handle)
+        slate = MagicMock()
+        slate.get_attribute = AsyncMock(return_value=entry.get("placeholder", ""))
+        slate.inner_text = AsyncMock(return_value=entry.get("inner", ""))
+        slate.element_handle = AsyncMock(return_value=handle)
+        slate_mocks.append(slate)
 
     def _locator(selector):
         loc = MagicMock()
         if selector == "[data-slate-editor='true']":
-            loc.count = AsyncMock(return_value=editor_count)
-        elif selector == "[data-scroll-state='START']":
-            loc.count = AsyncMock(return_value=panel_count)
+            loc.count = AsyncMock(return_value=len(slate_mocks))
+            loc.nth = MagicMock(side_effect=lambda i: slate_mocks[i])
         else:
             loc.count = AsyncMock(return_value=0)
         return loc
 
+    async def _evaluate(_js, handle):
+        idx = handles.index(handle)
+        return slates_data[idx].get("parent", "")
+
     page.locator = MagicMock(side_effect=_locator)
+    page.evaluate = AsyncMock(side_effect=_evaluate)
     return page
 
 
-async def test_verify_returns_true_on_two_slate_editors(caplog):
-    """B15 KEEP-4: main composer editor + extend panel editor = 2 → True + INFO."""
-    page = _make_panel_page(editor_count=2)
+async def test_verify_returns_true_when_slate_shows_extend_placeholder(caplog):
+    """New UI: slate inner_text contains "What happens next?" → True + INFO.
 
-    with caplog.at_level(logging.INFO, logger="flow.operations.extend"):
-        result = await _verify_extend_panel(page, timeout_sec=0.1)
-
-    assert result is True
-    infos = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
-    assert any(
-        "verified" in m.lower() and "slate" in m.lower() for m in infos
-    ), f"Expected INFO mentioning slate editor verification, got: {infos}"
-
-
-async def test_verify_returns_true_via_scroll_state(caplog):
-    """B15 KEEP-4: only 1 editor but extend-panel `[data-scroll-state='START']`
-    present → True. Supports panels that render the slate editor lazily
-    (scroll-state attribute appears first).
+    Live probe 2026-05-16 confirmed: after Extend click, the composer slate
+    inner_text changes to "What happens next?\\n\\ufeff\\n". Detector returns
+    True from that single slate; no second editor required.
     """
-    page = _make_panel_page(editor_count=1, panel_count=1)
+    page = _make_slate_page([
+        {"placeholder": "", "inner": "What happens next?\n﻿\n", "parent": ""}
+    ])
 
     with caplog.at_level(logging.INFO, logger="flow.operations.extend"):
         result = await _verify_extend_panel(page, timeout_sec=0.1)
@@ -99,15 +113,35 @@ async def test_verify_returns_true_via_scroll_state(caplog):
     assert result is True
     infos = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
     assert any(
-        "scroll-state" in m.lower() for m in infos
-    ), f"Expected INFO mentioning scroll-state signal, got: {infos}"
+        "verified" in m.lower() and "extend placeholder" in m.lower()
+        for m in infos
+    ), f"Expected INFO mentioning extend placeholder match, got: {infos}"
+
+
+async def test_verify_returns_true_on_localized_vi_placeholder():
+    """VI locale: placeholder "Tiếp theo là gì?" must also match."""
+    page = _make_slate_page([
+        {"placeholder": "Tiếp theo là gì?", "inner": "", "parent": ""}
+    ])
+    assert await _verify_extend_panel(page, timeout_sec=0.1) is True
+
+
+async def test_verify_returns_true_via_parent_text_walk():
+    """Slate itself empty but a parent (≤6 ancestors up) carries the hint
+    via the page.evaluate JS walk. Real-world variant when Flow renders the
+    placeholder as a sibling label rather than slate inner_text.
+    """
+    page = _make_slate_page([
+        {"placeholder": "", "inner": "", "parent": "what happens next"}
+    ])
+    assert await _verify_extend_panel(page, timeout_sec=0.1) is True
 
 
 async def test_verify_returns_false_on_timeout(caplog):
-    """B15 KEEP-4: editor count stays below 2 AND no scroll-state panel →
-    timeout, return False + ERROR with the final editor count. Fail-fast
-    signal for the caller to raise."""
-    page = _make_panel_page(editor_count=1, panel_count=0)
+    """No slate matches any extend hint → timeout, return False + ERROR diag."""
+    page = _make_slate_page([
+        {"placeholder": "", "inner": "Type your prompt", "parent": ""}
+    ])
 
     with caplog.at_level(logging.ERROR, logger="flow.operations.extend"):
         result = await _verify_extend_panel(page, timeout_sec=0.1)
@@ -119,10 +153,29 @@ async def test_verify_returns_false_on_timeout(caplog):
     ), f"Expected ERROR log diagnosing missing panel, got: {errors}"
 
 
-async def test_verify_checks_both_selectors():
-    """B15 KEEP-4 contract trip-wire: helper MUST probe
-    `[data-slate-editor='true']` AND `[data-scroll-state='START']`. Prevents
-    silent regression to a single-signal check.
+async def test_verify_returns_false_when_zero_slates():
+    """Edge: zero slate editors on page → timeout False, no crash."""
+    page = _make_slate_page([])
+    assert await _verify_extend_panel(page, timeout_sec=0.05) is False
+
+
+async def test_verify_scans_all_slates_until_match():
+    """Multi-slate page: first slate empty, second slate has the hint →
+    scan continues across all slates within one poll tick.
+    """
+    page = _make_slate_page([
+        {"placeholder": "", "inner": "Type prompt", "parent": ""},
+        {"placeholder": "", "inner": "What happens next?", "parent": ""},
+    ])
+    assert await _verify_extend_panel(page, timeout_sec=0.1) is True
+
+
+async def test_verify_probes_slate_editor_selector():
+    """Trip-wire: helper MUST probe `[data-slate-editor='true']` selector.
+
+    Replaces the legacy two-signal trip-wire — the old data-scroll-state path
+    was removed because Flow's current UI re-uses the single composer slate
+    rather than mounting a second editor / scroll-state container.
     """
     selectors_seen = []
     page = MagicMock()
@@ -139,9 +192,6 @@ async def test_verify_checks_both_selectors():
 
     assert "[data-slate-editor='true']" in selectors_seen, (
         "Helper must probe [data-slate-editor='true'] selector"
-    )
-    assert "[data-scroll-state='START']" in selectors_seen, (
-        "Helper must probe [data-scroll-state='START'] selector"
     )
 
 
