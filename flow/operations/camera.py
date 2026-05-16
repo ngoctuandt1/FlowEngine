@@ -11,8 +11,12 @@ Camera mode is DIFFERENT from other operations:
 
 import asyncio
 import logging
+import os
+import time
+from pathlib import Path
 
 from flow.failure_capture import message_with_failure_capture
+from flow.navigation import edit_url as build_edit_url, project_url as build_project_url
 from flow.submit import submit_with_confirmation
 from flow.operations._base import (
     navigate_to_edit,
@@ -21,6 +25,24 @@ from flow.operations._base import (
     count_visible_cards,
     finalize_operation,
 )
+from flow.operations._l1_status_poll import (
+    poll_status_via_api,
+    download_via_url,
+)
+
+try:  # Wave 1 reverse-API module; keep UI path import-safe.
+    from flow.operations.camera_api import (
+        install_camera_request_capture,
+        get_camera_request_template,
+        replay_camera_via_api,
+    )
+except Exception as exc:  # pragma: no cover - guarded fallback
+    install_camera_request_capture = None
+    get_camera_request_template = None
+    replay_camera_via_api = None
+    _CAMERA_API_IMPORT_ERROR = exc
+else:
+    _CAMERA_API_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +61,230 @@ CAMERA_POSITION_PRESETS = [
 ]
 
 ALL_PRESETS = CAMERA_MOTION_PRESETS + CAMERA_POSITION_PRESETS
+
+
+def _reverse_camera_enabled() -> bool:
+    return os.getenv("FLOW_CAMERA_VIA_REVERSE", "0") == "1"
+
+
+def _install_camera_capture_if_enabled(client) -> bool:
+    if not _reverse_camera_enabled():
+        return False
+    if install_camera_request_capture is None:
+        logger.info(
+            "FLOW_CAMERA_VIA_REVERSE=1 but camera_api unavailable; "
+            "continuing UI path (%s)",
+            _CAMERA_API_IMPORT_ERROR,
+        )
+        return False
+    try:
+        install_camera_request_capture(client)
+    except Exception as exc:
+        logger.info(
+            "Camera request capture install failed; continuing UI path: %s",
+            exc,
+        )
+        return False
+    return True
+
+
+def _current_camera_template(client):
+    if get_camera_request_template is None:
+        return None
+    try:
+        return get_camera_request_template(client)
+    except Exception as exc:
+        logger.info(
+            "Camera request template unavailable; continuing UI path: %s",
+            exc,
+        )
+        return None
+
+
+def _job_is_l3_plus(job: dict) -> bool:
+    try:
+        return int(job.get("job_level") or 1) >= 3
+    except (TypeError, ValueError):
+        return False
+
+
+def _extract_replay_media_ids(replay_result) -> list[str]:
+    if isinstance(replay_result, str) and replay_result:
+        return [replay_result]
+    if not isinstance(replay_result, dict):
+        return []
+    media_ids = replay_result.get("media_ids") or []
+    media_id = replay_result.get("media_id")
+    if media_id:
+        media_ids = [media_id, *media_ids]
+    unique_media_ids = []
+    for media_id_value in media_ids:
+        if media_id_value and media_id_value not in unique_media_ids:
+            unique_media_ids.append(str(media_id_value))
+    return unique_media_ids
+
+
+def _record_camera_replay_media_id(client, media_id: str) -> None:
+    recorder = getattr(client, "_record_media_id", None)
+    if callable(recorder):
+        recorder(media_id, source="camera_replay", url="camera-replay")
+        return
+    events = getattr(client, "_media_id_events", None)
+    if isinstance(events, list) and media_id not in {
+        event.get("mid") or event.get("media_id")
+        for event in events
+        if isinstance(event, dict)
+    }:
+        events.append(
+            {
+                "mid": media_id,
+                "source": "camera_replay",
+                "url": "camera-replay",
+                "ts": time.time(),
+            }
+        )
+
+
+def _replay_download_dir(client) -> Path:
+    client_dir = getattr(client, "download_dir", None)
+    if isinstance(client_dir, (str, os.PathLike)):
+        try:
+            return Path(client_dir)
+        except TypeError:
+            pass
+    env_dir = os.environ.get("FLOW_DOWNLOAD_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path("downloads")
+
+
+async def _finalize_camera_replay_result(
+    client,
+    job: dict,
+    *,
+    project_id: str,
+    locale: str,
+    replay_media_id: str,
+    download_prefix: str = "cam",
+) -> dict:
+    _record_camera_replay_media_id(client, replay_media_id)
+
+    logger.info(
+        "Camera replay finalize: polling status API for media_id=%s",
+        replay_media_id[:20],
+    )
+    poll_result = await poll_status_via_api(
+        client,
+        gen_ids=[replay_media_id],
+        project_id=project_id or None,
+        hard_timeout_sec=600.0,
+    )
+
+    slot = poll_result.get(replay_media_id) if isinstance(poll_result, dict) else None
+    if not isinstance(slot, dict):
+        message = (
+            f"camera-move replay: status API returned no slot for "
+            f"media_id={replay_media_id}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "camera_replay_status_no_entry",
+            message,
+        )
+        raise RuntimeError(message)
+
+    status = slot.get("status")
+    if status == "failed":
+        error = slot.get("error") or "unknown"
+        message = (
+            f"camera-move replay: status API reports failed for "
+            f"media_id={replay_media_id}: {error}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "camera_replay_status_failed",
+            message,
+        )
+        raise RuntimeError(message)
+
+    if status != "completed":
+        message = (
+            f"camera-move replay: status API did not reach completed "
+            f"(status={status}) for media_id={replay_media_id}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "camera_replay_status_timeout",
+            message,
+        )
+        raise RuntimeError(message)
+
+    media_url = slot.get("media_url")
+    if not isinstance(media_url, str) or not media_url:
+        message = (
+            f"camera-move replay: status completed but no media URL "
+            f"available for media_id={replay_media_id}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "camera_replay_no_media_url",
+            message,
+        )
+        raise RuntimeError(message)
+
+    download_dir = _replay_download_dir(client)
+    try:
+        download_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        logger.debug(
+            "Camera replay finalize: download dir mkdir failed (%s) for %s; "
+            "continuing -- download_via_url will surface the real error",
+            exc,
+            download_dir,
+        )
+    out_path = download_dir / (
+        f"{download_prefix}_replay_{replay_media_id[:20]}_{int(time.time())}.mp4"
+    )
+
+    logger.info(
+        "Camera replay finalize: downloading via direct URL "
+        "(media_id=%s -> %s)",
+        replay_media_id[:20],
+        out_path.name,
+    )
+    saved_path = await download_via_url(
+        client,
+        url=media_url,
+        out_path=str(out_path),
+    )
+    if not saved_path:
+        message = (
+            f"camera-move replay: direct-URL download returned empty path "
+            f"for media_id={replay_media_id}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "camera_replay_download_failed",
+            message,
+        )
+        raise RuntimeError(message)
+
+    proj_url = job.get("project_url") or (
+        build_project_url(project_id, locale) if project_id else ""
+    )
+    edit_url_val = (
+        build_edit_url(project_id, replay_media_id, locale)
+        if project_id
+        else getattr(client.page, "url", "")
+    )
+    return {
+        "project_url": proj_url,
+        "media_id": replay_media_id,
+        "edit_url": edit_url_val,
+        "output_files": [saved_path],
+        "generation_id": getattr(client, "_gen_id", None),
+        "profile": getattr(client, "profile_name", ""),
+    }
 
 
 async def camera_move(
@@ -65,12 +311,50 @@ async def camera_move(
     Returns: Result dict
     """
     page = client.page
+    capture_ready = _install_camera_capture_if_enabled(client)
 
     # Step 1: Navigate
     edit_url_val, project_id, locale = await navigate_to_edit(client, job)
 
     # Step 2: Wait for video
     await wait_for_video_loaded(page)
+
+    if capture_ready and _job_is_l3_plus(job):
+        template = _current_camera_template(client)
+        if template is not None and replay_camera_via_api is not None:
+            try:
+                client.clear_captures()
+                replay_result = await replay_camera_via_api(
+                    client,
+                    parent_media_id=job["media_id"],
+                    direction=direction,
+                )
+                replay_media_ids = _extract_replay_media_ids(replay_result)
+                if not replay_media_ids:
+                    raise RuntimeError(
+                        "Camera reverse-API replay returned no media_id"
+                    )
+                replay_media_id = replay_media_ids[0]
+                replay_count = getattr(client, "_camera_replay_count", 0) + 1
+                setattr(client, "_camera_replay_count", replay_count)
+                logger.info(
+                    "Camera replay submit accepted via reverse API "
+                    "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
+                    replay_count,
+                    replay_media_ids,
+                )
+                return await _finalize_camera_replay_result(
+                    client,
+                    job,
+                    project_id=project_id,
+                    locale=locale,
+                    replay_media_id=replay_media_id,
+                )
+            except RuntimeError as exc:
+                logger.warning(
+                    "Camera reverse-API replay failed; falling back to UI path: %s",
+                    exc,
+                )
 
     # Step 3: Click Camera button
     clicked = await click_action_button(page, CAMERA_BUTTONS, client=client)
