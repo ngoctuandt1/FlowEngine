@@ -8,16 +8,21 @@ Authoritative selectors from the 2026-04-20 live probe:
 """
 
 import asyncio
+import json
 import logging
+import os
+import time
 from pathlib import Path
 
 from flow.download import download_video
+from flow.failure_capture import message_with_failure_capture
 from flow.login import handle_login_redirect, is_login_page
 from flow.model_selector import DEFAULT_MODEL, select_model
 from flow.navigation import extract_project_id, flow_url
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.operations._base import resolve_final_media_id
+from flow.operations._l1_status_poll import download_via_url, poll_status_via_api
 from flow.operations.generate import (
     NEW_PROJECT_SELECTORS,
     _count_visible_cards,
@@ -27,6 +32,20 @@ from flow.operations.generate import (
     _type_prompt,
     _wait_for_composer,
 )
+
+try:  # Wave-1 reverse API helper; guarded so default UI path is independent.
+    from flow.operations.frames_api import (
+        get_f2v_request_template,
+        install_f2v_request_capture,
+        replay_f2v_via_inflate,
+    )
+except Exception as exc:  # pragma: no cover - guarded fallback
+    get_f2v_request_template = None
+    install_f2v_request_capture = None
+    replay_f2v_via_inflate = None
+    _F2V_API_IMPORT_ERROR = exc
+else:
+    _F2V_API_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +58,234 @@ COMPOSER_MENU_SELECTORS = [
     "button[aria-haspopup='menu']:has(i:text-is('crop_square'))",
     "button[aria-haspopup='menu']:has(i:text-is('crop_portrait'))",
 ]
+
+
+def _reverse_f2v_enabled() -> bool:
+    return os.getenv("FLOW_F2V_VIA_REVERSE", "0") == "1"
+
+
+def _install_f2v_capture_if_enabled(client) -> bool:
+    if not _reverse_f2v_enabled():
+        return False
+    if install_f2v_request_capture is None:
+        logger.info(
+            "FLOW_F2V_VIA_REVERSE=1 but frames_api unavailable; continuing UI path (%s)",
+            _F2V_API_IMPORT_ERROR,
+        )
+        return False
+    try:
+        install_f2v_request_capture(client)
+    except Exception as exc:
+        logger.info("F2V request capture install failed; continuing UI path: %s", exc)
+        return False
+    return True
+
+
+def _current_f2v_template(client):
+    if get_f2v_request_template is None:
+        return None
+    try:
+        return get_f2v_request_template(client)
+    except Exception as exc:
+        logger.info("F2V request template unavailable; continuing UI path: %s", exc)
+        return None
+
+
+def _extract_replay_media_ids(replay_result) -> list[str]:
+    if isinstance(replay_result, str) and replay_result:
+        return [replay_result]
+    if isinstance(replay_result, list):
+        return [str(item) for item in replay_result if item]
+    if not isinstance(replay_result, dict):
+        return []
+    media_ids = replay_result.get("media_ids") or []
+    media_id = replay_result.get("media_id") or replay_result.get("gen_id")
+    if media_id:
+        media_ids = [media_id, *media_ids]
+    unique_media_ids = []
+    for media_id_value in media_ids:
+        if media_id_value and media_id_value not in unique_media_ids:
+            unique_media_ids.append(str(media_id_value))
+    return unique_media_ids
+
+
+def _record_replay_media_id(client, media_id: str, *, source: str) -> None:
+    recorder = getattr(client, "_record_media_id", None)
+    if callable(recorder):
+        recorder(media_id, source=source, url=f"{source}://replay")
+        return
+    events = getattr(client, "_media_id_events", None)
+    if isinstance(events, list) and media_id not in {
+        event.get("mid") or event.get("media_id")
+        for event in events
+        if isinstance(event, dict)
+    }:
+        events.append(
+            {
+                "mid": media_id,
+                "source": source,
+                "url": f"{source}://replay",
+                "ts": time.time(),
+            }
+        )
+
+
+def _replay_download_dir(client) -> Path:
+    client_dir = getattr(client, "download_dir", None)
+    if isinstance(client_dir, (str, os.PathLike)):
+        try:
+            return Path(client_dir)
+        except TypeError:
+            pass
+    env_dir = os.environ.get("FLOW_DOWNLOAD_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path("downloads")
+
+
+def _project_id_from_template_or_page(template, page_url: str) -> str:
+    body = _template_body(template)
+    client_context = body.get("clientContext") if isinstance(body, dict) else None
+    if isinstance(client_context, dict):
+        project_id = client_context.get("projectId")
+        if project_id:
+            return str(project_id)
+    return extract_project_id(page_url) or extract_project_id((template or {}).get("url", "")) or ""
+
+
+def _template_body(template) -> dict:
+    raw = (template or {}).get("post_data")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return {}
+    if not isinstance(raw, str):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+async def _finalize_l1_replay_result(
+    client,
+    *,
+    project_id: str,
+    locale: str,
+    replay_media_id: str,
+    operation_label: str,
+    replay_source: str,
+    failure_prefix: str,
+    download_prefix: str,
+    status_poller=None,
+    url_downloader=None,
+) -> dict:
+    status_poller = status_poller or poll_status_via_api
+    url_downloader = url_downloader or download_via_url
+    _record_replay_media_id(client, replay_media_id, source=replay_source)
+
+    logger.info(
+        "%s replay finalize: polling status API for media_id=%s",
+        operation_label,
+        replay_media_id[:20],
+    )
+    poll_result = await status_poller(
+        client,
+        gen_ids=[replay_media_id],
+        project_id=project_id or None,
+        hard_timeout_sec=900.0,
+    )
+
+    slot = poll_result.get(replay_media_id) if isinstance(poll_result, dict) else None
+    if not isinstance(slot, dict):
+        message = f"{operation_label} replay: status API returned no slot for media_id={replay_media_id}"
+        message = await message_with_failure_capture(
+            client,
+            f"{failure_prefix}_status_no_entry",
+            message,
+        )
+        raise RuntimeError(message)
+
+    status = slot.get("status")
+    if status == "failed":
+        error = slot.get("error") or "unknown"
+        message = f"{operation_label} replay: status API reports failed for media_id={replay_media_id}: {error}"
+        message = await message_with_failure_capture(
+            client,
+            f"{failure_prefix}_status_failed",
+            message,
+        )
+        raise RuntimeError(message)
+
+    if status != "completed":
+        message = f"{operation_label} replay: status API did not reach completed (status={status}) for media_id={replay_media_id}"
+        message = await message_with_failure_capture(
+            client,
+            f"{failure_prefix}_status_timeout",
+            message,
+        )
+        raise RuntimeError(message)
+
+    media_url = slot.get("media_url")
+    if not isinstance(media_url, str) or not media_url:
+        message = f"{operation_label} replay: status completed but no media URL available for media_id={replay_media_id}"
+        message = await message_with_failure_capture(
+            client,
+            f"{failure_prefix}_no_media_url",
+            message,
+        )
+        raise RuntimeError(message)
+
+    download_dir = _replay_download_dir(client)
+    try:
+        download_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        logger.debug(
+            "%s replay finalize: download dir mkdir failed (%s) for %s; continuing",
+            operation_label,
+            exc,
+            download_dir,
+        )
+    out_path = download_dir / f"{download_prefix}_replay_{replay_media_id[:20]}_{int(time.time())}.mp4"
+
+    logger.info(
+        "%s replay finalize: downloading via direct URL (media_id=%s -> %s)",
+        operation_label,
+        replay_media_id[:20],
+        out_path.name,
+    )
+    saved_path = await url_downloader(
+        client,
+        url=media_url,
+        out_path=str(out_path),
+    )
+    if not saved_path:
+        message = f"{operation_label} replay: direct-URL download returned empty path for media_id={replay_media_id}"
+        message = await message_with_failure_capture(
+            client,
+            f"{failure_prefix}_download_failed",
+            message,
+        )
+        raise RuntimeError(message)
+
+    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else ""
+    edit_url_val = (
+        f"{flow_url(locale)}/project/{project_id}/edit/{replay_media_id}"
+        if project_id
+        else getattr(client.page, "url", "")
+    )
+    return {
+        "project_url": project_url,
+        "media_id": replay_media_id,
+        "edit_url": edit_url_val,
+        "output_files": [saved_path],
+        "generation_id": client._gen_id,
+        "profile": client.profile_name,
+    }
 
 
 async def frames_to_video(
@@ -58,8 +305,53 @@ async def frames_to_video(
         end_image_path = _resolve_image_input_path(end_image_path, label="End")
 
     page = client.page
+    capture_ready = _install_f2v_capture_if_enabled(client)
     locale = ""
     homepage = flow_url(locale)
+
+    if capture_ready and replay_f2v_via_inflate is not None:
+        template = _current_f2v_template(client)
+        if template is not None and end_image_path is None:
+            logger.info("F2V reverse-API replay requires an end frame; continuing UI path")
+        elif template is not None:
+            try:
+                if "/vi/" in str(getattr(page, "url", "")):
+                    locale = "vi"
+                replay_project_id = _project_id_from_template_or_page(template, getattr(page, "url", ""))
+                client.clear_captures()
+                replay_result = await replay_f2v_via_inflate(
+                    client,
+                    prompt,
+                    start_image_path,
+                    end_image_path,
+                )
+                replay_media_ids = _extract_replay_media_ids(replay_result)
+                if not replay_media_ids:
+                    raise RuntimeError("F2V reverse-API replay returned no media_id")
+                replay_media_id = replay_media_ids[0]
+                replay_count = getattr(client, "_f2v_replay_count", 0) + 1
+                setattr(client, "_f2v_replay_count", replay_count)
+                logger.info(
+                    "F2V replay submit accepted via reverse API "
+                    "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
+                    replay_count,
+                    replay_media_ids,
+                )
+                return await _finalize_l1_replay_result(
+                    client,
+                    project_id=replay_project_id,
+                    locale=locale,
+                    replay_media_id=replay_media_id,
+                    operation_label="frames-to-video",
+                    replay_source="f2v_replay",
+                    failure_prefix="f2v_replay",
+                    download_prefix="f2v",
+                )
+            except RuntimeError as exc:
+                logger.warning(
+                    "F2V reverse-API replay failed; falling back to UI path: %s",
+                    exc,
+                )
 
     await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
     try:

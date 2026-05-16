@@ -12,6 +12,7 @@ Live-probed 2026-04-20 on the current Flow UI:
 
 import asyncio
 import logging
+import os
 
 from flow.download import download_video
 from flow.login import handle_login_redirect, is_login_page
@@ -24,6 +25,9 @@ from flow.operations.frames_to_video import (
     COMPOSER_MENU_SELECTORS,
     _click_new_project,
     _close_composer_menu,
+    _extract_replay_media_ids,
+    _finalize_l1_replay_result,
+    _project_id_from_template_or_page,
     _resolve_image_input_path,
 )
 from flow.operations.generate import (
@@ -35,9 +39,54 @@ from flow.operations.generate import (
     _wait_for_composer,
 )
 
+try:  # Wave-1 reverse API helper; guarded so default UI path is independent.
+    from flow.operations.ingredients_api import (
+        get_i2v_request_template,
+        install_i2v_request_capture,
+        replay_i2v_via_inflate,
+    )
+except Exception as exc:  # pragma: no cover - guarded fallback
+    get_i2v_request_template = None
+    install_i2v_request_capture = None
+    replay_i2v_via_inflate = None
+    _I2V_API_IMPORT_ERROR = exc
+else:
+    _I2V_API_IMPORT_ERROR = None
+
 logger = logging.getLogger(__name__)
 
 INGREDIENT_PLUS_SELECTOR = "button:not([title*='Add Media']):has(i:text-is('add'))"
+
+
+def _reverse_i2v_enabled() -> bool:
+    return os.getenv("FLOW_I2V_VIA_REVERSE", "0") == "1"
+
+
+def _install_i2v_capture_if_enabled(client) -> bool:
+    if not _reverse_i2v_enabled():
+        return False
+    if install_i2v_request_capture is None:
+        logger.info(
+            "FLOW_I2V_VIA_REVERSE=1 but ingredients_api unavailable; continuing UI path (%s)",
+            _I2V_API_IMPORT_ERROR,
+        )
+        return False
+    try:
+        install_i2v_request_capture(client)
+    except Exception as exc:
+        logger.info("I2V request capture install failed; continuing UI path: %s", exc)
+        return False
+    return True
+
+
+def _current_i2v_template(client):
+    if get_i2v_request_template is None:
+        return None
+    try:
+        return get_i2v_request_template(client)
+    except Exception as exc:
+        logger.info("I2V request template unavailable; continuing UI path: %s", exc)
+        return None
 
 
 async def ingredients_to_video(
@@ -57,8 +106,50 @@ async def ingredients_to_video(
     ]
 
     page = client.page
+    capture_ready = _install_i2v_capture_if_enabled(client)
     locale = ""
     homepage = flow_url(locale)
+
+    if capture_ready and replay_i2v_via_inflate is not None:
+        template = _current_i2v_template(client)
+        if template is not None:
+            try:
+                if "/vi/" in str(getattr(page, "url", "")):
+                    locale = "vi"
+                replay_project_id = _project_id_from_template_or_page(template, getattr(page, "url", ""))
+                client.clear_captures()
+                replay_result = await replay_i2v_via_inflate(
+                    client,
+                    prompt,
+                    ingredient_image_paths,
+                )
+                replay_media_ids = _extract_replay_media_ids(replay_result)
+                if not replay_media_ids:
+                    raise RuntimeError("I2V reverse-API replay returned no media_id")
+                replay_media_id = replay_media_ids[0]
+                replay_count = getattr(client, "_i2v_replay_count", 0) + 1
+                setattr(client, "_i2v_replay_count", replay_count)
+                logger.info(
+                    "I2V replay submit accepted via reverse API "
+                    "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
+                    replay_count,
+                    replay_media_ids,
+                )
+                return await _finalize_l1_replay_result(
+                    client,
+                    project_id=replay_project_id,
+                    locale=locale,
+                    replay_media_id=replay_media_id,
+                    operation_label="ingredients-to-video",
+                    replay_source="i2v_replay",
+                    failure_prefix="i2v_replay",
+                    download_prefix="ingredients",
+                )
+            except RuntimeError as exc:
+                logger.warning(
+                    "I2V reverse-API replay failed; falling back to UI path: %s",
+                    exc,
+                )
 
     await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
     try:
