@@ -907,11 +907,13 @@ async def finalize_operation(
 
     current_url = page.url
     parent_media_id = job.get("media_id")
+    ancestor_media_ids = job.get("ancestor_media_ids") or []
     download_media_ids = result.get("media_ids") or []
     media_id = await resolve_final_media_id(
         page,
         fallback=parent_media_id,
         parent_media_id=parent_media_id,
+        ancestor_media_ids=list(ancestor_media_ids),
         download_media_ids=download_media_ids,
         strict=(parent_media_id is not None),
     )
@@ -968,19 +970,21 @@ async def resolve_final_media_id(
     *,
     fallback: str | None = None,
     parent_media_id: str | None = None,
+    ancestor_media_ids: list[str] | None = None,
     download_media_ids: list[str] | None = None,
     strict: bool = False,
 ) -> str | None:
     """Resolve the canonical media slug for a completed operation.
 
-    Priority (live-verified 2026-04-23, B39):
+    Priority (live-verified 2026-04-23, B39; ancestor exclusion 2026-05-16):
     1. Network-captured generation mid — the first ``download_media_ids``
-       slug that isn't ``parent_media_id``. These are the real ids minted
-       by Flow's backend during submit and are the strongest signal.
-    2. Latest history tile slug when it differs from the parent — the UI's
-       own declaration of "most recent output". Tile strip beats URL,
-       which often carries a clip-route slug neither parent nor new
-       output.
+       slug that isn't ``parent_media_id`` AND isn't any ancestor in the
+       chain. Filtering only against immediate parent left grandparent /
+       L1-root UUIDs as false positives (live v6 L3/L6/L8/L10 returned
+       L1's id when UI fallback fired after revAPI replay was
+       rate-limited).
+    2. Latest history tile slug when it isn't any ancestor — same
+       exclusion logic.
     3. Settled ``/edit/{slug}`` route — last resort; may be stale on the
        extend-child path.
     4. ``fallback`` — used only when the URL never settles to an /edit/
@@ -991,13 +995,21 @@ async def resolve_final_media_id(
     fatal before tile/URL fallback because deep-chain DOM order can be stale.
     """
     download_media_ids = download_media_ids or []
+    exclusion: set[str] = set()
+    if parent_media_id:
+        exclusion.add(parent_media_id)
+    if ancestor_media_ids:
+        exclusion.update(a for a in ancestor_media_ids if a)
+
     network_media_id = next(
-        (mid for mid in download_media_ids if mid and mid != parent_media_id),
+        (mid for mid in download_media_ids if mid and mid not in exclusion),
         None,
     )
     if network_media_id:
         logger.info(
-            "media_id from network events: %s", network_media_id[:20]
+            "media_id from network events: %s (excluded %d ancestors)",
+            network_media_id[:20],
+            len(exclusion),
         )
         return network_media_id
 
@@ -1006,19 +1018,21 @@ async def resolve_final_media_id(
         raise RuntimeError(
             "resolve_final_media_id: no new network media event for chain-child op "
             f"(parent={_short_value(parent_media_id, 20)}, "
+            f"ancestors={len(exclusion)}, "
             "tile_observed=None, "
             f"url={_short_value(getattr(page, 'url', None), 80)}) "
             f"kind={_CHAIN_CHILD_NO_NEW_MEDIA_KIND}"
         )
 
     tile_media_id = await find_latest_tile_slug(page)
-    if tile_media_id and tile_media_id != parent_media_id:
+    if tile_media_id and tile_media_id not in exclusion:
         url_media_id = extract_media_id(page.url)
         logger.warning(
-            "No new network mid; using latest tile slug: parent=%s url=%s tile=%s",
+            "No new network mid; using latest tile slug: parent=%s url=%s tile=%s (excluded %d ancestors)",
             (parent_media_id or "")[:20],
             (url_media_id or "")[:20],
             tile_media_id[:20],
+            len(exclusion),
         )
         return tile_media_id
 

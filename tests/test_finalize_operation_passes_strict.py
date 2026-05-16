@@ -47,6 +47,7 @@ async def test_finalize_operation_passes_strict_true_when_parent_media_id_set(mo
         client.page,
         fallback=PARENT_SLUG,
         parent_media_id=PARENT_SLUG,
+        ancestor_media_ids=[],
         download_media_ids=[PARENT_SLUG],
         strict=True,
     )
@@ -90,6 +91,7 @@ async def test_finalize_operation_passes_strict_false_when_parent_media_id_missi
         client.page,
         fallback=None,
         parent_media_id=None,
+        ancestor_media_ids=[],
         download_media_ids=[NEW_SLUG],
         strict=False,
     )
@@ -135,6 +137,7 @@ async def test_finalize_operation_uses_resolved_media_id_for_download_without_me
         client.page,
         fallback=None,
         parent_media_id=None,
+        ancestor_media_ids=[],
         download_media_ids=[],
         strict=False,
     )

@@ -312,6 +312,10 @@ async def run_live_profile(
             )
 
             previous = result
+            ancestor_media_ids: list[str] = []
+            l1_media = result.get("media_id") or ""
+            if l1_media:
+                ancestor_media_ids.append(l1_media)
             for level in range(2, depth + 1):
                 prompt = EXTEND_PROMPTS[(level - 2) % len(EXTEND_PROMPTS)]
                 job = {
@@ -322,6 +326,7 @@ async def run_live_profile(
                     "project_url": previous.get("project_url"),
                     "edit_url": previous.get("edit_url"),
                     "media_id": previous.get("media_id"),
+                    "ancestor_media_ids": list(ancestor_media_ids),
                     "prompt": prompt,
                     "profile": profile,
                 }
@@ -359,6 +364,10 @@ async def run_live_profile(
                         "prompt": prompt,
                     }
                 )
+                # Track this level's media for ancestor exclusion at next level
+                new_mid = result.get("media_id") or ""
+                if new_mid and new_mid not in ancestor_media_ids:
+                    ancestor_media_ids.append(new_mid)
                 previous = result
     except Exception as exc:
         log.exception("profile %s chain failed: %s", profile, exc)
