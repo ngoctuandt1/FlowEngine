@@ -837,10 +837,16 @@ async def finalize_operation(
     This is called after submit_with_confirmation() succeeds.
     """
     page = client.page
+    submit_baseline = len(getattr(client, "_media_id_events", []))
 
     # Wait for completion
     logger.info("Waiting for %s completion...", job_type)
-    result = await wait_for_completion(client, job_type=job_type)
+    result = await wait_for_completion(
+        client,
+        job_type=job_type,
+        # TODO: propagate submit-time baseline from op caller.
+        initial_media_count_at_submit=submit_baseline,
+    )
 
     if not result.get("done"):
         error = result.get("error", "unknown")
