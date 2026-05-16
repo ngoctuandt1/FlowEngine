@@ -6,6 +6,7 @@ submits, waits, downloads.
 
 import asyncio
 import logging
+import os
 
 from flow.failure_capture import message_with_failure_capture
 from flow.model_selector import select_model, DEFAULT_MODEL
@@ -17,6 +18,20 @@ from flow.operations._base import (
     count_visible_cards,
     finalize_operation,
 )
+
+try:  # C3 sibling PR; guarded so this branch lands independently.
+    from flow.operations.extend_api import (
+        get_extend_request_template,
+        install_extend_request_capture,
+        replay_extend_via_api,
+    )
+except Exception as exc:  # pragma: no cover - exercised via guarded fallback
+    get_extend_request_template = None
+    install_extend_request_capture = None
+    replay_extend_via_api = None
+    _EXTEND_API_IMPORT_ERROR = exc
+else:
+    _EXTEND_API_IMPORT_ERROR = None
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +46,90 @@ EXTEND_ICON_SELECTORS = [
     "[aria-label*='extend' i]",
     "button:has-text('keyboard_double_arrow_right')",
 ]
+
+
+def _reverse_extend_enabled() -> bool:
+    return os.getenv("FLOW_EXTEND_VIA_REVERSE", "0") == "1"
+
+
+def _install_extend_capture_if_enabled(client) -> bool:
+    if not _reverse_extend_enabled():
+        return False
+    if install_extend_request_capture is None:
+        logger.info(
+            "FLOW_EXTEND_VIA_REVERSE=1 but extend_api unavailable; "
+            "continuing UI path (%s)",
+            _EXTEND_API_IMPORT_ERROR,
+        )
+        return False
+    try:
+        install_extend_request_capture(client)
+    except Exception as exc:
+        logger.info(
+            "Extend request capture install failed; continuing UI path: %s",
+            exc,
+        )
+        return False
+    return True
+
+
+def _current_extend_template(client):
+    if get_extend_request_template is None:
+        return None
+    try:
+        return get_extend_request_template(client)
+    except Exception as exc:
+        logger.info(
+            "Extend request template unavailable; continuing UI path: %s",
+            exc,
+        )
+        return None
+
+
+def _extract_replay_media_ids(replay_result) -> list[str]:
+    if isinstance(replay_result, str) and replay_result:
+        return [replay_result]
+    if not isinstance(replay_result, dict):
+        return []
+    media_ids = replay_result.get("media_ids") or []
+    media_id = replay_result.get("media_id")
+    if media_id:
+        media_ids = [media_id, *media_ids]
+    unique_media_ids = []
+    for media_id_value in media_ids:
+        if media_id_value and media_id_value not in unique_media_ids:
+            unique_media_ids.append(str(media_id_value))
+    return unique_media_ids
+
+
+def _record_media_id_event(client, media_id: str, *, source: str) -> None:
+    recorder = getattr(client, "_record_media_id", None)
+    if callable(recorder):
+        recorder(media_id, source=source, url="extend-replay")
+        return
+    events = getattr(client, "_media_id_events", None)
+    if isinstance(events, list) and media_id not in {
+        event.get("mid") or event.get("media_id")
+        for event in events
+        if isinstance(event, dict)
+    }:
+        events.append({"mid": media_id, "source": source, "url": "extend-replay"})
+
+
+def _defer_replay_media_ids_for_wait(client, media_ids: list[str]) -> None:
+    if not media_ids:
+        return
+
+    async def _record_after_wait_starts():
+        await asyncio.sleep(0)
+        for media_id_value in media_ids:
+            _record_media_id_event(
+                client,
+                media_id_value,
+                source="extend_replay_result",
+            )
+
+    asyncio.create_task(_record_after_wait_starts())
 
 
 async def extend_video(
@@ -61,12 +160,49 @@ async def extend_video(
     Returns: Result dict with project_url, media_id, edit_url, output_files, etc.
     """
     page = client.page
+    capture_ready = _install_extend_capture_if_enabled(client)
 
     # Step 1: Navigate
     edit_url_val, project_id, locale = await navigate_to_edit(client, job)
 
     # Step 2: Wait for video
     await wait_for_video_loaded(page)
+
+    # Hybrid reverse-API path: after L2 has captured a request template, L3+
+    # can replay the extend submit and reuse the normal wait/download tail.
+    if capture_ready:
+        template = _current_extend_template(client)
+        if template is not None and replay_extend_via_api is not None:
+            try:
+                client.clear_captures()
+                replay_result = await replay_extend_via_api(
+                    client,
+                    parent_media_id=job["media_id"],
+                    prompt=prompt,
+                )
+                replay_media_ids = _extract_replay_media_ids(replay_result)
+                setattr(client, "_extend_replay_media_ids", replay_media_ids)
+                _defer_replay_media_ids_for_wait(client, replay_media_ids)
+                replay_count = getattr(client, "_extend_replay_count", 0) + 1
+                setattr(client, "_extend_replay_count", replay_count)
+                logger.info(
+                    "Extend replay submit accepted via reverse API "
+                    "(count=%d media_ids=%s)",
+                    replay_count,
+                    replay_media_ids,
+                )
+                return await finalize_operation(
+                    client, job,
+                    job_type="extend-video",
+                    project_id=project_id,
+                    locale=locale,
+                    download_prefix="ext",
+                )
+            except RuntimeError as exc:
+                logger.warning(
+                    "Extend reverse-API replay failed; falling back to UI path: %s",
+                    exc,
+                )
 
     # Step 3: Ensure Extend panel open.
     #
