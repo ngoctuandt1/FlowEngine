@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import os
 import re
+from pathlib import Path
 
 from flow.navigation import flow_url, extract_project_id
 from flow.login import is_login_page, handle_login_redirect
@@ -14,8 +16,14 @@ from flow.wait import wait_for_completion
 from flow.download import download_video
 from flow.failure_capture import message_with_failure_capture
 from flow.operations._base import failure_kind_from_error, resolve_final_media_id
+from flow.operations._l1_status_poll import download_via_url, poll_status_via_api
 
 logger = logging.getLogger(__name__)
+
+install_t2v_request_capture = None
+get_t2v_request_template = None
+replay_t2v_via_inflate = None
+_T2V_API_IMPORT_ERROR = None
 
 
 # Locale-independent selectors for the homepage "+ New project" CTA (B18).
@@ -57,6 +65,195 @@ NEW_PROJECT_SELECTORS = [
 ]
 
 
+def _reverse_t2v_enabled() -> bool:
+    return os.getenv("FLOW_T2V_VIA_REVERSE", "0") == "1"
+
+
+def _install_t2v_capture_if_enabled(client) -> bool:
+    if not _reverse_t2v_enabled():
+        return False
+    if install_t2v_request_capture is None:
+        logger.info(
+            "FLOW_T2V_VIA_REVERSE=1 but generate_api unavailable; "
+            "continuing UI path (%s)",
+            _T2V_API_IMPORT_ERROR,
+        )
+        return False
+    try:
+        install_t2v_request_capture(client)
+    except Exception as exc:
+        logger.info(
+            "T2V request capture install failed; continuing UI path: %s",
+            exc,
+        )
+        return False
+    logger.info(
+        "T2V reverse capture enabled for telemetry; pure replay remains "
+        "blocked by reCAPTCHA, UI path remains fallback"
+    )
+    return True
+
+
+def _current_t2v_template(client):
+    if get_t2v_request_template is None:
+        return None
+    try:
+        return get_t2v_request_template(client)
+    except Exception as exc:
+        logger.info(
+            "T2V request template unavailable; continuing UI path: %s",
+            exc,
+        )
+        return None
+
+
+def _extract_t2v_replay_gen_ids(replay_result) -> list[str]:
+    if isinstance(replay_result, str) and replay_result:
+        return [replay_result]
+    if isinstance(replay_result, list):
+        return [str(item) for item in replay_result if item]
+    if not isinstance(replay_result, dict):
+        return []
+    gen_ids = replay_result.get("gen_ids") or replay_result.get("generation_ids") or []
+    gen_id = replay_result.get("gen_id") or replay_result.get("generation_id")
+    if gen_id:
+        gen_ids = [gen_id, *gen_ids]
+    media_id = replay_result.get("media_id")
+    if media_id:
+        gen_ids = [media_id, *gen_ids]
+    unique_gen_ids = []
+    for gen_id_value in gen_ids:
+        if gen_id_value and gen_id_value not in unique_gen_ids:
+            unique_gen_ids.append(str(gen_id_value))
+    return unique_gen_ids
+
+
+def _record_t2v_replay_media_id(client, media_id: str) -> None:
+    recorder = getattr(client, "_record_media_id", None)
+    if callable(recorder):
+        recorder(media_id, source="t2v_replay", url="t2v-replay")
+        return
+    events = getattr(client, "_media_id_events", None)
+    if isinstance(events, list) and media_id not in {
+        event.get("mid") or event.get("media_id")
+        for event in events
+        if isinstance(event, dict)
+    }:
+        events.append({"mid": media_id, "source": "t2v_replay", "url": "t2v-replay"})
+
+
+def _replay_download_dir(client) -> Path:
+    client_dir = getattr(client, "download_dir", None)
+    if isinstance(client_dir, (str, os.PathLike)):
+        try:
+            return Path(client_dir)
+        except TypeError:
+            pass
+    env_dir = os.environ.get("FLOW_DOWNLOAD_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path("downloads")
+
+
+def _safe_filename_token(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("_") or "media"
+
+
+async def _finalize_t2v_replay_result(
+    client,
+    *,
+    gen_id: str,
+    project_id: str | None,
+    locale: str,
+) -> dict:
+    poll_result = await poll_status_via_api(
+        client,
+        gen_ids=[gen_id],
+        project_id=project_id,
+    )
+    status = poll_result.get(gen_id) or next(iter(poll_result.values()), {})
+    if status.get("status") != "completed":
+        raise RuntimeError(
+            f"text-to-video replay status not completed for gen_id={gen_id}: "
+            f"{status.get('status')} {status.get('error') or ''}".strip()
+        )
+    media_id = status.get("media_id") or gen_id
+    media_url = status.get("media_url")
+    if not media_url:
+        raise RuntimeError(f"text-to-video replay missing media_url for gen_id={gen_id}")
+
+    _record_t2v_replay_media_id(client, media_id)
+    download_dir = _replay_download_dir(client)
+    try:
+        download_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        logger.debug(
+            "T2V replay finalize: download dir mkdir failed (%s) for %s; "
+            "continuing -- download_via_url will surface the real error",
+            exc,
+            download_dir,
+        )
+    out_path = download_dir / f"t2v_replay_{_safe_filename_token(media_id)}.mp4"
+    saved_path = await download_via_url(
+        client,
+        url=media_url,
+        out_path=str(out_path),
+    )
+    if not saved_path:
+        raise RuntimeError(
+            f"text-to-video replay direct download returned empty path for media_id={media_id}"
+        )
+
+    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else getattr(client.page, "url", "")
+    edit_url_val = (
+        f"{flow_url(locale)}/project/{project_id}/edit/{media_id}"
+        if project_id
+        else getattr(client.page, "url", "")
+    )
+    return {
+        "project_url": project_url,
+        "media_id": media_id,
+        "edit_url": edit_url_val,
+        "output_files": [saved_path],
+        "generation_id": getattr(client, "_gen_id", None),
+        "profile": client.profile_name,
+    }
+
+
+async def _try_t2v_replay_from_template(client, prompt: str) -> dict | None:
+    if not _reverse_t2v_enabled() or replay_t2v_via_inflate is None:
+        return None
+    template = _current_t2v_template(client)
+    if template is None:
+        return None
+    try:
+        # Direct solo T2V replay is still reCAPTCHA-gated; the available
+        # replay helper piggybacks on Flow's UI-validated inflate path.
+        replay_result = await replay_t2v_via_inflate(client, [prompt])
+        replay_gen_ids = _extract_t2v_replay_gen_ids(replay_result)
+        if not replay_gen_ids:
+            raise RuntimeError("T2V reverse replay returned no gen_id")
+        current_url = getattr(client.page, "url", "")
+        locale = "vi" if "/vi/" in current_url else ""
+        project_id = extract_project_id(current_url)
+        logger.info(
+            "T2V reverse replay accepted (gen_ids=%s) -- finalizing via status API + direct URL download",
+            replay_gen_ids,
+        )
+        return await _finalize_t2v_replay_result(
+            client,
+            gen_id=replay_gen_ids[0],
+            project_id=project_id,
+            locale=locale,
+        )
+    except RuntimeError as exc:
+        logger.warning(
+            "T2V reverse replay failed; falling back to UI path: %s",
+            exc,
+        )
+        return None
+
+
 async def text_to_video(
     client,
     prompt: str,
@@ -88,6 +285,12 @@ async def text_to_video(
         }
     """
     page = client.page
+    capture_ready = _install_t2v_capture_if_enabled(client)
+    if capture_ready:
+        replay_result = await _try_t2v_replay_from_template(client, prompt)
+        if replay_result is not None:
+            return replay_result
+
     locale = ""  # Will detect from URL
 
     # === Step 1: Navigate to Flow homepage ===
@@ -942,3 +1145,18 @@ async def _count_visible_cards(page) -> int:
         }""")
     except Exception:
         return 0
+
+
+try:  # guarded so hybrid wiring runs before sibling revAPI modules land.
+    from flow.operations.generate_api import (
+        get_t2v_request_template as _get_t2v_request_template,
+        install_t2v_request_capture as _install_t2v_request_capture,
+        replay_t2v_via_inflate as _replay_t2v_via_inflate,
+    )
+except Exception as exc:  # pragma: no cover - tested by monkeypatched fallback
+    _T2V_API_IMPORT_ERROR = exc
+else:
+    install_t2v_request_capture = _install_t2v_request_capture
+    get_t2v_request_template = _get_t2v_request_template
+    replay_t2v_via_inflate = _replay_t2v_via_inflate
+    _T2V_API_IMPORT_ERROR = None

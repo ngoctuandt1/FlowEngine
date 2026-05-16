@@ -11,7 +11,9 @@ Authoritative selectors from the 2026-04-20 probe/docs:
 
 import asyncio
 import logging
+import os
 import re
+from pathlib import Path
 
 from playwright.async_api import Locator
 
@@ -22,6 +24,7 @@ from flow.navigation import extract_project_id, flow_url
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.operations._base import resolve_final_media_id
+from flow.operations._l1_status_poll import download_via_url
 from flow.operations.frames_to_video import (
     COMPOSER_MENU_SELECTORS,
     _click_new_project,
@@ -37,6 +40,20 @@ from flow.operations.generate import (
 )
 
 logger = logging.getLogger(__name__)
+
+try:  # guarded so production falls back cleanly if sibling revAPI module is absent.
+    from flow.operations.image_api import (
+        get_image_request_template,
+        install_image_request_capture,
+        replay_image_generate,
+    )
+except Exception as exc:  # pragma: no cover - exercised by monkeypatched fallback
+    get_image_request_template = None
+    install_image_request_capture = None
+    replay_image_generate = None
+    _IMAGE_API_IMPORT_ERROR = exc
+else:
+    _IMAGE_API_IMPORT_ERROR = None
 
 IMAGE_MODEL_MAP = {
     "nano-banana-pro": "Nano Banana Pro",
@@ -60,6 +77,179 @@ IMAGE_RATIO_IDS = {
 }
 
 
+def _reverse_t2i_enabled() -> bool:
+    return os.getenv("FLOW_T2I_VIA_REVERSE", "0") == "1"
+
+
+def _install_image_capture_if_enabled(client) -> bool:
+    if not _reverse_t2i_enabled():
+        return False
+    if install_image_request_capture is None:
+        logger.info(
+            "FLOW_T2I_VIA_REVERSE=1 but image_api unavailable; "
+            "continuing UI path (%s)",
+            _IMAGE_API_IMPORT_ERROR,
+        )
+        return False
+    try:
+        install_image_request_capture(client)
+    except Exception as exc:
+        logger.info(
+            "Image request capture install failed; continuing UI path: %s",
+            exc,
+        )
+        return False
+    return True
+
+
+def _current_image_template(client):
+    if get_image_request_template is None:
+        return None
+    try:
+        return get_image_request_template(client)
+    except Exception as exc:
+        logger.info(
+            "Image request template unavailable; continuing UI path: %s",
+            exc,
+        )
+        return None
+
+
+def _extract_image_replay_media_ids(replay_result) -> list[str]:
+    if isinstance(replay_result, str) and replay_result:
+        return [replay_result]
+    if isinstance(replay_result, list):
+        return [str(item) for item in replay_result if item]
+    if not isinstance(replay_result, dict):
+        return []
+    media_ids = replay_result.get("media_ids") or replay_result.get("media_names") or []
+    media_id = replay_result.get("media_id") or replay_result.get("media_name")
+    if media_id:
+        media_ids = [media_id, *media_ids]
+    unique_media_ids = []
+    for media_id_value in media_ids:
+        if media_id_value and media_id_value not in unique_media_ids:
+            unique_media_ids.append(str(media_id_value))
+    return unique_media_ids
+
+
+def _record_image_replay_media_id(client, media_id: str) -> None:
+    image_names = getattr(client, "_image_names", None)
+    if isinstance(image_names, list) and media_id not in image_names:
+        image_names.append(media_id)
+    recorder = getattr(client, "_record_media_id", None)
+    if callable(recorder):
+        try:
+            recorder(media_id, source="t2i_replay", url="t2i-replay")
+        except Exception:
+            pass
+
+
+def _replay_download_dir(client) -> Path:
+    client_dir = getattr(client, "download_dir", None)
+    if isinstance(client_dir, (str, os.PathLike)):
+        try:
+            return Path(client_dir)
+        except TypeError:
+            pass
+    env_dir = os.environ.get("FLOW_DOWNLOAD_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path("downloads")
+
+
+def _safe_filename_token(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("_") or "media"
+
+
+async def _finalize_image_replay_result(
+    client,
+    *,
+    media_id: str,
+    project_id: str | None,
+    locale: str,
+    project_url_full: str,
+) -> dict:
+    _record_image_replay_media_id(client, media_id)
+    media_url = (
+        "https://labs.google/fx/api/trpc/"
+        f"media.getMediaUrlRedirect?name={media_id}"
+    )
+    download_dir = _replay_download_dir(client)
+    try:
+        download_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        logger.debug(
+            "Image replay finalize: download dir mkdir failed (%s) for %s; "
+            "continuing -- download_via_url will surface the real error",
+            exc,
+            download_dir,
+        )
+    out_path = download_dir / f"t2i_replay_{_safe_filename_token(media_id)}.png"
+    saved_path = await download_via_url(
+        client,
+        url=media_url,
+        out_path=str(out_path),
+    )
+    if not saved_path:
+        raise RuntimeError(
+            f"text-to-image replay direct download returned empty path for media_id={media_id}"
+        )
+
+    project_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
+    edit_url_val = (
+        f"{flow_url(locale)}/project/{project_id}/edit/{media_id}"
+        if project_id
+        else getattr(client.page, "url", project_url_full)
+    )
+    return {
+        "project_url": project_url,
+        "media_id": media_id,
+        "edit_url": edit_url_val,
+        "output_files": [saved_path],
+        "generation_id": getattr(client, "_gen_id", None),
+        "profile": client.profile_name,
+    }
+
+
+async def _try_image_replay_from_template(
+    client,
+    *,
+    prompt: str,
+    project_id: str | None,
+    locale: str,
+    project_url_full: str,
+) -> dict | None:
+    if not _reverse_t2i_enabled() or replay_image_generate is None:
+        return None
+    template = _current_image_template(client)
+    if template is None:
+        return None
+    try:
+        client.clear_captures()
+        replay_result = await replay_image_generate(client, prompt, count=1)
+        replay_media_ids = _extract_image_replay_media_ids(replay_result)
+        if not replay_media_ids:
+            raise RuntimeError("Image reverse replay returned no media_id")
+        logger.info(
+            "Image reverse replay accepted (media_ids=%s) -- downloading via direct URL",
+            replay_media_ids,
+        )
+        return await _finalize_image_replay_result(
+            client,
+            media_id=replay_media_ids[0],
+            project_id=project_id,
+            locale=locale,
+            project_url_full=project_url_full,
+        )
+    except RuntimeError as exc:
+        logger.warning(
+            "Image reverse-API replay failed; falling back to UI path: %s",
+            exc,
+        )
+        return None
+
+
 async def text_to_image(
     client,
     prompt: str,
@@ -72,6 +262,7 @@ async def text_to_image(
         ref_image_path = _resolve_image_input_path(ref_image_path, label="Reference")
 
     page = client.page
+    capture_ready = _install_image_capture_if_enabled(client)
     locale = ""
     homepage = flow_url(locale)
 
@@ -150,6 +341,17 @@ async def text_to_image(
     await _select_image_model(page, model)
     await _set_image_aspect_ratio(page, aspect_ratio)
     await _set_image_output_count(page, 1)
+
+    if capture_ready:
+        replay_result = await _try_image_replay_from_template(
+            client,
+            prompt=prompt,
+            project_id=project_id,
+            locale=locale,
+            project_url_full=project_url_full,
+        )
+        if replay_result is not None:
+            return replay_result
 
     before_cards = await _count_visible_cards(page)
     client.clear_captures()
