@@ -133,6 +133,13 @@ $env:CHROME_USER_DATA_DIR = "D:\AI\FlowEngine\chrome-profiles"
 python scripts/warm_profile.py ngoctuandt20
 ```
 
+### Active profile pool (2026-05-16)
+
+- **Active**: `ngoctuandt20` is the only Flow-loggable profile right now.
+- **Dead**: `s1324h1450`, `default`, and any other entries previously listed in `profiles_ultra.txt` have been burned or had their Google account die. Do not re-add them to `WORKER_PROFILES` without re-warming and verifying Flow login on the live UI.
+- **Implication for live verify / autopilot**: deep-chain or mass-gen tests must run as a single chain on `ngoctuandt20`, not as parallel `--profiles a,b` runs, until additional profiles are re-warmed (see memory `project_active_profile_pool.md`).
+- **Replacement workflow**: when adding a new account, follow `scripts/warm_profile.py` + the burn-and-replace memo in `feedback_recaptcha_wipe_rewarm.md`; update this section after the new profile passes a Flow login probe.
+
 ### Core env vars
 
 | Component | Var | Why it matters | Typical local value |
