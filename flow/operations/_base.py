@@ -5,7 +5,9 @@ wait, download, and return metadata.
 """
 
 import asyncio
+import inspect
 import logging
+from types import SimpleNamespace
 
 from flow.failure_capture import message_with_failure_capture
 from flow.navigation import (
@@ -63,6 +65,49 @@ class LeafLockoutError(RuntimeError):
         )
 
 logger = logging.getLogger(__name__)
+
+_CHAIN_CHILD_NO_NEW_MEDIA_KIND = "chain_child_no_new_media"
+
+
+async def _capture_chain_child_no_new_media(page) -> None:
+    """Best-effort forensic capture for strict chain-child media misses."""
+    try:
+        from flow.diagnostics import capture_failure
+    except Exception as exc:
+        logger.warning("%s: capture import failed: %s", _CHAIN_CHILD_NO_NEW_MEDIA_KIND, exc)
+        return
+
+    try:
+        result = capture_failure(
+            page,
+            kind=_CHAIN_CHILD_NO_NEW_MEDIA_KIND,
+            logger=logger,
+        )
+        if inspect.isawaitable(result):
+            await result
+        return
+    except TypeError:
+        pass
+    except Exception as exc:
+        logger.warning("%s: capture failed: %s", _CHAIN_CHILD_NO_NEW_MEDIA_KIND, exc)
+        return
+
+    try:
+        result = capture_failure(
+            SimpleNamespace(page=page),
+            "unknown",
+            _CHAIN_CHILD_NO_NEW_MEDIA_KIND,
+        )
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:
+        logger.warning("%s: capture failed: %s", _CHAIN_CHILD_NO_NEW_MEDIA_KIND, exc)
+
+
+def _short_value(value: str | None, limit: int) -> str:
+    if value is None:
+        return "None"
+    return str(value)[:limit]
 
 
 def failure_kind_from_error(job_type: str, error: str) -> str:
@@ -862,6 +907,7 @@ async def finalize_operation(
         fallback=parent_media_id,
         parent_media_id=parent_media_id,
         download_media_ids=download_media_ids,
+        strict=(parent_media_id is not None),
     )
 
     # Build edit_url
@@ -917,6 +963,7 @@ async def resolve_final_media_id(
     fallback: str | None = None,
     parent_media_id: str | None = None,
     download_media_ids: list[str] | None = None,
+    strict: bool = False,
 ) -> str | None:
     """Resolve the canonical media slug for a completed operation.
 
@@ -933,6 +980,9 @@ async def resolve_final_media_id(
     4. ``fallback`` — used only when the URL never settles to an /edit/
        slug (typically the parent media, so callers can still build a
        usable edit_url).
+
+    With ``strict=True`` and a parent media id, missing network media is
+    fatal before tile/URL fallback because deep-chain DOM order can be stale.
     """
     download_media_ids = download_media_ids or []
     network_media_id = next(
@@ -944,6 +994,16 @@ async def resolve_final_media_id(
             "media_id from network events: %s", network_media_id[:20]
         )
         return network_media_id
+
+    if strict and parent_media_id is not None:
+        await _capture_chain_child_no_new_media(page)
+        raise RuntimeError(
+            "resolve_final_media_id: no new network media event for chain-child op "
+            f"(parent={_short_value(parent_media_id, 20)}, "
+            "tile_observed=None, "
+            f"url={_short_value(getattr(page, 'url', None), 80)}) "
+            f"kind={_CHAIN_CHILD_NO_NEW_MEDIA_KIND}"
+        )
 
     tile_media_id = await find_latest_tile_slug(page)
     if tile_media_id and tile_media_id != parent_media_id:
