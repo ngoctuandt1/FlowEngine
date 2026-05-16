@@ -97,6 +97,7 @@ async def wait_for_completion(
     client,
     job_type: str = "text-to-video",
     timeout: int | None = None,
+    initial_media_count_at_submit: int | None = None,
 ) -> dict:
     """Wait for generation to complete.
 
@@ -105,6 +106,8 @@ async def wait_for_completion(
                   ``._video_urls``, ``._media_id_events``).
         job_type: One of the keys in ``TIMEOUTS``.
         timeout:  Override the per-type timeout (seconds).
+        initial_media_count_at_submit: Optional submit-time ``_media_id_events``
+                  count for chain-child strict guard checks.
 
     Returns dict::
 
@@ -134,6 +137,11 @@ async def wait_for_completion(
 
     initial_video_count = len(getattr(client, "_video_urls", []))
     initial_media_count = len(getattr(client, "_media_id_events", []))
+    strict_media_count_baseline = (
+        initial_media_count
+        if initial_media_count_at_submit is None
+        else initial_media_count_at_submit
+    )
     initial_image_count = len(getattr(client, "_image_names", []))
     initial_url = page.url
     start = time.monotonic()
@@ -186,7 +194,7 @@ async def wait_for_completion(
             method_name = "reverse_api"
             is_chain_child = job_type in CHAIN_CHILD_JOB_TYPES
             new_media_count = len(
-                _collect_media_ids(client, start_index=initial_media_count)
+                _collect_media_ids(client, start_index=strict_media_count_baseline)
             )
             if is_chain_child and new_media_count == 0:
                 logger.error(
@@ -244,7 +252,7 @@ async def wait_for_completion(
             method_name = "network_video"
             is_chain_child = job_type in CHAIN_CHILD_JOB_TYPES
             new_media_count = len(
-                _collect_media_ids(client, start_index=initial_media_count)
+                _collect_media_ids(client, start_index=strict_media_count_baseline)
             )
             if is_chain_child and new_media_count == 0:
                 logger.error(
@@ -304,7 +312,7 @@ async def wait_for_completion(
             method_name = "dom_observer"
             is_chain_child = job_type in CHAIN_CHILD_JOB_TYPES
             new_media_count = len(
-                _collect_media_ids(client, start_index=initial_media_count)
+                _collect_media_ids(client, start_index=strict_media_count_baseline)
             )
             if is_chain_child and new_media_count == 0:
                 logger.error(
@@ -347,7 +355,7 @@ async def wait_for_completion(
                 method_name = "dom_observer"
                 is_chain_child = job_type in CHAIN_CHILD_JOB_TYPES
                 new_media_count = len(
-                    _collect_media_ids(client, start_index=initial_media_count)
+                    _collect_media_ids(client, start_index=strict_media_count_baseline)
                 )
                 if is_chain_child and new_media_count == 0:
                     logger.error(

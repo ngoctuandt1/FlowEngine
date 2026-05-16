@@ -27,6 +27,14 @@ def _make_client_with_new_media(mid="new-mid"):
     return client
 
 
+def _make_client_with_wait_start_media(mid="wait-start-mid"):
+    client = _make_client_no_new_media()
+    client._media_id_events.append({"mid": "submit-old-mid"})
+    submit_baseline = len(client._media_id_events)
+    client._media_id_events.append({"mid": mid})
+    return client, submit_baseline
+
+
 def _stub_wait_helpers(monkeypatch, *, api=None, dom=None):
     monkeypatch.setattr(wait_module, "_inject_observer", AsyncMock(return_value=None))
     monkeypatch.setattr(
@@ -99,6 +107,28 @@ async def test_chain_child_api_done_with_new_media_succeeds(monkeypatch, job_typ
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("job_type", CHAIN_CHILD_JOB_TYPES)
+async def test_chain_child_api_done_uses_submit_baseline_for_strict_guard(
+    monkeypatch,
+    job_type,
+):
+    _stub_wait_helpers(monkeypatch, api={"done": True, "error": None, "progress": 100})
+    capture = _capture_mock(monkeypatch)
+    client, submit_baseline = _make_client_with_wait_start_media()
+
+    result = await wait_module.wait_for_completion(
+        client,
+        job_type=job_type,
+        timeout=5,
+        initial_media_count_at_submit=submit_baseline,
+    )
+
+    assert result["done"] is True
+    assert result["media_ids"] == []
+    capture.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("job_type", CHAIN_CHILD_JOB_TYPES)
 async def test_chain_child_network_video_without_new_media_fails(monkeypatch, job_type):
     _stub_wait_helpers(monkeypatch)
     capture = _capture_mock(monkeypatch)
@@ -123,6 +153,37 @@ async def test_chain_child_network_video_without_new_media_fails(monkeypatch, jo
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("job_type", CHAIN_CHILD_JOB_TYPES)
+async def test_chain_child_network_video_uses_submit_baseline_for_strict_guard(
+    monkeypatch,
+    job_type,
+):
+    _stub_wait_helpers(monkeypatch)
+    capture = _capture_mock(monkeypatch)
+    client, submit_baseline = _make_client_with_wait_start_media()
+
+    async def record_video(_client):
+        client._video_urls.append("https://example.test/new.mp4")
+        return None
+
+    monkeypatch.setattr(
+        wait_module,
+        "detect_recaptcha_in_network",
+        AsyncMock(side_effect=record_video),
+    )
+
+    result = await wait_module.wait_for_completion(
+        client,
+        job_type=job_type,
+        timeout=5,
+        initial_media_count_at_submit=submit_baseline,
+    )
+
+    assert result["done"] is True
+    capture.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("job_type", CHAIN_CHILD_JOB_TYPES)
 async def test_chain_child_dom_video_without_new_media_fails(monkeypatch, job_type):
     _stub_wait_helpers(
         monkeypatch,
@@ -136,6 +197,30 @@ async def test_chain_child_dom_video_without_new_media_fails(monkeypatch, job_ty
     assert result["done"] is False
     assert result["error"] == FAILURE_KIND
     _assert_strict_capture(capture, job_type=job_type, method="dom_observer")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("job_type", CHAIN_CHILD_JOB_TYPES)
+async def test_chain_child_dom_video_uses_submit_baseline_for_strict_guard(
+    monkeypatch,
+    job_type,
+):
+    _stub_wait_helpers(
+        monkeypatch,
+        dom={"progress": 100, "error": "", "new_video": True},
+    )
+    capture = _capture_mock(monkeypatch)
+    client, submit_baseline = _make_client_with_wait_start_media()
+
+    result = await wait_module.wait_for_completion(
+        client,
+        job_type=job_type,
+        timeout=5,
+        initial_media_count_at_submit=submit_baseline,
+    )
+
+    assert result["done"] is True
+    capture.assert_not_awaited()
 
 
 @pytest.mark.asyncio
