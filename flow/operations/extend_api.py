@@ -73,6 +73,13 @@ _BARE_MEDIA_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+# Looser regex used to scan free-form string values for an embedded UUID.
+_EMBEDDED_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+# Keys whose value (or nested values) most likely hold a parent media identifier.
+_PARENT_KEY_PATTERN = re.compile(r"parent|source|media|name", re.IGNORECASE)
 
 
 def install_extend_request_capture(client) -> None:
@@ -102,12 +109,18 @@ def install_extend_request_capture(client) -> None:
             post_data = request.post_data
         except Exception:
             post_data = None
+        anchored_parent = _anchored_parent_from_post_data(post_data)
         client._extend_request_template = {
             "url": url,
             "headers": headers,
             "post_data": post_data,
+            "anchored_parent": anchored_parent,
         }
-        logger.info("Captured Flow extend reverseAPI template: %s", url)
+        logger.info(
+            "Captured Flow extend reverseAPI template: %s (anchored_parent=%s)",
+            url,
+            anchored_parent or "<none>",
+        )
 
     page.on("request", _on_request)
     client._extend_request_capture_listener = _on_request
@@ -132,7 +145,12 @@ async def replay_extend_via_api(client, parent_media_id: str, prompt: str) -> st
     body["requests"] = [deepcopy(requests[0])]
     request = body["requests"][0]
 
-    parent_path = _set_parent_media_id(request, parent_media_id)
+    parent_path = _rewrite_parent_media_id(
+        request=request,
+        body=body,
+        anchored_parent=template.get("anchored_parent"),
+        new_parent_media_id=parent_media_id,
+    )
     prompt_path = _set_prompt_text(request, prompt)
     logger.info("replay_extend_via_api: rewrote parent media at %s", parent_path)
     logger.info("replay_extend_via_api: rewrote prompt at %s", prompt_path)
@@ -203,6 +221,67 @@ def _parse_template_post_data(template: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise RuntimeError("replay_extend_via_api: captured template JSON was not an object")
     return parsed
+
+
+def _rewrite_parent_media_id(
+    *,
+    request: dict[str, Any],
+    body: dict[str, Any],
+    anchored_parent: str | None,
+    new_parent_media_id: str,
+) -> str:
+    """Rewrite the parent media slot.
+
+    Strategy (belt + suspenders):
+      1) Try the legacy path-candidate list against ``requests[0]``. This is
+         the fast common case and keeps existing tests/fixtures green.
+      2) Otherwise, fall back to walk-by-VALUE: search the whole body for
+         every occurrence of the ``anchored_parent`` UUID captured at install
+         time, and replace each one with ``new_parent_media_id``.
+
+    Both strategies preserve any surrounding path (e.g. ``media/<UUID>`` or
+    ``projects/<p>/media/<UUID>``) because the path-based writer mutates the
+    canonical leaf and the value-based writer rewrites only the UUID
+    substring within the matched string.
+    """
+    # 1) Path-candidate fast path — preserves legacy behaviour and tests.
+    try:
+        return _set_parent_media_id(request, new_parent_media_id)
+    except RuntimeError as exc:
+        path_error = exc
+
+    # 2) Walk-by-value fallback — requires an anchor UUID captured at install.
+    if not anchored_parent:
+        raise RuntimeError(
+            "replay_extend_via_api: parent media field not found in captured "
+            "template and no anchored parent UUID was captured "
+            f"(path-candidate error: {path_error})"
+        )
+
+    old_uuid_bare = _strip_media_prefix(anchored_parent)
+    if not old_uuid_bare:
+        raise RuntimeError(
+            "replay_extend_via_api: anchored parent UUID was empty after "
+            "stripping media/ prefix"
+        )
+
+    new_uuid_bare = _strip_media_prefix(new_parent_media_id)
+    replaced_paths = _replace_uuid_in_body(body, old_uuid_bare, new_uuid_bare)
+    if not replaced_paths:
+        raise RuntimeError(
+            "replay_extend_via_api: anchored parent UUID "
+            f"{old_uuid_bare!r} not found in captured template body"
+        )
+
+    logger.info(
+        "replay_extend_via_api: walk-by-value replaced parent UUID at %d "
+        "location(s): %s",
+        len(replaced_paths),
+        replaced_paths,
+    )
+    if len(replaced_paths) == 1:
+        return replaced_paths[0]
+    return f"[{len(replaced_paths)} locations]: {', '.join(replaced_paths)}"
 
 
 def _set_parent_media_id(request: dict[str, Any], parent_media_id: str) -> str:
@@ -400,6 +479,129 @@ def _media_id_from_name_or_bare(value: str) -> str | None:
     if media_id is not None:
         return media_id
     return value.strip() if _looks_like_bare_media_id(value) else None
+
+
+def _strip_media_prefix(value: str) -> str:
+    """Return the bare UUID portion of ``value``.
+
+    Accepts raw UUIDs, ``media/<uuid>``, and ``projects/<p>/media/<uuid>``
+    style names. Falls back to returning ``value.strip()`` when no UUID
+    substring is present (callers re-validate downstream).
+    """
+    if not value:
+        return ""
+    match = _EMBEDDED_UUID_RE.search(value)
+    if match:
+        return match.group(0)
+    return value.strip()
+
+
+def _anchored_parent_from_post_data(post_data: Any) -> str | None:
+    """Extract the parent media UUID from a captured POST body string.
+
+    The captured body always contains the L<N-1> media_id that is being
+    extended; locating it at install time means replay can later perform a
+    pure value-based rewrite even when Flow moves the field around.
+    Returns ``None`` if the body cannot be parsed or no UUID-shaped value
+    appears under a parent/source/media/name key.
+    """
+    if post_data is None:
+        return None
+    raw: Any = post_data
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except Exception:
+            return None
+    if isinstance(raw, str):
+        if not raw.strip():
+            return None
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None
+    if not isinstance(raw, (dict, list)):
+        return None
+    return _find_anchored_parent_uuid(raw)
+
+
+def _find_anchored_parent_uuid(body: Any) -> str | None:
+    """Walk ``body`` and return the first UUID found under a parent-ish key.
+
+    A "parent-ish key" is any key whose name matches
+    ``parent|source|media|name`` (case-insensitive). The match is applied to
+    the IMMEDIATE key under which a string lives, OR to any ancestor key on
+    the path from the root — that way values like
+    ``videoExtendInput.sourceMedia.name = "<uuid>"`` qualify because
+    ``sourceMedia`` (and ``name``) are both parent-ish.
+    """
+
+    def walk(value: Any, key_context: bool) -> str | None:
+        if isinstance(value, dict):
+            # Prefer parent-ish children first so we don't accidentally pick
+            # an unrelated UUID nested elsewhere (e.g. a projectId field that
+            # happens to be UUID-shaped) when a real candidate is available.
+            ordered = sorted(
+                value.items(),
+                key=lambda item: 0 if _PARENT_KEY_PATTERN.search(str(item[0])) else 1,
+            )
+            for child_key, child_value in ordered:
+                child_in_context = key_context or bool(
+                    _PARENT_KEY_PATTERN.search(str(child_key))
+                )
+                found = walk(child_value, child_in_context)
+                if found:
+                    return found
+            return None
+        if isinstance(value, list):
+            for item in value:
+                found = walk(item, key_context)
+                if found:
+                    return found
+            return None
+        if not key_context or not isinstance(value, str):
+            return None
+        match = _EMBEDDED_UUID_RE.search(value)
+        return match.group(0) if match else None
+
+    return walk(body, key_context=False)
+
+
+def _replace_uuid_in_body(
+    body: Any, old_uuid: str, new_uuid: str
+) -> list[str]:
+    """Replace every occurrence of ``old_uuid`` inside ``body`` in place.
+
+    Returns the list of dotted/indexed paths whose string values were
+    rewritten. Both raw UUIDs (``"<uuid>"``) and embedded UUIDs
+    (``"media/<uuid>"``, ``"projects/p/media/<uuid>"``) are handled because
+    ``str.replace`` operates on the substring while the surrounding path
+    stays intact.
+
+    No-op (returns ``[]``) when ``old_uuid`` is empty or the body contains
+    no string matching that UUID substring.
+    """
+    if not old_uuid:
+        return []
+    replaced: list[str] = []
+
+    def walk(value: Any, path: str) -> Any:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                next_path = f"{path}.{key}" if path else str(key)
+                value[key] = walk(child, next_path)
+            return value
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                value[index] = walk(item, f"{path}[{index}]")
+            return value
+        if isinstance(value, str) and old_uuid in value:
+            replaced.append(path)
+            return value.replace(old_uuid, new_uuid)
+        return value
+
+    walk(body, "")
+    return replaced
 
 
 def _remove_page_listener(page: Any, event_name: str, callback: Any) -> None:
