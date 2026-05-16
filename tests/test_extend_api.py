@@ -241,6 +241,18 @@ async def test_replay_extend_via_api_raises_on_zero_media_entries():
 
 
 @pytest.mark.asyncio
+async def test_replay_extend_via_api_accepts_bare_uuid_media_name_response():
+    media_id = "12345678-1234-1234-1234-123456789abc"
+    client = _client_with_template()
+    client.page.context.request.post.return_value = FakeAPIResponse(
+        200,
+        {"media": [{"name": media_id}]},
+    )
+
+    assert await replay_extend_via_api(client, "media/new-parent", "new prompt") == media_id
+
+
+@pytest.mark.asyncio
 async def test_replay_extend_via_api_headers_only_from_allowlist():
     client = _client_with_template()
     client.page.context.request.post.return_value = FakeAPIResponse(
@@ -291,3 +303,28 @@ def test_extract_extend_media_names_walks_nested_operation_names():
     }
 
     assert _extract_extend_media_names(data) == ["first", "second"]
+
+
+def test_extract_media_names_accepts_bare_uuid_at_media_name():
+    media_id = "12345678-1234-1234-1234-123456789abc"
+
+    assert _extract_extend_media_names({"media": [{"name": media_id}]}) == [media_id]
+
+
+def test_extract_media_names_accepts_bare_uuid_at_operations_operation_name():
+    media_id = "12345678-1234-1234-1234-123456789abc"
+    data = {"operations": [{"operation": {"name": media_id}}]}
+
+    assert _extract_extend_media_names(data) == [media_id]
+
+
+def test_extract_media_names_prefers_path_style_when_both_present():
+    bare_media_id = "12345678-1234-1234-1234-123456789abc"
+    path_media_id = "87654321-4321-4321-4321-cba987654321"
+    data = {"media": [{"name": f"projects/proj1/media/{path_media_id}?name={bare_media_id}"}]}
+
+    assert _extract_extend_media_names(data) == [path_media_id]
+
+
+def test_extract_media_names_rejects_non_uuid_bare_name():
+    assert _extract_extend_media_names({"media": [{"name": "not-a-uuid-just-text"}]}) == []

@@ -69,6 +69,10 @@ _PROMPT_FIELD_CANDIDATES: tuple[tuple[str | int, ...], ...] = (
     ("prompt",),
 )
 _MEDIA_ID_RE = re.compile(r"(?:^|/)media/([^/?#\s\"]+)", re.IGNORECASE)
+_BARE_MEDIA_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 def install_extend_request_capture(client) -> None:
@@ -376,7 +380,7 @@ def _extract_extend_media_names(data: Any) -> list[str]:
             add(value)
             return
         if key in {"name", "mediaName", "media_name"}:
-            add(_media_id_from_name(value))
+            add(_media_id_from_name_or_bare(value))
 
     walk(data)
     return found
@@ -385,6 +389,17 @@ def _extract_extend_media_names(data: Any) -> list[str]:
 def _media_id_from_name(value: str) -> str | None:
     match = _MEDIA_ID_RE.search(value)
     return match.group(1) if match else None
+
+
+def _looks_like_bare_media_id(value: str) -> bool:
+    return bool(_BARE_MEDIA_ID_RE.match(value.strip()))
+
+
+def _media_id_from_name_or_bare(value: str) -> str | None:
+    media_id = _media_id_from_name(value)
+    if media_id is not None:
+        return media_id
+    return value.strip() if _looks_like_bare_media_id(value) else None
 
 
 def _remove_page_listener(page: Any, event_name: str, callback: Any) -> None:
