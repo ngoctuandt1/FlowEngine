@@ -8,8 +8,8 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 
-from flow.download import download_video
 from flow.failure_capture import message_with_failure_capture
 from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.navigation import edit_url as build_edit_url, project_url as build_project_url
@@ -20,6 +20,10 @@ from flow.operations._base import (
     click_action_button,
     count_visible_cards,
     finalize_operation,
+)
+from flow.operations._l1_status_poll import (
+    poll_status_via_api,
+    download_via_url,
 )
 
 try:  # C3 sibling PR; guarded so this branch lands independently.
@@ -126,54 +130,163 @@ def _record_replay_media_id(client, media_id: str) -> None:
         )
 
 
-async def _download_replay_media(client, replay_media_id: str) -> list[str]:
-    last_error: Exception | None = None
-    for attempt in range(1, 7):
+def _replay_download_dir(client) -> Path:
+    """Return the directory that should receive a replay download.
+
+    Prefer the client's resolved ``download_dir`` (set in
+    ``FlowClient.__init__`` and used by every other download path), then
+    fall back to the ``FLOW_DOWNLOAD_DIR`` env override, then the
+    legacy ``./downloads`` default. Tests using a ``MagicMock`` client
+    still receive a usable ``Path`` because ``Path(MagicMock())`` would
+    raise — so we coerce to ``str`` first and accept any path-like.
+    """
+    client_dir = getattr(client, "download_dir", None)
+    if isinstance(client_dir, (str, os.PathLike)):
         try:
-            output_files = await download_video(
-                client,
-                media_ids=[replay_media_id],
-                prefix="ext",
-            )
-            if output_files:
-                return output_files
-            logger.warning(
-                "Extend replay download returned no files for media_id=%s (attempt=%d/6)",
-                replay_media_id,
-                attempt,
-            )
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "Extend replay download failed for media_id=%s (attempt=%d/6): %s",
-                replay_media_id,
-                attempt,
-                exc,
-            )
-        if attempt < 6:
-            await asyncio.sleep(10)
-
-    message = f"extend-video replay: no output file captured for media_id={replay_media_id}"
-    if last_error is not None:
-        message = f"{message}: {last_error}"
-    message = await message_with_failure_capture(
-        client,
-        "extend_video_replay_no_output_file",
-        message,
-    )
-    raise RuntimeError(message)
+            return Path(client_dir)
+        except TypeError:
+            pass
+    env_dir = os.environ.get("FLOW_DOWNLOAD_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path("downloads")
 
 
-async def _finalize_replay_extend(
+async def _finalize_replay_result(
     client,
     job: dict,
     *,
     project_id: str,
     locale: str,
     replay_media_id: str,
+    download_prefix: str = "ext",
 ) -> dict:
+    """Finalize a successful reverse-API replay via Flow's own status API.
+
+    The replay submit (`replay_extend_via_api`) returns the new media id
+    immediately, but the actual video render still takes ~30-120 s on
+    Flow's backend. Because the submit went out via
+    ``page.context.request.post`` and not the SPA, Flow's UI never
+    receives the usual ``mediaGenerationStarted`` push -- so DOM/network
+    listeners in ``wait_for_completion`` would time out after 5 minutes
+    waiting for a signal that will never fire.
+
+    Instead we poll Flow's own ``batchCheckAsyncVideoGenerationStatus``
+    endpoint (the same one the React UI uses for any submitted gen) and
+    download via direct GET on the rendered media URL. Both calls reuse
+    the captured auth headers from ``client._batch_requests``, so the
+    UI page is purely a session/auth carrier here -- no DOM is touched.
+
+    Raises ``RuntimeError`` (with forensic capture) on any non-success
+    terminal state, missing media url, or download failure. The caller
+    is expected to fall back to the UI path on ``RuntimeError``.
+    """
     _record_replay_media_id(client, replay_media_id)
-    output_files = await _download_replay_media(client, replay_media_id)
+
+    logger.info(
+        "Extend replay finalize: polling status API for media_id=%s",
+        replay_media_id[:20],
+    )
+    poll_result = await poll_status_via_api(
+        client,
+        gen_ids=[replay_media_id],
+        project_id=project_id or None,
+        hard_timeout_sec=600.0,
+    )
+
+    slot = poll_result.get(replay_media_id) if isinstance(poll_result, dict) else None
+    if not isinstance(slot, dict):
+        message = (
+            f"extend-video replay: status API returned no slot for "
+            f"media_id={replay_media_id}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "extend_replay_status_no_entry",
+            message,
+        )
+        raise RuntimeError(message)
+
+    status = slot.get("status")
+    if status == "failed":
+        error = slot.get("error") or "unknown"
+        message = (
+            f"extend-video replay: status API reports failed for "
+            f"media_id={replay_media_id}: {error}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "extend_replay_status_failed",
+            message,
+        )
+        raise RuntimeError(message)
+
+    if status != "completed":
+        # 'pending' here means the 10 min hard timeout elapsed without a
+        # terminal status; 'timeout' is what poll_status_via_api sets in
+        # that case. Either way, treat as a hard fail so the UI fallback
+        # path can take over.
+        message = (
+            f"extend-video replay: status API did not reach completed "
+            f"(status={status}) for media_id={replay_media_id}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "extend_replay_status_timeout",
+            message,
+        )
+        raise RuntimeError(message)
+
+    media_url = slot.get("media_url")
+    if not isinstance(media_url, str) or not media_url:
+        message = (
+            f"extend-video replay: status completed but no media URL "
+            f"available for media_id={replay_media_id}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "extend_replay_no_media_url",
+            message,
+        )
+        raise RuntimeError(message)
+
+    download_dir = _replay_download_dir(client)
+    try:
+        download_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        logger.debug(
+            "Extend replay finalize: download dir mkdir failed (%s) for %s; "
+            "continuing — download_via_url will surface the real error",
+            exc,
+            download_dir,
+        )
+    out_path = download_dir / (
+        f"{download_prefix}_replay_{replay_media_id[:20]}_{int(time.time())}.mp4"
+    )
+
+    logger.info(
+        "Extend replay finalize: downloading via direct URL "
+        "(media_id=%s -> %s)",
+        replay_media_id[:20],
+        out_path.name,
+    )
+    saved_path = await download_via_url(
+        client,
+        url=media_url,
+        out_path=str(out_path),
+    )
+    if not saved_path:
+        message = (
+            f"extend-video replay: direct-URL download returned empty path "
+            f"for media_id={replay_media_id}"
+        )
+        message = await message_with_failure_capture(
+            client,
+            "extend_replay_download_failed",
+            message,
+        )
+        raise RuntimeError(message)
+
     proj_url = job.get("project_url") or (
         build_project_url(project_id, locale) if project_id else ""
     )
@@ -186,7 +299,7 @@ async def _finalize_replay_extend(
         "project_url": proj_url,
         "media_id": replay_media_id,
         "edit_url": edit_url_val,
-        "output_files": output_files,
+        "output_files": [saved_path],
         "generation_id": client._gen_id,
         "profile": client.profile_name,
     }
@@ -229,7 +342,10 @@ async def extend_video(
     await wait_for_video_loaded(page)
 
     # Hybrid reverse-API path: after L2 has captured a request template, L3+
-    # can replay the extend submit and reuse the normal wait/download tail.
+    # can replay the extend submit AND finalize via Flow's own status +
+    # direct-URL APIs -- the entire submit/wait/download tail skips the UI,
+    # so DOM-driven `wait_for_completion` cannot observe a signal that the
+    # SPA never receives. See `_finalize_replay_result` for the rationale.
     if capture_ready:
         template = _current_extend_template(client)
         if template is not None and replay_extend_via_api is not None:
@@ -240,34 +356,32 @@ async def extend_video(
                     parent_media_id=job["media_id"],
                     prompt=prompt,
                 )
+                replay_media_ids = _extract_replay_media_ids(replay_result)
+                if not replay_media_ids:
+                    raise RuntimeError(
+                        "Extend reverse-API replay returned no media_id"
+                    )
+                replay_media_id = replay_media_ids[0]
+                replay_count = getattr(client, "_extend_replay_count", 0) + 1
+                setattr(client, "_extend_replay_count", replay_count)
+                logger.info(
+                    "Extend replay submit accepted via reverse API "
+                    "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
+                    replay_count,
+                    replay_media_ids,
+                )
+                return await _finalize_replay_result(
+                    client,
+                    job,
+                    project_id=project_id,
+                    locale=locale,
+                    replay_media_id=replay_media_id,
+                )
             except RuntimeError as exc:
                 logger.warning(
                     "Extend reverse-API replay failed; falling back to UI path: %s",
                     exc,
                 )
-            else:
-                replay_media_ids = _extract_replay_media_ids(replay_result)
-                if not replay_media_ids:
-                    logger.warning(
-                        "Extend reverse-API replay returned no media_id; falling back to UI path"
-                    )
-                else:
-                    replay_media_id = replay_media_ids[0]
-                    replay_count = getattr(client, "_extend_replay_count", 0) + 1
-                    setattr(client, "_extend_replay_count", replay_count)
-                    logger.info(
-                        "Extend replay submit accepted via reverse API "
-                        "(count=%d media_ids=%s)",
-                        replay_count,
-                        replay_media_ids,
-                    )
-                    return await _finalize_replay_extend(
-                        client,
-                        job,
-                        project_id=project_id,
-                        locale=locale,
-                        replay_media_id=replay_media_id,
-                    )
 
     # Step 3: Ensure Extend panel open.
     #
