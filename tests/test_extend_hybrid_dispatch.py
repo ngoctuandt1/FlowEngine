@@ -1,4 +1,3 @@
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,6 +29,7 @@ def _patch_common(monkeypatch):
         "count_visible_cards": AsyncMock(return_value=0),
         "submit_with_confirmation": AsyncMock(return_value=True),
         "finalize_operation": AsyncMock(return_value={"ok": True, "media_id": "final-mid"}),
+        "download_video": AsyncMock(return_value=["out.mp4"]),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(extend_mod, name, mock)
@@ -90,17 +90,30 @@ async def test_env_on_template_replays_and_skips_ui_submit(monkeypatch):
     install = MagicMock()
     get_template = MagicMock(return_value={"template": True})
     replay = AsyncMock(return_value={"media_id": "api-mid"})
+    create_task = MagicMock()
     monkeypatch.setattr(extend_mod, "install_extend_request_capture", install)
     monkeypatch.setattr(extend_mod, "get_extend_request_template", get_template)
     monkeypatch.setattr(extend_mod, "replay_extend_via_api", replay)
+    monkeypatch.setattr(extend_mod.asyncio, "create_task", create_task, raising=False)
 
     result = await extend_mod.extend_video(
         client,
-        {"media_id": "parent-mid", "edit_url": "edit-url"},
+        {
+            "media_id": "parent-mid",
+            "edit_url": "edit-url",
+            "project_url": "project-url",
+        },
         prompt="next",
     )
 
-    assert result == {"ok": True, "media_id": "final-mid"}
+    assert result == {
+        "project_url": "project-url",
+        "media_id": "api-mid",
+        "edit_url": "https://labs.google/fx/en/tools/flow/project/project-id/edit/api-mid",
+        "output_files": ["out.mp4"],
+        "generation_id": None,
+        "profile": "profile-a",
+    }
     replay.assert_awaited_once_with(
         client,
         parent_media_id="parent-mid",
@@ -108,7 +121,13 @@ async def test_env_on_template_replays_and_skips_ui_submit(monkeypatch):
     )
     mocks["_verify_extend_panel"].assert_not_awaited()
     mocks["submit_with_confirmation"].assert_not_awaited()
-    mocks["finalize_operation"].assert_awaited_once()
+    mocks["finalize_operation"].assert_not_awaited()
+    mocks["download_video"].assert_awaited_once_with(
+        client,
+        media_ids=["api-mid"],
+        prefix="ext",
+    )
+    create_task.assert_not_called()
 
 
 async def test_env_on_replay_runtime_error_falls_back_to_ui(monkeypatch):
@@ -136,12 +155,11 @@ async def test_env_on_replay_runtime_error_falls_back_to_ui(monkeypatch):
     mocks["finalize_operation"].assert_awaited_once()
 
 
-async def test_replay_media_id_is_deferred_for_finalize_wait(monkeypatch):
+async def test_replay_media_id_is_recorded_synchronously_without_wait(monkeypatch):
     monkeypatch.setenv("FLOW_EXTEND_VIA_REVERSE", "1")
     client = _client()
-    _patch_common(monkeypatch)
-    finalize = AsyncMock(return_value={"ok": True, "media_id": "api-mid"})
-    monkeypatch.setattr(extend_mod, "finalize_operation", finalize)
+    mocks = _patch_common(monkeypatch)
+    create_task = MagicMock()
     monkeypatch.setattr(extend_mod, "install_extend_request_capture", MagicMock())
     monkeypatch.setattr(
         extend_mod,
@@ -153,15 +171,18 @@ async def test_replay_media_id_is_deferred_for_finalize_wait(monkeypatch):
         "replay_extend_via_api",
         AsyncMock(return_value={"media_id": "api-mid"}),
     )
+    monkeypatch.setattr(extend_mod.asyncio, "create_task", create_task, raising=False)
 
-    await extend_mod.extend_video(
+    result = await extend_mod.extend_video(
         client,
         {"media_id": "parent-mid", "edit_url": "edit-url"},
         prompt="next",
     )
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
-    finalize.assert_awaited_once()
-    assert client._extend_replay_media_ids == ["api-mid"]
+    assert result["media_id"] == "api-mid"
+    mocks["finalize_operation"].assert_not_awaited()
+    mocks["download_video"].assert_awaited_once()
+    create_task.assert_not_called()
+    assert "_extend_replay_media_ids" not in client.__dict__
     assert {event.get("mid") for event in client._media_id_events} == {"api-mid"}
+    assert {event.get("source") for event in client._media_id_events} == {"extend_replay"}

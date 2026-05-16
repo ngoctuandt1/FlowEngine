@@ -22,6 +22,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+from flow.diagnostics import capture_failure
+
 EXPECTED_SEC_PER_LEVEL = 8.0
 VEOLITE_CREDITS_PER_LEVEL = 6
 DEFAULT_L1_PROMPT = "a calm river running through a misty forest at dawn"
@@ -241,39 +243,13 @@ async def capture_chain_failure(
 ) -> None:
     capture_dir = REPO_ROOT / "error-captures"
     capture_dir.mkdir(parents=True, exist_ok=True)
-    stem = capture_dir / f"chain_fail_{profile}_L{level}_{ts}"
-
+    os.environ.setdefault("FLOW_ERROR_CAPTURE_DIR", str(capture_dir))
     try:
-        from flow.diagnostics import capture_failure
-    except Exception:
-        capture_failure = None
-
-    if capture_failure is not None:
-        try:
-            await capture_failure(
-                client,
-                f"chain_fail_{profile}_L{level}_{ts}",
-                "extend_fail" if level > 1 else "l1_fail",
-                extra={"error": str(error), "level": level, "profile": profile},
-            )
-        except Exception:
-            pass
-
-    page = getattr(client, "page", None)
-    if page is not None:
-        try:
-            await page.screenshot(path=str(stem.with_suffix(".png")), full_page=False)
-        except Exception:
-            pass
-        try:
-            stem.with_suffix(".html").write_text(await page.content(), encoding="utf-8")
-        except Exception:
-            pass
-    try:
-        calls = getattr(client, "_calls", [])[-50:]
-        stem.with_suffix(".network.json").write_text(
-            json.dumps({"error": str(error), "calls": calls}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        await capture_failure(
+            client,
+            f"chain_fail_{profile}_L{level}_{ts}",
+            "extend_fail" if level > 1 else "l1_fail",
+            extra={"error": str(error), "level": level, "profile": profile},
         )
     except Exception:
         pass
@@ -510,7 +486,11 @@ async def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         "levels": results[0]["levels"] if len(results) == 1 else [],
         "results": results,
         "all_pass": all_pass,
-        "wall_time_sec": round(sum(result["wall_time_sec"] for result in results), 1),
+        "wall_time_sec": round(max(result["wall_time_sec"] for result in results), 1),
+        "total_compute_sec": round(
+            sum(result["wall_time_sec"] for result in results),
+            1,
+        ),
         "credit_estimate": sum(result["credit_estimate"] for result in results),
         "dry_run": args.dry_run,
     }

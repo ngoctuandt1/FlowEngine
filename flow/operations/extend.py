@@ -7,9 +7,12 @@ submits, waits, downloads.
 import asyncio
 import logging
 import os
+import time
 
+from flow.download import download_video
 from flow.failure_capture import message_with_failure_capture
 from flow.model_selector import select_model, DEFAULT_MODEL
+from flow.navigation import edit_url as build_edit_url, project_url as build_project_url
 from flow.submit import submit_with_confirmation
 from flow.operations._base import (
     navigate_to_edit,
@@ -102,10 +105,10 @@ def _extract_replay_media_ids(replay_result) -> list[str]:
     return unique_media_ids
 
 
-def _record_media_id_event(client, media_id: str, *, source: str) -> None:
+def _record_replay_media_id(client, media_id: str) -> None:
     recorder = getattr(client, "_record_media_id", None)
     if callable(recorder):
-        recorder(media_id, source=source, url="extend-replay")
+        recorder(media_id, source="extend_replay", url="extend-replay")
         return
     events = getattr(client, "_media_id_events", None)
     if isinstance(events, list) and media_id not in {
@@ -113,23 +116,80 @@ def _record_media_id_event(client, media_id: str, *, source: str) -> None:
         for event in events
         if isinstance(event, dict)
     }:
-        events.append({"mid": media_id, "source": source, "url": "extend-replay"})
+        events.append(
+            {
+                "mid": media_id,
+                "source": "extend_replay",
+                "url": "extend-replay",
+                "ts": time.time(),
+            }
+        )
 
 
-def _defer_replay_media_ids_for_wait(client, media_ids: list[str]) -> None:
-    if not media_ids:
-        return
-
-    async def _record_after_wait_starts():
-        await asyncio.sleep(0)
-        for media_id_value in media_ids:
-            _record_media_id_event(
+async def _download_replay_media(client, replay_media_id: str) -> list[str]:
+    last_error: Exception | None = None
+    for attempt in range(1, 7):
+        try:
+            output_files = await download_video(
                 client,
-                media_id_value,
-                source="extend_replay_result",
+                media_ids=[replay_media_id],
+                prefix="ext",
             )
+            if output_files:
+                return output_files
+            logger.warning(
+                "Extend replay download returned no files for media_id=%s (attempt=%d/6)",
+                replay_media_id,
+                attempt,
+            )
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "Extend replay download failed for media_id=%s (attempt=%d/6): %s",
+                replay_media_id,
+                attempt,
+                exc,
+            )
+        if attempt < 6:
+            await asyncio.sleep(10)
 
-    asyncio.create_task(_record_after_wait_starts())
+    message = f"extend-video replay: no output file captured for media_id={replay_media_id}"
+    if last_error is not None:
+        message = f"{message}: {last_error}"
+    message = await message_with_failure_capture(
+        client,
+        "extend_video_replay_no_output_file",
+        message,
+    )
+    raise RuntimeError(message)
+
+
+async def _finalize_replay_extend(
+    client,
+    job: dict,
+    *,
+    project_id: str,
+    locale: str,
+    replay_media_id: str,
+) -> dict:
+    _record_replay_media_id(client, replay_media_id)
+    output_files = await _download_replay_media(client, replay_media_id)
+    proj_url = job.get("project_url") or (
+        build_project_url(project_id, locale) if project_id else ""
+    )
+    edit_url_val = (
+        build_edit_url(project_id, replay_media_id, locale)
+        if project_id
+        else getattr(client.page, "url", "")
+    )
+    return {
+        "project_url": proj_url,
+        "media_id": replay_media_id,
+        "edit_url": edit_url_val,
+        "output_files": output_files,
+        "generation_id": client._gen_id,
+        "profile": client.profile_name,
+    }
 
 
 async def extend_video(
@@ -180,29 +240,34 @@ async def extend_video(
                     parent_media_id=job["media_id"],
                     prompt=prompt,
                 )
-                replay_media_ids = _extract_replay_media_ids(replay_result)
-                setattr(client, "_extend_replay_media_ids", replay_media_ids)
-                _defer_replay_media_ids_for_wait(client, replay_media_ids)
-                replay_count = getattr(client, "_extend_replay_count", 0) + 1
-                setattr(client, "_extend_replay_count", replay_count)
-                logger.info(
-                    "Extend replay submit accepted via reverse API "
-                    "(count=%d media_ids=%s)",
-                    replay_count,
-                    replay_media_ids,
-                )
-                return await finalize_operation(
-                    client, job,
-                    job_type="extend-video",
-                    project_id=project_id,
-                    locale=locale,
-                    download_prefix="ext",
-                )
             except RuntimeError as exc:
                 logger.warning(
                     "Extend reverse-API replay failed; falling back to UI path: %s",
                     exc,
                 )
+            else:
+                replay_media_ids = _extract_replay_media_ids(replay_result)
+                if not replay_media_ids:
+                    logger.warning(
+                        "Extend reverse-API replay returned no media_id; falling back to UI path"
+                    )
+                else:
+                    replay_media_id = replay_media_ids[0]
+                    replay_count = getattr(client, "_extend_replay_count", 0) + 1
+                    setattr(client, "_extend_replay_count", replay_count)
+                    logger.info(
+                        "Extend replay submit accepted via reverse API "
+                        "(count=%d media_ids=%s)",
+                        replay_count,
+                        replay_media_ids,
+                    )
+                    return await _finalize_replay_extend(
+                        client,
+                        job,
+                        project_id=project_id,
+                        locale=locale,
+                        replay_media_id=replay_media_id,
+                    )
 
     # Step 3: Ensure Extend panel open.
     #

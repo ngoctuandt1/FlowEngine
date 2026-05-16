@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import scripts.live_verify_chain_deep_revapi as script
 
@@ -81,3 +82,77 @@ async def test_dry_run_multiple_profiles_parallel(tmp_path, monkeypatch):
     assert summary["credit_estimate"] == 24
     assert [len(result["levels"]) for result in summary["results"]] == [2, 2]
     assert Path(summary["results"][0]["duration"]["report_path"]).exists()
+
+
+async def test_capture_chain_failure_uses_redacted_capture(tmp_path, monkeypatch):
+    capture_failure = AsyncMock()
+    client = MagicMock()
+    client._calls = [{"url": "https://example.test?token=secret"}]
+    monkeypatch.setattr(script, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(script, "capture_failure", capture_failure)
+    monkeypatch.delenv("FLOW_ERROR_CAPTURE_DIR", raising=False)
+
+    await script.capture_chain_failure(
+        client,
+        profile="p1",
+        level=3,
+        ts=123,
+        error=RuntimeError("boom"),
+    )
+
+    capture_failure.assert_awaited_once_with(
+        client,
+        "chain_fail_p1_L3_123",
+        "extend_fail",
+        extra={"error": "boom", "level": 3, "profile": "p1"},
+    )
+    assert (tmp_path / "error-captures").exists()
+    assert not list((tmp_path / "error-captures").glob("chain_fail_*.network.json"))
+
+
+async def test_multi_profile_wall_time_uses_max_and_keeps_compute_sum(tmp_path, monkeypatch):
+    async def fake_run_dry_profile(*, profile, depth, mode, ts, assert_duration, duration_tolerance_sec):
+        wall_times = {"p1": 12.3, "p2": 45.6}
+        return {
+            "profile": profile,
+            "depth": depth,
+            "mode": mode,
+            "levels": [
+                {
+                    "level": 1,
+                    "expected_dur": 8.0,
+                    "status": "completed",
+                    "submit": "t2v-ui",
+                    "media_id": f"mid-{profile}",
+                    "path": f"{profile}.mp4",
+                }
+            ],
+            "duration": {"all_pass": True, "report_path": str(tmp_path / f"{profile}.md")},
+            "all_pass": True,
+            "wall_time_sec": wall_times[profile],
+            "credit_estimate": depth * script.VEOLITE_CREDITS_PER_LEVEL,
+            "dry_run": True,
+        }
+
+    monkeypatch.setattr(script, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(script.time, "time", lambda: 1234567890)
+    monkeypatch.setattr(script, "run_dry_profile", fake_run_dry_profile)
+    args = script.build_parser().parse_args(
+        [
+            "--profile",
+            "ignored",
+            "--profiles",
+            "p1,p2",
+            "--depth",
+            "1",
+            "--mode",
+            "hybrid",
+            "--dry-run",
+        ]
+    )
+
+    code, summary = await script.run(args)
+
+    assert code == 0
+    assert summary["wall_time_sec"] == 45.6
+    assert summary["total_compute_sec"] == 57.9
