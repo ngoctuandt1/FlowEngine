@@ -38,7 +38,7 @@ def _new_client():
 
 
 def _fake_browser_stack():
-    page = SimpleNamespace(url="about:blank", on=MagicMock())
+    page = SimpleNamespace(url="about:blank", on=MagicMock(), route=AsyncMock(return_value=None))
     context = SimpleNamespace(pages=[page])
     browser = SimpleNamespace(contexts=[context])
     return page, context, browser
@@ -184,7 +184,7 @@ async def test_start_persistent_appends_no_sandbox_for_root_opt_in(monkeypatch):
 
     client = _new_client()
     client.real_chrome = False
-    page = SimpleNamespace(url="about:blank", on=MagicMock())
+    page = SimpleNamespace(url="about:blank", on=MagicMock(), route=AsyncMock(return_value=None))
     context = SimpleNamespace(pages=[page])
     launch = AsyncMock(return_value=context)
     client._pw = SimpleNamespace(
@@ -218,7 +218,7 @@ async def test_start_persistent_root_in_docker_requires_explicit_opt_in(
 
     client = _new_client()
     client.real_chrome = False
-    page = SimpleNamespace(url="about:blank", on=MagicMock())
+    page = SimpleNamespace(url="about:blank", on=MagicMock(), route=AsyncMock(return_value=None))
     context = SimpleNamespace(pages=[page])
     launch = AsyncMock(return_value=context)
     client._pw = SimpleNamespace(
@@ -255,7 +255,7 @@ async def test_start_persistent_non_root_does_not_add_no_sandbox(monkeypatch):
 
     client = _new_client()
     client.real_chrome = False
-    page = SimpleNamespace(url="about:blank", on=MagicMock())
+    page = SimpleNamespace(url="about:blank", on=MagicMock(), route=AsyncMock(return_value=None))
     context = SimpleNamespace(pages=[page])
     launch = AsyncMock(return_value=context)
     client._pw = SimpleNamespace(
