@@ -48,6 +48,9 @@ NO_SIGNAL_TIMEOUTS: dict[str, int] = {
     "camera-move": 180,
 }
 NO_SIGNAL_TIMEOUT_DEFAULT = 180
+CHAIN_CHILD_JOB_TYPES: frozenset[str] = frozenset(
+    {"extend-video", "camera-move", "insert-object", "remove-object"}
+)
 
 
 def _normalize_failure_kind(text: str) -> str:
@@ -180,6 +183,27 @@ async def wait_for_completion(
                 initial_url=initial_url,
                 initial_media_count=initial_media_count,
             )
+            method_name = "reverse_api"
+            is_chain_child = job_type in CHAIN_CHILD_JOB_TYPES
+            new_media_count = len(
+                _collect_media_ids(client, start_index=initial_media_count)
+            )
+            if is_chain_child and new_media_count == 0:
+                logger.error(
+                    "wait_for_completion: %s signaled done but no new media event "
+                    "captured since submit; treating as failure",
+                    method_name,
+                )
+                return await _result_with_capture(
+                    client,
+                    "no_new_media_event_at_chain_child",
+                    kind="no_new_media_event_at_chain_child",
+                    extra={
+                        "job_type": job_type,
+                        "method": method_name,
+                        "elapsed_sec": round(elapsed, 1),
+                    },
+                )
             return _result(
                 True,
                 media_ids=_collect_media_ids(client, start_index=initial_media_count),
@@ -217,6 +241,27 @@ async def wait_for_completion(
             last_signal_time = time.monotonic()
             # Let media-ID events settle
             await asyncio.sleep(3)
+            method_name = "network_video"
+            is_chain_child = job_type in CHAIN_CHILD_JOB_TYPES
+            new_media_count = len(
+                _collect_media_ids(client, start_index=initial_media_count)
+            )
+            if is_chain_child and new_media_count == 0:
+                logger.error(
+                    "wait_for_completion: %s signaled done but no new media event "
+                    "captured since submit; treating as failure",
+                    method_name,
+                )
+                return await _result_with_capture(
+                    client,
+                    "no_new_media_event_at_chain_child",
+                    kind="no_new_media_event_at_chain_child",
+                    extra={
+                        "job_type": job_type,
+                        "method": method_name,
+                        "elapsed_sec": round(elapsed, 1),
+                    },
+                )
             return _result(
                 True,
                 video_urls=list(new_videos),
@@ -256,6 +301,27 @@ async def wait_for_completion(
             )
             await asyncio.sleep(2)  # let media settle
             media_ids = await _finalize_dom_completion(client, page)
+            method_name = "dom_observer"
+            is_chain_child = job_type in CHAIN_CHILD_JOB_TYPES
+            new_media_count = len(
+                _collect_media_ids(client, start_index=initial_media_count)
+            )
+            if is_chain_child and new_media_count == 0:
+                logger.error(
+                    "wait_for_completion: %s signaled done but no new media event "
+                    "captured since submit; treating as failure",
+                    method_name,
+                )
+                return await _result_with_capture(
+                    client,
+                    "no_new_media_event_at_chain_child",
+                    kind="no_new_media_event_at_chain_child",
+                    extra={
+                        "job_type": job_type,
+                        "method": method_name,
+                        "elapsed_sec": round(elapsed, 1),
+                    },
+                )
             return _result(
                 True,
                 media_ids=media_ids,
@@ -278,6 +344,27 @@ async def wait_for_completion(
                 # returns 200.  3 s was too short (L4+ extend → 404).
                 await asyncio.sleep(10)
                 media_ids = await _finalize_dom_completion(client, page)
+                method_name = "dom_observer"
+                is_chain_child = job_type in CHAIN_CHILD_JOB_TYPES
+                new_media_count = len(
+                    _collect_media_ids(client, start_index=initial_media_count)
+                )
+                if is_chain_child and new_media_count == 0:
+                    logger.error(
+                        "wait_for_completion: %s signaled done but no new media event "
+                        "captured since submit; treating as failure",
+                        method_name,
+                    )
+                    return await _result_with_capture(
+                        client,
+                        "no_new_media_event_at_chain_child",
+                        kind="no_new_media_event_at_chain_child",
+                        extra={
+                            "job_type": job_type,
+                            "method": method_name,
+                            "elapsed_sec": round(elapsed, 1),
+                        },
+                    )
                 return _result(
                     True,
                     media_ids=media_ids,
