@@ -386,6 +386,10 @@ async def wait_for_all_l2_gens(
     modern submit endpoint emits per-op responses we cannot filter by
     gen_id, so we wait for N distinct media_ids (excluding the parent)
     post-earliest-submit and assign them in submission order.
+
+    Audit note (2026-05-16): this batch path intentionally bypasses
+    ``_base.resolve_final_media_id`` and resolves from network media events
+    directly; strict chain-child semantics here belong in a follow-up PR.
     """
     n = len(submits)
     if n == 0:

@@ -137,7 +137,7 @@ async def test_finalize_operation_prefers_network_media_id_for_chain_and_downloa
     assert download.await_args.kwargs["media_ids"] == [NEW_SLUG]
 
 
-async def test_finalize_operation_edit_url_fallback_uses_settled_current_url(monkeypatch):
+async def test_finalize_operation_non_strict_edit_url_fallback_uses_current_url(monkeypatch):
     first_url = f"https://labs.google/fx/tools/flow/project/{PROJECT_ID}/preview/first"
     second_url = f"https://labs.google/fx/tools/flow/project/{PROJECT_ID}/preview/second"
     page = StickyURLPage(first_url, second_url)
@@ -145,9 +145,9 @@ async def test_finalize_operation_edit_url_fallback_uses_settled_current_url(mon
     monkeypatch.setattr(_base, "wait_for_completion", AsyncMock(return_value={"done": True, "media_ids": []}))
     monkeypatch.setattr(_base, "download_video", AsyncMock(return_value=["x.mp4"]))
 
-    result = await _base.finalize_operation(client, {"media_id": OLD_SLUG}, "insert-object", "", "", "insert")
+    result = await _base.finalize_operation(client, {"media_id": None}, "insert-object", "", "", "insert")
 
-    assert result["media_id"] == OLD_SLUG
+    assert result["media_id"] is None
     assert result["edit_url"] == first_url
 
 
@@ -176,14 +176,14 @@ async def test_finalize_operation_serial_ops_keep_distinct_network_media_ids(mon
     assert insert["media_id"] != remove["media_id"]
 
 
-async def test_finalize_operation_uses_latest_tile_when_route_missing(monkeypatch):
+async def test_finalize_operation_non_strict_uses_latest_tile_when_route_missing(monkeypatch):
     page = StickyURLPage(f"https://labs.google/fx/tools/flow/project/{PROJECT_ID}/preview")
     client = _client(page)
     monkeypatch.setattr(_base, "wait_for_completion", AsyncMock(return_value={"done": True, "media_ids": []}))
     monkeypatch.setattr(_base, "download_video", AsyncMock(return_value=["x.mp4"]))
     monkeypatch.setattr(_base, "find_latest_tile_slug", AsyncMock(return_value=NEW_SLUG))
 
-    result = await _base.finalize_operation(client, {"media_id": OLD_SLUG}, "insert-object", PROJECT_ID, "", "insert")
+    result = await _base.finalize_operation(client, {"media_id": None}, "insert-object", PROJECT_ID, "", "insert")
 
     assert result["media_id"] == NEW_SLUG
     assert result["edit_url"] == _edit(NEW_SLUG)
