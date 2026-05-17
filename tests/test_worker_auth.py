@@ -125,3 +125,71 @@ async def test_dashboard_endpoints_remain_open(monkeypatch, db):
         profiles = await c.get("/api/profiles")
     assert jobs.status_code == 200
     assert profiles.status_code == 200
+
+
+# -- New regression tests: production hard-fail + dev-key 401 ------------------
+
+
+@pytest.mark.asyncio
+async def test_assert_production_api_key_hard_fails_with_dashboard_set(monkeypatch):
+    """DASHBOARD_PASSWORD set + dev-key API_KEY -> refuse to start."""
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "hunter2")
+    monkeypatch.setenv("FLOW_FORCE_PRODUCTION_API_KEY_CHECK", "1")
+    monkeypatch.delenv("FLOW_ALLOW_INSECURE_WORKER_API", raising=False)
+    _reload_with_key(monkeypatch, "dev-key")
+    from server.auth import assert_production_api_key
+
+    with pytest.raises(RuntimeError, match="Refusing to start"):
+        assert_production_api_key()
+
+
+@pytest.mark.asyncio
+async def test_assert_production_api_key_hard_fails_on_empty_key(monkeypatch):
+    """Empty API_KEY in production also hard-fails."""
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "hunter2")
+    monkeypatch.setenv("FLOW_FORCE_PRODUCTION_API_KEY_CHECK", "1")
+    monkeypatch.delenv("FLOW_ALLOW_INSECURE_WORKER_API", raising=False)
+    _reload_with_key(monkeypatch, "")
+    from server.auth import assert_production_api_key
+
+    with pytest.raises(RuntimeError, match="Refusing to start"):
+        assert_production_api_key()
+
+
+@pytest.mark.asyncio
+async def test_assert_production_api_key_allows_override(monkeypatch, caplog):
+    """FLOW_ALLOW_INSECURE_WORKER_API=1 downgrades to CRITICAL log."""
+    import logging
+
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "hunter2")
+    monkeypatch.setenv("FLOW_FORCE_PRODUCTION_API_KEY_CHECK", "1")
+    monkeypatch.setenv("FLOW_ALLOW_INSECURE_WORKER_API", "1")
+    _reload_with_key(monkeypatch, "dev-key")
+    from server.auth import assert_production_api_key
+
+    with caplog.at_level(logging.CRITICAL, logger="server.auth"):
+        assert_production_api_key()  # no raise
+    assert any(
+        "publicly reachable without auth" in rec.message
+        for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_assert_production_api_key_silent_in_dev(monkeypatch):
+    """No DASHBOARD_PASSWORD -> dev mode -> warning only, no raise."""
+    monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
+    _reload_with_key(monkeypatch, "dev-key")
+    from server.auth import assert_production_api_key
+
+    assert_production_api_key()  # no raise
+
+
+@pytest.mark.asyncio
+async def test_assert_production_api_key_allows_strong_key_in_prod(monkeypatch):
+    """Strong API_KEY in production -> no raise, no warning."""
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "hunter2")
+    _reload_with_key(monkeypatch, "s3cret-prod-key-xyz")
+    from server.auth import assert_production_api_key
+
+    assert_production_api_key()  # no raise

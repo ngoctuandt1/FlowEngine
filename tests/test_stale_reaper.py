@@ -272,3 +272,68 @@ async def test_lifespan_starts_and_cancels_reaper_task(db, monkeypatch, caplog):
     assert cancelled.is_set()
     assert "stale claim reaper task started" in caplog.text
     assert "stale claim reaper task stopped" in caplog.text
+
+
+# -- New regression tests: heartbeat join + threshold default ------------------
+
+
+async def test_default_threshold_is_thirty_minutes():
+    """Flow extend jobs run 600-900s; the reaper threshold must outlast that.
+
+    Regression guard for the credit-burn bug where a still-active worker
+    would have its job yanked back to ``pending`` mid-generation, then
+    reclaimed in a second Chrome session. 1800s comfortably exceeds the
+    longest measured extend cycle.
+    """
+    assert app_module.STALE_RUNNING_THRESHOLD_SEC >= 1800
+
+
+async def test_alive_worker_with_old_running_job_is_not_reaped(db, monkeypatch):
+    """Heartbeating worker on a long-running job is protected."""
+    import server.routes.worker as worker_route
+
+    old = datetime.now(UTC) - timedelta(seconds=900)
+    job = _job("alive-running", JobStatus.RUNNING, old)
+    await create_job(job)
+    await _create_profile_for_job(job)
+
+    # Worker heartbeat is fresh — this is exactly the live-Flow case we
+    # used to break.
+    monkeypatch.setitem(
+        worker_route._workers,
+        job.worker_id,
+        datetime.now(UTC),
+    )
+
+    reaped = await app_module._reap_stale_claims(threshold_sec=600)
+
+    row = await _fetch_job_row(job.id)
+    profile = await _fetch_profile_row(job.profile)
+    assert reaped == []
+    assert row["status"] == "running"
+    assert row["worker_id"] == job.worker_id
+    assert profile["current_job_id"] == job.id
+
+
+async def test_dead_worker_with_old_running_job_is_reaped(db, monkeypatch):
+    """Stale heartbeat (worker died mid-job) still gets reaped."""
+    import server.routes.worker as worker_route
+
+    old = datetime.now(UTC) - timedelta(seconds=900)
+    job = _job("dead-worker", JobStatus.RUNNING, old)
+    await create_job(job)
+    await _create_profile_for_job(job)
+
+    # Heartbeat older than the heartbeat-stale window (default 180s).
+    monkeypatch.setitem(
+        worker_route._workers,
+        job.worker_id,
+        datetime.now(UTC) - timedelta(seconds=600),
+    )
+
+    reaped = await app_module._reap_stale_claims(threshold_sec=600)
+
+    row = await _fetch_job_row(job.id)
+    assert reaped == [job.id]
+    assert row["status"] == "pending"
+    assert row["worker_id"] is None
