@@ -60,3 +60,6 @@ debug_screens/
 error-captures/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+.claude/worktrees/
+.codex-worktrees/
+.handoff/
