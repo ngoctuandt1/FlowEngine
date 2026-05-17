@@ -16,7 +16,7 @@ from server.models.job import BBox, Job, JobStatus, JobUpdate
 # Hoisted to module level so claim/update paths share a single source of truth.
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 TERMINAL_FAILURE_STATES = frozenset({"failed", "cancelled"})
-CASCADE_CANCEL_STATES = frozenset({"pending", "running"})
+CASCADE_CANCEL_STATES = frozenset({"pending", "claimed", "running"})
 RELATED_CHAIN_DEPTH_CAP = 256
 logger = logging.getLogger(__name__)
 
@@ -73,8 +73,10 @@ async def _cascade_cancel_descendants(
     parent_status: str,
     now: str,
 ) -> list[Job]:
+    cascade_states = tuple(CASCADE_CANCEL_STATES)
+    status_placeholders = ", ".join("?" for _ in cascade_states)
     cursor = await db.execute(
-        """
+        f"""
         WITH RECURSIVE descendants(id, depth) AS (
             SELECT id, 1
             FROM jobs
@@ -88,16 +90,23 @@ async def _cascade_cancel_descendants(
         SELECT jobs.id
         FROM jobs
         JOIN descendants ON descendants.id = jobs.id
-        WHERE jobs.status IN (?, ?)
+        WHERE jobs.status IN ({status_placeholders})
         ORDER BY jobs.created_at ASC
         """,
         (
             parent_job_id,
             RELATED_CHAIN_DEPTH_CAP,
-            *CASCADE_CANCEL_STATES,
+            *cascade_states,
         ),
     )
-    target_ids = [row["id"] for row in await cursor.fetchall()]
+    seen: set[str] = set()
+    target_ids: list[str] = []
+    for row in await cursor.fetchall():
+        job_id = row["id"]
+        if job_id in seen:
+            continue
+        seen.add(job_id)
+        target_ids.append(job_id)
     if not target_ids:
         return []
 
@@ -111,7 +120,7 @@ async def _cascade_cancel_descendants(
             completed_at = ?,
             updated_at = ?
         WHERE id IN ({placeholders})
-          AND status IN (?, ?)
+          AND status IN ({status_placeholders})
         """,
         (
             JobStatus.CANCELLED.value,
@@ -119,7 +128,7 @@ async def _cascade_cancel_descendants(
             now,
             now,
             *target_ids,
-            *CASCADE_CANCEL_STATES,
+            *cascade_states,
         ),
     )
     await db.execute(

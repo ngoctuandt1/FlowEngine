@@ -67,6 +67,39 @@ async def test_deep_descendants_cascade_from_failed_l2(db):
     assert (await get_job("l4")).error == "parent_failed: l2 (failed)"
 
 
+async def test_claimed_descendant_cascades_and_releases_profile(db):
+    await create_profile(
+        Profile(
+            name="profile-claimed-l3",
+            status=ProfileStatus.BUSY,
+            current_job_id="claimed-l3",
+            worker_id="worker-claimed",
+        )
+    )
+    await _create_jobs(
+        _job("l1", status=JobStatus.COMPLETED, seconds=1),
+        _job("failed-l2", parent_job_id="l1", job_level=2, job_type=JobType.EXTEND_VIDEO, seconds=2),
+        _job(
+            "claimed-l3",
+            parent_job_id="failed-l2",
+            job_level=3,
+            status=JobStatus.CLAIMED,
+            job_type=JobType.CAMERA_MOVE,
+            seconds=3,
+        ),
+    )
+
+    await update_job("failed-l2", JobUpdate(status=JobStatus.FAILED, error="bad branch"))
+
+    claimed_l3 = await get_job("claimed-l3")
+    profile = await get_profile("profile-claimed-l3")
+    assert claimed_l3.status == JobStatus.CANCELLED
+    assert claimed_l3.error == "parent_failed: failed-l2 (failed)"
+    assert claimed_l3.completed_at is not None
+    assert profile.current_job_id is None
+    assert profile.worker_id is None
+
+
 async def test_sibling_branches_untouched(db):
     await _create_jobs(
         _job("l1", seconds=1),
