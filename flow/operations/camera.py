@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import time
+import unicodedata
 from pathlib import Path
 
 from flow.failure_capture import message_with_failure_capture
@@ -61,6 +62,175 @@ CAMERA_POSITION_PRESETS = [
 ]
 
 ALL_PRESETS = CAMERA_MOTION_PRESETS + CAMERA_POSITION_PRESETS
+
+CAMERA_PRESET_ALIASES = {
+    "Dolly in": (
+        "Dolly in", "Dolly In", "DOLLY_IN", "DOLLY IN",
+        "Push in", "Push In", "PUSH_IN", "Zoom in", "Zoom In", "ZOOM_IN",
+        "Tiến vào", "Tien vao", "Tiến gần", "Tien gan", "Thu gần", "Thu gan",
+    ),
+    "Dolly out": (
+        "Dolly out", "Dolly Out", "DOLLY_OUT", "DOLLY OUT",
+        "Pull out", "Pull Out", "PULL_OUT", "Zoom out", "Zoom Out", "ZOOM_OUT",
+        "Lùi ra", "Lui ra", "Lùi lại", "Lui lai", "Thu xa",
+    ),
+    "Orbit left": (
+        "Orbit left", "Orbit Left", "ORBIT_LEFT", "ORBIT LEFT",
+        "Pan left", "Pan Left", "PAN_LEFT", "PAN LEFT",
+        "Tilt left", "Tilt Left", "TILT_LEFT", "TILT LEFT",
+        "Xoay trái", "Xoay trai", "Quỹ đạo trái", "Quy dao trai",
+        "Sang trái", "Sang trai", "Qua trái", "Qua trai",
+    ),
+    "Orbit right": (
+        "Orbit right", "Orbit Right", "ORBIT_RIGHT", "ORBIT RIGHT",
+        "Pan right", "Pan Right", "PAN_RIGHT", "PAN RIGHT",
+        "Tilt right", "Tilt Right", "TILT_RIGHT", "TILT RIGHT",
+        "Xoay phải", "Xoay phai", "Quỹ đạo phải", "Quy dao phai",
+        "Sang phải", "Sang phai", "Qua phải", "Qua phai",
+    ),
+    "Orbit up": (
+        "Orbit up", "Orbit Up", "ORBIT_UP", "ORBIT UP",
+        "Pan up", "Pan Up", "PAN_UP", "PAN UP",
+        "Tilt up", "Tilt Up", "TILT_UP", "TILT UP",
+        "Xoay lên", "Xoay len", "Quỹ đạo lên", "Quy dao len", "Lên", "Len",
+    ),
+    "Orbit low": (
+        "Orbit low", "Orbit Low", "ORBIT_LOW", "ORBIT LOW",
+        "Orbit down", "Orbit Down", "ORBIT_DOWN", "ORBIT DOWN",
+        "Pan down", "Pan Down", "PAN_DOWN", "PAN DOWN",
+        "Tilt down", "Tilt Down", "TILT_DOWN", "TILT DOWN",
+        "Xoay xuống", "Xoay xuong", "Quỹ đạo xuống", "Quy dao xuong",
+        "Xuống", "Xuong",
+    ),
+    "Dolly in zoom out": (
+        "Dolly in zoom out", "Dolly In Zoom Out", "DOLLY_IN_ZOOM_OUT",
+        "Push in zoom out", "Push In Zoom Out", "PUSH_IN_ZOOM_OUT",
+        "Tiến vào thu xa", "Tien vao thu xa",
+    ),
+    "Dolly out zoom in": (
+        "Dolly out zoom in", "Dolly Out Zoom In", "DOLLY_OUT_ZOOM_IN",
+        "Pull out zoom in", "Pull Out Zoom In", "PULL_OUT_ZOOM_IN",
+        "Lùi ra thu gần", "Lui ra thu gan",
+    ),
+    "Center": ("Center", "CENTER", "Giữa", "Giua", "Trung tâm", "Trung tam"),
+    "Left": ("Left", "LEFT", "Trái", "Trai", "Bên trái", "Ben trai"),
+    "Right": ("Right", "RIGHT", "Phải", "Phai", "Bên phải", "Ben phai"),
+    "High": ("High", "HIGH", "Cao", "Ở trên", "O tren"),
+    "Low": ("Low", "LOW", "Thấp", "Thap", "Ở dưới", "O duoi"),
+    "Closer": ("Closer", "CLOSER", "Gần hơn", "Gan hon", "Gần", "Gan"),
+    "Further": ("Further", "FURTHER", "Xa hơn", "Xa hon", "Xa"),
+}
+
+CAMERA_PRESET_ICON_ALIASES = {
+    "Dolly in": (
+        "zoom_in", "add", "arrow_downward", "south", "open_in_full",
+        "keyboard_double_arrow_down",
+    ),
+    "Dolly out": (
+        "zoom_out", "remove", "arrow_upward", "north", "close_fullscreen",
+        "keyboard_double_arrow_up",
+    ),
+    "Orbit left": (
+        "arrow_back", "arrow_left", "arrow_left_alt", "keyboard_arrow_left",
+        "keyboard_double_arrow_left", "chevron_left", "west", "rotate_left",
+    ),
+    "Orbit right": (
+        "arrow_forward", "arrow_right", "arrow_right_alt", "keyboard_arrow_right",
+        "keyboard_double_arrow_right", "chevron_right", "east", "rotate_right",
+        "directions_car",
+    ),
+    "Orbit up": (
+        "arrow_upward", "arrow_up", "keyboard_arrow_up", "north", "expand_less",
+    ),
+    "Orbit low": (
+        "arrow_downward", "arrow_down", "keyboard_arrow_down", "south", "expand_more",
+    ),
+    "Dolly in zoom out": ("zoom_out_map", "travel_explore"),
+    "Dolly out zoom in": ("center_focus_strong", "center_focus_weak"),
+    "Center": ("filter_center_focus", "center_focus_strong", "my_location"),
+    "Left": ("keyboard_arrow_left", "arrow_back", "west"),
+    "Right": ("keyboard_arrow_right", "arrow_forward", "east"),
+    "High": ("keyboard_arrow_up", "arrow_upward", "north"),
+    "Low": ("keyboard_arrow_down", "arrow_downward", "south"),
+    "Closer": ("zoom_in", "add"),
+    "Further": ("zoom_out", "remove"),
+}
+
+CAMERA_TAB_NAMES = {
+    "motion": ("Camera motion", "Chuyển động camera", "Chuyen dong camera"),
+    "position": ("Camera position", "Vị trí camera", "Vi tri camera"),
+}
+
+BUTTON_SCAN_SELECTOR = "button, [role='button']"
+
+
+def _normalize_preset_key(value: object) -> str:
+    text = "" if value is None else str(value)
+    decomposed = unicodedata.normalize("NFKD", text)
+    without_marks = "".join(
+        character for character in decomposed
+        if not unicodedata.combining(character)
+    )
+    normalized_characters = []
+    for character in without_marks.lower():
+        if character.isalnum():
+            normalized_characters.append(character)
+        else:
+            normalized_characters.append(" ")
+    return " ".join("".join(normalized_characters).split())
+
+
+def _build_alias_lookup() -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for canonical, aliases in CAMERA_PRESET_ALIASES.items():
+        lookup[_normalize_preset_key(canonical)] = canonical
+        for alias in aliases:
+            alias_key = _normalize_preset_key(alias)
+            if alias_key:
+                lookup[alias_key] = canonical
+    return lookup
+
+
+CAMERA_PRESET_ALIAS_LOOKUP = _build_alias_lookup()
+
+
+def _canonical_preset_for_direction(direction: str) -> str:
+    direction_text = (direction or "").strip()
+    direction_key = _normalize_preset_key(direction_text)
+    return CAMERA_PRESET_ALIAS_LOOKUP.get(direction_key, direction_text)
+
+
+def _append_unique_preset_candidate(candidates: list[str], value: object) -> None:
+    if not isinstance(value, str):
+        return
+    candidate = value.strip()
+    if not candidate:
+        return
+    candidate_key = _normalize_preset_key(candidate)
+    if not candidate_key:
+        return
+    existing_keys = {_normalize_preset_key(existing) for existing in candidates}
+    if candidate_key not in existing_keys:
+        candidates.append(candidate)
+
+
+def _preset_label_candidates(direction: str) -> list[str]:
+    canonical = _canonical_preset_for_direction(direction)
+    aliases = CAMERA_PRESET_ALIASES.get(canonical, (canonical,))
+    candidates: list[str] = []
+    _append_unique_preset_candidate(candidates, direction)
+    _append_unique_preset_candidate(candidates, canonical)
+    for alias in aliases:
+        _append_unique_preset_candidate(candidates, alias)
+        if "_" in alias:
+            _append_unique_preset_candidate(candidates, alias.replace("_", " "))
+        if " " in alias:
+            _append_unique_preset_candidate(candidates, alias.replace(" ", "_"))
+    return candidates
+
+
+def _direction_is_position(direction: str) -> bool:
+    return _canonical_preset_for_direction(direction) in CAMERA_POSITION_PRESETS
 
 
 def _reverse_camera_enabled() -> bool:
@@ -381,23 +551,34 @@ async def camera_move(
     await asyncio.sleep(1)  # Wait for preset grid to render
 
     # Step 4: Select correct tab
-    is_position = direction in CAMERA_POSITION_PRESETS
-    tab_name = "Camera position" if is_position else "Camera motion"
+    is_position = _direction_is_position(direction)
+    tab_key = "position" if is_position else "motion"
+    tab_names = CAMERA_TAB_NAMES[tab_key]
 
-    try:
-        tab = page.locator(f"[role='tab']:has-text('{tab_name}')").first
-        if await tab.is_visible(timeout=2000):
-            await tab.click(timeout=3000)
-            logger.info("Switched to tab: %s", tab_name)
-            await asyncio.sleep(0.5)
-    except Exception:
-        # Tab might already be active or not exist — proceed
-        logger.warning("Could not switch to tab %s — trying preset anyway", tab_name)
+    tab_clicked = False
+    for tab_name in tab_names:
+        try:
+            tab = page.locator(f"[role='tab']:has-text('{tab_name}')").first
+            if await tab.is_visible(timeout=2000):
+                await tab.click(timeout=3000)
+                logger.info("Switched to tab: %s", tab_name)
+                await asyncio.sleep(0.5)
+                tab_clicked = True
+                break
+        except Exception:
+            logger.debug("Could not switch to tab %s", tab_name)
+    if not tab_clicked:
+        logger.warning(
+            "Could not switch to %s tab via names %s -- trying preset anyway",
+            tab_key,
+            tab_names,
+        )
 
     # Step 5: Click preset thumbnail
     preset_clicked = await _click_preset(page, direction)
     if not preset_clicked:
-        message = f"Failed to find camera preset: {direction}"
+        diagnostic = await _camera_preset_failure_diagnostics(page)
+        message = f"Failed to find camera preset: {direction}. {diagnostic}"
         message = await message_with_failure_capture(
             client,
             "camera_preset_not_found",
@@ -436,33 +617,294 @@ async def camera_move(
 async def _click_preset(page, direction: str) -> bool:
     """Click a camera preset by name and verify it becomes active.
 
-    Uses Playwright's `get_by_text(direction, exact=True)` — the only strategy
-    that matches real Flow DOM. Earlier selector attempts (`[aria-label=...]`,
-    `[role='button']` CSS) were removed after Tier1 live-DOM probing confirmed
-    they find zero elements on production Flow: presets have no `aria-label`
-    and no explicit `role="button"` attribute (they are plain `<button>` tags).
-
-    Playwright's `exact=True` natively prevents partial matches (direction
-    "Low" will not match a hypothetical "Lower" button), replacing the
-    anchored-regex defense from the pre-B12 implementation.
-
-    See `docs/FLOW_UI_REFERENCE.md` §Camera Preset Selection & Active State
-    and `docs/session-reports/2026-04-17_Tier1_dom-validation.md` §7 B3 for
-    the live-DOM ground truth.
+    Primary path stays Playwright exact text. Fallback scans visible preset
+    buttons and matches normalized text, aria/data fields, or icon ligatures.
     """
-    try:
-        el = page.get_by_text(direction, exact=True).first
-        if await el.is_visible(timeout=2000):
-            await el.click(timeout=3000)
-            logger.info("Clicked preset via get_by_text(exact=True): %s", direction)
-            await asyncio.sleep(0.5)
-            if await _verify_preset_selected(page, direction):
-                return True
-    except Exception as e:
-        logger.debug("get_by_text strategy failed for %s: %s", direction, e)
+    candidates = _preset_label_candidates(direction)
+    canonical = _canonical_preset_for_direction(direction)
+    known_direction = canonical in ALL_PRESETS
+
+    for candidate in candidates:
+        try:
+            el = page.get_by_text(candidate, exact=True).first
+            if await el.is_visible(timeout=2000):
+                await el.click(timeout=3000)
+                logger.info(
+                    "Clicked preset via get_by_text(exact=True): %s "
+                    "(requested=%s canonical=%s)",
+                    candidate,
+                    direction,
+                    canonical,
+                )
+                await asyncio.sleep(0.5)
+                if await _verify_preset_selected(page, candidate):
+                    return True
+                logger.error(
+                    "Could not click+verify camera preset: %s "
+                    "(matched text=%s canonical=%s)",
+                    direction,
+                    candidate,
+                    canonical,
+                )
+                return False
+        except Exception as e:
+            logger.debug(
+                "get_by_text strategy failed for %s candidate %s: %s",
+                direction,
+                candidate,
+                e,
+            )
+
+    if known_direction and await _click_preset_via_button_scan(
+        page,
+        direction=direction,
+        canonical=canonical,
+        candidates=candidates,
+    ):
+        return True
 
     logger.error("Could not click+verify camera preset: %s", direction)
     return False
+
+
+async def _click_preset_via_button_scan(
+    page,
+    *,
+    direction: str,
+    canonical: str,
+    candidates: list[str],
+) -> bool:
+    target_keys = [_normalize_preset_key(candidate) for candidate in candidates]
+    icon_keys = [
+        _normalize_preset_key(icon)
+        for icon in CAMERA_PRESET_ICON_ALIASES.get(canonical, ())
+    ]
+    try:
+        match = await page.evaluate(
+            _CAMERA_PRESET_MATCH_SCRIPT,
+            {
+                "selector": BUTTON_SCAN_SELECTOR,
+                "targetKeys": [key for key in target_keys if key],
+                "iconKeys": [key for key in icon_keys if key],
+            },
+        )
+    except Exception as exc:
+        logger.debug("Camera preset button scan failed for %s: %s", direction, exc)
+        return False
+
+    if not isinstance(match, dict) or not isinstance(match.get("index"), int):
+        return False
+
+    source = str(match.get("source") or "unknown")
+    matched_value = str(match.get("matchedValue") or "").strip()
+    try:
+        button = page.locator(BUTTON_SCAN_SELECTOR).nth(match["index"])
+        await button.click(timeout=3000)
+        logger.info(
+            "Clicked preset via button scan: %s -> %s "
+            "(source=%s value=%r index=%s)",
+            direction,
+            canonical,
+            source,
+            matched_value,
+            match["index"],
+        )
+        await asyncio.sleep(0.5)
+    except Exception as exc:
+        logger.debug(
+            "Camera preset button-scan click failed for %s at index %s: %s",
+            direction,
+            match.get("index"),
+            exc,
+        )
+        return False
+
+    verify_targets = [matched_value, canonical, direction]
+    for verify_target in verify_targets:
+        if verify_target and await _verify_preset_selected(page, verify_target):
+            return True
+
+    if source in {"aria", "data", "icon"}:
+        logger.warning(
+            "Clicked camera preset %s via %s=%r but color verify had no "
+            "matching label; accepting fallback click",
+            direction,
+            source,
+            matched_value,
+        )
+        return True
+
+    logger.error("Could not click+verify camera preset: %s", direction)
+    return False
+
+
+async def _camera_preset_failure_diagnostics(page) -> str:
+    try:
+        buttons = await _scan_visible_preset_buttons(page)
+    except Exception as exc:
+        logger.warning("Camera preset diagnostic dump failed: %s", exc)
+        return f"Visible preset button diagnostic unavailable: {exc}"
+
+    formatted = _format_button_diagnostics(buttons)
+    logger.error("Visible camera preset buttons: %s", formatted)
+    return f"Visible camera preset buttons: {formatted}"
+
+
+async def _scan_visible_preset_buttons(page) -> list[dict]:
+    buttons = await page.evaluate(
+        _CAMERA_PRESET_DUMP_SCRIPT,
+        {"selector": BUTTON_SCAN_SELECTOR, "limit": 80},
+    )
+    if not isinstance(buttons, list):
+        return []
+    return [button for button in buttons if isinstance(button, dict)]
+
+
+def _format_button_diagnostics(buttons: list[dict]) -> str:
+    if not buttons:
+        return "<none>"
+    parts = []
+    for button in buttons[:40]:
+        index = button.get("index")
+        text = _short_diagnostic_value(button.get("text"))
+        aria = _short_diagnostic_value(button.get("ariaLabel"))
+        data_direction = _short_diagnostic_value(button.get("dataDirection"))
+        data_preset = _short_diagnostic_value(button.get("dataPreset"))
+        icons = button.get("icons") if isinstance(button.get("icons"), list) else []
+        icon_text = ",".join(
+            _short_diagnostic_value(icon)
+            for icon in icons[:4]
+            if _short_diagnostic_value(icon)
+        )
+        fields = [f"#{index}"]
+        if text:
+            fields.append(f"text={text!r}")
+        if aria:
+            fields.append(f"aria={aria!r}")
+        if data_direction:
+            fields.append(f"data-direction={data_direction!r}")
+        if data_preset:
+            fields.append(f"data-preset={data_preset!r}")
+        if icon_text:
+            fields.append(f"icons={icon_text!r}")
+        parts.append("{" + " ".join(fields) + "}")
+    if len(buttons) > 40:
+        parts.append(f"... +{len(buttons) - 40} more")
+    return "; ".join(parts)
+
+
+def _short_diagnostic_value(value: object, limit: int = 80) -> str:
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit - 3]}..."
+
+
+_CAMERA_PRESET_DUMP_SCRIPT = r"""
+(payload) => {
+    const selector = payload.selector || 'button, [role="button"]';
+    const limit = payload.limit || 80;
+    const isVisible = (el) => {
+        const style = window.getComputedStyle(el);
+        if (style.visibility === 'hidden' || style.display === 'none') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    };
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const collectIcons = (el) => Array.from(
+        el.querySelectorAll('i, span, [class*="material"], [data-icon], svg title')
+    ).map((node) => clean(
+        node.getAttribute('data-icon') ||
+        node.getAttribute('aria-label') ||
+        node.textContent ||
+        node.getAttribute('class') ||
+        ''
+    )).filter(Boolean);
+    return Array.from(document.querySelectorAll(selector))
+        .map((el, index) => ({el, index}))
+        .filter(({el}) => isVisible(el) && !el.disabled)
+        .slice(0, limit)
+        .map(({el, index}) => ({
+            index,
+            tag: el.tagName.toLowerCase(),
+            role: el.getAttribute('role') || '',
+            text: clean(el.innerText || el.textContent || ''),
+            ariaLabel: clean(el.getAttribute('aria-label') || ''),
+            title: clean(el.getAttribute('title') || ''),
+            dataDirection: clean(el.getAttribute('data-direction') || ''),
+            dataPreset: clean(el.getAttribute('data-preset') || el.getAttribute('data-camera-preset') || ''),
+            dataValue: clean(el.getAttribute('data-value') || el.getAttribute('value') || el.getAttribute('name') || ''),
+            dataTestId: clean(el.getAttribute('data-testid') || el.getAttribute('data-test-id') || ''),
+            icons: collectIcons(el),
+        }));
+}
+"""
+
+
+_CAMERA_PRESET_MATCH_SCRIPT = r"""
+(payload) => {
+    const selector = payload.selector || 'button, [role="button"]';
+    const targetKeys = new Set(payload.targetKeys || []);
+    const iconKeys = new Set(payload.iconKeys || []);
+    const normalize = (value) => (value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .trim()
+        .replace(/\s+/g, ' ');
+    const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+    const isVisible = (el) => {
+        const style = window.getComputedStyle(el);
+        if (style.visibility === 'hidden' || style.display === 'none') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    };
+    const actionNoise = /\b(extend|insert|remove|camera|done|show history|favorite|lock|play_circle|add_box|ink_eraser)\b/i;
+    const fieldsFor = (el) => ([
+        ['text', clean(el.innerText || el.textContent || '')],
+        ['aria', clean(el.getAttribute('aria-label') || '')],
+        ['data', clean(el.getAttribute('data-direction') || '')],
+        ['data', clean(el.getAttribute('data-preset') || '')],
+        ['data', clean(el.getAttribute('data-camera-preset') || '')],
+        ['data', clean(el.getAttribute('data-value') || '')],
+        ['data', clean(el.getAttribute('value') || '')],
+        ['data', clean(el.getAttribute('name') || '')],
+        ['data', clean(el.getAttribute('data-testid') || '')],
+        ['title', clean(el.getAttribute('title') || '')],
+    ]).filter(([, value]) => value);
+    const iconFieldsFor = (el) => Array.from(
+        el.querySelectorAll('i, span, [class*="material"], [data-icon], svg title')
+    ).map((node) => clean(
+        node.getAttribute('data-icon') ||
+        node.getAttribute('aria-label') ||
+        node.textContent ||
+        node.getAttribute('class') ||
+        ''
+    )).filter(Boolean);
+
+    for (const [index, el] of Array.from(document.querySelectorAll(selector)).entries()) {
+        if (!isVisible(el) || el.disabled) continue;
+        for (const [source, value] of fieldsFor(el)) {
+            const key = normalize(value);
+            if (targetKeys.has(key)) {
+                return {index, source, matchedValue: value};
+            }
+        }
+        const text = clean(el.innerText || el.textContent || '');
+        if (actionNoise.test(text)) continue;
+        for (const value of iconFieldsFor(el)) {
+            const key = normalize(value);
+            if (iconKeys.has(key)) {
+                return {index, source: 'icon', matchedValue: value};
+            }
+        }
+    }
+    return null;
+}
+"""
 
 
 async def _verify_preset_selected(page, direction: str) -> bool:
