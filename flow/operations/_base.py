@@ -362,18 +362,35 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
                 recovery_name = f"media-id tile recovery for {media_id}"
             else:
                 if tile is None:
-                    message = (
-                        f"Editor did not mount for {edit_url_val}; target tile for media_id "
-                        f"{media_id} not found in project rail. Refusing first-tile recovery "
-                        f"because deep-chain rails may be reordered. Parent media may be stale "
-                        f"(consumed by sibling op)."
-                    )
-                    message = await message_with_failure_capture(
-                        client,
-                        "editor_not_mounted",
-                        message,
-                    )
-                    raise RuntimeError(message)
+                    # Strict media-id match failed. Allow first-tile fallback
+                    # ONLY when the project rail is shallow (≤1 tile = L2 case
+                    # where the only tile IS the L1 root we want). At ≥2 tiles,
+                    # rail reorder risk is real → refuse to avoid wrong-clip.
+                    try:
+                        tile_count = await page.locator("[data-tile-id]").count()
+                    except Exception:
+                        tile_count = 0
+                    if tile_count <= 1:
+                        logger.warning(
+                            "Media-id %s not found, but rail has %d tile(s); "
+                            "falling back to first-tile click (safe at shallow rail)",
+                            media_id[:20], tile_count,
+                        )
+                        recovered = await _click_video_tile(page, "")
+                        recovery_name = f"first-tile fallback for {media_id}"
+                    else:
+                        message = (
+                            f"Editor did not mount for {edit_url_val}; target tile for media_id "
+                            f"{media_id} not found in project rail ({tile_count} tiles present). "
+                            f"Refusing first-tile recovery because deep-chain rails may be reordered. "
+                            f"Parent media may be stale (consumed by sibling op)."
+                        )
+                        message = await message_with_failure_capture(
+                            client,
+                            "editor_not_mounted",
+                            message,
+                        )
+                        raise RuntimeError(message)
                 try:
                     await tile.click(timeout=3000)
                     logger.info(
