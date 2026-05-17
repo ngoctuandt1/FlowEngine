@@ -42,6 +42,9 @@ chrome-profiles/
 
 # Environment
 .env
+profiles_ultra.txt
+secrets/
+secrets/service_account.json
 
 # OS
 Thumbs.db
