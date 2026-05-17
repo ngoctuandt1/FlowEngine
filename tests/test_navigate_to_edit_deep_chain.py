@@ -169,8 +169,20 @@ async def test_navigate_recovery_uses_first_tile_only_when_media_id_unknown(monk
     click_video_tile.assert_awaited_once_with(page, "")
 
 
-async def test_navigate_recovery_fails_clearly_when_target_tile_missing(monkeypatch):
+async def test_navigate_recovery_fails_clearly_when_target_tile_missing_and_deep_rail(monkeypatch):
+    """Deep rail (>=2 tiles, target tile not matched): strict refusal."""
     page = _Page(url=_edit_url(TARGET_MEDIA_ID))
+    # Mock the [data-tile-id] count() to return 2 (deep-chain rail)
+    deep_tile_loc = MagicMock()
+    deep_tile_loc.count = AsyncMock(return_value=2)
+    original_locator = page.locator
+
+    def _locator_with_deep_rail(selector):
+        if selector == "[data-tile-id]":
+            return deep_tile_loc
+        return original_locator(selector)
+    page.locator = _locator_with_deep_rail
+
     click_video_tile = AsyncMock(return_value=True)
     monkeypatch.setattr(_base, "_click_video_tile", click_video_tile)
 
@@ -186,3 +198,34 @@ async def test_navigate_recovery_fails_clearly_when_target_tile_missing(monkeypa
     assert TARGET_MEDIA_ID in str(exc_info.value)
     assert "Refusing first-tile recovery" in str(exc_info.value)
     click_video_tile.assert_not_awaited()
+
+
+async def test_navigate_recovery_allows_first_tile_when_shallow_rail(monkeypatch):
+    """Shallow rail (<=1 tile, target not matched): fallback to first-tile click."""
+    page = _Page(url=_edit_url(TARGET_MEDIA_ID))
+    shallow_loc = MagicMock()
+    shallow_loc.count = AsyncMock(return_value=1)
+    original_locator = page.locator
+
+    def _locator_with_shallow_rail(selector):
+        if selector == "[data-tile-id]":
+            return shallow_loc
+        return original_locator(selector)
+    page.locator = _locator_with_shallow_rail
+
+    async def _recover(page_arg, _media_id):
+        page_arg.editor_mounts = True
+        return True
+
+    click_video_tile = AsyncMock(side_effect=_recover)
+    monkeypatch.setattr(_base, "_click_video_tile", click_video_tile)
+
+    job = {
+        "edit_url": _edit_url(TARGET_MEDIA_ID),
+        "project_url": _project_url(),
+        "media_id": TARGET_MEDIA_ID,
+    }
+
+    # Should NOT raise — first-tile fallback is allowed at shallow rail
+    await navigate_to_edit(_client(page), job)
+    click_video_tile.assert_awaited_once()
