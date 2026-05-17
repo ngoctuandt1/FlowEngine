@@ -43,6 +43,15 @@ CHAIN_PROJECT_ID_MISMATCH_ERROR = (
     "All chain steps must use the same project_id as the first step when provided."
 )
 EXTEND_TERMINAL_BLOCKERS = {"camera-move", "insert-object", "remove-object"}
+TERMINAL_FAILURE_STATES = {
+    JobStatus.FAILED.value,
+    JobStatus.CANCELLED.value,
+    *(
+        status.value
+        for status in JobStatus
+        if status.value.startswith("recaptcha_") and status.value.endswith("_burned")
+    ),
+}
 
 
 def _job_type_value(job_type: object) -> str:
@@ -126,6 +135,50 @@ async def _validate_existing_parent_chain_shape(
         ancestor = await get_job(ancestor.parent_job_id)
 
     return None
+
+
+def _job_status_value(job_status: object) -> str:
+    return str(getattr(job_status, "value", job_status))
+
+
+def _parent_alive_error(parent: Job) -> str:
+    return (
+        f"parent chain invalid: parent_id={parent.id} "
+        f"parent_status={_job_status_value(parent.status)} is terminal-failure "
+        "in the ancestor chain. Submitting a child here would create an "
+        "orphan because failed/cancelled parents cannot produce usable media. "
+        "Re-root this as a new L1-rooted chain before retrying."
+    )
+
+
+async def _validate_parent_alive(parent: Job) -> str | None:
+    """Refuse a child under terminal-failure parent ancestry."""
+    seen: set[str] = set()
+    ancestor: Job | None = parent
+    while ancestor is not None and ancestor.id not in seen:
+        seen.add(ancestor.id)
+        if _job_status_value(ancestor.status) in TERMINAL_FAILURE_STATES:
+            return _parent_alive_error(ancestor)
+        if not ancestor.parent_job_id:
+            break
+        ancestor = await get_job(ancestor.parent_job_id)
+
+    return None
+
+
+async def _validate_chain_parent_alive(req: ChainCreate) -> str | None:
+    """Refuse a continuation chain under terminal-failure parent ancestry."""
+    parent_job_id = getattr(req, "parent_job_id", None)
+    if parent_job_id is None and req.jobs:
+        parent_job_id = req.jobs[0].parent_job_id
+    if not parent_job_id:
+        return None
+
+    parent = await get_job(parent_job_id)
+    if parent is None:
+        return f"Parent job {parent_job_id} not found"
+
+    return await _validate_parent_alive(parent)
 
 
 def _resolve_model(req: JobCreate) -> str:
@@ -280,6 +333,9 @@ async def create_single_job(req: JobCreate):
         err = await _validate_existing_parent_chain_shape(req, parent)
         if err:
             raise HTTPException(status_code=400, detail=err)
+        err = await _validate_parent_alive(parent)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
         job_level = parent.job_level + 1
         chain_id = _resolve_parent_chain_id(parent)
         # L2+ inherits profile from completed parent — INV-1 account binding.
@@ -316,6 +372,10 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
         effective_profile = req.effective_profile
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    err = await _validate_chain_parent_alive(req)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
 
     err = _validate_chain_shape(req.jobs)
     if err:
