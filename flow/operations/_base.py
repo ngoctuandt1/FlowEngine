@@ -1072,10 +1072,31 @@ async def finalize_operation(
     if not proj_url and project_id:
         proj_url = f"{flow_url(locale)}/project/{project_id}"
 
+    # Build the download list using the resolved canonical id. The resolver
+    # filters out parent + ancestor slugs (SPEC INV-5 §2026-05-16) — if the
+    # raw ``download_media_ids`` list contained only ancestor mids, blindly
+    # passing it here would download the parent clip while the job record
+    # stored the new child mid (output_files / media_id mismatch). Mirror
+    # the resolver's exclusion logic and fall back to ``[media_id]`` when
+    # filtering empties the list.
+    exclusion: set[str] = set()
+    if parent_media_id:
+        exclusion.add(parent_media_id)
+    for anc in ancestor_media_ids:
+        if anc:
+            exclusion.add(anc)
+    filtered_download_ids = [mid for mid in download_media_ids if mid and mid not in exclusion]
+    if filtered_download_ids:
+        download_list = filtered_download_ids
+    elif media_id:
+        download_list = [media_id]
+    else:
+        download_list = []
+
     logger.info("Downloading %s result...", job_type)
     output_files = await download_video(
         client,
-        media_ids=download_media_ids or ([media_id] if media_id else []),
+        media_ids=download_list,
         prefix=download_prefix,
         metadata={
             "job_type": job_type,

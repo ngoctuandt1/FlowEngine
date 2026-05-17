@@ -57,9 +57,13 @@ async def test_finalize_operation_passes_strict_false_for_chain_child(monkeypatc
         download_media_ids=[PARENT_SLUG],
         strict=False,
     )
+    # INV-5: download_media_ids contained only the parent slug (ancestor),
+    # which the resolver excluded. The download list must therefore use the
+    # resolved NEW_SLUG instead of the ancestor — otherwise output_files
+    # would be the parent clip while the job's media_id stored the new mid.
     download_video.assert_awaited_once_with(
         client,
-        media_ids=[PARENT_SLUG],
+        media_ids=[NEW_SLUG],
         prefix="ext",
         metadata={
             "job_type": "extend-video",
@@ -174,6 +178,33 @@ async def test_finalize_operation_uses_resolved_media_id_for_download_without_me
         },
     )
     assert result["output_files"] == ["out.mp4"]
+
+
+async def test_finalize_operation_preserves_non_ancestor_download_ids(monkeypatch):
+    """When network events contain both ancestor + new mids, the non-ancestor
+    network mids are preserved (resolver's own selection logic)."""
+    client = _client()
+    resolve_final_media_id = AsyncMock(return_value=NEW_SLUG)
+    download_video = AsyncMock(return_value=["out.mp4"])
+    monkeypatch.setattr(
+        _base,
+        "wait_for_completion",
+        AsyncMock(return_value={"done": True, "media_ids": [PARENT_SLUG, NEW_SLUG]}),
+    )
+    monkeypatch.setattr(_base, "resolve_final_media_id", resolve_final_media_id)
+    monkeypatch.setattr(_base, "download_video", download_video)
+
+    await _base.finalize_operation(
+        client,
+        {"media_id": PARENT_SLUG, "project_url": PROJECT_URL},
+        "extend-video",
+        PROJECT_ID,
+        "",
+        "ext",
+    )
+
+    download_video.assert_awaited_once()
+    assert download_video.await_args.kwargs["media_ids"] == [NEW_SLUG]
 
 
 async def test_finalize_operation_builds_project_url_when_job_missing_one(monkeypatch):

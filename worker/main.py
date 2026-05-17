@@ -174,6 +174,11 @@ async def claim_loop(
     last_heartbeat = datetime.now(UTC)
     heartbeat_delta = timedelta(seconds=HEARTBEAT_INTERVAL_SEC)
     in_flight: set[asyncio.Task[None]] = set()
+    # Track in-flight work at JOB granularity, not asyncio.Task granularity:
+    # a single batch task may carry N jobs, so ``len(in_flight)`` undercounts
+    # capacity and lets the loop over-claim past MAX_CONCURRENT_JOBS. Each
+    # entry maps task -> number of jobs that task is dispatching.
+    in_flight_job_count: dict[asyncio.Task[None], int] = {}
     # Profiles undergoing burn/wipe-rewarm: excluded from same-profile claims
     # until recovery completes, preventing a new job from cloning a half-dead dir.
     _draining: set[str] = set()
@@ -311,9 +316,18 @@ async def claim_loop(
         shutdown_task.cancel()
         await asyncio.gather(shutdown_task, return_exceptions=True)
 
+    def _jobs_in_flight() -> int:
+        return sum(in_flight_job_count.values())
+
+    def _purge_done() -> None:
+        done_tasks = {task for task in in_flight if task.done()}
+        for task in done_tasks:
+            in_flight.discard(task)
+            in_flight_job_count.pop(task, None)
+
     try:
         while not _shutdown.is_set():
-            in_flight = {task for task in in_flight if not task.done()}
+            _purge_done()
 
             now = datetime.now(UTC)
             if now - last_heartbeat >= heartbeat_delta:
@@ -341,11 +355,12 @@ async def claim_loop(
                     available = []
             else:
                 available = profile_mgr.get_available()
-            if not available or len(in_flight) >= max_concurrent:
+            jobs_active = _jobs_in_flight()
+            if not available or jobs_active >= max_concurrent:
                 await wait_for_capacity()
                 continue
 
-            slots = max_concurrent - len(in_flight)
+            slots = max_concurrent - jobs_active
             if ALLOW_SAME_PROFILE_CONCURRENCY:
                 # Repeat the rotated pool until we fill the remaining slots.
                 claim_profiles = (available * slots)[:slots]
@@ -385,6 +400,9 @@ async def claim_loop(
             else:
                 task = asyncio.create_task(run_claimed_job(claimed_jobs[0]))
             in_flight.add(task)
+            # Record job-granularity weight so capacity accounting reflects
+            # actual concurrent jobs, not just outstanding asyncio tasks.
+            in_flight_job_count[task] = len(claimed_jobs)
 
     finally:
         if in_flight:
