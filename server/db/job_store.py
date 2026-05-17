@@ -681,6 +681,33 @@ async def get_children(parent_job_id: str) -> list[Job]:
         return [_row_to_job(r) for r in rows]
 
 
+async def list_completed_jobs_by_project_url(
+    project_url: str,
+    *,
+    limit: int = 2,
+) -> list[Job]:
+    """Return most-recently-completed jobs sharing a Flow `project_url`.
+
+    Used by the L2-without-parent route guard to resolve which ancestor a new
+    L2 op should inherit from. Caller is responsible for deciding whether the
+    result is unambiguous (typically: trust only when `len(...) == 1` or all
+    rows share the same `profile`).
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT * FROM jobs
+            WHERE project_url = ?
+              AND status = 'completed'
+            ORDER BY datetime(completed_at) DESC, datetime(updated_at) DESC
+            LIMIT ?
+            """,
+            (project_url, limit),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_job(r) for r in rows]
+
+
 async def get_jobs_by_chain(chain_id: str) -> list[Job]:
     """Return every job on a chain, oldest first, in one query."""
     async with get_db() as db:

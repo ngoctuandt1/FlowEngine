@@ -120,19 +120,21 @@ async def test_l2_submit_rejects_unpinned_parent_without_explicit_profile(api_cl
     assert "profile" in detail
 
 
-async def test_l2_submit_without_parent_keeps_existing_behavior(api_client):
+async def test_l2_submit_without_parent_or_project_url_is_rejected(api_client):
+    # INV-1 + INV-4: L2 op types must NOT downgrade to job_level=1. With
+    # neither parent_job_id nor a resolvable project_url, profile cannot be
+    # inherited and the dispatcher would skip the project_lock for the
+    # contending project.
     response = await api_client.post(
         "/api/jobs",
         json={
             "type": "extend-video",
-            "prompt": "Existing no-parent shape behavior",
+            "prompt": "Bare L2 must be rejected",
         },
     )
 
-    assert response.status_code == 201, response.text
-    body = response.json()
-    assert body["job_level"] == 1
-    assert body["parent_job_id"] is None
+    assert response.status_code == 422, response.text
+    assert "L2" in response.json()["detail"]
 
 
 async def test_l1_submit_without_profile_remains_allowed(api_client):
