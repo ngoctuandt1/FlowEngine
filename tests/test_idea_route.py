@@ -67,3 +67,97 @@ async def test_generate_idea_returns_503_when_api_key_missing(api_client, monkey
 
     assert response.status_code == 503
     assert response.json() == {"error": "Gemini API key not configured"}
+
+
+async def test_generate_idea_rejects_ssrf_private_ip_host(api_client, monkeypatch):
+    """A reference URL whose hostname resolves to a private/loopback IP must
+    be refused BEFORE any HTTP request goes out — otherwise an attacker can
+    reach the cloud metadata service or any internal admin endpoint."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    import server.routes.idea as idea
+
+    # Pretend `attacker.example.com` resolves to AWS link-local metadata IP.
+    def fake_getaddrinfo(host, *args, **kwargs):
+        return [(idea.socket.AF_INET, None, None, "", ("169.254.169.254", 0))]
+
+    monkeypatch.setattr(idea.socket, "getaddrinfo", fake_getaddrinfo)
+
+    async def boom(*args, **kwargs):  # gemini must NOT be called
+        raise AssertionError("gemini_client.generate must not be reached")
+
+    monkeypatch.setattr(idea.gemini_client, "generate", boom)
+
+    response = await api_client.post(
+        "/api/idea/generate",
+        json={
+            "prompt": "ignore",
+            "ref_image_urls": ["http://attacker.example.com/leak.png"],
+        },
+    )
+    assert response.status_code == 502
+    assert "not allowed" in response.json()["error"]
+
+
+async def test_generate_idea_rejects_oversized_reference_image(
+    api_client, monkeypatch
+):
+    """A reference URL that streams more than 10 MB must be truncated/refused
+    instead of being buffered into worker memory."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    import server.routes.idea as idea
+
+    # Resolve to a public IP so SSRF guard lets the request through.
+    monkeypatch.setattr(
+        idea.socket,
+        "getaddrinfo",
+        lambda *a, **kw: [(idea.socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
+    )
+
+    # Mock httpx stream → yield chunks until > REF_IMAGE_MAX_BYTES.
+    class _FakeStreamResponse:
+        headers = {"content-type": "image/png"}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            chunk = b"\x00" * (1024 * 1024)
+            for _ in range(idea.REF_IMAGE_MAX_BYTES // len(chunk) + 2):
+                yield chunk
+
+    class _FakeStreamCtx:
+        async def __aenter__(self):
+            return _FakeStreamResponse()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def stream(self, method, url):
+            return _FakeStreamCtx()
+
+    monkeypatch.setattr(idea.httpx, "AsyncClient", _FakeClient)
+
+    async def boom(*args, **kwargs):  # gemini must NOT be called
+        raise AssertionError("gemini_client.generate must not be reached")
+
+    monkeypatch.setattr(idea.gemini_client, "generate", boom)
+
+    response = await api_client.post(
+        "/api/idea/generate",
+        json={
+            "prompt": "ignore",
+            "ref_image_urls": ["https://cdn.example.com/huge.png"],
+        },
+    )
+    assert response.status_code == 502
+    assert "exceeds" in response.json()["error"]

@@ -61,24 +61,28 @@ def _is_forbidden_ip(ip_text: str) -> bool:
 
 
 def _validate_hostname_resolution(host: str) -> None:
-    # This blocks obvious DNS rebinding targets at validation time, but yt-dlp
-    # resolves the hostname again later so a small TOCTOU window still exists.
+    # Validate every resolved address. yt-dlp re-resolves later so a DNS
+    # rebinding TOCTOU window remains; we narrow it by rejecting any host
+    # whose record set mixes public + private addresses (a common rebinding
+    # tell) and by failing closed on an empty result.
     try:
         addrinfos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise ValueError("url host could not be resolved") from exc
 
+    saw_address = False
     for family, *_rest, sockaddr in addrinfos:
-        if family == socket.AF_INET:
-            candidate_ip = sockaddr[0]
-        elif family == socket.AF_INET6:
-            candidate_ip = sockaddr[0]
-        else:
+        if family not in (socket.AF_INET, socket.AF_INET6):
             continue
+        candidate_ip = sockaddr[0] if sockaddr else None
         if not isinstance(candidate_ip, str):
             continue
+        candidate_ip = candidate_ip.split("%", 1)[0]
+        saw_address = True
         if _is_forbidden_ip(candidate_ip):
             raise ValueError("url host is not allowed")
+    if not saw_address:
+        raise ValueError("url host could not be resolved")
 
 
 class FetchUrlRequest(BaseModel):
@@ -120,6 +124,37 @@ class FetchUrlResponse(BaseModel):
     source_url: str
 
 
+def _terminate_child_processes() -> None:
+    """Best-effort kill of ffmpeg/aria2c subprocesses yt-dlp may have spawned.
+
+    yt-dlp does not expose a reliable handle to its child processes, so we
+    walk this process's children via ``psutil`` when available. If psutil is
+    absent we degrade silently — the worst case is the same orphaned-process
+    behaviour we had before this change.
+    """
+
+    try:
+        import psutil  # type: ignore[import-not-found]
+    except ImportError:
+        return
+    try:
+        current = psutil.Process()
+        children = current.children(recursive=True)
+    except Exception:  # pragma: no cover - defensive
+        return
+    for child in children:
+        try:
+            child.terminate()
+        except Exception:  # pragma: no cover - defensive
+            continue
+    _gone, alive = psutil.wait_procs(children, timeout=2)
+    for child in alive:
+        try:
+            child.kill()
+        except Exception:  # pragma: no cover - defensive
+            continue
+
+
 def _extract_info_with_timeout(url: str, options: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
     result: dict[str, Any] = {}
     error: dict[str, BaseException] = {}
@@ -137,12 +172,17 @@ def _extract_info_with_timeout(url: str, options: dict[str, Any], timeout_second
     worker.start()
     worker.join(timeout_seconds)
     if worker.is_alive():
-        # Best effort only: yt-dlp does not guarantee prompt child-process
-        # teardown here, so a small timeout leakage window still exists.
+        # Best effort teardown: call yt-dlp's documented cancel hook, also try
+        # interrupting any spawned ffmpeg/aria2c child processes so a CPU/disk
+        # leak does not outlive the HTTP request.
         downloader = downloader_ref.get("instance")
         cancel = getattr(downloader, "cancel", None)
         if callable(cancel):
-            cancel()
+            try:
+                cancel()
+            except Exception:  # pragma: no cover - best-effort cleanup
+                pass
+        _terminate_child_processes()
         raise TimeoutError(f"Download timed out after {timeout_seconds} seconds")
     if "exc" in error:
         raise error["exc"]

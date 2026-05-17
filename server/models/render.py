@@ -7,6 +7,13 @@ from enum import Enum
 from pydantic import BaseModel, Field, model_validator
 
 
+# Resource bounds — applied at the Pydantic layer so an unbounded timeline is
+# rejected with 422 BEFORE we hand the payload to the background ffmpeg job.
+MAX_TRACKS_PER_TIMELINE = 10
+MAX_CLIPS_PER_TRACK = 100
+MAX_TOTAL_DURATION_SEC = 600.0  # 10 minutes
+
+
 class RenderStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -46,12 +53,16 @@ class TimelineTrack(BaseModel):
 
 class TimelinePayload(BaseModel):
     ratio: TimelineRatio
-    tracks: list[TimelineTrack] = Field(min_length=1)
-    total_duration_sec: float = Field(gt=0)
+    tracks: list[TimelineTrack] = Field(min_length=1, max_length=MAX_TRACKS_PER_TIMELINE)
+    total_duration_sec: float = Field(gt=0, le=MAX_TOTAL_DURATION_SEC)
 
     @model_validator(mode="after")
     def _validate_track_bounds(self) -> "TimelinePayload":
         for track in self.tracks:
+            if len(track.clips) > MAX_CLIPS_PER_TRACK:
+                raise ValueError(
+                    f"track exceeds {MAX_CLIPS_PER_TRACK} clip limit"
+                )
             for clip in track.clips:
                 clip_end = clip.start_sec + clip.duration_sec
                 if clip_end > (self.total_duration_sec + 1e-6):
