@@ -27,6 +27,7 @@ from server.db.job_store import (
     get_jobs_by_chain,
     get_job_counts,
     get_related_jobs,
+    list_completed_jobs_by_project_url,
     list_jobs,
     list_pending_l1_siblings,
     list_pending_l2_siblings,
@@ -53,6 +54,26 @@ CHAIN_PROJECT_ID_MISMATCH_ERROR = (
     "All chain steps must use the same project_id as the first step when provided."
 )
 EXTEND_TERMINAL_BLOCKERS = {"camera-move", "insert-object", "remove-object"}
+# L2 op types — operate on an existing L1/L2 output. MUST have either
+# `parent_job_id` (preferred) or resolve to a single ancestor via `project_url`.
+# Accepting one of these with neither set as `job_level=1` breaks INV-1
+# (same-profile chain) + INV-4 (serial-per-project, dispatcher only locks at
+# level>=2).
+L2_OPS_SET = frozenset({
+    "extend-video",
+    "insert-object",
+    "remove-object",
+    "camera-move",
+})
+L2_OPS_REQUIRE_ANCESTOR_DETAIL = (
+    "L2 op types (extend-video, insert-object, remove-object, camera-move) "
+    "require parent_job_id, or a project_url that resolves to a single "
+    "completed ancestor (INV-1, INV-4)."
+)
+L2_OPS_AMBIGUOUS_PROJECT_DETAIL = (
+    "project_url has multiple completed jobs across different profiles; "
+    "specify parent_job_id explicitly to bind this L2 op to one ancestor."
+)
 TERMINAL_FAILURE_STATES = {
     JobStatus.FAILED.value,
     JobStatus.CANCELLED.value,
@@ -335,6 +356,35 @@ async def create_single_job(req: JobCreate):
     job_level = 1
     profile = req.profile  # L1 pin; L2+ resolves against parent below.
     chain_id = req.chain_id
+
+    # L2 op types must NOT silently downgrade to job_level=1. Without an
+    # ancestor we can't pin profile (breaks INV-1) and the dispatcher would
+    # skip project_lock (breaks INV-4). Resolve from project_url when the
+    # caller supplied one and exactly one profile owns the completed
+    # ancestry; otherwise reject with 422.
+    if _job_type_value(req.type) in L2_OPS_SET and req.parent_job_id is None:
+        if not req.project_url:
+            raise HTTPException(
+                status_code=422,
+                detail=L2_OPS_REQUIRE_ANCESTOR_DETAIL,
+            )
+        candidates = await list_completed_jobs_by_project_url(
+            req.project_url, limit=5,
+        )
+        if not candidates:
+            raise HTTPException(
+                status_code=422,
+                detail=L2_OPS_REQUIRE_ANCESTOR_DETAIL,
+            )
+        profiles_seen = {c.profile for c in candidates if c.profile}
+        if len(profiles_seen) > 1:
+            raise HTTPException(
+                status_code=422,
+                detail=L2_OPS_AMBIGUOUS_PROJECT_DETAIL,
+            )
+        # Bind to the most-recent completed ancestor on the project.
+        resolved_parent = candidates[0]
+        req.parent_job_id = resolved_parent.id
 
     if req.parent_job_id:
         parent = await get_job(req.parent_job_id)

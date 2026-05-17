@@ -57,11 +57,19 @@ async def test_post_jobs_rejects_invalid_camera_direction(api_client):
 
 
 async def test_post_jobs_accepts_valid_camera_direction(api_client):
-    # Seed an L1 parent so the L2 camera-move has something to attach to;
-    # the validator runs BEFORE the parent lookup so we can skip the parent
-    # link entirely here — camera-move without a parent simply sits as L1
-    # pending, which is fine for this test.
-    payload = {"type": "camera-move", "direction": "Orbit left"}
+    # camera-move is an L2 op; must attach to a parent (INV-1, INV-4).
+    seed = await api_client.post(
+        "/api/jobs",
+        json={"type": "text-to-video", "prompt": "seed", "profile": "pa"},
+    )
+    assert seed.status_code == 201, seed.text
+    parent_id = seed.json()["id"]
+
+    payload = {
+        "type": "camera-move",
+        "direction": "Orbit left",
+        "parent_job_id": parent_id,
+    }
     resp = await api_client.post("/api/jobs", json=payload)
     assert resp.status_code == 201, resp.text
     assert resp.json()["direction"] == "Orbit left"
