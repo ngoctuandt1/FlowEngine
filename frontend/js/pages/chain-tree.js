@@ -6,6 +6,7 @@
   const PAGE_ROOT_ID = 'chain-tree-page';
   const PAGE_STYLE_ID = 'chain-tree-page-styles';
   const COLLAPSE_STORAGE_PREFIX = 'flowengine:chain-tree:collapsed:';
+  const HIDE_ORPHANS_STORAGE_KEY = 'chainTree.hideOrphans';
   const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v']);
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
   const ACTIVE_STATUSES = new Set(['pending', 'claimed', 'running']);
@@ -21,6 +22,9 @@
     selectedJobs: [],
     collapsedByChain: {},
     errorOpenByChain: {},
+    hideOrphans: readHideOrphansState(),
+    deletingJobIds: new Set(),
+    deletingCancelled: false,
     loadingList: false,
     loadingDetail: false,
     listError: '',
@@ -42,6 +46,22 @@
       return localStorage.getItem('FLOW_DEBUG_BADGES') === '1';
     } catch (_) {
       return false;
+    }
+  }
+
+  function readHideOrphansState() {
+    try {
+      return localStorage.getItem(HIDE_ORPHANS_STORAGE_KEY) === '1';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function persistHideOrphansState() {
+    try {
+      localStorage.setItem(HIDE_ORPHANS_STORAGE_KEY, state.hideOrphans ? '1' : '0');
+    } catch (_) {
+      // Ignore local storage failures.
     }
   }
 
@@ -305,6 +325,29 @@
         margin-bottom: 16px;
       }
 
+      .chain-tree-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      .chain-tree-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-secondary);
+        font-size: 13px;
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .chain-tree-toggle input {
+        accent-color: var(--color-warn, var(--warning));
+      }
+
       .chain-tree-help {
         margin-top: 6px;
         color: var(--text-secondary);
@@ -561,6 +604,28 @@
         border-color: rgba(239, 68, 68, 0.38);
       }
 
+      .chain-tree-status.orphan {
+        color: var(--color-warn, var(--warning));
+        background: color-mix(in srgb, var(--color-warn, var(--warning)) 18%, transparent);
+        border-color: color-mix(in srgb, var(--color-err, var(--error)) 42%, transparent);
+        text-transform: none;
+      }
+
+      .chain-tree-node-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .chain-tree-icon-btn.delete {
+        color: var(--color-err, var(--error));
+      }
+
+      .chain-tree-icon-btn.delete:hover:not(:disabled) {
+        border-color: color-mix(in srgb, var(--color-err, var(--error)) 45%, transparent);
+        background: color-mix(in srgb, var(--color-err, var(--error)) 12%, transparent);
+      }
+
       .chain-tree-icon-btn,
       .chain-tree-inline-link {
         display: inline-flex;
@@ -586,6 +651,12 @@
         width: 32px;
         height: 32px;
         padding: 0;
+      }
+
+      .chain-tree-icon-btn:disabled,
+      .chain-tree-icon-btn:disabled:hover {
+        cursor: not-allowed;
+        opacity: 0.55;
       }
 
       .chain-tree-inline-link {
@@ -864,6 +935,27 @@
     }
     if (normalized === 'cancelled') return { label: 'Cancelled', className: 'cancelled' };
     return { label: 'Pending', className: 'pending' };
+  }
+
+  function parentFailedReason(error) {
+    const text = String(error || '').trim();
+    if (!text.startsWith('parent_failed:')) return '';
+    return text.slice('parent_failed:'.length).trim() || 'Parent job failed.';
+  }
+
+  function isCancelledJob(job) {
+    return String(job?.status || '') === 'cancelled';
+  }
+
+  function isParentFailedCancellation(job) {
+    return isCancelledJob(job) && Boolean(parentFailedReason(job?.error));
+  }
+
+  function nodeStatusMeta(job) {
+    if (isParentFailedCancellation(job)) {
+      return { label: 'Orphan (parent failed)', className: 'orphan' };
+    }
+    return statusMeta(job?.status);
   }
 
   function isActiveStatus(status) {
@@ -1173,6 +1265,77 @@
     return getErrorOpenSet(chainId).has(String(nodeId || ''));
   }
 
+  function cancelledDescendants(model) {
+    if (!model) return [];
+    return Array.from(model.nodesById.values())
+      .map((node) => node.job)
+      .filter((job) => isCancelledJob(job) && (job.parent_job_id || Number(job.job_level) > 1))
+      .sort((a, b) => (Number(b?.job_level) || 0) - (Number(a?.job_level) || 0));
+  }
+
+  async function deleteJob(jobId) {
+    const id = String(jobId || '').trim();
+    if (!id) return;
+    if (!confirm(`Delete job ${id}? This cannot be undone.`)) return;
+
+    state.deletingJobIds.add(id);
+    renderPage();
+
+    try {
+      await API.jobs.delete(id);
+      App.toast(`Deleted job ${shortId(id, 18)}`, 'success');
+      await loadChainList();
+    } catch (error) {
+      App.toast(error?.message || 'Failed to delete job.', 'error');
+    } finally {
+      state.deletingJobIds.delete(id);
+      renderPage();
+    }
+  }
+
+  async function deleteAllCancelledInChain() {
+    const chainId = state.selectedChainId;
+    if (!chainId || !state.selectedJobs.length) return;
+
+    const jobs = cancelledDescendants(buildTreeModel(state.selectedJobs));
+    if (!jobs.length) {
+      App.toast('No cancelled jobs to delete.', 'info');
+      return;
+    }
+
+    const countLabel = jobs.length === 1 ? '1 cancelled job' : `${jobs.length} cancelled jobs`;
+    if (!confirm(`Delete ${countLabel} in this chain? This cannot be undone.`)) return;
+
+    state.deletingCancelled = true;
+    jobs.forEach((job) => state.deletingJobIds.add(String(job.id || '')));
+    renderPage();
+
+    const failed = [];
+    for (const job of jobs) {
+      const id = String(job.id || '').trim();
+      if (!id) continue;
+      try {
+        await API.jobs.delete(id);
+      } catch (error) {
+        failed.push({ id, error });
+      }
+    }
+
+    try {
+      await loadChainList();
+    } finally {
+      state.deletingCancelled = false;
+      jobs.forEach((job) => state.deletingJobIds.delete(String(job.id || '')));
+      renderPage();
+    }
+
+    if (failed.length) {
+      App.toast(`Deleted ${jobs.length - failed.length}/${jobs.length}; ${failed.length} failed.`, 'warning');
+    } else {
+      App.toast(`Deleted ${countLabel}.`, 'success');
+    }
+  }
+
   function syncSelectedSummary() {
     const summary = state.chains.find((chain) => chain.id === state.selectedChainId) || null;
     state.selectedSummary = summary;
@@ -1295,11 +1458,16 @@
   function buildNodeTooltip(job) {
     const lines = [
       `Type: ${getJobTypeLabel(job.type)}`,
-      `Status: ${statusMeta(job.status).label}`,
+      `Status: ${nodeStatusMeta(job).label}`,
       `Prompt: ${promptText(job) || 'No prompt provided'}`,
       `Created: ${exactDateLabel(job.created_at)}`,
       `Updated: ${exactDateLabel(job.updated_at || job.created_at)}`,
     ];
+
+    const parentFailed = parentFailedReason(job.error);
+    if (parentFailed) {
+      lines.push(`Parent failed: ${parentFailed}`);
+    }
 
     if (job.completed_at) {
       lines.push(`Completed: ${exactDateLabel(job.completed_at)}`);
@@ -1320,6 +1488,14 @@
     const text = String(error || '').trim().replace(/\s+/g, ' ');
     if (!text) return 'Unknown failure.';
     return App.truncate(text, maxLen);
+  }
+
+  function nodeErrorText(job) {
+    const parentFailed = parentFailedReason(job?.error);
+    if (parentFailed) {
+      return `Parent failed: ${parentFailed}`;
+    }
+    return errorExcerpt(job?.error);
   }
 
   function detectCycleNodeIds(nodesById) {
@@ -1438,6 +1614,7 @@
       missingParentCount,
       hasMissingParents: missingParentCount > 0,
       rootCount: roots.length,
+      hasCancelledJobs: orderedNodes.some((node) => isCancelledJob(node.job)),
     };
   }
 
@@ -1466,17 +1643,23 @@
 
   function renderNodeBranch(node, model, chainId, trail = new Set(), isRoot = false) {
     const job = node.job;
+    if (state.hideOrphans && isCancelledJob(job)) {
+      return '';
+    }
+
     const nodeId = String(job.id || '');
     const cycleInTrail = trail.has(nodeId);
     const nextTrail = new Set(trail);
     nextTrail.add(nodeId);
 
-    const status = statusMeta(job.status);
+    const status = nodeStatusMeta(job);
     const theme = typeTheme(job.type);
     const label = getJobTypeLabel(job.type);
     const snippet = rootPromptSnippet(job, isRoot ? 92 : 72);
     const collapsed = isNodeCollapsed(chainId, nodeId);
     const errorOpen = isErrorOpen(chainId, nodeId);
+    const deleting = state.deletingJobIds.has(nodeId);
+    const showDeleteAction = model.hasCancelledJobs;
     const hasChildren = node.children.length > 0;
     const showChildren = hasChildren && !collapsed && !cycleInTrail;
     const cycleNode = cycleInTrail || model.cycleNodeIds.has(nodeId);
@@ -1501,7 +1684,18 @@
               <span class="chain-tree-level-badge">L${App.escapeHtml(String(job.job_level || '?'))}</span>
               <span class="chain-tree-status ${status.className}">${App.escapeHtml(status.label)}</span>
             </div>
-            <div>
+            <div${model.hasCancelledJobs ? ' class="chain-tree-node-actions"' : ''}>
+              ${showDeleteAction ? `
+                <button
+                  type="button"
+                  class="chain-tree-icon-btn delete"
+                  data-delete-job="${escapeAttr(nodeId)}"
+                  title="Delete this job"
+                  ${deleting ? 'disabled' : ''}
+                >
+                  <span class="material-icons">${deleting ? 'hourglass_empty' : 'delete'}</span>
+                </button>
+              ` : ''}
               ${hasChildren ? `
                 <button
                   type="button"
@@ -1563,7 +1757,7 @@
           </div>
 
           ${job.error && errorOpen ? `
-            <div class="chain-tree-node-error">${App.escapeHtml(errorExcerpt(job.error))}</div>
+            <div class="chain-tree-node-error">${App.escapeHtml(nodeErrorText(job))}</div>
           ` : ''}
 
           ${cycleNode ? `
@@ -1774,6 +1968,21 @@
     }
 
     const hasExpandableNodes = Array.from(model.nodesById.values()).some((node) => node.children.length > 0);
+    const cancelledJobs = cancelledDescendants(model);
+    const cancelledCount = cancelledJobs.length;
+    const showCleanupToolbar = model.hasCancelledJobs || state.deletingCancelled;
+    const renderedRootGroups = model.roots
+      .map((rootNode) => {
+        const branch = renderNodeBranch(rootNode, model, chainId, new Set(), true);
+        return branch.trim() ? `
+          <div class="chain-tree-root-group">
+            <ul class="chain-tree-tree">
+              ${branch}
+            </ul>
+          </div>
+        ` : '';
+      })
+      .join('');
 
     return `
       <div class="card chain-tree-tree-card" style="padding: 20px;">
@@ -1805,6 +2014,29 @@
           </div>
         </div>
 
+        ${showCleanupToolbar ? `
+          <div class="chain-tree-toolbar">
+            <label class="chain-tree-toggle" for="chain-tree-hide-orphans">
+              <input
+                type="checkbox"
+                id="chain-tree-hide-orphans"
+                ${state.hideOrphans ? 'checked' : ''}
+              >
+              <span>Hide cancelled / orphan jobs</span>
+            </label>
+            <button
+              type="button"
+              class="btn btn-sm btn-danger"
+              data-tree-action="delete-cancelled"
+              ${cancelledCount && !state.deletingCancelled ? '' : 'disabled'}
+              title="Delete cancelled descendants in this chain"
+            >
+              <span class="material-icons" style="font-size:16px">${state.deletingCancelled ? 'hourglass_empty' : 'delete_sweep'}</span>
+              Delete all cancelled in this chain${cancelledCount ? ` (${App.escapeHtml(String(cancelledCount))})` : ''}
+            </button>
+          </div>
+        ` : ''}
+
         ${model.hasMissingParents ? `
           <div class="chain-tree-banner warn" style="margin-bottom: 12px;">
             <span class="material-icons">warning</span>
@@ -1829,13 +2061,13 @@
         <div class="chain-tree-tree-scroll">
           <div class="chain-tree-tree-stage">
             <div class="chain-tree-root-forest">
-              ${model.roots.map((rootNode) => `
-                <div class="chain-tree-root-group">
-                  <ul class="chain-tree-tree">
-                    ${renderNodeBranch(rootNode, model, chainId, new Set(), true)}
-                  </ul>
+              ${renderedRootGroups.trim() ? renderedRootGroups : `
+                <div class="empty-state" style="padding: 40px 20px;">
+                  <span class="material-icons">visibility_off</span>
+                  <h3>Cancelled jobs hidden</h3>
+                  <p>Turn off the filter to show cancelled and orphan jobs.</p>
                 </div>
-              `).join('')}
+              `}
             </div>
           </div>
         </div>
@@ -1947,6 +2179,12 @@
     renderPage();
   }
 
+  function setHideOrphans(checked) {
+    state.hideOrphans = Boolean(checked);
+    persistHideOrphansState();
+    renderPage();
+  }
+
   async function handleClick(event) {
     const chainButton = event.target.closest('[data-chain-id]');
     if (chainButton) {
@@ -1962,6 +2200,9 @@
       if (treeAction.dataset.treeAction === 'collapse-all') {
         setAllCollapsed(true);
       }
+      if (treeAction.dataset.treeAction === 'delete-cancelled') {
+        await deleteAllCancelledInChain();
+      }
       return;
     }
 
@@ -1974,6 +2215,12 @@
     const errorButton = event.target.closest('[data-toggle-error]');
     if (errorButton) {
       toggleErrorOpen(errorButton.dataset.toggleError);
+      return;
+    }
+
+    const deleteButton = event.target.closest('[data-delete-job]');
+    if (deleteButton) {
+      await deleteJob(deleteButton.dataset.deleteJob);
       return;
     }
 
@@ -1996,6 +2243,13 @@
     }
   }
 
+  function handleChange(event) {
+    const hideToggle = event.target.closest('#chain-tree-hide-orphans');
+    if (hideToggle) {
+      setHideOrphans(hideToggle.checked);
+    }
+  }
+
   const ChainTreePage = {
     name: 'chain-tree',
     title: 'Chain Tree',
@@ -2013,9 +2267,11 @@
 
       handlers = {
         click: (event) => { void handleClick(event); },
+        change: handleChange,
       };
 
       root.addEventListener('click', handlers.click);
+      root.addEventListener('change', handlers.change);
 
       syncSelectedSummary();
       renderPage();
@@ -2025,6 +2281,7 @@
     destroy() {
       if (root && handlers) {
         root.removeEventListener('click', handlers.click);
+        root.removeEventListener('change', handlers.change);
       }
       root = null;
       handlers = null;
