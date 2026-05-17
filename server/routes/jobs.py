@@ -282,18 +282,25 @@ async def create_single_job(req: JobCreate):
             raise HTTPException(status_code=400, detail=err)
         job_level = parent.job_level + 1
         chain_id = _resolve_parent_chain_id(parent)
-        # L2+ inherits parent profile when pinned — INV-1 account binding.
-        # Reject explicit cross-account routing instead of silently discarding it.
-        if (
-            parent.profile is not None
-            and req.profile is not None
-            and req.profile != parent.profile
-        ):
+        # L2+ inherits parent profile when pinned — INV-B account binding.
+        # Reject explicit cross-account or speculative routing.
+        if parent.profile is not None:
+            if req.profile is not None and req.profile != parent.profile:
+                raise HTTPException(
+                    status_code=400,
+                    detail="INV-B account binding (child profile must match parent profile)",
+                )
+            profile = parent.profile
+        elif req.profile is not None:
             raise HTTPException(
                 status_code=400,
-                detail="child profile must match parent profile (INV-1 account binding)",
+                detail=(
+                    "child cannot specify profile when parent profile is unpinned — "
+                    "wait for parent to be claimed and pinned, or re-root the chain (INV-B)"
+                ),
             )
-        profile = parent.profile or req.profile
+        else:
+            profile = None
 
         if parent.status == JobStatus.COMPLETED:
             req.project_id = parent.project_id

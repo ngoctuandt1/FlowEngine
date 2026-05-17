@@ -63,8 +63,27 @@ async def test_l2_submit_rejects_explicit_profile_mismatch(api_client):
 
     assert response.status_code == 400
     assert response.json()["detail"] == (
-        "child profile must match parent profile (INV-1 account binding)"
+        "INV-B account binding (child profile must match parent profile)"
     )
+
+
+async def test_l2_submit_accepts_explicit_profile_matching_parent(api_client):
+    parent = await _create_l1_parent(api_client)
+
+    response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "extend-video",
+            "prompt": "Same account follow-up",
+            "parent_job_id": parent["id"],
+            "profile": PARENT_PROFILE,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["job_level"] == 2
+    assert body["profile"] == PARENT_PROFILE
 
 
 async def test_l2_submit_inherits_profile_from_pending_parent(api_client):
@@ -131,7 +150,7 @@ async def test_l1_submit_without_profile_remains_allowed(api_client):
     assert body["profile"] is None
 
 
-async def test_l2_submit_accepts_explicit_profile_when_parent_unpinned(api_client):
+async def test_l2_submit_rejects_explicit_profile_when_parent_unpinned(api_client):
     parent = await _create_l1_parent(api_client, profile=None)
 
     response = await api_client.post(
@@ -144,8 +163,11 @@ async def test_l2_submit_accepts_explicit_profile_when_parent_unpinned(api_clien
         },
     )
 
-    assert response.status_code == 201, response.text
-    assert response.json()["profile"] == PARENT_PROFILE
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "child cannot specify profile when parent profile is unpinned — "
+        "wait for parent to be claimed and pinned, or re-root the chain (INV-B)"
+    )
 
 
 async def test_l2_profile_inheritance_works_before_parent_completion(api_client):
