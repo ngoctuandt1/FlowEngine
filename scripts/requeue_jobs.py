@@ -1,10 +1,10 @@
 """Requeue FlowEngine jobs through the public jobs API.
 
 Examples:
-    python scripts/requeue_jobs.py --type extend-video --status completed
     python scripts/requeue_jobs.py --status failed
+    python scripts/requeue_jobs.py --status cancelled
     python scripts/requeue_jobs.py --id <job_id>
-    python scripts/requeue_jobs.py --type extend-video --status completed --dry-run
+    python scripts/requeue_jobs.py --type extend-video --status failed --dry-run
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
-TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+REQUEUEABLE_STATUSES = ("failed", "cancelled")
 DEFAULT_SERVER_URL = "http://localhost:8080"
 PAGE_SIZE = 2000
 
@@ -40,12 +40,13 @@ class ApiError(Exception):
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Find terminal FlowEngine jobs and requeue them via /api/jobs/{id}/requeue.",
+        description="Find failed/cancelled FlowEngine jobs and requeue them via /api/jobs/{id}/requeue.",
     )
     parser.add_argument("--type", dest="job_type", help="Filter by job.type, e.g. extend-video.")
     parser.add_argument(
         "--status",
-        help="Filter by current status. Defaults to all terminal states.",
+        choices=REQUEUEABLE_STATUSES,
+        help="Filter by current status. Defaults to failed and cancelled.",
     )
     parser.add_argument("--id", dest="job_id", help="Requeue a single job by ID.")
     parser.add_argument(
@@ -145,7 +146,7 @@ def matching_jobs(args: argparse.Namespace) -> list[dict[str, Any]]:
             return []
         return [job]
 
-    statuses = [args.status] if args.status else list(TERMINAL_STATUSES)
+    statuses = [args.status] if args.status else list(REQUEUEABLE_STATUSES)
     jobs: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for status in statuses:

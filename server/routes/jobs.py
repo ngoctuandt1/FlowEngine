@@ -45,6 +45,10 @@ REQUEUEABLE_STATES = frozenset({
     JobStatus.FAILED,
     JobStatus.CANCELLED,
 })
+INV_A_PROFILE_REQUIRED_DETAIL = (
+    "L2+ submit requires explicit profile or a parent with "
+    "profile pinned (INV-A)"
+)
 CHAIN_PROJECT_ID_MISMATCH_ERROR = (
     "All chain steps must use the same project_id as the first step when provided."
 )
@@ -374,10 +378,7 @@ async def create_single_job(req: JobCreate):
     if (job_level >= 2 or req.parent_job_id is not None) and profile is None:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "L2+ submit requires explicit profile or a parent with "
-                "profile pinned (INV-A)"
-            ),
+            detail=INV_A_PROFILE_REQUIRED_DETAIL,
         )
 
     validate_job_create(req)
@@ -644,6 +645,8 @@ async def requeue_job(job_id: str):
     job = await get_job(job_id)
     if job is None:
         raise HTTPException(404, f"Job {job_id} not found")
+    if job.status == JobStatus.PENDING:
+        return job
     if job.status not in REQUEUEABLE_STATES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -657,6 +660,12 @@ async def requeue_job(job_id: str):
         err = await _validate_parent_alive(parent)
         if err:
             raise HTTPException(status_code=400, detail=err)
+
+    if job.job_level >= 2 and job.profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INV_A_PROFILE_REQUIRED_DETAIL,
+        )
 
     updated = await update_job(
         job_id,
