@@ -17,6 +17,10 @@
   // Keep this page scoped to prompt-only L1 flows.
   const SUPPORTED_BATCH_TYPES = new Set(['text-to-video', 'text-to-image']);
   const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'submit_failed']);
+  const QUEUE_LIMIT = 2000;
+  const STUCK_RUNNING_IDLE_MS = 10 * 60 * 1000;
+  const STUCK_PARENT_STATUSES = new Set(['failed', 'cancelled']);
+  const QUEUE_STATUS_FILTERS = ['all', 'pending', 'claimed', 'running', 'completed', 'failed', 'cancelled'];
   const LOCAL_BADGES = {
     queued: {
       label: 'queued',
@@ -36,6 +40,12 @@
   const state = {
     profiles: [],
     profilesLoadError: '',
+    queueJobs: [],
+    queueFilter: 'all',
+    queueLoadError: '',
+    queueLoading: false,
+    queueDeleting: false,
+    queueRefreshTimer: null,
     rows: [],
     nextRowNumber: 1,
     isSubmitting: false,
@@ -97,6 +107,88 @@
       .map((profile) => profile?.name || profile?.profile_name || '')
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b));
+  }
+
+  function normalizeJobList(result) {
+    return Array.isArray(result) ? result : result?.jobs || [];
+  }
+
+  function queueJobsById(jobs = state.queueJobs) {
+    return jobs.reduce((byId, job) => {
+      if (job?.id) byId[String(job.id)] = job;
+      return byId;
+    }, Object.create(null));
+  }
+
+  function jobTypeLabel(type) {
+    const meta = JOB_TYPES.find((item) => item.id === type);
+    return meta?.label || (type || 'Unknown').replace(/-/g, ' ');
+  }
+
+  function idleMinutesSince(value) {
+    const timestamp = Date.parse(value || '');
+    if (!Number.isFinite(timestamp)) return null;
+    const idleMs = Date.now() - timestamp;
+    if (idleMs <= STUCK_RUNNING_IDLE_MS) return null;
+    return Math.max(0, Math.floor(idleMs / 60000));
+  }
+
+  function formatIdleMinutes(minutes) {
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remainder = minutes % 60;
+    return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+  }
+
+  function queueFilterLabel(value) {
+    return value === 'all' ? 'All' : value.charAt(0).toUpperCase() + value.slice(1);
+  }
+
+  function stuckJobReason(job, byId) {
+    if (!job) return '';
+
+    const status = job.status || 'pending';
+    if (status === 'pending' && job.parent_job_id) {
+      const parent = byId?.[String(job.parent_job_id)];
+      if (STUCK_PARENT_STATUSES.has(parent?.status)) return `Orphan: parent ${parent.status}`;
+    }
+
+    const level = Number(job.job_level || job.jobLevel || 1);
+    if (status === 'pending' && job.profile == null && level >= 2) return 'Orphan: no profile pinned';
+
+    if (status === 'running') {
+      const idleMinutes = idleMinutesSince(job.updated_at || job.updatedAt);
+      if (idleMinutes !== null) return `Stuck running: idle ${formatIdleMinutes(idleMinutes)}`;
+    }
+    return '';
+  }
+
+  function isJobStuck(job, byId) {
+    return Boolean(stuckJobReason(job, byId));
+  }
+
+  function queueCounts() {
+    const byId = queueJobsById();
+    const counts = QUEUE_STATUS_FILTERS.reduce((acc, item) => ({ ...acc, [item]: 0 }), { stuck: 0 });
+    counts.all = state.queueJobs.length;
+    state.queueJobs.forEach((job) => {
+      const status = job?.status || 'pending';
+      if (counts[status] !== undefined) counts[status] += 1;
+      if (isJobStuck(job, byId)) counts.stuck += 1;
+    });
+    return counts;
+  }
+
+  function visibleQueueJobs() {
+    const byId = queueJobsById();
+    if (state.queueFilter === 'stuck') return state.queueJobs.filter((job) => isJobStuck(job, byId));
+    if (state.queueFilter === 'all') return state.queueJobs;
+    return state.queueJobs.filter((job) => (job?.status || 'pending') === state.queueFilter);
+  }
+
+  function visibleStuckJobs() {
+    const byId = queueJobsById();
+    return visibleQueueJobs().filter((job) => job?.id && isJobStuck(job, byId));
   }
 
   function profileOptions(selected) {
@@ -303,6 +395,136 @@
     return `<span class="${App.statusBadge(status || 'pending')}">${App.escapeHtml(status || 'pending')}</span>`;
   }
 
+  function renderQueueFilterChips() {
+    const counts = queueCounts();
+    const chips = QUEUE_STATUS_FILTERS.map((filter) => {
+      const active = state.queueFilter === filter;
+      const style = active ? 'btn-primary' : 'btn-outline';
+      return `
+        <button class="btn btn-sm ${style}" data-queue-filter="${App.escapeHtml(filter)}">
+          ${App.escapeHtml(queueFilterLabel(filter))} (${counts[filter] || 0})
+        </button>
+      `;
+    });
+
+    chips.push(`
+      <button class="btn btn-sm ${state.queueFilter === 'stuck' ? 'btn-danger' : 'btn-outline'}" data-queue-filter="stuck">
+        <span class="material-icons" style="font-size:16px">report_problem</span> Stuck (${counts.stuck || 0})
+      </button>
+    `);
+    return chips.join('');
+  }
+
+  function renderQueueError() {
+    return state.queueLoadError ? `
+      <div role="alert" style="margin-bottom:16px; padding:12px 14px; border-radius:12px; border:1px solid rgba(248, 113, 113, 0.35); background: rgba(127, 29, 29, 0.18); color:#fecaca; font-size:13px;">
+        ${App.escapeHtml(state.queueLoadError)}
+      </div>
+    ` : '';
+  }
+
+  function renderQueueTable() {
+    if (state.queueLoading && !state.queueJobs.length) {
+      return '<div class="loading-center"><div class="spinner spinner-lg"></div></div>';
+    }
+
+    const byId = queueJobsById();
+    const jobs = visibleQueueJobs();
+    if (!jobs.length) {
+      const message = state.queueFilter === 'stuck'
+        ? 'No stuck jobs found.'
+        : 'No jobs match this queue filter.';
+      return `
+        <div class="empty-state">
+          <span class="material-icons">queue</span>
+          <h3>No matching jobs</h3>
+          <p>${App.escapeHtml(message)}</p>
+        </div>
+      `;
+    }
+
+    const rows = jobs.map((job) => {
+      const reason = stuckJobReason(job, byId);
+      const jobId = String(job.id || '');
+      const parentId = String(job.parent_job_id || '');
+      const updatedAt = job.updated_at || job.updatedAt || '';
+      return `
+        <tr data-job-id="${App.escapeHtml(jobId)}" style="${reason ? 'background: rgba(248, 113, 113, 0.06);' : ''}">
+          <td title="${App.escapeHtml(jobId)}"><code>${App.escapeHtml(App.truncate(jobId, 12))}</code></td>
+          <td>
+            <div style="display:grid; gap:4px; min-width:0;">
+              <span>${App.escapeHtml(jobTypeLabel(job.type))}</span>
+              ${job.prompt ? `<span title="${App.escapeHtml(job.prompt)}" style="font-size:12px; color: var(--text-muted);">${App.escapeHtml(App.truncate(job.prompt, 72))}</span>` : ''}
+            </div>
+          </td>
+          <td>${App.escapeHtml(String(job.job_level || 1))}</td>
+          <td title="${App.escapeHtml(parentId)}">${parentId ? `<code>${App.escapeHtml(App.truncate(parentId, 12))}</code>` : '<span style="color: var(--text-muted);">-</span>'}</td>
+          <td title="${App.escapeHtml(job.profile || 'null')}">${App.escapeHtml(job.profile || 'null')}</td>
+          <td>
+            <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+              ${renderStatusBadge(job.status)}
+              ${reason ? '<span class="badge" style="background: rgba(248, 113, 113, 0.18); border-color: rgba(248, 113, 113, 0.42); color: #fecaca;">stuck</span>' : ''}
+            </div>
+          </td>
+          <td title="${App.escapeHtml(updatedAt)}">${App.escapeHtml(App.formatTileDate ? App.formatTileDate(updatedAt) : App.formatDate(updatedAt))}</td>
+          <td>${reason ? `<span style="color:#fecaca; font-size:12px;">${App.escapeHtml(reason)}</span>` : '<span style="color: var(--text-muted);">-</span>'}</td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Job ID</th>
+              <th>Type</th>
+              <th>Level</th>
+              <th>Parent</th>
+              <th>Profile</th>
+              <th>Status</th>
+              <th>Updated</th>
+              <th>Stuck Reason</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderQueueCard() {
+    const visibleCount = visibleQueueJobs().length;
+    const visibleStuckCount = visibleStuckJobs().length;
+    return `
+      <div class="card" id="batch-queue-global-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">Global Queue</h3>
+            <p id="batch-queue-global-counts" style="margin-top:4px; color: var(--text-muted); font-size: 13px;">
+              Showing ${visibleCount} of ${state.queueJobs.length} job${state.queueJobs.length === 1 ? '' : 's'}.
+            </p>
+          </div>
+          <div class="section-actions">
+            <button class="btn btn-sm btn-danger" id="batch-queue-delete-stuck" ${visibleStuckCount && !state.queueDeleting ? '' : 'disabled'}>
+              ${state.queueDeleting ? '<span class="spinner"></span> Deleting...' : `<span class="material-icons" style="font-size:16px">delete_sweep</span> Delete ${visibleStuckCount} stuck job${visibleStuckCount === 1 ? '' : 's'}`}
+            </button>
+            <button class="btn btn-sm btn-outline" id="batch-queue-refresh" ${state.queueLoading ? 'disabled' : ''}>
+              ${state.queueLoading ? '<span class="spinner"></span> Refreshing...' : '<span class="material-icons" style="font-size:16px">refresh</span> Refresh'}
+            </button>
+          </div>
+        </div>
+        <div id="batch-queue-global-error">${renderQueueError()}</div>
+        <div id="batch-queue-filter-chips" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px;">
+          ${renderQueueFilterChips()}
+        </div>
+        <div id="batch-queue-global-results">
+          ${renderQueueTable()}
+        </div>
+      </div>
+    `;
+  }
+
   function buildDownloadUrl(path) {
     const normalized = String(path || '')
       .replace(/\\/g, '/')
@@ -400,7 +622,9 @@
     `).join('');
 
     return `
-      <div style="display:grid; gap:16px;">
+      <div id="batch-queue-root" style="display:grid; gap:16px;">
+        ${renderQueueCard()}
+
         <div class="card">
           <div class="section-header">
             <div>
@@ -504,8 +728,29 @@
     }
   }
 
+  async function refreshQueueJobs(options = {}) {
+    state.queueLoading = true;
+    syncQueueControls();
+
+    try {
+      state.queueJobs = normalizeJobList(await API.jobs.list({ limit: QUEUE_LIMIT }));
+      state.queueLoadError = '';
+    } catch (err) {
+      state.queueLoadError = `Failed to load global queue: ${err.message}`;
+      if (!options.silent) {
+        App.toast(state.queueLoadError, 'error');
+      }
+    } finally {
+      state.queueLoading = false;
+      syncQueueControls();
+    }
+  }
+
   async function render() {
-    await fetchProfiles();
+    await Promise.all([
+      fetchProfiles(),
+      refreshQueueJobs({ silent: true }),
+    ]);
     return renderPage();
   }
 
@@ -569,6 +814,11 @@
     }
   }
 
+  function syncQueueControls() {
+    const card = document.getElementById('batch-queue-global-card');
+    if (card) card.outerHTML = renderQueueCard();
+  }
+
   function scheduleRowsRender() {
     if (state.renderFrame !== null) return;
     state.renderFrame = requestAnimationFrame(() => {
@@ -603,6 +853,15 @@
     scheduleRowsRender();
   }
 
+  function scheduleQueueRefresh() {
+    if (App.currentPage !== 'batch-queue') return;
+    if (state.queueRefreshTimer) clearTimeout(state.queueRefreshTimer);
+    state.queueRefreshTimer = setTimeout(() => {
+      state.queueRefreshTimer = null;
+      refreshQueueJobs({ silent: true });
+    }, 250);
+  }
+
   function handleSocketMessage(event) {
     try {
       const message = JSON.parse(event.data);
@@ -610,10 +869,76 @@
       const payload = message.data || message.payload;
       if (eventName === 'job_update' && payload?.id) {
         applyJobUpdate(payload);
+        scheduleQueueRefresh();
       }
     } catch (_) {
       // Ignore malformed messages from unrelated producers.
     }
+  }
+
+  async function deleteQueueJob(jobId) {
+    if (typeof API.jobs?.delete === 'function') {
+      return API.jobs.delete(jobId);
+    }
+
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const errorData = await response.json();
+        message = errorData.detail || errorData.message || message;
+      } catch (_) {
+        // response was not JSON
+      }
+      throw new Error(message);
+    }
+    return response.status === 204 ? null : response.json();
+  }
+
+  function updateProgressToast(toast, message) {
+    const label = toast?.querySelector?.('.toast-message');
+    if (label) {
+      label.textContent = message;
+    }
+  }
+
+  async function deleteVisibleStuckJobs() {
+    if (state.queueDeleting) return;
+
+    const jobs = visibleStuckJobs();
+    if (!jobs.length) {
+      App.toast('No visible stuck jobs to delete', 'info');
+      return;
+    }
+
+    const message = `Delete ${jobs.length} visible stuck job${jobs.length === 1 ? '' : 's'}? This cannot be undone.`;
+    if (!confirm(message)) return;
+
+    state.queueDeleting = true;
+    syncQueueControls();
+
+    const toast = App.toast(`Deleting 0/${jobs.length} stuck jobs...`, 'info', 0);
+    let deleted = 0;
+    let failed = 0;
+
+    for (const job of jobs) {
+      try {
+        await deleteQueueJob(job.id);
+        deleted += 1;
+      } catch (err) {
+        failed += 1;
+        console.warn('[BatchQueue] failed to delete stuck job:', job.id, err.message);
+      }
+      updateProgressToast(toast, `Deleting ${deleted + failed}/${jobs.length} stuck jobs...`);
+    }
+
+    state.queueDeleting = false;
+    App.dismissToast(toast);
+    App.toast(
+      `Deleted ${deleted}/${jobs.length} stuck job${jobs.length === 1 ? '' : 's'}${failed ? `, ${failed} failed` : ''}`,
+      failed ? 'warning' : 'success'
+    );
+    await refreshQueueJobs({ silent: true });
   }
 
   function attachSocketListener() {
@@ -891,6 +1216,18 @@
       clearCompleted();
     });
 
+    document.getElementById('batch-queue-root')?.addEventListener('click', (event) => {
+      const chip = event.target.closest('[data-queue-filter]');
+      if (chip) {
+        const nextFilter = chip.dataset.queueFilter || 'all';
+        state.queueFilter = state.queueFilter === nextFilter ? 'all' : nextFilter;
+        syncQueueControls();
+        return;
+      }
+      if (event.target.closest('#batch-queue-refresh')) refreshQueueJobs();
+      if (event.target.closest('#batch-queue-delete-stuck')) deleteVisibleStuckJobs();
+    });
+
     attachSocketListener();
     state.wsUnsubs.push(WS.on('connected', attachSocketListener));
     syncValidationFeedback();
@@ -901,6 +1238,10 @@
     if (state.renderFrame !== null) {
       cancelAnimationFrame(state.renderFrame);
       state.renderFrame = null;
+    }
+    if (state.queueRefreshTimer) {
+      clearTimeout(state.queueRefreshTimer);
+      state.queueRefreshTimer = null;
     }
     state.wsUnsubs.forEach((unsubscribe) => {
       try {
