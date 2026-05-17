@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
 import ipaddress
+import json
 import os
+import platform
+import shutil
+import signal
 import socket
-import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
-import yt_dlp
+import yt_dlp  # imported for test compatibility (test monkeypatches yt_dlp.utils.DownloadError)
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
@@ -41,11 +44,29 @@ router = APIRouter(
 
 ALLOWED_MAX_HEIGHTS = {360, 480, 720, 1080}
 DOWNLOAD_TIMEOUT_SECONDS = 60
+PROBE_TIMEOUT_SECONDS = 30
 _ERROR_MESSAGE = "Failed to fetch media from source URL"
+_YTDLP_BIN_ENV = "FLOW_YTDLP_BIN"
 
 
 def _resolve_download_dir() -> Path:
     return Path(os.environ.get("FLOW_DOWNLOAD_DIR", "./downloads")).expanduser().resolve()
+
+
+def _resolve_ytdlp_binary() -> str:
+    """Locate the yt-dlp executable.
+
+    Override path with ``FLOW_YTDLP_BIN`` for tests. Falls back to whatever
+    ``shutil.which`` finds on PATH; raises if absent so the route surfaces
+    a 502 instead of a stale ``FileNotFoundError`` from the event loop.
+    """
+    override = os.environ.get(_YTDLP_BIN_ENV)
+    if override:
+        return override
+    found = shutil.which("yt-dlp")
+    if not found:
+        raise RuntimeError("yt-dlp executable not found on PATH")
+    return found
 
 
 def _is_forbidden_ip(ip_text: str) -> bool:
@@ -53,10 +74,8 @@ def _is_forbidden_ip(ip_text: str) -> bool:
         ip = ipaddress.ip_address(ip_text)
     except ValueError:
         return True
-    # `is_global` is a strict allow-list covering every special-use range:
-    # RFC1918 private, loopback, link-local, CGNAT 100.64/10, documentation,
-    # benchmarking, multicast, unspecified, reserved. Plain `is_private`
-    # misses CGNAT — see RFC 6598.
+    # ``is_global`` is the strict allow-list. ``is_private`` misses
+    # CGNAT 100.64/10 (RFC 6598) which can still reach ISP-internal hosts.
     if not ip.is_global:
         return True
     if ip.is_multicast:
@@ -65,10 +84,6 @@ def _is_forbidden_ip(ip_text: str) -> bool:
 
 
 def _validate_hostname_resolution(host: str) -> None:
-    # Validate every resolved address. yt-dlp re-resolves later so a DNS
-    # rebinding TOCTOU window remains; we narrow it by rejecting any host
-    # whose record set mixes public + private addresses (a common rebinding
-    # tell) and by failing closed on an empty result.
     try:
         addrinfos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
@@ -129,7 +144,7 @@ class FetchUrlResponse(BaseModel):
 
 
 def _validate_url_for_ytdlp(url: str) -> None:
-    """Apply the same SSRF rules used by the public API to a URL yt-dlp wants
+    """Apply the same SSRF rules as the public API to a URL yt-dlp wants
     to fetch (initial page, manifest, fragment, or final media)."""
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
@@ -149,13 +164,7 @@ def _validate_url_for_ytdlp(url: str) -> None:
 
 
 def _collect_candidate_urls(info: Any) -> list[str]:
-    """Walk an info_dict for every URL yt-dlp might subsequently fetch.
-
-    Covers: top-level `url`/`webpage_url`/`manifest_url`, every entry under
-    `entries`, every `formats[].url` plus its `fragments[].url`, and
-    `requested_formats[]`. Caller validates each against the SSRF allow-list
-    before letting yt-dlp redownload with `download=True`.
-    """
+    """Walk an info_dict for every URL yt-dlp might fetch."""
     found: list[str] = []
     seen: set[str] = set()
 
@@ -184,163 +193,141 @@ def _collect_candidate_urls(info: Any) -> list[str]:
     return found
 
 
-@contextlib.contextmanager
-def _socket_ssrf_guard():
-    """Patch socket.create_connection so every outgoing TCP connect is
-    validated. yt-dlp may follow redirects or fetch HLS/DASH segments whose
-    URLs were never seen by the pre-flight allow-list (an info_dict can omit
-    server-driven redirects). This is the last line of defence.
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill the subprocess and every descendant in its process group.
+
+    POSIX: ``start_new_session=True`` made the child the leader of a new
+    process group, so ``killpg`` reaches yt-dlp plus any ffmpeg/aria2c it
+    spawned without touching unrelated server children.
+
+    Windows: ``CREATE_NEW_PROCESS_GROUP`` was set; ``terminate()`` then
+    ``kill()`` is the equivalent escalation. asyncio's transport implements
+    these against the underlying job/process group.
     """
-    original = socket.create_connection
-
-    def guarded(address, *args, **kwargs):
-        host = address[0] if isinstance(address, tuple) and address else None
-        if isinstance(host, str) and host:
-            stripped = host.strip().split("%", 1)[0]
-            try:
-                ip = ipaddress.ip_address(stripped)
-            except ValueError:
-                _validate_hostname_resolution(stripped)
-            else:
-                if _is_forbidden_ip(str(ip)):
-                    raise ValueError("yt-dlp target host is not allowed")
-        return original(address, *args, **kwargs)
-
-    socket.create_connection = guarded  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        socket.create_connection = original  # type: ignore[assignment]
-
-
-def _terminate_child_processes() -> None:
-    """Best-effort kill of ffmpeg/aria2c grandchildren spawned by yt-dlp.
-
-    yt-dlp does not expose a reliable handle to its children, and we
-    deliberately avoid psutil here: it is an optional dependency that was
-    missing from requirements.txt, and even when present it walks *all*
-    descendants of the FastAPI worker — that nukes unrelated ffmpeg renders.
-
-    Stdlib path: enumerate immediate children via /proc on POSIX, or fall
-    back to a no-op on Windows. yt-dlp's own `cancel()` hook is the primary
-    signal; this helper is the safety net only.
-    """
-    if os.name != "posix":
+    if proc.returncode is not None:
         return
-    try:
-        my_pid = os.getpid()
-        proc_root = Path("/proc")
-        if not proc_root.is_dir():
-            return
-        children: list[int] = []
-        for entry in proc_root.iterdir():
-            if not entry.name.isdigit():
-                continue
-            try:
-                status = (entry / "status").read_text(encoding="ascii", errors="ignore")
-            except OSError:
-                continue
-            for line in status.splitlines():
-                if line.startswith("PPid:"):
-                    try:
-                        ppid = int(line.split()[1])
-                    except (IndexError, ValueError):
-                        ppid = -1
-                    if ppid == my_pid:
-                        children.append(int(entry.name))
-                    break
-    except Exception:  # pragma: no cover - defensive
+    if platform.system() == "Windows":
+        try:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
         return
-
-    import signal
-    import time
-
-    for pid in children:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            continue
-    deadline = time.monotonic() + 2.0
-    while children and time.monotonic() < deadline:
-        children = [pid for pid in children if _pid_alive(pid)]
-        if not children:
-            break
-        time.sleep(0.05)
-    for pid in children:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            continue
-
-
-def _pid_alive(pid: int) -> bool:
+    # ``signal.SIGKILL`` only exists on POSIX; this branch is unreachable on
+    # Windows (handled above), so resolve the constant lazily to keep the
+    # module importable on Windows hosts (FlowEngine dev boxes).
+    sigkill = getattr(signal, "SIGKILL", getattr(signal, "SIGTERM", 15))
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
-    return True
+        os.killpg(os.getpgid(proc.pid), sigkill)
+    except (ProcessLookupError, PermissionError, OSError, AttributeError):
+        # Fall back to direct kill; the child may have exited between the
+        # ``returncode`` check and the ``killpg`` call.
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
 
 
-def _probe_and_validate(url: str, options: dict[str, Any]) -> None:
-    """First pass: ask yt-dlp to resolve the URL without downloading, then
-    validate every candidate URL it intends to touch. Defeats the SSRF
-    bypass where an attacker URL serves an HLS manifest pointing at
-    169.254.169.254 or an internal IP.
+async def _run_ytdlp(
+    args: list[str],
+    timeout_seconds: int,
+) -> tuple[int, bytes, bytes]:
+    """Run yt-dlp as an isolated subprocess in its own process group.
+
+    Returns ``(returncode, stdout, stderr)``. Raises ``TimeoutError`` after
+    killing the entire process group.
     """
-    probe_opts = dict(options)
-    probe_opts["skip_download"] = True
-    probe_opts["quiet"] = True
-    probe_opts["no_warnings"] = True
+    binary = _resolve_ytdlp_binary()
+    popen_kwargs: dict[str, Any] = {
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.PIPE,
+        "stdin": asyncio.subprocess.DEVNULL,
+    }
+    if platform.system() == "Windows":
+        # Windows lacks POSIX sessions; CREATE_NEW_PROCESS_GROUP lets us
+        # signal the group via ``terminate``/``kill`` without affecting peers.
+        import subprocess as _subprocess
+
+        popen_kwargs["creationflags"] = _subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = await asyncio.create_subprocess_exec(binary, *args, **popen_kwargs)
     try:
-        with yt_dlp.YoutubeDL(probe_opts) as probe:
-            info = probe.extract_info(url, download=False)
-    except yt_dlp.utils.DownloadError:
-        raise
-    candidates = _collect_candidate_urls(info)
-    for candidate in candidates:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        _kill_process_group(proc)
+        # Drain the pipes so ``proc`` releases its fds.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+        raise TimeoutError(f"yt-dlp timed out after {timeout_seconds} seconds") from exc
+    assert proc.returncode is not None
+    return proc.returncode, stdout, stderr
+
+
+async def _probe_and_collect_urls(url: str, max_height: int) -> dict[str, Any]:
+    """Pass 1: ``yt-dlp -j`` (simulate + dump JSON). Returns parsed info_dict.
+
+    Validates every URL the info_dict references before pass-2 runs.
+    """
+    format_selector = (
+        f"bestvideo[height<=?{max_height}]+bestaudio/best[height<=?{max_height}]"
+    )
+    args = [
+        "--no-warnings",
+        "--no-playlist",
+        "--simulate",
+        "--dump-single-json",
+        "--no-call-home",
+        "-f",
+        format_selector,
+        url,
+    ]
+    rc, stdout, stderr = await _run_ytdlp(args, PROBE_TIMEOUT_SECONDS)
+    if rc != 0:
+        # Surface as DownloadError so the route maps it to a sanitized 502.
+        raise yt_dlp.utils.DownloadError(
+            f"yt-dlp probe failed (rc={rc}): {stderr.decode('utf-8', 'replace')[:200]}"
+        )
+    try:
+        info = json.loads(stdout.decode("utf-8", "replace"))
+    except json.JSONDecodeError as exc:
+        raise yt_dlp.utils.DownloadError(f"yt-dlp probe returned non-JSON: {exc}") from exc
+
+    for candidate in _collect_candidate_urls(info):
         _validate_url_for_ytdlp(candidate)
+    return info
 
 
-def _extract_info_with_timeout(url: str, options: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    error: dict[str, BaseException] = {}
-    downloader_ref: dict[str, Any] = {}
-
-    def run_download() -> None:
-        try:
-            # Pass 1: probe + validate every URL yt-dlp would touch.
-            _probe_and_validate(url, options)
-            # Pass 2: actual download under a socket-level SSRF guard so any
-            # server-driven redirect or late-resolved fragment URL still
-            # cannot reach a private IP.
-            with _socket_ssrf_guard():
-                with yt_dlp.YoutubeDL(options) as downloader:
-                    downloader_ref["instance"] = downloader
-                    result["info"] = downloader.extract_info(url, download=True)
-        except BaseException as exc:  # pragma: no cover - rethrown below
-            error["exc"] = exc
-
-    worker = threading.Thread(target=run_download, daemon=True)
-    worker.start()
-    worker.join(timeout_seconds)
-    if worker.is_alive():
-        # Best effort teardown: call yt-dlp's documented cancel hook, also try
-        # interrupting any spawned ffmpeg/aria2c child processes so a CPU/disk
-        # leak does not outlive the HTTP request.
-        downloader = downloader_ref.get("instance")
-        cancel = getattr(downloader, "cancel", None)
-        if callable(cancel):
-            try:
-                cancel()
-            except Exception:  # pragma: no cover - best-effort cleanup
-                pass
-        _terminate_child_processes()
-        raise TimeoutError(f"Download timed out after {timeout_seconds} seconds")
-    if "exc" in error:
-        raise error["exc"]
-    return result["info"]
+async def _download_validated(url: str, max_height: int, output_path: Path) -> None:
+    """Pass 2: actual download. URL hosts re-validated immediately prior."""
+    _validate_url_for_ytdlp(url)
+    format_selector = (
+        f"bestvideo[height<=?{max_height}]+bestaudio/best[height<=?{max_height}]"
+    )
+    args = [
+        "--no-warnings",
+        "--no-playlist",
+        "--quiet",
+        "--no-call-home",
+        "--merge-output-format",
+        "mp4",
+        "-f",
+        format_selector,
+        "-o",
+        str(output_path),
+        url,
+    ]
+    rc, _stdout, stderr = await _run_ytdlp(args, DOWNLOAD_TIMEOUT_SECONDS)
+    if rc != 0:
+        raise yt_dlp.utils.DownloadError(
+            f"yt-dlp download failed (rc={rc}): {stderr.decode('utf-8', 'replace')[:200]}"
+        )
 
 
 def _select_primary_info(info: dict[str, Any]) -> dict[str, Any]:
@@ -363,31 +350,21 @@ def _build_output_path() -> Path:
 @router.post("/fetch-url", response_model=FetchUrlResponse)
 async def fetch_media_url(request: FetchUrlRequest) -> FetchUrlResponse:
     output_path = _build_output_path()
-    format_selector = (
-        f"bestvideo[height<=?{request.max_height}]+bestaudio/"
-        f"best[height<=?{request.max_height}]"
-    )
-    options = {
-        "format": format_selector,
-        "outtmpl": str(output_path),
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "socket_timeout": DOWNLOAD_TIMEOUT_SECONDS,
-        "overwrites": True,
-        "quiet": True,
-        "no_warnings": True,
-    }
 
     try:
-        info = _extract_info_with_timeout(request.url, options, DOWNLOAD_TIMEOUT_SECONDS)
+        info = await _probe_and_collect_urls(request.url, request.max_height)
+        await _download_validated(request.url, request.max_height, output_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except TimeoutError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except yt_dlp.utils.DownloadError as exc:
-        raise HTTPException(status_code=502, detail=_ERROR_MESSAGE) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=_ERROR_MESSAGE) from exc
+    except yt_dlp.utils.DownloadError:
+        raise HTTPException(status_code=502, detail=_ERROR_MESSAGE)
+    except RuntimeError as exc:
+        # yt-dlp binary missing → operational failure, not user error.
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception:
+        raise HTTPException(status_code=502, detail=_ERROR_MESSAGE)
 
     if not output_path.is_file():
         raise HTTPException(status_code=502, detail=_ERROR_MESSAGE)
