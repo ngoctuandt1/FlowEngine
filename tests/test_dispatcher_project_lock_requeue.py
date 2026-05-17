@@ -133,3 +133,130 @@ async def test_successful_acquire_clears_contention_counter(monkeypatch):
 
     assert result["status"] == "completed"
     assert project_url not in dispatcher._lock_contention_history
+
+
+# --- dispatch_batch_multitab parity ----------------------------------------
+# Round-1 only patched the single-job path. With FLOW_BATCH_DISPATCH=1 the
+# multitab path still terminal-failed on lock contention, cascading every
+# tab's descendant chain. Same retry budget, same requeue semantics.
+
+
+def _l2_multitab_job(job_id: str, project_url: str) -> dict:
+    return {
+        "id": job_id,
+        "type": "extend-video",
+        "profile": "profile-A",
+        "project_url": project_url,
+        "job_level": 2,
+        "parent_job_id": "parent-x",
+        # claim_next_batch binds these onto the job at claim time.
+        "parent_edit_url": (
+            f"https://labs.google/fx/tools/flow/project/{job_id}/edit/m-{job_id}"
+        ),
+        "parent_media_id": f"m-{job_id}",
+    }
+
+
+async def test_multitab_lock_contention_requeues_instead_of_failing():
+    from worker import dispatcher
+
+    dispatcher._lock_contention_history.clear()
+
+    profile_mgr = _ProfileManagerStub()
+    project_url = "https://flow.example/project/multitab-contended"
+    lock = _ContendingLock(project_url)
+    jobs = [
+        _l2_multitab_job("job-a", project_url),
+        _l2_multitab_job("job-b", project_url),
+    ]
+
+    results = await dispatcher.dispatch_batch_multitab(jobs, profile_mgr, lock)
+
+    assert len(results) == 2
+    for r in results:
+        assert r["status"] == "pending", r
+        assert r.get("claimed_at") is None
+        assert r.get("worker_id") is None
+        assert "project_lock_busy" in r.get("error", "")
+    # Contention counter recorded exactly once (one blocked URL).
+    assert len(dispatcher._lock_contention_history[project_url]) == 1
+    # No tab dispatch happened — profile_manager.mark_busy was never called.
+    assert profile_mgr.busy == []
+
+
+async def test_multitab_lock_contention_caps_out_to_failure():
+    from worker import dispatcher
+
+    dispatcher._lock_contention_history.clear()
+
+    profile_mgr = _ProfileManagerStub()
+    project_url = "https://flow.example/project/multitab-exhausted"
+    lock = _ContendingLock(project_url)
+
+    last = None
+    for i in range(dispatcher.LOCK_RETRY_MAX_PER_WINDOW):
+        jobs = [_l2_multitab_job(f"batch-{i}", project_url)]
+        last = await dispatcher.dispatch_batch_multitab(jobs, profile_mgr, lock)
+        assert last[0]["status"] == "pending", (i, last)
+
+    jobs_final = [_l2_multitab_job("batch-final", project_url)]
+    final = await dispatcher.dispatch_batch_multitab(
+        jobs_final, profile_mgr, lock,
+    )
+    assert final[0]["status"] == "failed"
+    assert "project_lock_exhausted" in final[0]["error"]
+    # Counter reset after terminal failure.
+    assert project_url not in dispatcher._lock_contention_history
+
+
+async def test_multitab_partial_contention_requeues_only_blocked_url(monkeypatch):
+    """Two distinct project_urls; only one is contended.
+
+    The blocked URL's tabs requeue; the other URL's tabs would proceed to
+    real dispatch — which we short-circuit by stubbing the inner call so the
+    test stays unit-level and doesn't reach Playwright.
+    """
+    from worker import dispatcher
+
+    dispatcher._lock_contention_history.clear()
+
+    blocked_url = "https://flow.example/project/multitab-blocked"
+    free_url = "https://flow.example/project/multitab-free"
+    lock = _ContendingLock(blocked_url)
+    profile_mgr = _ProfileManagerStub()
+
+    jobs = [
+        _l2_multitab_job("job-blocked", blocked_url),
+        _l2_multitab_job("job-free", free_url),
+    ]
+
+    # Stub the per-tab batch primitive so we don't open a real browser.
+    async def _fake_batch(client, op_jobs):
+        return [
+            {"job_id": j["id"], "status": "completed", "output_files": ["x.mp4"]}
+            for j in op_jobs
+        ]
+
+    monkeypatch.setattr(
+        "flow.operations._multitab.batch_dispatch_ops_multitab",
+        _fake_batch,
+    )
+
+    # _client_lease yields a stand-in client; avoid touching Playwright.
+    class _StubClient:
+        pass
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _fake_lease(profile):
+        yield _StubClient()
+
+    monkeypatch.setattr(dispatcher, "_client_lease", _fake_lease)
+
+    results = await dispatcher.dispatch_batch_multitab(jobs, profile_mgr, lock)
+
+    by_id = {r["job_id"]: r for r in results}
+    assert by_id["job-blocked"]["status"] == "pending"
+    assert "project_lock_busy" in by_id["job-blocked"].get("error", "")
+    assert by_id["job-free"]["status"] == "completed"

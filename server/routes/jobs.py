@@ -71,8 +71,8 @@ L2_OPS_REQUIRE_ANCESTOR_DETAIL = (
     "completed ancestor (INV-1, INV-4)."
 )
 L2_OPS_AMBIGUOUS_PROJECT_DETAIL = (
-    "project_url has multiple completed jobs across different profiles; "
-    "specify parent_job_id explicitly to bind this L2 op to one ancestor."
+    "project_url has multiple completed jobs; specify parent_job_id "
+    "explicitly to bind this L2 op to one ancestor (INV-1, INV-4)."
 )
 TERMINAL_FAILURE_STATES = {
     JobStatus.FAILED.value,
@@ -368,23 +368,26 @@ async def create_single_job(req: JobCreate):
                 status_code=422,
                 detail=L2_OPS_REQUIRE_ANCESTOR_DETAIL,
             )
+        # Probe with limit=2: we only need to distinguish zero / one / more.
+        # Any time the project has 2+ completed jobs (L1 siblings, prior L2
+        # outputs, multi-profile churn), picking "most recent" is an arbitrary
+        # bind that silently targets the wrong media_id/parent. Force the
+        # caller to disambiguate by passing parent_job_id explicitly.
         candidates = await list_completed_jobs_by_project_url(
-            req.project_url, limit=5,
+            req.project_url, limit=2,
         )
         if not candidates:
             raise HTTPException(
                 status_code=422,
                 detail=L2_OPS_REQUIRE_ANCESTOR_DETAIL,
             )
-        profiles_seen = {c.profile for c in candidates if c.profile}
-        if len(profiles_seen) > 1:
+        if len(candidates) > 1:
             raise HTTPException(
                 status_code=422,
                 detail=L2_OPS_AMBIGUOUS_PROJECT_DETAIL,
             )
-        # Bind to the most-recent completed ancestor on the project.
-        resolved_parent = candidates[0]
-        req.parent_job_id = resolved_parent.id
+        # Exactly one completed ancestor — safe to bind.
+        req.parent_job_id = candidates[0].id
 
     if req.parent_job_id:
         parent = await get_job(req.parent_job_id)
