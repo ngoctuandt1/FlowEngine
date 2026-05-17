@@ -26,8 +26,8 @@ async def test_post_chain_rolls_back_when_job_insert_fails(api_client, monkeypat
                 "profile": "chain-profile",
                 "jobs": [
                     {"type": "text-to-video", "prompt": "Step 1"},
-                    {"type": "extend-video", "prompt": "Step 2"},
-                    {"type": "camera-move", "prompt": "Step 3", "direction": "Dolly in"},
+                    {"type": "camera-move", "prompt": "Step 2", "direction": "Dolly in"},
+                    {"type": "extend-video", "prompt": "Step 3"},
                 ],
             },
         )

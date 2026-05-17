@@ -42,6 +42,90 @@ IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "bmp"})
 CHAIN_PROJECT_ID_MISMATCH_ERROR = (
     "All chain steps must use the same project_id as the first step when provided."
 )
+EXTEND_TERMINAL_BLOCKERS = {"camera-move", "insert-object", "remove-object"}
+
+
+def _job_type_value(job_type: object) -> str:
+    return str(getattr(job_type, "value", job_type))
+
+
+def _chain_shape_error(
+    *,
+    child_type: object,
+    child_index: int | None = None,
+    ancestor_index: int | None = None,
+    ancestor_job_id: str | None = None,
+) -> str:
+    child = (
+        f"job[{child_index}] type={_job_type_value(child_type)}"
+        if child_index is not None
+        else f"submitted job type={_job_type_value(child_type)}"
+    )
+    ancestor = (
+        f"job[{ancestor_index}]"
+        if ancestor_index is not None
+        else f"job {ancestor_job_id}"
+    )
+    return (
+        f"chain shape invalid: {child} has an extend-video ancestor at "
+        f"{ancestor}. Flow UI disables Camera/Insert/Remove on extend-output "
+        f"clips (extend-child lockout, FLOW_BUTTON_EXACT §5.1; see memory "
+        f"feedback_extend_terminal_op.md). Split this into a separate "
+        f"L1-rooted chain or reverse the order (camera/insert/remove BEFORE "
+        f"extend)."
+    )
+
+
+def _validate_chain_shape(jobs: list[JobCreate]) -> str | None:
+    """Refuse extend-output children blocked by Flow UI submit controls."""
+    if not jobs:
+        return None
+
+    def parent_index_for(job: JobCreate, index: int) -> int | None:
+        explicit_parent = getattr(job, "parent_index", None)
+        if explicit_parent is not None:
+            return explicit_parent
+        return index - 1 if index > 0 else None
+
+    for index, job in enumerate(jobs):
+        if _job_type_value(job.type) not in EXTEND_TERMINAL_BLOCKERS:
+            continue
+
+        parent_index = parent_index_for(job, index)
+        while parent_index is not None and 0 <= parent_index < index:
+            parent = jobs[parent_index]
+            if _job_type_value(parent.type) == "extend-video":
+                return _chain_shape_error(
+                    child_type=job.type,
+                    child_index=index,
+                    ancestor_index=parent_index,
+                )
+            parent_index = parent_index_for(parent, parent_index)
+    return None
+
+
+async def _validate_existing_parent_chain_shape(
+    req: JobCreate,
+    parent: Job,
+) -> str | None:
+    """Refuse a new blocker job when existing parent lineage contains extend."""
+    if _job_type_value(req.type) not in EXTEND_TERMINAL_BLOCKERS:
+        return None
+
+    seen: set[str] = set()
+    ancestor: Job | None = parent
+    while ancestor is not None and ancestor.id not in seen:
+        seen.add(ancestor.id)
+        if _job_type_value(ancestor.type) == "extend-video":
+            return _chain_shape_error(
+                child_type=req.type,
+                ancestor_job_id=ancestor.id,
+            )
+        if not ancestor.parent_job_id:
+            break
+        ancestor = await get_job(ancestor.parent_job_id)
+
+    return None
 
 
 def _resolve_model(req: JobCreate) -> str:
@@ -193,6 +277,9 @@ async def create_single_job(req: JobCreate):
         parent = await get_job(req.parent_job_id)
         if parent is None:
             raise HTTPException(404, f"Parent job {req.parent_job_id} not found")
+        err = await _validate_existing_parent_chain_shape(req, parent)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
         job_level = parent.job_level + 1
         chain_id = _resolve_parent_chain_id(parent)
         # L2+ inherits profile from completed parent — INV-1 account binding.
@@ -229,6 +316,10 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
         effective_profile = req.effective_profile
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    err = _validate_chain_shape(req.jobs)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
 
     chain = Chain(id=str(uuid.uuid4()), profile=effective_profile)
 
