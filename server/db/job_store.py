@@ -15,6 +15,8 @@ from server.models.job import BBox, Job, JobStatus, JobUpdate
 # Job states that release the profile and stamp completed_at (B5 + B6).
 # Hoisted to module level so claim/update paths share a single source of truth.
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
+TERMINAL_FAILURE_STATES = frozenset({"failed", "cancelled"})
+CASCADE_CANCEL_STATES = frozenset({"pending", "claimed", "running"})
 RELATED_CHAIN_DEPTH_CAP = 256
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,99 @@ def _row_to_job(row) -> Job:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+async def _broadcast_cascaded_jobs(jobs: list[Job]) -> None:
+    if not jobs:
+        return
+    try:
+        from server.routes.ws import broadcast_job_update
+
+        for job in jobs:
+            await broadcast_job_update(job)
+    except Exception:
+        logger.exception("failed to broadcast cascaded job updates")
+
+
+async def _cascade_cancel_descendants(
+    db,
+    parent_job_id: str,
+    parent_status: str,
+    now: str,
+) -> list[Job]:
+    cascade_states = tuple(CASCADE_CANCEL_STATES)
+    status_placeholders = ", ".join("?" for _ in cascade_states)
+    cursor = await db.execute(
+        f"""
+        WITH RECURSIVE descendants(id, depth) AS (
+            SELECT id, 1
+            FROM jobs
+            WHERE parent_job_id = ?
+            UNION ALL
+            SELECT child.id, descendants.depth + 1
+            FROM jobs AS child
+            JOIN descendants ON child.parent_job_id = descendants.id
+            WHERE descendants.depth < ?
+        )
+        SELECT jobs.id
+        FROM jobs
+        JOIN descendants ON descendants.id = jobs.id
+        WHERE jobs.status IN ({status_placeholders})
+        ORDER BY jobs.created_at ASC
+        """,
+        (
+            parent_job_id,
+            RELATED_CHAIN_DEPTH_CAP,
+            *cascade_states,
+        ),
+    )
+    seen: set[str] = set()
+    target_ids: list[str] = []
+    for row in await cursor.fetchall():
+        job_id = row["id"]
+        if job_id in seen:
+            continue
+        seen.add(job_id)
+        target_ids.append(job_id)
+    if not target_ids:
+        return []
+
+    placeholders = ", ".join("?" for _ in target_ids)
+    error = f"parent_failed: {parent_job_id} ({parent_status})"
+    await db.execute(
+        f"""
+        UPDATE jobs
+        SET status = ?,
+            error = ?,
+            completed_at = ?,
+            updated_at = ?
+        WHERE id IN ({placeholders})
+          AND status IN ({status_placeholders})
+        """,
+        (
+            JobStatus.CANCELLED.value,
+            error,
+            now,
+            now,
+            *target_ids,
+            *cascade_states,
+        ),
+    )
+    await db.execute(
+        f"""
+        UPDATE profiles
+        SET current_job_id = NULL,
+            worker_id = NULL
+        WHERE current_job_id IN ({placeholders})
+        """,
+        target_ids,
+    )
+    cursor = await db.execute(
+        f"SELECT * FROM jobs WHERE id IN ({placeholders}) ORDER BY created_at ASC",
+        target_ids,
+    )
+    rows = await cursor.fetchall()
+    return [_row_to_job(r) for r in rows]
 
 
 async def _job_columns(db) -> set[str]:
@@ -439,38 +534,55 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
     params.append(job_id)
     sql = f"UPDATE jobs SET {', '.join(sets)} WHERE id = ?"
 
+    cascaded_jobs: list[Job] = []
     async with get_db() as db:
-        cursor = await db.execute(sql, params)
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(sql, params)
+            if cursor.rowcount == 0:
+                await db.execute("ROLLBACK")
+                return None
 
-        if status_value in TERMINAL_STATES:
-            await db.execute(
-                """
-                UPDATE profiles
-                SET current_job_id = NULL,
-                    worker_id = NULL
-                WHERE current_job_id = ?
-                """,
-                (job_id,),
-            )
-        elif status_value == "pending" and (
-            fields.get("worker_id") is None and "worker_id" in fields
-        ):
-            # Requeue path: job reset to pending with cleared claim metadata —
-            # also clear the profiles table so the profile is not stuck as
-            # "claimed" while waiting for the re-warmed worker to pick it up.
-            await db.execute(
-                """
-                UPDATE profiles
-                SET current_job_id = NULL,
-                    worker_id = NULL
-                WHERE current_job_id = ?
-                """,
-                (job_id,),
-            )
+            if status_value in TERMINAL_STATES:
+                await db.execute(
+                    """
+                    UPDATE profiles
+                    SET current_job_id = NULL,
+                        worker_id = NULL
+                    WHERE current_job_id = ?
+                    """,
+                    (job_id,),
+                )
+            elif status_value == "pending" and (
+                fields.get("worker_id") is None and "worker_id" in fields
+            ):
+                # Requeue path: job reset to pending with cleared claim metadata —
+                # also clear the profiles table so the profile is not stuck as
+                # "claimed" while waiting for the re-warmed worker to pick it up.
+                await db.execute(
+                    """
+                    UPDATE profiles
+                    SET current_job_id = NULL,
+                        worker_id = NULL
+                    WHERE current_job_id = ?
+                    """,
+                    (job_id,),
+                )
 
-        await db.commit()
-        if cursor.rowcount == 0:
-            return None
+            if status_value in TERMINAL_FAILURE_STATES:
+                cascaded_jobs = await _cascade_cancel_descendants(
+                    db,
+                    parent_job_id=job_id,
+                    parent_status=status_value,
+                    now=_now_iso(),
+                )
+
+            await db.commit()
+        except Exception:
+            await db.execute("ROLLBACK")
+            raise
+
+    await _broadcast_cascaded_jobs(cascaded_jobs)
     return await get_job(job_id)
 
 
