@@ -17,6 +17,7 @@ from server.models.job import BBox, Job, JobStatus, JobUpdate
 TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 TERMINAL_FAILURE_STATES = frozenset({"failed", "cancelled"})
 CASCADE_CANCEL_STATES = frozenset({"pending", "claimed", "running"})
+CASCADE_PARENT_FAILED_PATTERN = "parent_failed:%"
 RELATED_CHAIN_DEPTH_CAP = 256
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,84 @@ async def _cascade_cancel_descendants(
             now,
             *target_ids,
             *cascade_states,
+        ),
+    )
+    await db.execute(
+        f"""
+        UPDATE profiles
+        SET current_job_id = NULL,
+            worker_id = NULL
+        WHERE current_job_id IN ({placeholders})
+        """,
+        target_ids,
+    )
+    cursor = await db.execute(
+        f"SELECT * FROM jobs WHERE id IN ({placeholders}) ORDER BY created_at ASC",
+        target_ids,
+    )
+    rows = await cursor.fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
+async def _resync_cascade_cancelled_descendants(db, parent_job_id: str, now: str) -> list[Job]:
+    cursor = await db.execute(
+        """
+        WITH RECURSIVE descendants(id, depth) AS (
+            SELECT id, 1
+            FROM jobs
+            WHERE parent_job_id = ?
+            UNION ALL
+            SELECT child.id, descendants.depth + 1
+            FROM jobs AS child
+            JOIN descendants ON child.parent_job_id = descendants.id
+            WHERE descendants.depth < ?
+        )
+        SELECT jobs.id
+        FROM jobs
+        JOIN descendants ON descendants.id = jobs.id
+        WHERE jobs.status = ?
+          AND jobs.error LIKE ?
+        ORDER BY jobs.created_at ASC
+        """,
+        (
+            parent_job_id,
+            RELATED_CHAIN_DEPTH_CAP,
+            JobStatus.CANCELLED.value,
+            CASCADE_PARENT_FAILED_PATTERN,
+        ),
+    )
+    seen: set[str] = set()
+    target_ids: list[str] = []
+    for row in await cursor.fetchall():
+        job_id = row["id"]
+        if job_id in seen:
+            continue
+        seen.add(job_id)
+        target_ids.append(job_id)
+    if not target_ids:
+        return []
+
+    placeholders = ", ".join("?" for _ in target_ids)
+    await db.execute(
+        f"""
+        UPDATE jobs
+        SET status = ?,
+            error = NULL,
+            completed_at = NULL,
+            output_files_json = NULL,
+            worker_id = NULL,
+            claimed_at = NULL,
+            updated_at = ?
+        WHERE id IN ({placeholders})
+          AND status = ?
+          AND error LIKE ?
+        """,
+        (
+            JobStatus.PENDING.value,
+            now,
+            *target_ids,
+            JobStatus.CANCELLED.value,
+            CASCADE_PARENT_FAILED_PATTERN,
         ),
     )
     await db.execute(
@@ -567,6 +646,11 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
                     WHERE current_job_id = ?
                     """,
                     (job_id,),
+                )
+                cascaded_jobs = await _resync_cascade_cancelled_descendants(
+                    db,
+                    parent_job_id=job_id,
+                    now=_now_iso(),
                 )
 
             if status_value in TERMINAL_FAILURE_STATES:

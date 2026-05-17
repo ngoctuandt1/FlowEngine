@@ -13,6 +13,7 @@ from server.models.job import (
     ChainCreate,
     Job,
     JobCreate,
+    JobUpdate,
     JobRelatedResponse,
     JobStatus,
     JobWithThumb,
@@ -31,6 +32,7 @@ from server.db.job_store import (
     list_pending_l2_siblings,
     list_pending_l3_siblings,
     recover_stale_jobs,
+    update_job,
 )
 from server.routes.ws import broadcast_job_update
 
@@ -39,6 +41,14 @@ logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = frozenset({"mp4", "webm", "mov", "m4v"})
 IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "webp", "gif", "bmp"})
+REQUEUEABLE_STATES = frozenset({
+    JobStatus.FAILED,
+    JobStatus.CANCELLED,
+})
+INV_A_PROFILE_REQUIRED_DETAIL = (
+    "L2+ submit requires explicit profile or a parent with "
+    "profile pinned (INV-A)"
+)
 CHAIN_PROJECT_ID_MISMATCH_ERROR = (
     "All chain steps must use the same project_id as the first step when provided."
 )
@@ -368,10 +378,7 @@ async def create_single_job(req: JobCreate):
     if (job_level >= 2 or req.parent_job_id is not None) and profile is None:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "L2+ submit requires explicit profile or a parent with "
-                "profile pinned (INV-A)"
-            ),
+            detail=INV_A_PROFILE_REQUIRED_DETAIL,
         )
 
     validate_job_create(req)
@@ -630,3 +637,48 @@ async def cancel_job(job_id: str):
     job.status = JobStatus.CANCELLED
     await broadcast_job_update(job)
     return {"deleted": job_id}
+
+
+@router.post("/jobs/{job_id}/requeue")
+async def requeue_job(job_id: str):
+    """Reset a failed/cancelled job to pending so workers can run it again."""
+    job = await get_job(job_id)
+    if job is None:
+        raise HTTPException(404, f"Job {job_id} not found")
+    if job.status == JobStatus.PENDING:
+        return job
+    if job.status not in REQUEUEABLE_STATES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only failed or cancelled jobs can be requeued",
+        )
+
+    if job.parent_job_id:
+        parent = await get_job(job.parent_job_id)
+        if parent is None:
+            raise HTTPException(404, f"Parent job {job.parent_job_id} not found")
+        err = await _validate_parent_alive(parent)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+
+    if job.job_level >= 2 and job.profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=INV_A_PROFILE_REQUIRED_DETAIL,
+        )
+
+    updated = await update_job(
+        job_id,
+        JobUpdate(
+            status=JobStatus.PENDING,
+            error=None,
+            completed_at=None,
+            output_files=None,
+            worker_id=None,
+            claimed_at=None,
+        ),
+    )
+    if updated is None:
+        raise HTTPException(404, f"Job {job_id} not found")
+    await broadcast_job_update(updated)
+    return updated
