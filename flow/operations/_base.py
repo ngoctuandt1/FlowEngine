@@ -365,11 +365,14 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
                     # Strict media-id match failed. Allow first-tile fallback
                     # ONLY when the project rail is shallow (≤1 tile = L2 case
                     # where the only tile IS the L1 root we want). At ≥2 tiles,
-                    # rail reorder risk is real → refuse to avoid wrong-clip.
+                    # use the last tile only when rail size exactly matches the
+                    # known chain depth; otherwise refuse to avoid wrong-clip.
                     try:
                         tile_count = await page.locator("[data-tile-id]").count()
                     except Exception:
                         tile_count = 0
+                    ancestor_count = len(job.get("ancestor_media_ids") or [])
+                    expected_count = ancestor_count + 1
                     if tile_count <= 1:
                         logger.warning(
                             "Media-id %s not found, but rail has %d tile(s); "
@@ -378,6 +381,19 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
                         )
                         recovered = await _click_video_tile(page, "")
                         recovery_name = f"first-tile fallback for {media_id}"
+                    elif tile_count == expected_count:
+                        logger.warning(
+                            "Media-id %s not matched but rail size (%d) matches "
+                            "chain depth; clicking last tile as best-guess target",
+                            media_id[:20], tile_count,
+                        )
+                        last_tile = page.locator("[data-tile-id]").last
+                        await last_tile.click(timeout=3000)
+                        await asyncio.sleep(3)
+                        recovered = True
+                        recovery_name = (
+                            f"last-tile fallback (rail size match) for {media_id}"
+                        )
                     else:
                         message = (
                             f"Editor did not mount for {edit_url_val}; target tile for media_id "
@@ -391,22 +407,23 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
                             message,
                         )
                         raise RuntimeError(message)
-                try:
-                    await tile.click(timeout=3000)
-                    logger.info(
-                        "Clicked media-id matched tile for editor recovery: %s",
-                        media_id[:20],
-                    )
-                    await asyncio.sleep(3)
-                    recovered = True
-                except Exception as exc:
-                    logger.warning(
-                        "Media-id tile recovery click failed for media=%s: %s",
-                        media_id[:20],
-                        exc,
-                    )
-                    recovered = False
-                recovery_name = f"media-id tile recovery for {media_id}"
+                else:
+                    try:
+                        await tile.click(timeout=3000)
+                        logger.info(
+                            "Clicked media-id matched tile for editor recovery: %s",
+                            media_id[:20],
+                        )
+                        await asyncio.sleep(3)
+                        recovered = True
+                    except Exception as exc:
+                        logger.warning(
+                            "Media-id tile recovery click failed for media=%s: %s",
+                            media_id[:20],
+                            exc,
+                        )
+                        recovered = False
+                    recovery_name = f"media-id tile recovery for {media_id}"
         else:
             logger.warning(
                 "Editor did not mount after nav to %s — falling back to first-tile click; media_id unknown",
@@ -466,7 +483,7 @@ async def _editor_mounted(page, timeout_ms: int = 15000) -> bool:
         return False
 
 
-async def _find_tile_by_media_id(page, media_id: str):
+async def _find_tile_by_media_id(page, media_id: str, timeout_ms: int = 5000):
     """Return a project/history tile locator matching ``media_id`` if present."""
     if not media_id:
         return None
@@ -475,22 +492,44 @@ async def _find_tile_by_media_id(page, media_id: str):
         f"[data-tile-id='fe_id_{media_id}']",
         f"[data-tile-id*='{media_id}']",
         f"a[href*='/edit/{media_id}']",
+        f"[data-media-id='{media_id}']",
+        f"[id$='-{media_id}']",
+        f"[data-clip-id*='{media_id}']",
+        f"xpath=//*[@*[contains(., '{media_id}')]]",
     ]
-    for selector in selectors:
-        try:
-            loc = page.locator(selector).first
-            count_result = loc.count()
-            if not inspect.isawaitable(count_result):
-                raise _TileLookupInconclusive(
-                    f"locator count for {selector!r} was not awaitable"
-                )
-            if await count_result > 0:
-                return loc
-        except _TileLookupInconclusive:
-            raise
-        except Exception as exc:
-            logger.debug("Tile lookup selector failed %r: %s", selector, exc)
-            continue
+    interval_sec = 0.5
+    attempts = max(1, int(timeout_ms / (interval_sec * 1000)) + 1)
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+
+    for attempt in range(attempts):
+        for selector in selectors:
+            try:
+                loc = page.locator(selector).first
+                count_result = loc.count()
+                if not inspect.isawaitable(count_result):
+                    raise _TileLookupInconclusive(
+                        f"locator count for {selector!r} was not awaitable"
+                    )
+                if await count_result > 0:
+                    visible_result = loc.is_visible()
+                    if not inspect.isawaitable(visible_result):
+                        raise _TileLookupInconclusive(
+                            f"locator visibility for {selector!r} was not awaitable"
+                        )
+                    if await visible_result:
+                        return loc
+            except _TileLookupInconclusive:
+                raise
+            except Exception as exc:
+                logger.debug("Tile lookup selector failed %r: %s", selector, exc)
+                continue
+
+        if attempt == attempts - 1:
+            break
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(interval_sec, remaining))
     return None
 
 
