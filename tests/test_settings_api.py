@@ -103,3 +103,24 @@ async def test_ai_settings_put_preserves_redacted_secret_and_persists_model(api_
         "gemini_model": "gemini-2.5-pro-preview",
         "nano_api_key": "***4321",
     }
+
+
+async def test_ai_settings_post_alias_accepts_same_payload(api_client):
+    """POST /api/settings/ai mirrors PUT — frontend dashboard sends POST."""
+    response = await api_client.post(
+        "/api/settings/ai",
+        json={
+            "gemini_api_key": "gem-key-POSTPOST",
+            "gemini_model": "gemini-2-flash-preview",
+            "nano_api_key": "nano-key-POSTNANO",
+        },
+    )
+
+    assert response.status_code == 204
+
+    fetched = await api_client.get("/api/settings/ai")
+    assert fetched.status_code == 200
+    body = fetched.json()
+    assert body["gemini_api_key"].endswith("POST")
+    assert body["gemini_model"] == "gemini-2-flash-preview"
+    assert body["nano_api_key"].endswith("NANO")

@@ -56,11 +56,26 @@ async def get_ai_settings_endpoint():
     return _to_ai_public(await get_ai_settings())
 
 
-@router.put("/ai", status_code=204)
-async def update_ai_settings_endpoint(body: AISettingsUpdate):
-    """Persist AI settings, preserving redacted placeholders."""
+async def _update_ai_settings_handler(body: AISettingsUpdate) -> Response:
     await update_ai_settings(body)
     return Response(status_code=204)
+
+
+@router.put("/ai", status_code=204)
+async def update_ai_settings_endpoint(body: AISettingsUpdate) -> Response:
+    """Persist AI settings, preserving redacted placeholders (idiomatic REST)."""
+    return await _update_ai_settings_handler(body)
+
+
+@router.post("/ai", status_code=204)
+async def update_ai_settings_endpoint_post(body: AISettingsUpdate) -> Response:
+    """POST alias for PUT /api/settings/ai.
+
+    The frontend (``frontend/js/pages/settings.js``) sends POST; older
+    clients in the wild may do the same. We accept both verbs and keep
+    them under distinct operation IDs so the OpenAPI schema stays clean.
+    """
+    return await _update_ai_settings_handler(body)
 
 
 @router.get("/veo-accounts", response_model=list[VeoAccountPublic])
