@@ -35,12 +35,60 @@ IMAGE_UPSCALE_QUALITIES = {"2k", "4k"}
 ImageQuality = Literal["original", "2k", "4k"]
 
 
+def _metadata_args(metadata: dict | None) -> list[str]:
+    """Build ffmpeg -metadata key=value args from a job metadata dict."""
+    if not metadata:
+        return []
+    fields = [
+        ("title",       metadata.get("media_id", "")),
+        ("artist",      metadata.get("profile", "")),
+        ("comment",     metadata.get("prompt", "")),
+        ("description", metadata.get("project_url", "")),
+        ("album",       metadata.get("job_type", "")),
+    ]
+    args: list[str] = []
+    for key, val in fields:
+        if val:
+            # Truncate prompt to 500 chars to keep atom size reasonable.
+            args += ["-metadata", f"{key}={str(val)[:500]}"]
+    return args
+
+
+def _embed_image_metadata(filepath: Path, metadata: dict | None) -> None:
+    """Embed job metadata into PNG / JPEG / WebP via ffmpeg (best-effort)."""
+    if not metadata or not filepath.exists():
+        return
+    meta_args = _metadata_args(metadata)
+    if not meta_args:
+        return
+    tmp = filepath.with_name(filepath.stem + "_meta_tmp" + filepath.suffix)
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-i", str(filepath),
+             *meta_args,
+             "-c", "copy",
+             str(tmp)],
+            capture_output=True,
+            timeout=30,
+        )
+        if proc.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+            tmp.replace(filepath)
+        else:
+            tmp.unlink(missing_ok=True)
+            logger.warning("image metadata embed failed for %s: rc=%s", filepath.name, proc.returncode)
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        logger.warning("image metadata embed exception for %s: %s", filepath.name, exc)
+
+
 async def download_video(
     client,
     media_ids: list[str] | None = None,
     prefix: str = "vid",
     quality: str = "1080p",
     media_kind: str = "video",
+    metadata: dict | None = None,
 ) -> list[str]:
     """Download generated video(s).
 
@@ -97,6 +145,7 @@ async def download_video(
                     )
 
                 if ui_path:
+                    _faststart_mp4(Path(ui_path), metadata)
                     downloaded_paths.append(ui_path)
                     continue
 
@@ -111,6 +160,7 @@ async def download_video(
                     "720p",
                     output_dir,
                     media_kind,
+                    metadata,
                 )
                 if api_path:
                     logger.warning(
@@ -162,6 +212,7 @@ async def download_video(
                     )
 
                 if ui_path:
+                    _embed_image_metadata(Path(ui_path), metadata)
                     downloaded_paths.append(ui_path)
                     continue
 
@@ -177,6 +228,7 @@ async def download_video(
                     "original",
                     output_dir,
                     media_kind,
+                    metadata,
                 )
                 if api_path:
                     logger.warning(
@@ -219,8 +271,7 @@ async def download_video(
 
     if not media_ids:
         logger.warning("No media IDs found for download")
-        # Fallback: try UI download
-        result = await _download_via_ui(client, prefix, output_dir, media_kind)
+        result = await _download_via_ui(client, prefix, output_dir, media_kind, metadata)
         return [result] if result else []
 
     # B38: When the caller asked for 1080p and we're past the UI path above,
@@ -234,13 +285,12 @@ async def download_video(
 
     downloaded = []
     for mid in media_ids:
-        path = await _download_via_api(client, mid, prefix, api_quality, output_dir, media_kind)
+        path = await _download_via_api(client, mid, prefix, api_quality, output_dir, media_kind, metadata)
         if path:
             downloaded.append(path)
             continue
 
-        # Fallback: UI download
-        path = await _download_via_ui(client, prefix, output_dir, media_kind)
+        path = await _download_via_ui(client, prefix, output_dir, media_kind, metadata)
         if path:
             downloaded.append(path)
 
@@ -248,7 +298,8 @@ async def download_video(
 
 
 async def _download_via_api(
-    client, media_id: str, prefix: str, quality: str, output_dir: Path, media_kind: str
+    client, media_id: str, prefix: str, quality: str, output_dir: Path, media_kind: str,
+    metadata: dict | None = None,
 ) -> str | None:
     """Download via API redirect URL."""
     page = client.page
@@ -260,7 +311,7 @@ async def _download_via_api(
             f"media.getMediaUrlRedirect?name={media_id}_upsampled"
         )
         path = await _api_download_with_retry(
-            page, url_1080, prefix, "1080p", output_dir, media_kind
+            page, url_1080, prefix, "1080p", output_dir, media_kind, metadata=metadata
         )
         if path:
             return path
@@ -277,6 +328,7 @@ async def _download_via_api(
         fallback_quality,
         output_dir,
         media_kind,
+        metadata=metadata,
     )
 
 
@@ -288,6 +340,7 @@ async def _api_download_with_retry(
     output_dir: Path,
     media_kind: str,
     max_retries: int | None = None,
+    metadata: dict | None = None,
 ) -> str | None:
     # B34: default retries = UPSCALE_MAX_RETRIES (env-configurable 12) instead
     # of the pre-B34 hardcoded 3. At UPSCALE_POLL_INTERVAL=15s, total wait is
@@ -317,14 +370,17 @@ async def _api_download_with_retry(
                             filepath,
                             len(body),
                         )
-                        _faststart_mp4(filepath)
+                        if media_kind == "video":
+                            _faststart_mp4(filepath, metadata)
+                        else:
+                            _embed_image_metadata(filepath, metadata)
                         return str(filepath)
 
                 # 200 but redirected -- may need to follow
                 redirect_url = response.headers.get("location")
                 if redirect_url:
                     return await _fetch_and_save(
-                        page, redirect_url, prefix, quality, output_dir, media_kind
+                        page, redirect_url, prefix, quality, output_dir, media_kind, metadata=metadata
                     )
 
             elif response.status in (202, 404) and "upsampled" in url:
@@ -346,7 +402,8 @@ async def _api_download_with_retry(
 
 
 async def _fetch_and_save(
-    page, url: str, prefix: str, quality: str, output_dir: Path, media_kind: str
+    page, url: str, prefix: str, quality: str, output_dir: Path, media_kind: str,
+    metadata: dict | None = None,
 ) -> str | None:
     """Fetch a direct URL via browser and save."""
     try:
@@ -362,25 +419,30 @@ async def _fetch_and_save(
                 logger.info(
                     "Fetched %s: %s (%d bytes)", quality, filepath, len(body)
                 )
-                _faststart_mp4(filepath)
+                if media_kind == "video":
+                    _faststart_mp4(filepath, metadata)
+                else:
+                    _embed_image_metadata(filepath, metadata)
                 return str(filepath)
     except Exception as e:
         logger.warning("Fetch error: %s", e)
     return None
 
 
-def _faststart_mp4(filepath: Path) -> None:
-    """Move the MP4 ``moov`` atom to the head so HTML5 ``<video>`` can stream.
+def _faststart_mp4(filepath: Path, metadata: dict | None = None) -> None:
+    """Move the MP4 ``moov`` atom to the head and embed job metadata.
 
     Flow's API delivers MP4s with ``moov`` after ``mdat``, which prevents
     progressive download — browsers stall at ``readyState=0`` and tile
     thumbnails render fully black. ``-movflags +faststart`` rewrites the
     container with ``moov`` first so Range requests can stream the head.
+    Job metadata (media_id, profile, prompt, project_url, job_type) is
+    embedded as MP4 atoms in the same ffmpeg pass (no extra cost).
     Best-effort: any failure is logged and the original file is kept.
     """
     if filepath.suffix.lower() != ".mp4" or not filepath.exists():
         return
-    tmp_path = filepath.with_suffix(filepath.suffix + ".faststart.tmp")
+    tmp_path = filepath.with_name(filepath.stem + "_faststart_tmp" + filepath.suffix)
     try:
         proc = subprocess.run(
             [
@@ -388,13 +450,20 @@ def _faststart_mp4(filepath: Path) -> None:
                 "-i", str(filepath),
                 "-c", "copy",
                 "-movflags", "+faststart",
+                *_metadata_args(metadata),
                 str(tmp_path),
             ],
             capture_output=True,
             timeout=60,
         )
-        if proc.returncode == 0 and tmp_path.exists() and tmp_path.stat().st_size > 0:
-            tmp_path.replace(filepath)
+        if proc.returncode == 0:
+            if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                tmp_path.replace(filepath)
+            else:
+                logger.warning(
+                    "faststart output missing for %s: expected %s",
+                    filepath.name, tmp_path.name,
+                )
             poster_path = filepath.with_suffix(".poster.jpg")
             try:
                 poster_proc = subprocess.run(
@@ -428,7 +497,7 @@ def _faststart_mp4(filepath: Path) -> None:
         logger.warning("faststart exception for %s: %s", filepath.name, exc)
 
 
-async def _download_via_ui(client, prefix: str, output_dir: Path, media_kind: str) -> str | None:
+async def _download_via_ui(client, prefix: str, output_dir: Path, media_kind: str, metadata: dict | None = None) -> str | None:
     """Download via UI right-click menu on video card."""
     page = client.page
 
@@ -467,16 +536,18 @@ async def _download_via_ui(client, prefix: str, output_dir: Path, media_kind: st
 
             if filepath.stat().st_size > _minimum_size_for(media_kind):
                 logger.info("UI download: %s", filepath)
-                _faststart_mp4(filepath)
+                if media_kind == "video":
+                    _faststart_mp4(filepath, metadata)
+                else:
+                    _embed_image_metadata(filepath, metadata)
                 return str(filepath)
     except Exception as e:
         logger.warning("UI download failed: %s", e)
 
-    # Last resort: extract blob URL from video element
-    return await _download_blob(page, prefix, output_dir)
+    return await _download_blob(page, prefix, output_dir, metadata)
 
 
-async def _download_blob(page, prefix: str, output_dir: Path) -> str | None:
+async def _download_blob(page, prefix: str, output_dir: Path, metadata: dict | None = None) -> str | None:
     """Extract and download video from blob: URL in browser."""
     try:
         blob_data = await page.evaluate(
@@ -509,7 +580,7 @@ async def _download_blob(page, prefix: str, output_dir: Path) -> str | None:
                 filepath = output_dir / filename
                 filepath.write_bytes(raw)
                 logger.info("Blob download: %s (%d bytes)", filepath, len(raw))
-                _faststart_mp4(filepath)
+                _faststart_mp4(filepath, metadata)
                 return str(filepath)
     except Exception as e:
         logger.warning("Blob download failed: %s", e)

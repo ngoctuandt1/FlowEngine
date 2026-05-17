@@ -55,6 +55,13 @@ async def test_finalize_operation_passes_strict_true_when_parent_media_id_set(mo
         client,
         media_ids=[PARENT_SLUG],
         prefix="ext",
+        metadata={
+            "job_type": "extend-video",
+            "prompt": "",
+            "media_id": NEW_SLUG,
+            "project_url": PROJECT_URL,
+            "profile": "profile-a",
+        },
     )
     assert result == {
         "project_url": PROJECT_URL,
@@ -99,6 +106,13 @@ async def test_finalize_operation_passes_strict_false_when_parent_media_id_missi
         client,
         media_ids=[NEW_SLUG],
         prefix="gen",
+        metadata={
+            "job_type": "text-to-video",
+            "prompt": "",
+            "media_id": NEW_SLUG,
+            "project_url": PROJECT_URL,
+            "profile": "profile-a",
+        },
     )
     assert result == {
         "project_url": PROJECT_URL,
@@ -145,6 +159,13 @@ async def test_finalize_operation_uses_resolved_media_id_for_download_without_me
         client,
         media_ids=[NEW_SLUG],
         prefix="gen",
+        metadata={
+            "job_type": "text-to-video",
+            "prompt": "",
+            "media_id": NEW_SLUG,
+            "project_url": PROJECT_URL,
+            "profile": "profile-a",
+        },
     )
     assert result["output_files"] == ["out.mp4"]
 

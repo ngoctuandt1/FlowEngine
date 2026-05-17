@@ -911,6 +911,7 @@ async def download_l1_gen(
     *,
     prefix: str = "t2v",
     quality: str = "1080p",
+    metadata: dict | None = None,
 ) -> list[str]:
     """Download the 1080p mp4 for `media_id`, scoped to that mid only.
 
@@ -926,6 +927,7 @@ async def download_l1_gen(
         prefix=prefix,
         quality=quality,
         media_kind="video",
+        metadata=metadata,
     )
     if not files:
         raise RuntimeError(f"download_l1_gen({media_id[:12]}): no output file")
@@ -966,6 +968,7 @@ async def download_l1_gen_at_tile(
     pinned_tile_id: str | None = None,
     prefix: str = "t2v",
     quality: str = "1080p",
+    metadata: dict | None = None,
 ) -> list[str]:
     """Download the i-th project tile (most-recent-first ordering).
 
@@ -1099,6 +1102,7 @@ async def download_l1_gen_at_tile(
         prefix=prefix,
         quality=quality,
         media_kind="video",
+        metadata=metadata,
     )
     if not files:
         raise RuntimeError(
