@@ -113,9 +113,9 @@ class JobCreate(BaseModel):
     model: str = DEFAULT_MODEL
     aspect_ratio: str = "16:9"
 
-    # Pin an L1 job to a specific Chrome profile (Google account). For
-    # L2+ the profile is inherited from the completed parent and this
-    # field is ignored.
+    # Pin an L1 job to a specific Chrome profile (Google account). For L2+,
+    # inherit the parent profile regardless of status; reject if this field
+    # mismatches the pinned parent or tries to bind an unpinned parent chain.
     profile: Optional[str] = None
 
     # Multi-level chain

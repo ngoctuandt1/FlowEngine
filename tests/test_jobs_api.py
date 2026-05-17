@@ -134,7 +134,6 @@ async def test_post_child_job_inherits_completed_parent_fields(api_client):
             "type": "extend-video",
             "prompt": "Add a second camera pass",
             "parent_job_id": parent_id,
-            "profile": "wrong-profile",
         },
     )
 
@@ -247,6 +246,7 @@ async def test_post_child_job_inherits_chain_id_from_pending_parent(api_client):
         json={
             "type": "text-to-video",
             "prompt": "Create a parent that is still pending",
+            "profile": "chain-profile",
         },
     )
     assert parent_response.status_code == 201
@@ -265,6 +265,7 @@ async def test_post_child_job_inherits_chain_id_from_pending_parent(api_client):
     child = child_response.json()
     assert child["job_level"] == 2
     assert child["chain_id"] == parent["chain_id"]
+    assert child["profile"] == "chain-profile"
 
 
 async def test_post_child_job_falls_back_to_parent_id_when_parent_chain_id_is_null(
@@ -275,6 +276,7 @@ async def test_post_child_job_falls_back_to_parent_id_when_parent_chain_id_is_nu
         json={
             "type": "text-to-video",
             "prompt": "Create a legacy-style parent row",
+            "profile": "legacy-profile",
         },
     )
     assert parent_response.status_code == 201

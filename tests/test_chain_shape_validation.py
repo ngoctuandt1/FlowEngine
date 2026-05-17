@@ -143,7 +143,11 @@ async def test_post_chain_allows_camera_before_extend(api_client):
 async def test_post_job_rejects_existing_extend_parent_lineage(api_client):
     root = await api_client.post(
         "/api/jobs",
-        json={"type": "text-to-video", "prompt": "Root clip"},
+        json={
+            "type": "text-to-video",
+            "prompt": "Root clip",
+            "profile": "chain-profile",
+        },
     )
     assert root.status_code == 201
 
