@@ -213,6 +213,9 @@ async def test_navigate_recovery_allows_first_tile_when_shallow_rail(monkeypatch
         return original_locator(selector)
     page.locator = _locator_with_shallow_rail
 
+    # Force _find_tile_by_media_id to return None (no specific tile match)
+    monkeypatch.setattr(_base, "_find_tile_by_media_id", AsyncMock(return_value=None))
+
     async def _recover(page_arg, _media_id):
         page_arg.editor_mounts = True
         return True
