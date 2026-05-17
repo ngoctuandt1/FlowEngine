@@ -1,10 +1,21 @@
 """Profile management endpoints."""
 
+from __future__ import annotations
+
+import os
+import secrets
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
+from flow.credentials.sheet_loader import (
+    MalformedSheetError,
+    SheetLoaderError,
+    sheet_mode_enabled,
+    sync_profiles_from_sheet,
+)
+from server.config import API_KEY
 from server.models.profile import Profile, ProfileStatus, ProfileUpdate
 from server.db.profile_store import (
     create_profile, get_profile, list_profiles, update_profile,
@@ -20,10 +31,45 @@ class ProfileStatusReason(BaseModel):
     reason: Optional[str] = None
 
 
+def _configured_api_key() -> str:
+    return os.environ.get("API_KEY", API_KEY)
+
+
+def _is_default_key(key: str) -> bool:
+    return key in {"", "dev-key", "changeme"}
+
+
+def _require_reload_key(worker_api_key: str | None) -> None:
+    expected = _configured_api_key()
+    if _is_default_key(expected) and not worker_api_key:
+        return
+    if not worker_api_key or not secrets.compare_digest(worker_api_key, expected):
+        raise HTTPException(status_code=401, detail="Invalid worker API key")
+
+
 @router.get("")
 async def get_all_profiles():
     """List all registered profiles."""
     return await list_profiles()
+
+
+@router.post("/reload")
+async def reload_profiles_from_sheet(
+    x_worker_api_key: str | None = Header(default=None, alias="X-Worker-API-Key"),
+):
+    """Reload profiles_ultra.txt from Google Sheet credentials."""
+
+    _require_reload_key(x_worker_api_key)
+    if not sheet_mode_enabled():
+        raise HTTPException(status_code=409, detail="Sheet mode not enabled")
+    try:
+        result = sync_profiles_from_sheet()
+    except MalformedSheetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SheetLoaderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {"loaded": result.loaded, "profiles": result.profiles}
 
 
 @router.post("", status_code=201)

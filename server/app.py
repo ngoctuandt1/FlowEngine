@@ -268,6 +268,18 @@ async def lifespan(app: FastAPI):
     setup_logging("server")
     from server.db import init_db
     await init_db()
+    from flow.credentials.sheet_loader import (
+        MalformedSheetError,
+        sheet_mode_enabled,
+        sync_profiles_from_sheet,
+    )
+    if sheet_mode_enabled():
+        try:
+            sync_profiles_from_sheet()
+        except MalformedSheetError:
+            logger.exception(
+                "Malformed sheet credentials at startup; existing profiles cache remains unchanged"
+            )
     await _reap_stale_claims()
     stale_reaper_task = asyncio.create_task(
         _stale_claim_reaper(),
