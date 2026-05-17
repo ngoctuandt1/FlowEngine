@@ -530,8 +530,10 @@ async def replay_image_generate(client, prompt: str, count: int = 1) -> list[str
         _set_replay_recaptcha_token(body, recaptcha_token)
     else:
         logger.warning(
-            "replay_image_generate: reCAPTCHA mint returned empty token; "
-            "using captured token if present"
+            "reCAPTCHA mint returned empty — cannot perform reverse-API replay safely; falling back to UI path required"
+        )
+        raise RuntimeError(
+            "reCAPTCHA mint empty — refusing to reuse single-use captured token"
         )
     headers = _replay_headers(req.get("headers") or {})
     if recaptcha_token:

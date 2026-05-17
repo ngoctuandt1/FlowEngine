@@ -252,6 +252,23 @@ async def test_replay_uses_new_prompt():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("minted_token", ["", None])
+async def test_replay_raises_when_recaptcha_mint_empty(monkeypatch, caplog, minted_token):
+    client = _client_with_template()
+    monkeypatch.setattr(client.page, "evaluate", AsyncMock(return_value=minted_token))
+    caplog.set_level("WARNING")
+
+    with pytest.raises(RuntimeError, match="refusing to reuse single-use captured token"):
+        await replay_image_generate(client, "a dog", count=2)
+
+    assert (
+        "reCAPTCHA mint returned empty — cannot perform reverse-API replay safely; falling back to UI path required"
+        in caplog.messages
+    )
+    client.page.context.request.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_replay_raises_when_no_template():
     client = _client()
     client._image_requests = []
