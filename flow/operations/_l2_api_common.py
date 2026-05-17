@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 import json
 import logging
@@ -180,29 +181,63 @@ async def replay_l2_via_api(
         body["mediaGenerationContext"] = media_context
     media_context["batchId"] = str(uuid.uuid4())
 
-    recaptcha_token = await mint_recaptcha_token(page, caller=caller)
-    if recaptcha_token:
-        set_replay_recaptcha_token(body, recaptcha_token)
-    else:
-        logger.warning(
-            "%s: reCAPTCHA mint returned empty token; using captured token if present",
-            caller,
+    # Retry-on-403/429 (reCAPTCHA-adjacent / rate-limit): up to 3 attempts
+    # with fresh recaptcha + bounded backoff. Flow's anti-abuse v3 scoring
+    # occasionally rejects programmatic tokens with low scores even when
+    # account is healthy. Live-evidence 2026-05-17 matrix run:
+    # remove+revapi failed at L2 with reCAPTCHA v3_invisible after 8 prior
+    # cates × 3 modes (cumulative PUBLIC_ERROR_UNUSUAL_ACTIVITY). Mint-fresh
+    # + cooldown retry clears transient flags. Non-transient errors fail
+    # immediately (no retry).
+    response = None
+    last_status = 0
+    last_error_text = ""
+    for attempt in range(3):
+        recaptcha_token = await mint_recaptcha_token(page, caller=caller)
+        if recaptcha_token:
+            set_replay_recaptcha_token(body, recaptcha_token)
+        else:
+            logger.warning(
+                "%s: reCAPTCHA mint returned empty token (attempt %d/3); "
+                "using captured token if present",
+                caller, attempt + 1,
+            )
+
+        headers = replay_headers(template.get("headers") or {})
+        if recaptcha_token:
+            headers["x-recaptcha-token"] = recaptcha_token
+
+        # Fresh batchId per attempt (Flow's idempotency surface).
+        media_context["batchId"] = str(uuid.uuid4())
+
+        response = await page.context.request.post(
+            template["url"],
+            data=json.dumps(body),
+            headers=headers,
+            timeout=30000,
         )
-
-    headers = replay_headers(template.get("headers") or {})
-    if recaptcha_token:
-        headers["x-recaptcha-token"] = recaptcha_token
-
-    response = await page.context.request.post(
-        template["url"],
-        data=json.dumps(body),
-        headers=headers,
-        timeout=30000,
-    )
-    status = response_status(response)
-    if status < 200 or status >= 300:
-        text = await response_text(response)
-        raise RuntimeError(f"{caller} failed with HTTP {status}: {text[:500]}")
+        last_status = response_status(response)
+        if 200 <= last_status < 300:
+            break
+        last_error_text = await response_text(response)
+        is_recaptcha_403 = last_status == 403 and (
+            "recaptcha" in (last_error_text or "").lower()
+            or "unusual_activity" in (last_error_text or "").lower()
+        )
+        is_rate_limit = last_status == 429
+        if not (is_recaptcha_403 or is_rate_limit):
+            raise RuntimeError(f"{caller} failed with HTTP {last_status}: {last_error_text[:500]}")
+        if attempt < 2:
+            backoff_sec = 30 * (attempt + 1)  # 30s, 60s
+            logger.warning(
+                "%s: HTTP %d on attempt %d/3 — retrying after %ds with fresh recaptcha",
+                caller, last_status, attempt + 1, backoff_sec,
+            )
+            await asyncio.sleep(backoff_sec)
+    else:
+        raise RuntimeError(
+            f"{caller} failed with HTTP {last_status} after 3 attempts: {last_error_text[:500]}"
+        )
 
     try:
         data = await response.json()
