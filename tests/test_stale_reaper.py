@@ -65,7 +65,7 @@ async def test_old_running_job_is_reaped_to_pending_and_claim_cleared(db):
     await create_job(job)
     await _create_profile_for_job(job)
 
-    reaped = await app_module._reap_stale_running_claims(threshold_sec=600)
+    reaped = await app_module._reap_stale_claims(threshold_sec=600)
 
     row = await _fetch_job_row(job.id)
     profile = await _fetch_profile_row(job.profile)
@@ -79,13 +79,33 @@ async def test_old_running_job_is_reaped_to_pending_and_claim_cleared(db):
     assert profile["worker_id"] is None
 
 
+async def test_old_claimed_job_is_reaped_to_pending_and_claim_cleared(db):
+    old = datetime.now(UTC) - timedelta(seconds=900)
+    job = _job("stale-claimed", JobStatus.CLAIMED, old)
+    await create_job(job)
+    await _create_profile_for_job(job)
+
+    reaped = await app_module._reap_stale_claims(threshold_sec=600)
+
+    row = await _fetch_job_row(job.id)
+    profile = await _fetch_profile_row(job.profile)
+    assert reaped == [job.id]
+    assert row["status"] == "pending"
+    assert row["worker_id"] is None
+    assert row["claimed_at"] is None
+    assert "existing-error-stale-claimed" in row["error"]
+    assert "stale_claim_reaped: previous_worker=worker-stale-claimed" in row["error"]
+    assert profile["current_job_id"] is None
+    assert profile["worker_id"] is None
+
+
 async def test_recent_running_job_is_not_reaped(db):
     recent = datetime.now(UTC) - timedelta(seconds=30)
     job = _job("recent-running", JobStatus.RUNNING, recent)
     await create_job(job)
     await _create_profile_for_job(job)
 
-    reaped = await app_module._reap_stale_running_claims(threshold_sec=600)
+    reaped = await app_module._reap_stale_claims(threshold_sec=600)
 
     row = await _fetch_job_row(job.id)
     profile = await _fetch_profile_row(job.profile)
@@ -103,7 +123,7 @@ async def test_old_pending_job_is_not_touched(db):
     job = _job("old-pending", JobStatus.PENDING, old)
     await create_job(job)
 
-    reaped = await app_module._reap_stale_running_claims(threshold_sec=600)
+    reaped = await app_module._reap_stale_claims(threshold_sec=600)
 
     row = await _fetch_job_row(job.id)
     assert reaped == []
@@ -119,7 +139,7 @@ async def test_completed_job_is_not_touched(db):
     job = _job("completed", JobStatus.COMPLETED, old)
     await create_job(job)
 
-    reaped = await app_module._reap_stale_running_claims(threshold_sec=600)
+    reaped = await app_module._reap_stale_claims(threshold_sec=600)
 
     row = await _fetch_job_row(job.id)
     assert reaped == []
@@ -127,6 +147,22 @@ async def test_completed_job_is_not_touched(db):
     assert row["worker_id"] == "worker-completed"
     assert row["claimed_at"] == old.isoformat()
     assert row["error"] == "existing-error-completed"
+    assert row["updated_at"] == old.isoformat()
+
+
+async def test_cancelled_job_is_not_touched(db):
+    old = datetime.now(UTC) - timedelta(seconds=900)
+    job = _job("cancelled", JobStatus.CANCELLED, old)
+    await create_job(job)
+
+    reaped = await app_module._reap_stale_claims(threshold_sec=600)
+
+    row = await _fetch_job_row(job.id)
+    assert reaped == []
+    assert row["status"] == "cancelled"
+    assert row["worker_id"] == "worker-cancelled"
+    assert row["claimed_at"] == old.isoformat()
+    assert row["error"] == "existing-error-cancelled"
     assert row["updated_at"] == old.isoformat()
 
 
@@ -148,7 +184,7 @@ async def test_reaper_interval_and_threshold_honor_env(monkeypatch):
         if sleep_calls > 1:
             raise asyncio.CancelledError
 
-    monkeypatch.setattr(app_module, "_reap_stale_running_claims", fake_reap)
+    monkeypatch.setattr(app_module, "_reap_stale_claims", fake_reap)
     monkeypatch.setattr(app_module.asyncio, "sleep", fake_sleep)
 
     with pytest.raises(asyncio.CancelledError):
@@ -174,15 +210,43 @@ async def test_reaper_logs_single_row_db_error_and_continues(db, monkeypatch, ca
 
     monkeypatch.setattr(app_module, "_reset_stale_running_job", flaky_reset)
     with caplog.at_level(logging.ERROR, logger=app_module.__name__):
-        reaped = await app_module._reap_stale_running_claims(threshold_sec=600)
+        reaped = await app_module._reap_stale_claims(threshold_sec=600)
 
     first_row = await _fetch_job_row(first.id)
     second_row = await _fetch_job_row(second.id)
     assert reaped == [second.id]
     assert first_row["status"] == "running"
     assert second_row["status"] == "pending"
-    assert "failed to reap stale running job stale-error" in caplog.text
+    assert "failed to reap stale claim job stale-error" in caplog.text
     assert "synthetic row failure" in caplog.text
+
+
+async def test_lifespan_runs_immediate_startup_sweep_before_periodic_task(
+    db,
+    monkeypatch,
+):
+    import server.config
+
+    events: list[tuple[str, int | None]] = []
+    started = asyncio.Event()
+
+    async def fake_reap(threshold_sec: int | None = None) -> list[str]:
+        events.append(("startup-sweep", threshold_sec))
+        return []
+
+    async def fake_reaper() -> None:
+        events.append(("periodic-task", None))
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(server.config, "setup_logging", lambda service: None)
+    monkeypatch.setattr(app_module, "_reap_stale_claims", fake_reap)
+    monkeypatch.setattr(app_module, "_stale_claim_reaper", fake_reaper)
+
+    async with app_module.lifespan(app_module.app):
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+    assert events == [("startup-sweep", None), ("periodic-task", None)]
 
 
 async def test_lifespan_starts_and_cancels_reaper_task(db, monkeypatch, caplog):

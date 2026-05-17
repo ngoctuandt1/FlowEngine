@@ -119,7 +119,7 @@ def _append_stale_reaper_error(existing: str | None, marker: str) -> str:
 
 
 def _is_stale_running_row(row, observed_at: datetime, threshold_sec: int) -> bool:
-    return row is not None and row["status"] == "running" and _idle_seconds(
+    return row is not None and row["status"] in {"claimed", "running"} and _idle_seconds(
         row["updated_at"],
         observed_at,
     ) > threshold_sec
@@ -141,6 +141,7 @@ async def _reset_stale_running_job(
                 SELECT id, status, worker_id, updated_at, error
                 FROM jobs
                 WHERE id = ?
+                  AND status IN ('claimed', 'running')
                 """,
                 (job_id,),
             )
@@ -164,7 +165,7 @@ async def _reset_stale_running_job(
                     error = ?,
                     updated_at = ?
                 WHERE id = ?
-                  AND status = 'running'
+                  AND status IN ('claimed', 'running')
                 """,
                 (_append_stale_reaper_error(row["error"], marker), now, job_id),
             )
@@ -179,7 +180,7 @@ async def _reset_stale_running_job(
             )
             await db.commit()
             logger.info(
-                "reaped stale running job %s previous_worker=%s idle_for=%ss",
+                "reaped stale claim job %s previous_worker=%s idle_for=%ss",
                 job_id,
                 previous_worker,
                 idle_for,
@@ -191,7 +192,7 @@ async def _reset_stale_running_job(
             raise
 
 
-async def _reap_stale_running_claims(threshold_sec: int | None = None) -> list[str]:
+async def _reap_stale_claims(threshold_sec: int | None = None) -> list[str]:
     from server.db.database import get_db
 
     effective_threshold_sec = (
@@ -205,7 +206,7 @@ async def _reap_stale_running_claims(threshold_sec: int | None = None) -> list[s
             """
             SELECT id
             FROM jobs
-            WHERE status = 'running'
+            WHERE status IN ('claimed', 'running')
               AND updated_at < ?
             ORDER BY updated_at ASC
             """,
@@ -223,11 +224,15 @@ async def _reap_stale_running_claims(threshold_sec: int | None = None) -> list[s
                 observed_at,
             )
         except Exception:
-            logger.exception("failed to reap stale running job %s", job_id)
+            logger.exception("failed to reap stale claim job %s", job_id)
             continue
         if reaped_id is not None:
             reaped.append(reaped_id)
     return reaped
+
+
+async def _reap_stale_running_claims(threshold_sec: int | None = None) -> list[str]:
+    return await _reap_stale_claims(threshold_sec)
 
 
 async def _stale_claim_reaper() -> None:
@@ -241,7 +246,7 @@ async def _stale_claim_reaper() -> None:
     while True:
         await asyncio.sleep(interval_sec)
         try:
-            await _reap_stale_running_claims(threshold_sec)
+            await _reap_stale_claims(threshold_sec)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -263,6 +268,7 @@ async def lifespan(app: FastAPI):
     setup_logging("server")
     from server.db import init_db
     await init_db()
+    await _reap_stale_claims()
     stale_reaper_task = asyncio.create_task(
         _stale_claim_reaper(),
         name="stale-claim-reaper",
