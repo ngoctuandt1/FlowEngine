@@ -69,6 +69,10 @@ logger = logging.getLogger(__name__)
 _CHAIN_CHILD_NO_NEW_MEDIA_KIND = "chain_child_no_new_media"
 
 
+class _TileLookupInconclusive(RuntimeError):
+    """Raised when test doubles cannot answer Playwright locator counts."""
+
+
 async def _capture_chain_child_no_new_media(page) -> None:
     """Best-effort forensic capture for strict chain-child media misses."""
     try:
@@ -336,17 +340,66 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     # /edit/{stale_media_id} in the URL with an un-mounted editor — no
     # <video>, no mode buttons. Observed on insert-object whose parent
     # media had been consumed by a sibling extend. Catch it here with a
-    # bounded video wait and fall back to first-tile click (the same
-    # recovery the /project/ branch above uses) to land on /edit/{latest}.
+    # bounded video wait and recover by clicking the semantic target tile.
+    # Deep extend chains can reorder the rail, so first-tile recovery may
+    # select an L1 root instead of the L<N-1> parent clip.
     if not await _editor_mounted(page, timeout_ms=15000):
-        logger.warning(
-            "Editor did not mount after nav to %s — falling back to first-tile click",
-            edit_url_val[:80],
-        )
-        recovered = await _click_video_tile(page, "")
+        if media_id:
+            logger.warning(
+                "Editor did not mount after nav to %s — clicking tile for media=%s; first-tile click only when media_id unknown",
+                edit_url_val[:80],
+                media_id[:20],
+            )
+            try:
+                tile = await _find_tile_by_media_id(page, media_id)
+            except _TileLookupInconclusive:
+                logger.debug(
+                    "Media-id tile lookup inconclusive for media=%s; "
+                    "trying existing media-id click path",
+                    media_id[:20],
+                )
+                recovered = await _click_video_tile(page, media_id)
+                recovery_name = f"media-id tile recovery for {media_id}"
+            else:
+                if tile is None:
+                    message = (
+                        f"Editor did not mount for {edit_url_val}; target tile for media_id "
+                        f"{media_id} not found in project rail. Refusing first-tile recovery "
+                        f"because deep-chain rails may be reordered. Parent media may be stale "
+                        f"(consumed by sibling op)."
+                    )
+                    message = await message_with_failure_capture(
+                        client,
+                        "editor_not_mounted",
+                        message,
+                    )
+                    raise RuntimeError(message)
+                try:
+                    await tile.click(timeout=3000)
+                    logger.info(
+                        "Clicked media-id matched tile for editor recovery: %s",
+                        media_id[:20],
+                    )
+                    await asyncio.sleep(3)
+                    recovered = True
+                except Exception as exc:
+                    logger.warning(
+                        "Media-id tile recovery click failed for media=%s: %s",
+                        media_id[:20],
+                        exc,
+                    )
+                    recovered = False
+                recovery_name = f"media-id tile recovery for {media_id}"
+        else:
+            logger.warning(
+                "Editor did not mount after nav to %s — falling back to first-tile click; media_id unknown",
+                edit_url_val[:80],
+            )
+            recovered = await _click_video_tile(page, "")
+            recovery_name = "first-tile recovery"
         if not recovered or not await _editor_mounted(page, timeout_ms=15000):
             message = (
-                f"Editor did not mount for {edit_url_val} and first-tile recovery "
+                f"Editor did not mount for {edit_url_val} and {recovery_name} "
                 f"failed. Parent media may be stale (consumed by sibling op)."
             )
             message = await message_with_failure_capture(
@@ -394,6 +447,34 @@ async def _editor_mounted(page, timeout_ms: int = 15000) -> bool:
         return True
     except Exception:
         return False
+
+
+async def _find_tile_by_media_id(page, media_id: str):
+    """Return a project/history tile locator matching ``media_id`` if present."""
+    if not media_id:
+        return None
+
+    selectors = [
+        f"[data-tile-id='fe_id_{media_id}']",
+        f"[data-tile-id*='{media_id}']",
+        f"a[href*='/edit/{media_id}']",
+    ]
+    for selector in selectors:
+        try:
+            loc = page.locator(selector).first
+            count_result = loc.count()
+            if not inspect.isawaitable(count_result):
+                raise _TileLookupInconclusive(
+                    f"locator count for {selector!r} was not awaitable"
+                )
+            if await count_result > 0:
+                return loc
+        except _TileLookupInconclusive:
+            raise
+        except Exception as exc:
+            logger.debug("Tile lookup selector failed %r: %s", selector, exc)
+            continue
+    return None
 
 
 async def _recover_editor_landing(page, target_url: str) -> bool:
