@@ -1,7 +1,10 @@
 """FlowEngine FastAPI application."""
 
+import asyncio
+import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -56,6 +59,10 @@ MEDIA_IMAGE_CACHE_CONTROL = "public, max-age=2592000, immutable"
 # caches locally for 5 minutes.
 MEDIA_PREFIXES = ("/downloads/", "/uploads/")
 MEDIA_CACHE_CONTROL = "private, max-age=300"
+STALE_REAPER_INTERVAL_SEC = 60
+STALE_RUNNING_THRESHOLD_SEC = 600
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_data_dir(env_var: str, default: str) -> Path:
@@ -65,6 +72,185 @@ def _resolve_data_dir(env_var: str, default: str) -> Path:
     if resolved.exists() and not resolved.is_dir():
         raise RuntimeError(f"{env_var} must point to a directory, got file: {resolved}")
     return resolved
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    raw_value = (os.environ.get(name) or "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning("%s must be an integer; using default %s", name, default)
+        return default
+    if value <= 0:
+        logger.warning("%s must be positive; using default %s", name, default)
+        return default
+    return value
+
+
+def _stale_reaper_interval_sec() -> int:
+    return _env_positive_int(
+        "FLOW_STALE_REAPER_INTERVAL_SEC",
+        STALE_REAPER_INTERVAL_SEC,
+    )
+
+
+def _stale_running_threshold_sec() -> int:
+    return _env_positive_int(
+        "FLOW_STALE_RUNNING_THRESHOLD_SEC",
+        STALE_RUNNING_THRESHOLD_SEC,
+    )
+
+
+def _parse_db_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _idle_seconds(updated_at: str, observed_at: datetime) -> int:
+    return max(0, int((observed_at - _parse_db_datetime(updated_at)).total_seconds()))
+
+
+def _append_stale_reaper_error(existing: str | None, marker: str) -> str:
+    return f"{existing}\n{marker}" if existing else marker
+
+
+def _is_stale_running_row(row, observed_at: datetime, threshold_sec: int) -> bool:
+    return row is not None and row["status"] in {"claimed", "running"} and _idle_seconds(
+        row["updated_at"],
+        observed_at,
+    ) > threshold_sec
+
+
+async def _reset_stale_running_job(
+    job_id: str,
+    threshold_sec: int,
+    observed_at: datetime,
+) -> str | None:
+    from server.db.database import get_db
+
+    now = observed_at.isoformat()
+    async with get_db() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                """
+                SELECT id, status, worker_id, updated_at, error
+                FROM jobs
+                WHERE id = ?
+                  AND status IN ('claimed', 'running')
+                """,
+                (job_id,),
+            )
+            row = await cursor.fetchone()
+            if not _is_stale_running_row(row, observed_at, threshold_sec):
+                await db.execute("ROLLBACK")
+                return None
+
+            previous_worker = row["worker_id"] or "None"
+            idle_for = _idle_seconds(row["updated_at"], observed_at)
+            marker = (
+                "stale_claim_reaped: "
+                f"previous_worker={previous_worker} idle_for={idle_for}s"
+            )
+            await db.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    worker_id = NULL,
+                    claimed_at = NULL,
+                    error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND status IN ('claimed', 'running')
+                """,
+                (_append_stale_reaper_error(row["error"], marker), now, job_id),
+            )
+            await db.execute(
+                """
+                UPDATE profiles
+                SET current_job_id = NULL,
+                    worker_id = NULL
+                WHERE current_job_id = ?
+                """,
+                (job_id,),
+            )
+            await db.commit()
+            logger.info(
+                "reaped stale claim job %s previous_worker=%s idle_for=%ss",
+                job_id,
+                previous_worker,
+                idle_for,
+            )
+            return job_id
+        except Exception:
+            with suppress(Exception):
+                await db.execute("ROLLBACK")
+            raise
+
+
+async def _reap_stale_claims(threshold_sec: int | None = None) -> list[str]:
+    from server.db.database import get_db
+
+    effective_threshold_sec = (
+        _stale_running_threshold_sec() if threshold_sec is None else threshold_sec
+    )
+    observed_at = datetime.now(UTC)
+    cutoff = (observed_at - timedelta(seconds=effective_threshold_sec)).isoformat()
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id
+            FROM jobs
+            WHERE status IN ('claimed', 'running')
+              AND updated_at < ?
+            ORDER BY updated_at ASC
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+
+    reaped: list[str] = []
+    for row in rows:
+        job_id = row["id"]
+        try:
+            reaped_id = await _reset_stale_running_job(
+                job_id,
+                effective_threshold_sec,
+                observed_at,
+            )
+        except Exception:
+            logger.exception("failed to reap stale claim job %s", job_id)
+            continue
+        if reaped_id is not None:
+            reaped.append(reaped_id)
+    return reaped
+
+
+async def _reap_stale_running_claims(threshold_sec: int | None = None) -> list[str]:
+    return await _reap_stale_claims(threshold_sec)
+
+
+async def _stale_claim_reaper() -> None:
+    interval_sec = _stale_reaper_interval_sec()
+    threshold_sec = _stale_running_threshold_sec()
+    logger.info(
+        "stale claim reaper running interval_sec=%s threshold_sec=%s",
+        interval_sec,
+        threshold_sec,
+    )
+    while True:
+        await asyncio.sleep(interval_sec)
+        try:
+            await _reap_stale_claims(threshold_sec)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("stale claim reaper iteration failed")
 
 
 # Worker writes output media to FLOW_DOWNLOAD_DIR (see flow/download.py).
@@ -82,7 +268,19 @@ async def lifespan(app: FastAPI):
     setup_logging("server")
     from server.db import init_db
     await init_db()
-    yield
+    await _reap_stale_claims()
+    stale_reaper_task = asyncio.create_task(
+        _stale_claim_reaper(),
+        name="stale-claim-reaper",
+    )
+    logger.info("stale claim reaper task started")
+    try:
+        yield
+    finally:
+        stale_reaper_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await stale_reaper_task
+        logger.info("stale claim reaper task stopped")
     # --- shutdown ---
 
 
