@@ -81,6 +81,14 @@ async def test_post_job_allows_running_parent(api_client):
     assert response.status_code == 201
 
 
+async def test_post_job_allows_claimed_parent(api_client):
+    parent = await _insert_parent("claimed-parent", JobStatus.CLAIMED)
+
+    response = await api_client.post("/api/jobs", json=_child_payload(parent.id))
+
+    assert response.status_code == 201
+
+
 async def test_post_job_allows_pending_parent(api_client):
     parent = await _insert_parent("pending-parent", JobStatus.PENDING)
 

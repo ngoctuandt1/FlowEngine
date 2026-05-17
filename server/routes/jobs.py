@@ -373,11 +373,11 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    err = await _validate_chain_parent_alive(req)
+    err = _validate_chain_shape(req.jobs)
     if err:
         raise HTTPException(status_code=400, detail=err)
 
-    err = _validate_chain_shape(req.jobs)
+    err = await _validate_chain_parent_alive(req)
     if err:
         raise HTTPException(status_code=400, detail=err)
 
