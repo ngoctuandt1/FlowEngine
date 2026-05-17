@@ -53,6 +53,24 @@ class _Tile:
             raise TimeoutError(f"missing {self.selector}")
 
 
+class _RailLocator:
+    def __init__(self, page, count: int, last_tile: _Tile | None = None) -> None:
+        self.page = page
+        self._count = count
+        self._last_tile = last_tile or _Tile(page, "[data-tile-id] >> nth=-1", count > 0)
+
+    @property
+    def first(self):
+        return self._last_tile
+
+    @property
+    def last(self):
+        return self._last_tile
+
+    async def count(self) -> int:
+        return self._count
+
+
 class _EditorMountLocator:
     def __init__(self, page) -> None:
         self.page = page
@@ -67,17 +85,33 @@ class _EditorMountLocator:
 
 
 class _Page:
-    def __init__(self, matches: set[str] | None = None, url: str | None = None) -> None:
+    def __init__(
+        self,
+        matches: set[str] | None = None,
+        url: str | None = None,
+        rail_tile_count: int | None = None,
+        last_tile_selector: str = "[data-tile-id] >> nth=-1",
+    ) -> None:
         self.url = url or _edit_url()
         self.matches = matches or set()
         self.editor_mounts = False
         self.clicked_selectors: list[str] = []
         self.locators: dict[str, _Tile] = {}
         self.goto = AsyncMock()
+        self.rail_tile_count = rail_tile_count
+        self.last_tile_selector = last_tile_selector
 
     def locator(self, selector: str):
         if selector.startswith("video,"):
             return _EditorMountLocator(self)
+        if selector == "[data-tile-id]" and self.rail_tile_count is not None:
+            if self.last_tile_selector not in self.locators:
+                self.locators[self.last_tile_selector] = _Tile(
+                    self, self.last_tile_selector, self.rail_tile_count > 0
+                )
+            return _RailLocator(
+                self, self.rail_tile_count, self.locators[self.last_tile_selector]
+            )
         if selector not in self.locators:
             self.locators[selector] = _Tile(self, selector, selector in self.matches)
         return self.locators[selector]
@@ -130,6 +164,15 @@ async def test_find_tile_by_media_id_falls_back_to_edit_href():
     assert tile is page.locators[selector]
 
 
+async def test_find_tile_by_media_id_with_alt_selectors():
+    selector = f"[data-media-id='{TARGET_MEDIA_ID}']"
+    page = _Page(matches={selector})
+
+    tile = await _find_tile_by_media_id(page, TARGET_MEDIA_ID)
+
+    assert tile is page.locators[selector]
+
+
 async def test_navigate_recovery_clicks_media_id_tile_not_first_tile(monkeypatch):
     target_selector = f"[data-tile-id='fe_id_{TARGET_MEDIA_ID}']"
     first_selector = f"[data-tile-id='fe_id_{ROOT_MEDIA_ID}']"
@@ -167,6 +210,50 @@ async def test_navigate_recovery_uses_first_tile_only_when_media_id_unknown(monk
     )
 
     click_video_tile.assert_awaited_once_with(page, "")
+
+
+async def test_navigate_recovery_uses_last_tile_when_rail_size_matches(monkeypatch):
+    last_selector = "[data-tile-id] >> nth=-1"
+    page = _Page(
+        url=_edit_url(TARGET_MEDIA_ID),
+        rail_tile_count=2,
+        last_tile_selector=last_selector,
+    )
+    click_video_tile = AsyncMock(return_value=True)
+    monkeypatch.setattr(_base, "_click_video_tile", click_video_tile)
+
+    await navigate_to_edit(
+        _client(page),
+        {
+            "edit_url": _edit_url(TARGET_MEDIA_ID),
+            "project_url": _project_url(),
+            "media_id": TARGET_MEDIA_ID,
+            "ancestor_media_ids": [ROOT_MEDIA_ID],
+        },
+    )
+
+    assert page.clicked_selectors == [last_selector]
+    click_video_tile.assert_not_awaited()
+
+
+async def test_navigate_recovery_strict_when_rail_size_mismatched(monkeypatch):
+    page = _Page(url=_edit_url(TARGET_MEDIA_ID), rail_tile_count=3)
+    click_video_tile = AsyncMock(return_value=True)
+    monkeypatch.setattr(_base, "_click_video_tile", click_video_tile)
+
+    job = {
+        "edit_url": _edit_url(TARGET_MEDIA_ID),
+        "project_url": _project_url(),
+        "media_id": TARGET_MEDIA_ID,
+        "ancestor_media_ids": [ROOT_MEDIA_ID],
+    }
+
+    with pytest.raises(RuntimeError, match="target tile for media_id") as exc_info:
+        await navigate_to_edit(_client(page), job)
+
+    assert TARGET_MEDIA_ID in str(exc_info.value)
+    assert "Refusing first-tile recovery" in str(exc_info.value)
+    click_video_tile.assert_not_awaited()
 
 
 async def test_navigate_recovery_fails_clearly_when_target_tile_missing_and_deep_rail(monkeypatch):
