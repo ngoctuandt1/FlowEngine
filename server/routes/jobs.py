@@ -266,11 +266,11 @@ async def create_single_job(req: JobCreate):
     """Create a single job.
 
     If parent_job_id is given, auto-set job_level = parent.job_level + 1,
-    always inherit chain metadata from the direct parent, and inherit
+    always inherit chain metadata/profile from the direct parent, and inherit
     runtime target fields from a completed parent.
     """
     job_level = 1
-    profile = req.profile  # L1 pin (ignored when parent present, see below)
+    profile = req.profile  # L1 pin; L2+ resolves against parent below.
     chain_id = req.chain_id
 
     if req.parent_job_id:
@@ -282,16 +282,34 @@ async def create_single_job(req: JobCreate):
             raise HTTPException(status_code=400, detail=err)
         job_level = parent.job_level + 1
         chain_id = _resolve_parent_chain_id(parent)
-        # L2+ inherits profile from completed parent — INV-1 account binding.
-        # The request's `profile` hint is discarded to avoid accidental cross-
-        # account routing on a chain.
+        # L2+ inherits parent profile when pinned — INV-1 account binding.
+        # Reject explicit cross-account routing instead of silently discarding it.
+        if (
+            parent.profile is not None
+            and req.profile is not None
+            and req.profile != parent.profile
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="child profile must match parent profile (INV-1 account binding)",
+            )
+        profile = parent.profile or req.profile
+
         if parent.status == JobStatus.COMPLETED:
-            profile = parent.profile
             req.project_id = parent.project_id
             if req.project_url is None:
                 req.project_url = parent.project_url
             if req.media_id is None:
                 req.media_id = parent.media_id
+
+    if (job_level >= 2 or req.parent_job_id is not None) and profile is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "L2+ submit requires explicit profile or a parent with "
+                "profile pinned (INV-A)"
+            ),
+        )
 
     validate_job_create(req)
     job = _build_job(req, profile=profile, chain_id=chain_id, job_level=job_level)
