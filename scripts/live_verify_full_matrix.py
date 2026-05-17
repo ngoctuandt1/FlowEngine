@@ -95,6 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=30.0,
         help="Sleep between live chains; skipped in dry-run",
     )
+    parser.add_argument(
+        "--stitch",
+        action="store_true",
+        help="Concat completed per-level clips into _chain_stitched.mp4 after each live chain",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Plan matrix without Flow calls")
     return parser
 
@@ -296,6 +301,7 @@ def finalize_chain(
     download_dir: Path,
     started_at: float,
     dry_run: bool,
+    stitch: bool = False,
 ) -> dict[str, Any]:
     total_count = len(ops)
     success_count = total_count if dry_run else sum(1 for op in ops if op.get("status") == "completed")
@@ -315,11 +321,32 @@ def finalize_chain(
         "first_error": first_error(ops),
         "ts": ts,
     }
+    if stitch and not dry_run:
+        chain["stitch"] = stitch_completed_ops(ops, download_dir)
+    elif stitch:
+        chain["stitch"] = {"enabled": True, "ok": True, "dry_run": True}
+    else:
+        chain["stitch"] = {"enabled": False}
     chain["ok_label"] = chain_ok_label(chain)
     return chain
 
 
-async def run_dry_chain(*, profile: str, cate: str, mode: str, depth: int, ts: int) -> dict[str, Any]:
+def stitch_completed_ops(ops: list[dict[str, Any]], download_dir: Path) -> dict[str, Any]:
+    paths = [Path(op["path"]) for op in ops if op.get("status") == "completed" and op.get("path")]
+    if len(paths) != len(ops):
+        return {"enabled": True, "ok": False, "error": "not all ops have completed clip paths"}
+    try:
+        from flow.operations._chain_stitch import stitch_chain_clips
+
+        stitched_path = stitch_chain_clips(paths, download_dir / "_chain_stitched.mp4")
+    except Exception as exc:
+        return {"enabled": True, "ok": False, "error": str(exc)}
+    return {"enabled": True, "ok": True, "path": str(stitched_path)}
+
+
+async def run_dry_chain(
+    *, profile: str, cate: str, mode: str, depth: int, ts: int, stitch: bool = False
+) -> dict[str, Any]:
     env = configure_mode_env(cate, mode)
     download_dir = REPO_ROOT / "downloads" / f"matrix_{ts}" / cate / mode
     ops = build_op_plan(cate, depth)
@@ -334,10 +361,13 @@ async def run_dry_chain(*, profile: str, cate: str, mode: str, depth: int, ts: i
         download_dir=download_dir,
         started_at=time.time(),
         dry_run=True,
+        stitch=stitch,
     )
 
 
-async def run_live_chain(*, profile: str, cate: str, mode: str, depth: int, ts: int) -> dict[str, Any]:
+async def run_live_chain(
+    *, profile: str, cate: str, mode: str, depth: int, ts: int, stitch: bool = False
+) -> dict[str, Any]:
     env = configure_mode_env(cate, mode)
     download_dir = REPO_ROOT / "downloads" / f"matrix_{ts}" / cate / mode
     download_dir.mkdir(parents=True, exist_ok=True)
@@ -415,6 +445,7 @@ async def run_live_chain(*, profile: str, cate: str, mode: str, depth: int, ts: 
         download_dir=download_dir,
         started_at=started_at,
         dry_run=False,
+        stitch=stitch,
     )
 
 
@@ -513,7 +544,14 @@ async def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     for cate in cates:
         for mode in modes:
             runner = run_dry_chain if args.dry_run else run_live_chain
-            chain = await runner(profile=args.profile, cate=cate, mode=mode, depth=args.depth, ts=ts)
+            chain = await runner(
+                profile=args.profile,
+                cate=cate,
+                mode=mode,
+                depth=args.depth,
+                ts=ts,
+                stitch=args.stitch,
+            )
             chains.append(chain)
             completed += 1
             if not args.dry_run and completed < total and args.cooldown_sec > 0:

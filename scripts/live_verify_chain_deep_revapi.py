@@ -80,6 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip Flow calls and emit deterministic level plan",
     )
+    parser.add_argument(
+        "--stitch",
+        action="store_true",
+        help="Concat completed per-level clips into _chain_stitched.mp4 after live chain",
+    )
     return parser
 
 
@@ -233,6 +238,21 @@ def materialize_output_file(
     return str(dest)
 
 
+def stitch_completed_levels(levels: list[dict[str, Any]], download_dir: Path, *, enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return {"enabled": False}
+    paths = [Path(entry["path"]) for entry in levels if entry.get("status") == "completed" and entry.get("path")]
+    if len(paths) != len(levels):
+        return {"enabled": True, "ok": False, "error": "not all levels have completed clip paths"}
+    try:
+        from flow.operations._chain_stitch import stitch_chain_clips
+
+        stitched_path = stitch_chain_clips(paths, download_dir / "_chain_stitched.mp4")
+    except Exception as exc:
+        return {"enabled": True, "ok": False, "error": str(exc)}
+    return {"enabled": True, "ok": True, "path": str(stitched_path)}
+
+
 async def capture_chain_failure(
     client,
     *,
@@ -263,6 +283,7 @@ async def run_live_profile(
     ts: int,
     assert_duration: bool,
     duration_tolerance_sec: float,
+    stitch: bool = False,
 ) -> dict[str, Any]:
     from flow.client import FlowClient
     from flow.operations.extend import extend_video
@@ -385,11 +406,13 @@ async def run_live_profile(
     completed_levels = [entry for entry in levels if entry.get("status") == "completed"]
     media_ids = [entry.get("media_id") for entry in completed_levels if entry.get("media_id")]
     files = [entry.get("path") for entry in completed_levels if entry.get("path")]
+    stitch_result = stitch_completed_levels(levels, download_dir, enabled=stitch)
     all_pass = (
         len(completed_levels) == depth
         and len(set(media_ids)) == depth
         and len(set(files)) == depth
         and bool(duration.get("all_pass"))
+        and (not stitch_result.get("enabled") or bool(stitch_result.get("ok")))
     )
     return {
         "profile": profile,
@@ -398,6 +421,7 @@ async def run_live_profile(
         "levels": levels,
         "duration": duration,
         "all_pass": all_pass,
+        "stitch": stitch_result,
         "wall_time_sec": round(time.time() - t0, 1),
         "credit_estimate": depth * VEOLITE_CREDITS_PER_LEVEL,
         "download_dir": str(download_dir),
@@ -412,6 +436,7 @@ async def run_dry_profile(
     ts: int,
     assert_duration: bool,
     duration_tolerance_sec: float,
+    stitch: bool = False,
 ) -> dict[str, Any]:
     levels = build_level_plan(profile, depth, mode)
     for entry in levels:
@@ -450,6 +475,7 @@ async def run_dry_profile(
         "mode": mode,
         "levels": levels,
         "duration": {"all_pass": True, "rows": rows, "report_path": str(report_path)},
+        "stitch": {"enabled": bool(stitch), "ok": True, "dry_run": True} if stitch else {"enabled": False},
         "all_pass": True,
         "wall_time_sec": 0.0,
         "credit_estimate": depth * VEOLITE_CREDITS_PER_LEVEL,
@@ -462,6 +488,7 @@ async def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     profiles = selected_profiles(args)
     ts = int(time.time())
     runner = run_dry_profile if args.dry_run else run_live_profile
+    runner_extra = {"stitch": True} if args.stitch else {}
     results = await asyncio.gather(
         *[
             runner(
@@ -471,6 +498,7 @@ async def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 ts=ts,
                 assert_duration=args.assert_duration,
                 duration_tolerance_sec=args.duration_tolerance_sec,
+                **runner_extra,
             )
             for profile in profiles
         ]
@@ -485,6 +513,8 @@ async def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         )
         print_level_table(result["levels"])
         print(f"Duration report: {result['duration'].get('report_path')}")
+        if result.get("stitch", {}).get("enabled"):
+            print(f"Stitched: {result['stitch'].get('path') or result['stitch'].get('error')}")
 
     all_pass = all(result.get("all_pass") for result in results)
     summary = {
