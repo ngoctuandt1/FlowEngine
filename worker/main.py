@@ -17,7 +17,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from worker.browser_pool import init_pool, shutdown_pool
-from worker.dispatcher import dispatch_job
+from worker.dispatcher import dispatch_batch, dispatch_job
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
 from worker.remote_api import RemoteAPI
@@ -39,6 +39,13 @@ WORKER_PROFILES = [
 ]
 POLL_INTERVAL_SEC = int(os.getenv("POLL_INTERVAL_SEC", "5"))
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
+# Opt-in batch-claim wire: when set, the worker asks the server for up to
+# ``MAX_CONCURRENT_JOBS`` jobs per /claim round-trip and routes any
+# multi-job result through dispatch_batch (multi-tab orchestrator).
+# Default off — single-claim path is the live-verified baseline.
+FLOW_CLAIM_BATCH_ENABLED = os.getenv(
+    "FLOW_CLAIM_BATCH_ENABLED", "0"
+).strip().lower() in ("1", "true", "yes")
 # When ALLOW_SAME_PROFILE_CONCURRENCY=1, the dispatcher clones the profile
 # directory per Chrome launch (FLOW_USE_BASE_PROFILE=0 path) so the
 # legacy "1 job per profile" cap no longer applies. Set this to 1
@@ -190,24 +197,9 @@ async def claim_loop(
         SERVER_URL, WORKER_ID, WORKER_PROFILES, POLL_INTERVAL_SEC, max_concurrent,
     )
 
-    async def run_claimed_job(job: dict) -> None:
+    async def report_result(job: dict, result: dict) -> None:
         job_id = job.get("id", "?")
         profile = job.get("profile", "")
-        try:
-            result = await dispatch_job(
-                job,
-                profile_mgr,
-                project_lock,
-                manage_profile=False,
-            )
-        except Exception as exc:
-            logger.exception("Dispatch crashed for job %s", job_id)
-            result = {"status": "failed", "error": str(exc)}
-        finally:
-            if profile:
-                profile_mgr.mark_available(profile)
-                _draining.discard(profile)
-
         try:
             if result.get("requeue"):
                 # Burn-recovery success path: block the profile during the API
@@ -241,6 +233,65 @@ async def claim_loop(
                 logger.info("Job %s result sent -> %s", job_id, result.get("status"))
         except Exception:
             logger.error("Failed to report result for job %s", job_id, exc_info=True)
+
+    async def run_claimed_job(job: dict) -> None:
+        """Single-job path: dispatch one job, release its profile, report."""
+        job_id = job.get("id", "?")
+        profile = job.get("profile", "")
+        try:
+            result = await dispatch_job(
+                job,
+                profile_mgr,
+                project_lock,
+                manage_profile=False,
+            )
+        except Exception as exc:
+            logger.exception("Dispatch crashed for job %s", job_id)
+            result = {"status": "failed", "error": str(exc)}
+        finally:
+            if profile:
+                profile_mgr.mark_available(profile)
+                _draining.discard(profile)
+
+        await report_result(job, result)
+
+    async def run_claimed_batch(jobs: list[dict]) -> None:
+        """Batch path: dispatch a server-claimed batch via ``dispatch_batch``.
+
+        ``dispatch_batch`` returns one result dict per input job (in order),
+        each enriched with ``job_id``. Profile release is handled inside
+        the batch dispatchers (multitab/L1-fresh) so we only mirror the
+        legacy single-path mark_available for jobs whose profile is still
+        present on the returned dict.
+        """
+        job_ids = [j.get("id") for j in jobs]
+        try:
+            results = await dispatch_batch(jobs, profile_mgr, project_lock)
+        except Exception as exc:
+            logger.exception("Batch dispatch crashed for jobs %s", job_ids)
+            results = [
+                {"status": "failed", "error": str(exc), "job_id": j.get("id")}
+                for j in jobs
+            ]
+        finally:
+            # Defensive: ensure every claimed profile is released even if a
+            # batch dispatcher raised before its own cleanup ran.
+            for j in jobs:
+                profile = j.get("profile", "")
+                if profile:
+                    profile_mgr.mark_available(profile)
+                    _draining.discard(profile)
+
+        # Pair results with input jobs by job_id (dispatch_batch preserves
+        # order, but match defensively in case a future dispatcher reorders).
+        by_id = {r.get("job_id"): r for r in results if r.get("job_id")}
+        for job in jobs:
+            jid = job.get("id")
+            result = by_id.get(jid) or {
+                "status": "failed",
+                "error": "batch dispatch returned no result",
+            }
+            await report_result(job, result)
 
     async def wait_for_capacity() -> None:
         if not in_flight:
@@ -300,24 +351,39 @@ async def claim_loop(
                 claim_profiles = (available * slots)[:slots]
             else:
                 claim_profiles = available[:slots]
+            # Opt-in batch claim: ask the server for up to ``slots`` jobs in
+            # one round-trip. Only activates when explicitly enabled AND
+            # there is room for more than one job — otherwise the single-
+            # claim wire (live-verified baseline) is used.
+            use_batch = FLOW_CLAIM_BATCH_ENABLED and slots > 1
+            claimed_jobs: list[dict] = []
             try:
-                job = await api.claim_job(claim_profiles)
+                if use_batch:
+                    claimed_jobs = await api.claim_batch(claim_profiles, batch_size=slots)
+                else:
+                    single = await api.claim_job(claim_profiles)
+                    if single is not None:
+                        claimed_jobs = [single]
             except Exception:
                 logger.warning("Claim request failed", exc_info=True)
-                job = None
+                claimed_jobs = []
 
-            if job is None:
+            if not claimed_jobs:
                 await wait_for_capacity()
                 continue
 
-            job_id = job.get("id", "?")
-            job_type = job.get("type", "?")
-            job_profile = job.get("profile", "")
-            logger.info("Claimed job %s [%s] profile=%s", job_id, job_type, job_profile)
+            for j in claimed_jobs:
+                jid = j.get("id", "?")
+                jtype = j.get("type", "?")
+                jprofile = j.get("profile", "")
+                logger.info("Claimed job %s [%s] profile=%s", jid, jtype, jprofile)
+                if jprofile:
+                    profile_mgr.mark_busy(jprofile, jid)
 
-            if job_profile:
-                profile_mgr.mark_busy(job_profile, job_id)
-            task = asyncio.create_task(run_claimed_job(job))
+            if len(claimed_jobs) > 1:
+                task = asyncio.create_task(run_claimed_batch(claimed_jobs))
+            else:
+                task = asyncio.create_task(run_claimed_job(claimed_jobs[0]))
             in_flight.add(task)
 
     finally:

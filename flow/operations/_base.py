@@ -1052,7 +1052,13 @@ async def finalize_operation(
         parent_media_id=parent_media_id,
         ancestor_media_ids=list(ancestor_media_ids),
         download_media_ids=download_media_ids,
-        strict=(parent_media_id is not None),
+        # SPEC INV-5 (docs/SPEC.md:103) mandates the full resolution
+        # chain: network event → latest DOM tile → settled /edit/ route →
+        # parent fallback. The previous strict=True early-raise short-
+        # circuited paths 2-4 whenever a chain-child had no network
+        # event, even though tile + settled-route fallback are healthy
+        # recovery paths.
+        strict=False,
     )
 
     # Build edit_url

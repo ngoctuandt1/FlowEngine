@@ -22,7 +22,13 @@ def _client():
     )
 
 
-async def test_finalize_operation_passes_strict_true_when_parent_media_id_set(monkeypatch):
+async def test_finalize_operation_passes_strict_false_for_chain_child(monkeypatch):
+    """SPEC INV-5 (docs/SPEC.md:103) mandates the full network -> tile ->
+    URL -> fallback chain. ``finalize_operation`` therefore always calls
+    ``resolve_final_media_id`` with ``strict=False`` so a missing network
+    event cannot short-circuit the DOM-tile / settled-route recovery
+    paths — even when the job has a parent media_id (chain-child case).
+    """
     client = _client()
     resolve_final_media_id = AsyncMock(return_value=NEW_SLUG)
     download_video = AsyncMock(return_value=["out.mp4"])
@@ -49,7 +55,7 @@ async def test_finalize_operation_passes_strict_true_when_parent_media_id_set(mo
         parent_media_id=PARENT_SLUG,
         ancestor_media_ids=[],
         download_media_ids=[PARENT_SLUG],
-        strict=True,
+        strict=False,
     )
     download_video.assert_awaited_once_with(
         client,
