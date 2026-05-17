@@ -60,7 +60,33 @@ MEDIA_IMAGE_CACHE_CONTROL = "public, max-age=2592000, immutable"
 MEDIA_PREFIXES = ("/downloads/", "/uploads/")
 MEDIA_CACHE_CONTROL = "private, max-age=300"
 STALE_REAPER_INTERVAL_SEC = 60
-STALE_RUNNING_THRESHOLD_SEC = 600
+# Flow jobs legitimately stay in ``claimed`` / ``running`` for the full
+# generation cycle: text-to-video ~ 300-600s, extend ~ 600-900s, deep
+# chains push past 15 minutes when the model panel + submit confirmation
+# is slow. The reaper used to fire at 600s, which would yank an active
+# job back to ``pending`` mid-generation — another worker (or the same
+# worker on its next claim) would then reclaim it, opening a second
+# Chrome session against the same project_url and double-charging
+# credits. The threshold now sits comfortably above the upper bound,
+# and ``_reap_stale_claims`` additionally checks that the owning
+# worker's heartbeat is stale before reaping (see
+# ``_worker_heartbeat_is_stale``).
+STALE_RUNNING_THRESHOLD_SEC = 1800
+# Stale-claim reaper only touches a job whose owning worker has not
+# pinged ``/api/worker/heartbeat`` recently. The worker pings on every
+# claim/heartbeat (server/routes/worker.py); a gap larger than this
+# means the worker process is dead, not just busy on a long job.
+WORKER_HEARTBEAT_STALE_SEC = 180
+# After server boot the in-memory ``_workers`` heartbeat map is empty.
+# A live worker mid-Flow-generation has not yet re-registered (the next
+# heartbeat is up to ``FLOW_HEARTBEAT_INTERVAL_SEC`` away on the worker
+# side). Without a grace window the very first reaper pass would treat
+# every claimed job as orphaned and reset them all — the next claim
+# cycle would then open duplicate Chrome sessions against the same
+# project_url, double-billing credits. Defer the first stale-claim
+# sweep by at least 2× worker heartbeat interval so workers have time
+# to re-register.
+STALE_REAPER_STARTUP_GRACE_SEC = 180
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +127,53 @@ def _stale_running_threshold_sec() -> int:
         "FLOW_STALE_RUNNING_THRESHOLD_SEC",
         STALE_RUNNING_THRESHOLD_SEC,
     )
+
+
+def _worker_heartbeat_stale_sec() -> int:
+    return _env_positive_int(
+        "FLOW_WORKER_HEARTBEAT_STALE_SEC",
+        WORKER_HEARTBEAT_STALE_SEC,
+    )
+
+
+def _stale_reaper_startup_grace_sec() -> int:
+    return _env_positive_int(
+        "FLOW_STALE_REAPER_STARTUP_GRACE_SEC",
+        STALE_REAPER_STARTUP_GRACE_SEC,
+    )
+
+
+def _worker_heartbeat_is_stale(
+    worker_id: str | None,
+    observed_at: datetime,
+    stale_sec: int,
+) -> bool:
+    """Return True iff the worker has not pinged within ``stale_sec``.
+
+    The reaper consults this on every candidate row so we only nuke jobs
+    whose owning worker is genuinely dead. Long-running but live jobs
+    (Flow extends sit in ``running`` 600-900s) are kept untouched: the
+    worker is still posting ``/api/worker/heartbeat`` every claim cycle,
+    so the in-memory heartbeat map stays fresh.
+
+    A missing ``worker_id`` (somehow ``claimed`` without an owner) is
+    treated as stale — there is no live process to protect. An unknown
+    worker_id (claimed before this server boot, no heartbeat yet
+    observed) is also treated as stale: if the worker were alive it
+    would have re-registered via /claim or /heartbeat by now.
+    """
+    if not worker_id:
+        return True
+    # Imported lazily so this module stays import-safe under test
+    # reloads that touch ``server.routes.worker``.
+    from server.routes.worker import _workers as worker_heartbeats
+
+    last_seen = worker_heartbeats.get(worker_id)
+    if last_seen is None:
+        return True
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=UTC)
+    return (observed_at - last_seen).total_seconds() > stale_sec
 
 
 def _parse_db_datetime(value: str) -> datetime:
@@ -148,6 +221,25 @@ async def _reset_stale_running_job(
             row = await cursor.fetchone()
             if not _is_stale_running_row(row, observed_at, threshold_sec):
                 await db.execute("ROLLBACK")
+                return None
+
+            # INV-1 guard: never yank a job out from under an actively
+            # heartbeating worker. The DB ``updated_at`` field only
+            # advances on status changes, not on per-poll progress, so a
+            # legitimately long generation looks "idle" by row age even
+            # while the worker is busy. Cross-check the worker's
+            # in-memory heartbeat before resetting.
+            if not _worker_heartbeat_is_stale(
+                row["worker_id"],
+                observed_at,
+                _worker_heartbeat_stale_sec(),
+            ):
+                await db.execute("ROLLBACK")
+                logger.debug(
+                    "skip reaping job %s — worker %s heartbeat is fresh",
+                    job_id,
+                    row["worker_id"],
+                )
                 return None
 
             previous_worker = row["worker_id"] or "None"
@@ -235,22 +327,43 @@ async def _reap_stale_running_claims(threshold_sec: int | None = None) -> list[s
     return await _reap_stale_claims(threshold_sec)
 
 
-async def _stale_claim_reaper() -> None:
+async def _stale_claim_reaper(startup_grace_sec: int | None = None) -> None:
     interval_sec = _stale_reaper_interval_sec()
     threshold_sec = _stale_running_threshold_sec()
+    grace_sec = (
+        _stale_reaper_startup_grace_sec()
+        if startup_grace_sec is None
+        else startup_grace_sec
+    )
     logger.info(
-        "stale claim reaper running interval_sec=%s threshold_sec=%s",
+        "stale claim reaper running interval_sec=%s threshold_sec=%s startup_grace_sec=%s",
         interval_sec,
         threshold_sec,
+        grace_sec,
     )
+    # Defer the FIRST sweep by ``grace_sec`` so live workers mid-Flow-job
+    # have time to re-register their heartbeat after a server restart.
+    # Without this, the empty in-memory ``_workers`` map causes
+    # ``_worker_heartbeat_is_stale`` to return True for every claimed
+    # job and the first pass would reap them all — triggering duplicate
+    # Chrome sessions on the next claim cycle.
+    if grace_sec > 0:
+        logger.info(
+            "stale claim reaper warmup — skipping first sweep for %ss",
+            grace_sec,
+        )
+        try:
+            await asyncio.sleep(grace_sec)
+        except asyncio.CancelledError:
+            raise
     while True:
-        await asyncio.sleep(interval_sec)
         try:
             await _reap_stale_claims(threshold_sec)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("stale claim reaper iteration failed")
+        await asyncio.sleep(interval_sec)
 
 
 # Worker writes output media to FLOW_DOWNLOAD_DIR (see flow/download.py).
@@ -266,6 +379,12 @@ async def lifespan(app: FastAPI):
     # --- startup ---
     from server.config import setup_logging
     setup_logging("server")
+    # Fail fast if a production deploy (DASHBOARD_PASSWORD set) is about
+    # to expose /api/worker/* with the dev-key default. The escape hatch
+    # for operators who really want it is FLOW_ALLOW_INSECURE_WORKER_API=1
+    # (logs CRITICAL but does not raise).
+    from server.auth import assert_production_api_key
+    assert_production_api_key()
     from server.db import init_db
     await init_db()
     from flow.credentials.sheet_loader import (
@@ -280,7 +399,11 @@ async def lifespan(app: FastAPI):
             logger.exception(
                 "Malformed sheet credentials at startup; existing profiles cache remains unchanged"
             )
-    await _reap_stale_claims()
+    # NOTE: do not eager-reap at startup. ``_workers`` is empty until
+    # workers re-register via /claim or /heartbeat, so an immediate
+    # sweep would treat all live claimed jobs as orphaned. The reaper
+    # task below honours ``STALE_REAPER_STARTUP_GRACE_SEC`` before its
+    # first pass to bridge that window.
     stale_reaper_task = asyncio.create_task(
         _stale_claim_reaper(),
         name="stale-claim-reaper",
