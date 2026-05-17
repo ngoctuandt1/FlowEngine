@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # Resource bounds — applied at the Pydantic layer so an unbounded timeline is
@@ -38,12 +38,15 @@ class TimelineClip(BaseModel):
     duration_sec: float = Field(gt=0)
     trim_in: float | None = Field(default=None, ge=0)
 
-    @model_validator(mode="after")
-    def _normalize(self) -> "TimelineClip":
-        self.asset_id = self.asset_id.strip()
-        if not self.asset_id:
-            raise ValueError("asset_id is required")
-        return self
+    @field_validator("asset_id", mode="before")
+    @classmethod
+    def _normalize_asset_id(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("asset_id is required")
+            return stripped
+        return value
 
 
 class TimelineTrack(BaseModel):

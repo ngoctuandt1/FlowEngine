@@ -120,7 +120,7 @@ async def test_generate_idea_rejects_oversized_reference_image(
         def raise_for_status(self):
             return None
 
-        async def aiter_bytes(self):
+        async def aiter_bytes(self, chunk_size=None):
             chunk = b"\x00" * (1024 * 1024)
             for _ in range(idea.REF_IMAGE_MAX_BYTES // len(chunk) + 2):
                 yield chunk
@@ -157,6 +157,99 @@ async def test_generate_idea_rejects_oversized_reference_image(
         json={
             "prompt": "ignore",
             "ref_image_urls": ["https://cdn.example.com/huge.png"],
+        },
+    )
+    assert response.status_code == 502
+    assert "exceeds" in response.json()["error"]
+
+
+async def test_generate_idea_rejects_cgnat_ip_host(api_client, monkeypatch):
+    """CGNAT (100.64.0.0/10, RFC 6598) must be blocked even though
+    ipaddress.IPv4Address.is_private returns False for that range."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    import server.routes.idea as idea
+
+    monkeypatch.setattr(
+        idea.socket,
+        "getaddrinfo",
+        lambda *a, **kw: [(idea.socket.AF_INET, None, None, "", ("100.64.0.5", 0))],
+    )
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("gemini_client.generate must not be reached")
+
+    monkeypatch.setattr(idea.gemini_client, "generate", boom)
+
+    response = await api_client.post(
+        "/api/idea/generate",
+        json={
+            "prompt": "ignore",
+            "ref_image_urls": ["http://cgnat.example.com/leak.png"],
+        },
+    )
+    assert response.status_code == 502
+    assert "not allowed" in response.json()["error"]
+
+
+async def test_generate_idea_rejects_oversize_via_content_length(api_client, monkeypatch):
+    """A server advertising content-length > 10 MB must be rejected without
+    streaming the body."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    import server.routes.idea as idea
+
+    monkeypatch.setattr(
+        idea.socket,
+        "getaddrinfo",
+        lambda *a, **kw: [(idea.socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
+    )
+
+    class _FakeStreamResponse:
+        headers = {
+            "content-type": "image/png",
+            "content-length": str(idea.REF_IMAGE_MAX_BYTES + 1),
+        }
+        extensions: dict = {}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self, chunk_size=None):
+            # Should NEVER be invoked once content-length pre-check fires.
+            raise AssertionError("aiter_bytes must not be reached")
+            yield b""  # pragma: no cover
+
+    class _FakeStreamCtx:
+        async def __aenter__(self):
+            return _FakeStreamResponse()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def stream(self, method, url):
+            return _FakeStreamCtx()
+
+    monkeypatch.setattr(idea.httpx, "AsyncClient", _FakeClient)
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("gemini_client.generate must not be reached")
+
+    monkeypatch.setattr(idea.gemini_client, "generate", boom)
+
+    response = await api_client.post(
+        "/api/idea/generate",
+        json={
+            "prompt": "ignore",
+            "ref_image_urls": ["https://cdn.example.com/over.png"],
         },
     )
     assert response.status_code == 502

@@ -118,16 +118,40 @@ def _ip_is_forbidden(ip_text: str) -> bool:
     except ValueError:
         # Unknown address family → reject defensively.
         return True
-    return any(
-        (
-            ip.is_private,
-            ip.is_loopback,
-            ip.is_link_local,
-            ip.is_multicast,
-            ip.is_reserved,
-            ip.is_unspecified,
-        )
-    )
+    # `is_global` is the tightest allow-list: it rejects every special-use
+    # range (private RFC1918, loopback, link-local, CGNAT 100.64/10,
+    # documentation 192.0.2/24, benchmarking 198.18/15, multicast,
+    # unspecified, reserved). The bare `is_*` predicates miss CGNAT.
+    if not ip.is_global:
+        return True
+    if ip.is_multicast:
+        return True
+    return False
+
+
+def _extract_peer_ip(response: object) -> str | None:
+    """Best-effort extraction of the live socket peer IP from an httpx Response.
+
+    Returns None when the attribute path is unavailable (e.g. mocked tests) so
+    callers can degrade to the pre-flight DNS validation alone.
+    """
+    network_stream = None
+    try:
+        network_stream = response.extensions.get("network_stream")  # type: ignore[attr-defined]
+    except Exception:
+        network_stream = None
+    if network_stream is None:
+        return None
+    try:
+        addr = network_stream.get_extra_info("server_addr")
+    except Exception:
+        return None
+    if not addr:
+        return None
+    candidate = addr[0] if isinstance(addr, (tuple, list)) else addr
+    if not isinstance(candidate, str):
+        return None
+    return candidate.split("%", 1)[0]
 
 
 def _validate_public_url(url: str) -> None:
@@ -174,13 +198,28 @@ async def _fetch_capped(client: httpx.AsyncClient, url: str) -> tuple[bytes, str
     async with client.stream("GET", url) as response:
         response.raise_for_status()
         content_type = response.headers.get("content-type", "")
+        # Reject upfront when Content-Length declares an over-cap payload —
+        # cheaper than streaming the bytes just to discard them.
+        declared = response.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > REF_IMAGE_MAX_BYTES:
+            raise RuntimeError(
+                f"Reference image exceeds {REF_IMAGE_MAX_BYTES} byte limit: {url}"
+            )
+        # Validate the peer's resolved IP a second time — a DNS-rebind that
+        # flipped public → private between getaddrinfo and connect would land
+        # here. httpx exposes the live socket via the underlying network
+        # stream; we read it defensively because the attribute path differs
+        # across httpx versions.
+        peer_ip = _extract_peer_ip(response)
+        if peer_ip and _ip_is_forbidden(peer_ip):
+            raise RuntimeError(f"Reference image URL host is not allowed: {url}")
         buffer = bytearray()
-        async for chunk in response.aiter_bytes():
-            buffer.extend(chunk)
-            if len(buffer) > REF_IMAGE_MAX_BYTES:
+        async for chunk in response.aiter_bytes(chunk_size=65536):
+            if len(buffer) + len(chunk) > REF_IMAGE_MAX_BYTES:
                 raise RuntimeError(
                     f"Reference image exceeds {REF_IMAGE_MAX_BYTES} byte limit: {url}"
                 )
+            buffer.extend(chunk)
         return bytes(buffer), content_type
 
 

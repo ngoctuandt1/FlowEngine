@@ -175,11 +175,19 @@ async def test_render_endpoint_concurrency_cap_returns_429(api_client, monkeypat
         ],
         "total_duration_sec": 1.0,
     }
-    first = await api_client.post("/api/render/timeline", json=body)
+    # Starlette runs BackgroundTasks BEFORE returning the response, so a
+    # `slow_process` that waits on `release.set()` would deadlock the first
+    # POST. Run the first POST in a background task, wait for `started` to
+    # fire, then issue the second POST and release.
+    first_task = asyncio.create_task(api_client.post("/api/render/timeline", json=body))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        second = await api_client.post("/api/render/timeline", json=body)
+        assert second.status_code == 429
+        assert "concurrency" in second.json()["detail"].lower()
+    finally:
+        release.set()
+        first = await first_task
+        render_route._active_renders = 0
+
     assert first.status_code == 202
-    second = await api_client.post("/api/render/timeline", json=body)
-    assert second.status_code == 429
-    assert "concurrency" in second.json()["detail"].lower()
-    # Allow the slow task to complete so other tests do not see a stuck slot.
-    release.set()
-    render_route._active_renders = 0

@@ -185,6 +185,74 @@ def test_fetch_url_rejects_dns_rebinding_target(temp_db_path, monkeypatch, tmp_p
     assert response.json()["detail"] == "Value error, url host is not allowed"
 
 
+def test_fetch_url_rejects_cgnat_host(temp_db_path, monkeypatch, tmp_path):
+    """100.64.0.0/10 (RFC 6598 CGNAT) is not covered by ``is_private`` but
+    can still reach ISP-internal services. The strict ``is_global`` filter
+    must reject it."""
+    client, _, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        media_fetch.socket,
+        "getaddrinfo",
+        lambda *a, **kw: [(media_fetch.socket.AF_INET, None, None, "", ("100.64.0.5", 0))],
+    )
+
+    response = client.post(
+        "/api/media/fetch-url",
+        json={"url": "https://cgnat.example.com/video.mp4"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Value error, url host is not allowed"
+
+
+def test_fetch_url_probe_rejects_manifest_with_private_ip(temp_db_path, monkeypatch, tmp_path):
+    """An attacker page that resolves to a public IP but whose yt-dlp
+    info_dict points at an internal HLS manifest must be refused BEFORE the
+    real download starts."""
+    client, _, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        media_fetch.socket,
+        "getaddrinfo",
+        lambda *a, **kw: [(media_fetch.socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
+    )
+
+    class ManifestLeakingDL:
+        skip_download_seen = []
+
+        def __init__(self, options):
+            self.options = options
+            ManifestLeakingDL.skip_download_seen.append(bool(options.get("skip_download")))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def extract_info(self, url, download=True):
+            # Probe pass returns an info_dict whose manifest_url points at
+            # the AWS metadata service.
+            return {
+                "url": url,
+                "manifest_url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                "formats": [
+                    {"url": "http://10.0.0.5/segment.ts"},
+                ],
+            }
+
+    monkeypatch.setattr(media_fetch.yt_dlp, "YoutubeDL", ManifestLeakingDL)
+
+    response = client.post(
+        "/api/media/fetch-url",
+        json={"url": "https://attacker.example.com/page"},
+    )
+
+    # Two-pass probe should fire BEFORE the real download.
+    assert ManifestLeakingDL.skip_download_seen[0] is True
+    # The bad manifest must surface as the 400/502 SSRF rejection.
+    assert response.status_code in (400, 502)
+    assert response.json()["detail"] != "Example video"
+
+
 def test_fetch_url_openapi_uses_typed_request_and_response(temp_db_path, monkeypatch, tmp_path):
     client, _, _ = _client_with_data_dir(monkeypatch, tmp_path)
 
