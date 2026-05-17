@@ -188,9 +188,13 @@ async def test_reaper_interval_and_threshold_honor_env(monkeypatch):
     monkeypatch.setattr(app_module.asyncio, "sleep", fake_sleep)
 
     with pytest.raises(asyncio.CancelledError):
-        await app_module._stale_claim_reaper()
+        # Skip the startup grace window; this test exercises the
+        # steady-state interval/threshold env wiring only.
+        await app_module._stale_claim_reaper(startup_grace_sec=0)
 
-    assert thresholds == [3]
+    # Loop order is reap → sleep; the second sleep call raises so reap
+    # has been invoked twice with the env-overridden threshold.
+    assert thresholds == [3, 3]
     assert sleeps == [2, 2]
 
 
@@ -221,10 +225,18 @@ async def test_reaper_logs_single_row_db_error_and_continues(db, monkeypatch, ca
     assert "synthetic row failure" in caplog.text
 
 
-async def test_lifespan_runs_immediate_startup_sweep_before_periodic_task(
+async def test_lifespan_defers_first_sweep_to_periodic_task(
     db,
     monkeypatch,
 ):
+    """Server boot must NOT eager-reap.
+
+    The in-memory ``_workers`` heartbeat map is empty until workers
+    re-register, so an immediate sweep treats every live claimed job
+    as orphaned and the next claim cycle opens duplicate Chrome
+    sessions. Only the periodic reaper runs at startup; that task
+    owns its own grace-period before the first pass.
+    """
     import server.config
 
     events: list[tuple[str, int | None]] = []
@@ -246,7 +258,8 @@ async def test_lifespan_runs_immediate_startup_sweep_before_periodic_task(
     async with app_module.lifespan(app_module.app):
         await asyncio.wait_for(started.wait(), timeout=1)
 
-    assert events == [("startup-sweep", None), ("periodic-task", None)]
+    # Only the periodic task should have run; no eager sweep.
+    assert events == [("periodic-task", None)]
 
 
 async def test_lifespan_starts_and_cancels_reaper_task(db, monkeypatch, caplog):
@@ -337,3 +350,65 @@ async def test_dead_worker_with_old_running_job_is_reaped(db, monkeypatch):
     assert reaped == [job.id]
     assert row["status"] == "pending"
     assert row["worker_id"] is None
+
+
+# -- Server-restart startup grace period ---------------------------------------
+
+
+async def test_default_startup_grace_at_least_twice_heartbeat_interval():
+    """Grace must outlast 2× the worker heartbeat interval (60s default)."""
+    assert app_module.STALE_REAPER_STARTUP_GRACE_SEC >= 120
+
+
+async def test_stale_claim_reaper_skips_first_sweep_during_grace(db, monkeypatch):
+    """During the boot grace window the reaper must NOT call _reap_stale_claims.
+
+    Simulates the server-restart edge case: in-memory ``_workers`` map is
+    empty, so a sweep would treat every claimed row as orphaned and
+    duplicate Chrome sessions on the next claim. The task must wait
+    out the grace period before its first pass.
+    """
+    calls: list[int] = []
+
+    async def fake_reap(threshold_sec: int | None = None) -> list[str]:
+        calls.append(1)
+        return []
+
+    monkeypatch.setattr(app_module, "_reap_stale_claims", fake_reap)
+    monkeypatch.setenv("FLOW_STALE_REAPER_INTERVAL_SEC", "30")
+
+    # Grace > test timeout so the first sweep never lands.
+    task = asyncio.create_task(app_module._stale_claim_reaper(startup_grace_sec=60))
+    try:
+        await asyncio.sleep(0.2)
+        assert calls == []  # still in grace window
+    finally:
+        task.cancel()
+        with suppress_cancel():
+            await task
+
+
+async def test_stale_claim_reaper_runs_after_grace(db, monkeypatch):
+    """Once grace expires the periodic sweep starts firing normally."""
+    calls = asyncio.Event()
+
+    async def fake_reap(threshold_sec: int | None = None) -> list[str]:
+        calls.set()
+        return []
+
+    monkeypatch.setattr(app_module, "_reap_stale_claims", fake_reap)
+    monkeypatch.setenv("FLOW_STALE_REAPER_INTERVAL_SEC", "30")
+
+    task = asyncio.create_task(app_module._stale_claim_reaper(startup_grace_sec=0))
+    try:
+        await asyncio.wait_for(calls.wait(), timeout=1.0)
+    finally:
+        task.cancel()
+        with suppress_cancel():
+            await task
+
+
+def suppress_cancel():
+    from contextlib import suppress
+
+    return suppress(asyncio.CancelledError, Exception)

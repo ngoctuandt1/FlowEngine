@@ -11,7 +11,6 @@ import logging
 import os
 import signal
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -49,7 +48,7 @@ ALLOW_SAME_PROFILE_CONCURRENCY = os.getenv(
 ).strip().lower() in ("1", "true", "yes")
 FLOW_USE_BASE_PROFILE = os.getenv("FLOW_USE_BASE_PROFILE", "0").strip().lower() in ("1", "true", "yes")
 FLOW_BROWSER_POOL = os.getenv("FLOW_BROWSER_POOL", "0").strip().lower() in ("1", "true", "yes")
-HEARTBEAT_INTERVAL_SEC = 30
+HEARTBEAT_INTERVAL_SEC = int(os.getenv("FLOW_HEARTBEAT_INTERVAL_SEC", "60"))
 
 # ======================================================================
 # Logging
@@ -154,6 +153,38 @@ def preflight_profiles(
 
 
 # ======================================================================
+# Heartbeat task
+# ======================================================================
+
+async def _heartbeat_loop(
+    api: RemoteAPI,
+    interval_sec: int,
+) -> None:
+    """Send ``/api/worker/heartbeat`` every ``interval_sec`` until shutdown.
+
+    The claim loop can block in ``wait_for_capacity`` for the full
+    duration of a long-running Flow job (extend: 600-900s) when
+    MAX_CONCURRENT_JOBS slots are all consumed. Coupling the heartbeat
+    to the claim cadence would let the server's stale-claim reaper
+    treat a busy-but-alive worker as dead and yank its active job back
+    to ``pending`` — the exact race that double-billed credits before
+    this guard existed. A dedicated background task keeps the heartbeat
+    firing regardless of claim-loop state.
+    """
+    while not _shutdown.is_set():
+        try:
+            await api.heartbeat()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Background heartbeat failed", exc_info=True)
+        try:
+            await asyncio.wait_for(_shutdown.wait(), timeout=interval_sec)
+        except asyncio.TimeoutError:
+            continue
+
+
+# ======================================================================
 # Main loop
 # ======================================================================
 
@@ -164,8 +195,6 @@ async def claim_loop(
 ) -> None:
     """Core claim-dispatch-update loop."""
 
-    last_heartbeat = datetime.now(UTC)
-    heartbeat_delta = timedelta(seconds=HEARTBEAT_INTERVAL_SEC)
     in_flight: set[asyncio.Task[None]] = set()
     # Profiles undergoing burn/wipe-rewarm: excluded from same-profile claims
     # until recovery completes, preventing a new job from cloning a half-dead dir.
@@ -264,13 +293,9 @@ async def claim_loop(
         while not _shutdown.is_set():
             in_flight = {task for task in in_flight if not task.done()}
 
-            now = datetime.now(UTC)
-            if now - last_heartbeat >= heartbeat_delta:
-                try:
-                    await api.heartbeat()
-                    last_heartbeat = now
-                except Exception:
-                    logger.warning("Heartbeat failed", exc_info=True)
+            # Heartbeat is owned by ``_heartbeat_loop`` (started in
+            # ``run()``) so it keeps firing while the claim loop sits in
+            # ``wait_for_capacity`` during a long Flow job.
 
             # In same-profile concurrency mode the busy/available split no
             # longer maps 1:1 to Chrome instances — each dispatch clones
@@ -386,9 +411,18 @@ async def run() -> None:
         download_dir=os.getenv("FLOW_DOWNLOAD_DIR", "./downloads"),
     )
 
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(api, HEARTBEAT_INTERVAL_SEC),
+        name="worker-heartbeat",
+    )
     try:
         await claim_loop(api, profile_mgr, project_lock)
     finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
         await shutdown_pool()
         await api.close()
         logger.info("Worker shut down cleanly.")

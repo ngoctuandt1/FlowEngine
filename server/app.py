@@ -77,6 +77,16 @@ STALE_RUNNING_THRESHOLD_SEC = 1800
 # claim/heartbeat (server/routes/worker.py); a gap larger than this
 # means the worker process is dead, not just busy on a long job.
 WORKER_HEARTBEAT_STALE_SEC = 180
+# After server boot the in-memory ``_workers`` heartbeat map is empty.
+# A live worker mid-Flow-generation has not yet re-registered (the next
+# heartbeat is up to ``FLOW_HEARTBEAT_INTERVAL_SEC`` away on the worker
+# side). Without a grace window the very first reaper pass would treat
+# every claimed job as orphaned and reset them all — the next claim
+# cycle would then open duplicate Chrome sessions against the same
+# project_url, double-billing credits. Defer the first stale-claim
+# sweep by at least 2× worker heartbeat interval so workers have time
+# to re-register.
+STALE_REAPER_STARTUP_GRACE_SEC = 180
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +133,13 @@ def _worker_heartbeat_stale_sec() -> int:
     return _env_positive_int(
         "FLOW_WORKER_HEARTBEAT_STALE_SEC",
         WORKER_HEARTBEAT_STALE_SEC,
+    )
+
+
+def _stale_reaper_startup_grace_sec() -> int:
+    return _env_positive_int(
+        "FLOW_STALE_REAPER_STARTUP_GRACE_SEC",
+        STALE_REAPER_STARTUP_GRACE_SEC,
     )
 
 
@@ -310,22 +327,43 @@ async def _reap_stale_running_claims(threshold_sec: int | None = None) -> list[s
     return await _reap_stale_claims(threshold_sec)
 
 
-async def _stale_claim_reaper() -> None:
+async def _stale_claim_reaper(startup_grace_sec: int | None = None) -> None:
     interval_sec = _stale_reaper_interval_sec()
     threshold_sec = _stale_running_threshold_sec()
+    grace_sec = (
+        _stale_reaper_startup_grace_sec()
+        if startup_grace_sec is None
+        else startup_grace_sec
+    )
     logger.info(
-        "stale claim reaper running interval_sec=%s threshold_sec=%s",
+        "stale claim reaper running interval_sec=%s threshold_sec=%s startup_grace_sec=%s",
         interval_sec,
         threshold_sec,
+        grace_sec,
     )
+    # Defer the FIRST sweep by ``grace_sec`` so live workers mid-Flow-job
+    # have time to re-register their heartbeat after a server restart.
+    # Without this, the empty in-memory ``_workers`` map causes
+    # ``_worker_heartbeat_is_stale`` to return True for every claimed
+    # job and the first pass would reap them all — triggering duplicate
+    # Chrome sessions on the next claim cycle.
+    if grace_sec > 0:
+        logger.info(
+            "stale claim reaper warmup — skipping first sweep for %ss",
+            grace_sec,
+        )
+        try:
+            await asyncio.sleep(grace_sec)
+        except asyncio.CancelledError:
+            raise
     while True:
-        await asyncio.sleep(interval_sec)
         try:
             await _reap_stale_claims(threshold_sec)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("stale claim reaper iteration failed")
+        await asyncio.sleep(interval_sec)
 
 
 # Worker writes output media to FLOW_DOWNLOAD_DIR (see flow/download.py).
@@ -361,7 +399,11 @@ async def lifespan(app: FastAPI):
             logger.exception(
                 "Malformed sheet credentials at startup; existing profiles cache remains unchanged"
             )
-    await _reap_stale_claims()
+    # NOTE: do not eager-reap at startup. ``_workers`` is empty until
+    # workers re-register via /claim or /heartbeat, so an immediate
+    # sweep would treat all live claimed jobs as orphaned. The reaper
+    # task below honours ``STALE_REAPER_STARTUP_GRACE_SEC`` before its
+    # first pass to bridge that window.
     stale_reaper_task = asyncio.create_task(
         _stale_claim_reaper(),
         name="stale-claim-reaper",
