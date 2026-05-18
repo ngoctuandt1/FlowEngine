@@ -52,17 +52,20 @@ class TimelineClip(BaseModel):
 
 class TimelineTrack(BaseModel):
     kind: TimelineTrackKind
-    clips: list[TimelineClip] = Field(default_factory=list)
+    clips: list[TimelineClip] = Field(..., max_length=MAX_CLIPS_PER_TRACK)
 
 
 class TimelinePayload(BaseModel):
     ratio: TimelineRatio
-    tracks: list[TimelineTrack] = Field(min_length=1)
+    tracks: list[TimelineTrack] = Field(min_length=1, max_length=MAX_TRACKS_PER_TIMELINE)
     total_duration_sec: float = Field(gt=0, le=MAX_TOTAL_DURATION_SEC)
 
     @model_validator(mode="after")
     def _validate_track_bounds(self) -> "TimelinePayload":
         total_clips = sum(len(track.clips) for track in self.tracks)
+        if total_clips == 0:
+            raise ValueError("Timeline must contain at least 1 clip total.")
+
         if total_clips > MAX_CLIPS_PER_TIMELINE:
             raise ValueError(
                 f"timeline exceeds {MAX_CLIPS_PER_TIMELINE} clip limit"

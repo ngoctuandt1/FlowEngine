@@ -24,12 +24,17 @@ async def test_render_endpoint_202_on_post(api_client, monkeypatch):
                         {
                             "asset_id": "clip-1",
                             "start_sec": 0.0,
-                            "duration_sec": 1.0,
+                            "duration_sec": 10.0,
+                        },
+                        {
+                            "asset_id": "clip-2",
+                            "start_sec": 10.0,
+                            "duration_sec": 20.0,
                         }
                     ],
                 }
             ],
-            "total_duration_sec": 1.0,
+            "total_duration_sec": 30.0,
         },
     )
 
@@ -113,6 +118,7 @@ async def test_render_endpoint_rejects_too_many_tracks(api_client):
         },
     )
     assert response.status_code == 422
+    assert "max_length" in str(response.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -149,6 +155,7 @@ async def test_render_endpoint_rejects_too_many_clips_per_track(api_client):
         },
     )
     assert response.status_code == 422
+    assert "max_length" in str(response.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -161,17 +168,35 @@ async def test_render_endpoint_rejects_too_many_clips_total(api_client):
                 {
                     "kind": "video",
                     "clips": [
-                        {"asset_id": f"t{track_index}-c{clip_index}", "start_sec": 0.0, "duration_sec": 0.5}
-                        for clip_index in range(10)
+                        {
+                            "asset_id": f"t{track_index}-c{clip_index}",
+                            "start_sec": 0.0,
+                            "duration_sec": 0.5,
+                        }
+                        for clip_index in range(60)
                     ],
                 }
-                for track_index in range(11)
+                for track_index in range(2)
             ],
             "total_duration_sec": 60.0,
         },
     )
     assert response.status_code == 422
     assert "100" in str(response.json()["detail"])
+
+
+@pytest.mark.asyncio
+async def test_render_endpoint_rejects_empty_timeline(api_client):
+    response = await api_client.post(
+        "/api/render/timeline",
+        json={
+            "ratio": "9:16",
+            "tracks": [{"kind": "video", "clips": []}],
+            "total_duration_sec": 1.0,
+        },
+    )
+    assert response.status_code == 422
+    assert "at least 1 clip total" in str(response.json()["detail"])
 
 
 @pytest.mark.asyncio
