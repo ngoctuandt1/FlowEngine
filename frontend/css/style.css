@@ -1073,8 +1073,64 @@ tbody tr:hover {
   padding: 60px;
 }
 
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.skeleton-card {
+  position: relative;
+  overflow: hidden;
+  min-height: 132px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  box-shadow: 0 12px 32px var(--shadow);
+}
+
+.skeleton-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.08),
+    transparent
+  );
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+.skeleton-line {
+  height: 12px;
+  margin-top: 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.skeleton-line:first-child {
+  margin-top: 0;
+}
+
+.skeleton-line--wide {
+  width: 78%;
+  height: 18px;
+}
+
+.skeleton-line--short {
+  width: 44%;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+@keyframes skeleton-shimmer {
+  100% { transform: translateX(100%); }
 }
 
 .page-enter {

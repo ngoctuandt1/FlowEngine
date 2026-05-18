@@ -1,5 +1,5 @@
 /**
- * Home page — one tile per chain, showing the latest output thumbnail
+ * Home page - one tile per chain, showing the latest output thumbnail
  * and the root L1 prompt as the tile label.
  */
 (() => {
@@ -10,10 +10,10 @@
   const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
 
   const JOB_TYPE_LABELS = {
-    'text-to-video':        'Text → Video',
-    'text-to-image':        'Text → Image',
-    'frames-to-video':      'Frames → Video',
-    'ingredients-to-video': 'Image → Video',
+    'text-to-video':        'Text \u2192 Video',
+    'text-to-image':        'Text \u2192 Image',
+    'frames-to-video':      'Frames \u2192 Video',
+    'ingredients-to-video': 'Image \u2192 Video',
     'extend-video':         'Extend',
     'camera-move':          'Camera',
     'insert-object':        'Insert',
@@ -146,7 +146,7 @@
     const prompt = job._displayPrompt;
     const typeLabel = JOB_TYPE_LABELS[job?.type] || job?.type || '';
     const displayText = prompt || typeLabel || 'Completed job';
-    const truncated = displayText.length > 80 ? displayText.slice(0, 80) + '…' : displayText;
+    const truncated = displayText.length > 80 ? displayText.slice(0, 80) + '\u2026' : displayText;
     const media = primaryMedia(job);
 
     const thumbnail = media
@@ -182,7 +182,7 @@
       return `
         <div class="home-empty">
           <span class="material-icons">movie_filter</span>
-          <p>Chưa có video nào. Tạo project để bắt đầu.</p>
+          <p>No videos yet. Create a project to start.</p>
         </div>
       `;
     }
@@ -194,12 +194,12 @@
       <button type="button"
               class="new-project-fab"
               id="home-create-project"
-              title="Tạo project"
-              aria-label="Tạo project"
+              title="Create project"
+              aria-label="Create project"
               ${state.creating ? 'disabled' : ''}
               style="cursor:pointer; border:0; appearance:none; -webkit-appearance:none; font:inherit;">
         <span class="material-icons">add</span>
-        <span>Tạo project</span>
+        <span>Create project</span>
       </button>
     `;
   }

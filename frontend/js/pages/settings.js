@@ -72,6 +72,7 @@
       token: stringValue(firstDefined(raw.token, raw.access_token, raw.api_token, '')),
       cookie: stringValue(firstDefined(raw.cookie, raw.cookies, raw.cookie_blob, raw.cookie_text, '')),
       expanded: options.expanded ?? true,
+      showToken: options.showToken ?? false,
     };
   }
 
@@ -200,7 +201,7 @@
     const safeLabel = App.escapeHtml(label);
     const safePlaceholder = App.escapeHtml(placeholder);
     const safeValue = App.escapeHtml(value);
-    const ariaLabel = visible ? `Ẩn ${label}` : `Hiện ${label}`;
+    const ariaLabel = visible ? `Hide ${label}` : `Show ${label}`;
 
     return `
       <div class="form-group">
@@ -241,8 +242,8 @@
       <section class="settings-setup-card">
         <div class="settings-setup-card-header">
           <div>
-            <h2 class="settings-setup-card-title">Thiết lập Gemini SDK</h2>
-            <p class="settings-setup-card-copy">Khai báo khóa truy cập và chọn model Gemini mặc định cho hệ thống.</p>
+            <h2 class="settings-setup-card-title">Gemini SDK Setup</h2>
+            <p class="settings-setup-card-copy">Set API key and default Gemini model.</p>
           </div>
         </div>
         <div class="settings-setup-grid settings-setup-grid--two">
@@ -267,7 +268,9 @@
   }
 
   function renderAccountRow(account, index) {
-    const summary = trimmed(account.name) || 'Chưa điền Name';
+    const summary = trimmed(account.name) || 'Name missing';
+    const tokenVisible = Boolean(account.showToken);
+    const tokenToggleLabel = tokenVisible ? 'Hide Token' : 'Show Token';
     const deleteBusy = state.deletingAccountUid === account.uid;
 
     return `
@@ -279,7 +282,7 @@
           aria-expanded="${account.expanded ? 'true' : 'false'}"
         >
           <div class="settings-setup-account-heading">
-            <span class="settings-setup-account-title">Tài khoản ${index + 1}</span>
+            <span class="settings-setup-account-title">Account ${index + 1}</span>
             <span class="settings-setup-account-summary">${App.escapeHtml(summary)}</span>
           </div>
           <span class="material-icons settings-setup-account-chevron" aria-hidden="true">
@@ -306,18 +309,28 @@
             </div>
             <div class="form-group">
               <label class="form-label" for="account-token-${App.escapeHtml(account.uid)}">Token</label>
-              <input
-                type="text"
-                class="form-input settings-setup-mono"
-                id="account-token-${App.escapeHtml(account.uid)}"
-                data-account-uid="${App.escapeHtml(account.uid)}"
-                data-account-field="token"
-                placeholder="Long access token"
-                value="${App.escapeHtml(account.token)}"
-                autocapitalize="off"
-                autocomplete="off"
-                spellcheck="false"
-              >
+              <div class="settings-setup-secret-field">
+                <input
+                  type="${tokenVisible ? 'text' : 'password'}"
+                  class="form-input settings-setup-mono"
+                  id="account-token-${App.escapeHtml(account.uid)}"
+                  data-account-uid="${App.escapeHtml(account.uid)}"
+                  data-account-field="token"
+                  placeholder="Long access token"
+                  value="${App.escapeHtml(account.token)}"
+                  autocapitalize="off"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
+                <button
+                  type="button"
+                  class="settings-setup-eye-toggle"
+                  data-account-token-toggle="${App.escapeHtml(account.uid)}"
+                  aria-label="${App.escapeHtml(tokenToggleLabel)}"
+                >
+                  <span class="material-icons" aria-hidden="true">${tokenVisible ? 'visibility_off' : 'visibility'}</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -343,7 +356,7 @@
               data-account-delete="${App.escapeHtml(account.uid)}"
               ${deleteBusy ? 'disabled' : ''}
             >
-              ${deleteBusy ? 'Đang xoá...' : 'Xoá'}
+              ${deleteBusy ? 'Deleting...' : 'Delete'}
             </button>
           </div>
         </div>
@@ -358,8 +371,8 @@
         <div class="settings-setup-empty">
           <span class="material-icons" aria-hidden="true">account_circle</span>
           <div>
-            <strong>Chưa có tài khoản Veo</strong>
-            <p>Bấm "Thêm tài khoản" để thêm thông tin Name, Token và Cookie.</p>
+            <strong>No Veo accounts yet</strong>
+            <p>Click 'Add account' to enter Name, Token, and Cookie.</p>
           </div>
         </div>
       `;
@@ -368,12 +381,12 @@
       <section class="settings-setup-card">
         <div class="settings-setup-card-header settings-setup-card-header--split">
           <div>
-            <h2 class="settings-setup-card-title">Thiết lập tài khoản Veo</h2>
-            <p class="settings-setup-card-copy">Quản lý nhiều tài khoản Veo và lưu token/cookie cho từng account.</p>
+            <h2 class="settings-setup-card-title">Veo Accounts</h2>
+            <p class="settings-setup-card-copy">Manage multiple Veo accounts; persist token/cookie per account.</p>
           </div>
           <button type="button" class="btn btn-outline settings-setup-add-account" id="settings-add-account">
             <span class="material-icons" aria-hidden="true">add</span>
-            Thêm tài khoản
+            Add account
           </button>
         </div>
         <div class="settings-setup-account-list">
@@ -389,7 +402,7 @@
         <div class="settings-setup-card-header">
           <div>
             <h2 class="settings-setup-card-title">API KEY NANO</h2>
-            <p class="settings-setup-card-copy">Lưu khóa Nano API dùng chung cho các module cần gọi dịch vụ NANO.</p>
+            <p class="settings-setup-card-copy">Nano API key shared across modules calling NANO.</p>
           </div>
         </div>
         ${renderSecretField({
@@ -412,8 +425,8 @@
       <div class="settings-setup-page">
         <header class="settings-setup-header">
           <p class="settings-setup-kicker">System Configuration</p>
-          <h1 class="settings-setup-title">⚙ Setup</h1>
-          <p class="settings-setup-subtitle">Quản lý cấu hình hệ thống và thông tin kết nối cho các module AI.</p>
+          <h1 class="settings-setup-title"><span class="material-icons" aria-hidden="true">settings</span> Setup</h1>
+          <p class="settings-setup-subtitle">Manage system config and connection info for AI modules.</p>
         </header>
 
         ${renderBanner()}
@@ -462,7 +475,7 @@
       input.type = config.visible ? 'text' : 'password';
     }
     if (button) {
-      button.setAttribute('aria-label', `${config.visible ? 'Ẩn' : 'Hiện'} ${config.label}`);
+      button.setAttribute('aria-label', `${config.visible ? 'Hide' : 'Show'} ${config.label}`);
     }
     if (icon) {
       icon.textContent = config.visible ? 'visibility_off' : 'visibility';
@@ -508,7 +521,7 @@
     const account = findAccount(uid);
     if (!account) return;
 
-    if (!window.confirm(`Delete Tài khoản ${state.accounts.findIndex((item) => item.uid === uid) + 1}?`)) {
+    if (!window.confirm(`Delete Account ${state.accounts.findIndex((item) => item.uid === uid) + 1}?`)) {
       return;
     }
 
@@ -555,8 +568,8 @@
       if (!name || !token || !cookie) {
         return {
           error: account.id
-            ? `Tài khoản ${index + 1} is incomplete. Use "Xoá" to remove saved accounts, or fill all fields.`
-            : `Complete Name, Token, and Cookie for Tài khoản ${index + 1}.`,
+            ? `Account ${index + 1} is incomplete. Use "Delete" to remove saved accounts, or fill all fields.`
+            : `Complete Name, Token, and Cookie for Account ${index + 1}.`,
         };
       }
 
@@ -642,7 +655,7 @@
 
           savedAccounts.push({ uid: account.uid, response });
         } catch (err) {
-          accountErrors.push(`Tài khoản ${index + 1}: ${err.message}`);
+          accountErrors.push(`Account ${index + 1}: ${err.message}`);
         }
       }
 
@@ -681,6 +694,15 @@
     const deleteButton = event.target.closest('[data-account-delete]');
     if (deleteButton && !deleteButton.disabled) {
       await deleteAccount(deleteButton.dataset.accountDelete);
+      return;
+    }
+
+    const accountTokenToggle = event.target.closest('[data-account-token-toggle]');
+    if (accountTokenToggle) {
+      const account = findAccount(accountTokenToggle.dataset.accountTokenToggle);
+      if (!account) return;
+      account.showToken = !account.showToken;
+      renderPage();
       return;
     }
 

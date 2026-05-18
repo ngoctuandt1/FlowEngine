@@ -22,6 +22,7 @@ const LAZY_MODULE_MAP = {
   'batch-queue': 'batch-queue',
   chains: 'chain-builder',
 };
+const SKELETON_ROUTES = new Set(['dashboard', 'gallery', 'jobs', 'profiles', 'characters']);
 
 const App = {
   currentPage: null,
@@ -152,6 +153,25 @@ const App = {
     return loadPromise;
   },
 
+  mountSkeleton(container, count = 6) {
+    if (!container) return;
+
+    const cardCount = Math.max(1, Number(count) || 6);
+    const cards = Array.from({ length: cardCount }, () => `
+      <div class="skeleton-card" aria-hidden="true">
+        <div class="skeleton-line skeleton-line--wide"></div>
+        <div class="skeleton-line"></div>
+        <div class="skeleton-line skeleton-line--short"></div>
+      </div>
+    `).join('');
+
+    container.innerHTML = `
+      <div class="skeleton-grid" role="status" aria-label="Loading content">
+        ${cards}
+      </div>
+    `;
+  },
+
   /**
    * Handle route changes.
    */
@@ -249,7 +269,11 @@ const App = {
 
     // Render page
     const container = document.getElementById('page-container');
-    container.innerHTML = '<div class="loading-center"><div class="spinner spinner-lg"></div></div>';
+    if (SKELETON_ROUTES.has(resolvedName)) {
+      this.mountSkeleton(container, resolvedName === 'dashboard' ? 4 : 6);
+    } else {
+      container.innerHTML = '<div class="loading-center"><div class="spinner spinner-lg"></div></div>';
+    }
     container.classList.remove('page-enter');
 
     try {
