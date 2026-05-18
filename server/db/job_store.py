@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Optional
@@ -20,6 +21,7 @@ CASCADE_CANCEL_STATES = frozenset({"pending", "claimed", "running"})
 CASCADE_PARENT_FAILED_PATTERN = "parent_failed:%"
 RELATED_CHAIN_DEPTH_CAP = 256
 logger = logging.getLogger(__name__)
+FTS_SAFE_QUERY_RE = re.compile(r"^[\w]+$", re.UNICODE)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +390,8 @@ async def list_jobs(
     """List jobs with optional filters. limit=None returns all rows (internal use only)."""
     clauses: list[str] = []
     params: list = []
+    uses_fts = False
+    query_text = ""
 
     def like_pattern(value: str) -> str:
         escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -408,26 +412,56 @@ async def list_jobs(
     if q is not None:
         query_text = q.strip().lower()
         if query_text:
-            # Scale note: consider indexes on lower(id), lower(project_url), and lower(type).
+            if FTS_SAFE_QUERY_RE.fullmatch(query_text):
+                clauses.append(
+                    "jobs.rowid IN ("
+                    "SELECT rowid FROM jobs_fts WHERE jobs_fts MATCH ?"
+                    ")"
+                )
+                params.append(f"{query_text}*")
+                uses_fts = True
+            else:
+                clauses.append(
+                    "(LOWER(COALESCE(id, '')) LIKE ? ESCAPE '\\' "
+                    "OR LOWER(COALESCE(project_url, '')) LIKE ? ESCAPE '\\' "
+                    "OR LOWER(COALESCE(type, '')) LIKE ? ESCAPE '\\' "
+                    "OR LOWER(COALESCE(profile, '')) LIKE ? ESCAPE '\\')"
+                )
+                params.extend([like_pattern(query_text)] * 4)
+
+    where = " AND ".join(clauses) if clauses else "1"
+    query = f"SELECT * FROM jobs WHERE {where} ORDER BY created_at DESC"
+    query_params = list(params)
+    if limit is not None:
+        query += " LIMIT ?"
+        query_params.append(limit)
+        if offset:
+            query += " OFFSET ?"
+            query_params.append(offset)
+
+    async with get_db() as db:
+        try:
+            cursor = await db.execute(query, query_params)
+        except sqlite3.OperationalError:
+            if not uses_fts:
+                raise
+            clauses = [clause for clause in clauses if "jobs_fts MATCH" not in clause]
             clauses.append(
                 "(LOWER(COALESCE(id, '')) LIKE ? ESCAPE '\\' "
                 "OR LOWER(COALESCE(project_url, '')) LIKE ? ESCAPE '\\' "
                 "OR LOWER(COALESCE(type, '')) LIKE ? ESCAPE '\\' "
                 "OR LOWER(COALESCE(profile, '')) LIKE ? ESCAPE '\\')"
             )
-            params.extend([like_pattern(query_text)] * 4)
-
-    where = " AND ".join(clauses) if clauses else "1"
-    query = f"SELECT * FROM jobs WHERE {where} ORDER BY created_at DESC"
-    if limit is not None:
-        query += " LIMIT ?"
-        params.append(limit)
-        if offset:
-            query += " OFFSET ?"
-            params.append(offset)
-
-    async with get_db() as db:
-        cursor = await db.execute(query, params)
+            fallback_params = params[:-1] + [like_pattern(query_text)] * 4
+            where = " AND ".join(clauses) if clauses else "1"
+            query = f"SELECT * FROM jobs WHERE {where} ORDER BY created_at DESC"
+            if limit is not None:
+                query += " LIMIT ?"
+                fallback_params.append(limit)
+                if offset:
+                    query += " OFFSET ?"
+                    fallback_params.append(offset)
+            cursor = await db.execute(query, fallback_params)
         rows = await cursor.fetchall()
         return [_row_to_job(r) for r in rows]
 

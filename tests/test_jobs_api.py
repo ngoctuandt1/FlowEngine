@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock
+from time import perf_counter
 
 import aiosqlite
 
@@ -411,6 +412,65 @@ async def test_list_jobs_q_filters_across_searchable_fields(api_client):
     assert [job["id"] for job in by_profile.json()["jobs"]] == [first.json()["id"]]
     assert by_id.status_code == 200
     assert [job["id"] for job in by_id.json()["jobs"]] == [first.json()["id"]]
+
+
+async def test_list_jobs_q_fts_prefix_scale(api_client, temp_db_path):
+    created_at = "2026-01-01T00:00:00+00:00"
+    rows = [
+        (
+            f"fts-scale-{index:04d}",
+            "text-to-video",
+            "pending",
+            1,
+            f"scale-profile-{index:04d}",
+            f"https://labs.google/fx/tools/flow/projects/ScaleProject{index:04d}",
+            "perf seed",
+            "veo-3.1-fast-lp",
+            "16:9",
+            created_at,
+            created_at,
+        )
+        for index in range(5000)
+    ]
+    async with aiosqlite.connect(temp_db_path) as db:
+        await db.executemany(
+            """
+            INSERT INTO jobs (
+                id, type, status, job_level, profile, project_url, prompt,
+                model, aspect_ratio, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        await db.commit()
+
+    start = perf_counter()
+    response = await api_client.get("/api/jobs", params={"q": "sc", "limit": 25})
+    elapsed_ms = (perf_counter() - start) * 1000
+
+    assert response.status_code == 200
+    assert len(response.json()["jobs"]) == 25
+    assert elapsed_ms < 200
+
+
+async def test_list_jobs_q_special_chars_falls_back_to_like(api_client):
+    created = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Search special chars",
+            "profile": "unsafe*profile",
+            "project_url": "https://labs.google/fx/tools/flow/projects/Quoted:Project",
+        },
+    )
+    assert created.status_code == 201
+
+    for query in ["unsafe*", '"profile"', "quoted:"]:
+        response = await api_client.get("/api/jobs", params={"q": query})
+        assert response.status_code == 200
+
+    matched = await api_client.get("/api/jobs", params={"q": "unsafe*"})
+    assert [job["id"] for job in matched.json()["jobs"]] == [created.json()["id"]]
 
 
 async def test_list_jobs_q_rejects_too_short(api_client):
