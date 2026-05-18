@@ -1,10 +1,11 @@
 /**
  * Profiles Page
- * List, create, quarantine/activate profiles.
+ * List, create, edit, reload, quarantine/activate profiles.
  */
 (() => {
   const TIERS = ['free', 'standard', 'pro'];
   const LOCALES = ['en-US', 'en-GB', 'vi-VN', 'ja-JP', 'ko-KR', 'zh-CN', 'de-DE', 'fr-FR'];
+  const RELOAD_API_KEY_STORAGE = 'flowengine.workerApiKey';
 
   function getInitials(name) {
     if (!name) return '?';
@@ -15,6 +16,77 @@
       .join('');
   }
 
+  function escapeAttr(value) {
+    return App.escapeHtml(String(value ?? '')).replace(/"/g, '&quot;');
+  }
+
+  function optionValues(values, currentValue) {
+    const normalized = String(currentValue || '').trim();
+    return normalized && !values.includes(normalized) ? [normalized, ...values] : values;
+  }
+
+  function renderSelectOptions(values, currentValue) {
+    const selected = String(currentValue || '').trim();
+    return optionValues(values, selected).map((value) => {
+      return `<option value="${escapeAttr(value)}" ${selected === value ? 'selected' : ''}>${App.escapeHtml(value)}</option>`;
+    }).join('');
+  }
+
+  function renderProfileFormFields(prefix, profile = {}, options = {}) {
+    const name = profile.name || profile.profile_name || '';
+    const account = profile.google_account || profile.email || '';
+    const locale = profile.locale || LOCALES[0];
+    const tier = profile.tier || TIERS[0];
+    const nameAttrs = options.readonlyName ? 'readonly aria-readonly="true"' : '';
+
+    return `
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Profile Name <span class="required">*</span></label>
+          <input type="text" class="form-input" id="${prefix}-name" placeholder="e.g. worker-01" value="${escapeAttr(name)}" ${nameAttrs}>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Google Account <span class="required">*</span></label>
+          <input type="email" class="form-input" id="${prefix}-account" placeholder="user@gmail.com" value="${escapeAttr(account)}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Locale</label>
+          <select class="form-select" id="${prefix}-locale">${renderSelectOptions(LOCALES, locale)}</select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tier</label>
+          <select class="form-select" id="${prefix}-tier">${renderSelectOptions(TIERS, tier)}</select>
+        </div>
+      </div>
+    `;
+  }
+
+  function readProfileForm(prefix) {
+    return {
+      name: document.getElementById(`${prefix}-name`)?.value?.trim() || '',
+      google_account: document.getElementById(`${prefix}-account`)?.value?.trim() || '',
+      locale: document.getElementById(`${prefix}-locale`)?.value || '',
+      tier: document.getElementById(`${prefix}-tier`)?.value || '',
+    };
+  }
+
+  function validateProfileForm(data) {
+    if (!data.name) return 'Profile name is required.';
+    if (!data.google_account) return 'Google account is required.';
+    return '';
+  }
+
+  function profileFromCard(card) {
+    return {
+      name: card?.dataset.profileName || '',
+      google_account: card?.dataset.profileAccount || '',
+      locale: card?.dataset.profileLocale || '',
+      tier: card?.dataset.profileTier || '',
+    };
+  }
+
   function renderProfileCard(profile) {
     const name = profile.name || profile.profile_name || 'Unknown';
     const status = profile.status || (profile.quarantined ? 'quarantined' : 'active');
@@ -23,9 +95,15 @@
     const locale = profile.locale || '-';
     const account = profile.google_account || profile.email || '-';
     const currentJob = profile.current_job || profile.current_job_id;
+    const actionId = profile.id || profile.profile_id || name;
 
     return `
-      <div class="profile-card" data-profile-id="${App.escapeHtml(profile.id || profile.profile_id || name)}">
+      <div class="profile-card"
+        data-profile-id="${escapeAttr(actionId)}"
+        data-profile-name="${escapeAttr(name)}"
+        data-profile-account="${escapeAttr(account === '-' ? '' : account)}"
+        data-profile-locale="${escapeAttr(locale === '-' ? '' : locale)}"
+        data-profile-tier="${escapeAttr(tier)}">
         <div class="profile-header">
           <div class="profile-avatar ${avatarClass}">${getInitials(name)}</div>
           <div>
@@ -53,16 +131,15 @@
           ` : ''}
         </div>
         <div class="profile-actions">
+          <button class="btn btn-sm btn-outline profile-edit" data-name="${escapeAttr(name)}">
+            <span class="material-icons" style="font-size:14px">edit</span> Edit
+          </button>
           ${
             status === 'quarantined'
-              ? `<button class="btn btn-success btn-sm profile-activate" data-id="${App.escapeHtml(
-                  profile.id || profile.profile_id || name
-                )}">
+              ? `<button class="btn btn-success btn-sm profile-activate" data-id="${escapeAttr(actionId)}">
                   <span class="material-icons" style="font-size:14px">check</span> Activate
                 </button>`
-              : `<button class="btn btn-danger btn-sm profile-quarantine" data-id="${App.escapeHtml(
-                  profile.id || profile.profile_id || name
-                )}">
+              : `<button class="btn btn-danger btn-sm profile-quarantine" data-id="${escapeAttr(actionId)}">
                   <span class="material-icons" style="font-size:14px">block</span> Quarantine
                 </button>`
           }
@@ -72,45 +149,88 @@
   }
 
   function renderAddForm() {
-    const tierOptions = TIERS.map(
-      (t) => `<option value="${t}">${t.charAt(0).toUpperCase() + t.slice(1)}</option>`
-    ).join('');
-
-    const localeOptions = LOCALES.map(
-      (l) => `<option value="${l}">${l}</option>`
-    ).join('');
-
     return `
       <div class="card" style="margin-bottom: 24px;">
-        <h3 style="margin-bottom: 16px; font-size: 16px; font-weight: 600;">
-          <span class="material-icons" style="font-size:18px; vertical-align:middle;">person_add</span>
-          Add New Profile
-        </h3>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Profile Name <span class="required">*</span></label>
-            <input type="text" class="form-input" id="profile-name" placeholder="e.g. worker-01">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Google Account <span class="required">*</span></label>
-            <input type="email" class="form-input" id="profile-account" placeholder="user@gmail.com">
-          </div>
+        <div class="section-header">
+          <h3 style="font-size: 16px; font-weight: 600; margin: 0;">
+            <span class="material-icons" style="font-size:18px; vertical-align:middle;">person_add</span>
+            Add New Profile
+          </h3>
+          <button class="btn btn-sm btn-outline" id="profiles-reload">
+            <span class="material-icons" style="font-size:16px">sync</span> Reload from Google Sheet
+          </button>
         </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Locale</label>
-            <select class="form-select" id="profile-locale">${localeOptions}</select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Tier</label>
-            <select class="form-select" id="profile-tier">${tierOptions}</select>
-          </div>
-        </div>
+        ${renderProfileFormFields('profile')}
         <button class="btn btn-primary" id="profile-submit">
           <span class="material-icons">add</span> Add Profile
         </button>
       </div>
     `;
+  }
+
+  function openEditProfileModal(profile) {
+    App.openModal('Edit Profile', `
+      ${renderProfileFormFields('profile-edit', profile, { readonlyName: true })}
+      <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:18px;">
+        <button class="btn btn-outline" id="profile-edit-cancel">Cancel</button>
+        <button class="btn btn-primary" id="profile-edit-submit">
+          <span class="material-icons" style="font-size:16px">save</span> Save Changes
+        </button>
+      </div>
+    `);
+
+    document.getElementById('profile-edit-cancel')?.addEventListener('click', () => App.closeModal());
+    document.getElementById('profile-edit-submit')?.addEventListener('click', async (event) => {
+      const data = readProfileForm('profile-edit');
+      const error = validateProfileForm(data);
+      if (error) {
+        App.toast(error, 'warning');
+        return;
+      }
+
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.innerHTML = '<span class="spinner"></span> Saving...';
+      try {
+        await API.profiles.update(data.name, {
+          google_account: data.google_account,
+          locale: data.locale,
+          tier: data.tier,
+        });
+        App.toast('Profile updated.', 'success');
+        App.closeModal();
+        App._loadPage('profiles');
+      } catch (err) {
+        App.toast('Failed to update profile: ' + err.message, 'error');
+        button.disabled = false;
+        button.innerHTML = '<span class="material-icons" style="font-size:16px">save</span> Save Changes';
+      }
+    });
+  }
+
+  async function reloadProfiles(button) {
+    let apiKey = localStorage.getItem(RELOAD_API_KEY_STORAGE) || '';
+    if (!apiKey) {
+      apiKey = prompt('Worker API key for Google Sheet reload') || '';
+      apiKey = apiKey.trim();
+      if (!apiKey) return;
+      localStorage.setItem(RELOAD_API_KEY_STORAGE, apiKey);
+    }
+
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner"></span> Reloading...';
+    try {
+      const result = await API.profiles.reload(apiKey);
+      const count = result?.loaded ?? result?.profiles?.length ?? 0;
+      App.toast(`Reloaded ${count} profile${count === 1 ? '' : 's'} from Google Sheet.`, 'success');
+      App._loadPage('profiles');
+    } catch (err) {
+      if (err.status === 401) localStorage.removeItem(RELOAD_API_KEY_STORAGE);
+      App.toast('Profile reload failed: ' + err.message, 'error');
+    } finally {
+      button.disabled = false;
+      button.innerHTML = '<span class="material-icons" style="font-size:16px">sync</span> Reload from Google Sheet';
+    }
   }
 
   const ProfilesPage = {
@@ -153,19 +273,15 @@
     },
 
     mount() {
-      // Add profile
-      document.getElementById('profile-submit')?.addEventListener('click', async () => {
-        const name = document.getElementById('profile-name')?.value?.trim();
-        const account = document.getElementById('profile-account')?.value?.trim();
-        const locale = document.getElementById('profile-locale')?.value;
-        const tier = document.getElementById('profile-tier')?.value;
+      document.getElementById('profiles-reload')?.addEventListener('click', (event) => {
+        reloadProfiles(event.currentTarget);
+      });
 
-        if (!name) {
-          App.toast('Profile name is required.', 'warning');
-          return;
-        }
-        if (!account) {
-          App.toast('Google account is required.', 'warning');
+      document.getElementById('profile-submit')?.addEventListener('click', async () => {
+        const data = readProfileForm('profile');
+        const error = validateProfileForm(data);
+        if (error) {
+          App.toast(error, 'warning');
           return;
         }
 
@@ -175,10 +291,10 @@
 
         try {
           await API.profiles.create({
-            name,
-            google_account: account,
-            locale,
-            tier,
+            name: data.name,
+            google_account: data.google_account,
+            locale: data.locale,
+            tier: data.tier,
           });
           App.toast('Profile added!', 'success');
           App._loadPage('profiles');
@@ -189,12 +305,17 @@
         }
       });
 
-      // Quarantine / Activate buttons
       const grid = document.getElementById('profiles-grid');
       if (grid) {
         grid.addEventListener('click', async (e) => {
+          const editBtn = e.target.closest('.profile-edit');
           const quarantineBtn = e.target.closest('.profile-quarantine');
           const activateBtn = e.target.closest('.profile-activate');
+
+          if (editBtn) {
+            openEditProfileModal(profileFromCard(editBtn.closest('.profile-card')));
+            return;
+          }
 
           if (quarantineBtn) {
             const id = quarantineBtn.dataset.id;

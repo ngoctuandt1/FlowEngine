@@ -104,6 +104,14 @@
       `);
     }
 
+    if (['failed', 'cancelled'].includes(job.status)) {
+      buttons.push(`
+        <button class="btn btn-sm btn-outline" data-action="requeue" data-job-id="${id}">
+          <span class="material-icons" style="font-size:16px">redo</span> Requeue
+        </button>
+      `);
+    }
+
     buttons.push(`
       <button class="btn btn-sm btn-danger" data-action="delete" data-job-id="${id}">
         <span class="material-icons" style="font-size:16px">delete</span> Delete
@@ -397,6 +405,21 @@
     }
   }
 
+  async function requeueJob(jobId, button) {
+    if (!confirm(`Requeue job ${jobId}?`)) return;
+
+    setActionBusy(button, true);
+    try {
+      await API.jobs.requeue(jobId);
+      App.toast('Job requeued', 'success');
+      await refreshJobs({ silent: true });
+    } catch (err) {
+      App.toast('Requeue failed: ' + err.message, 'error');
+    } finally {
+      setActionBusy(button, false);
+    }
+  }
+
   async function removeJob(jobId, button) {
     const prompt = 'Delete this job? This cannot be undone.';
     if (!confirm(prompt)) return;
@@ -533,6 +556,10 @@
         }
         if (action === 'retry') {
           retryJob(jobId, button);
+          return;
+        }
+        if (action === 'requeue') {
+          requeueJob(jobId, button);
           return;
         }
         if (action === 'delete') {
