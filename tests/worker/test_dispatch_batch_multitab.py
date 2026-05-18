@@ -235,9 +235,16 @@ async def test_multitab_project_lock_acquire_release_order(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_multitab_lock_contention_fails_blocked_jobs_only(monkeypatch):
-    """Jobs whose project_url can't be locked fail; unblocked jobs continue."""
+async def test_multitab_lock_contention_requeues_blocked_jobs_only(monkeypatch):
+    """Blocked-URL jobs requeue (status=pending, claim cleared); free continue.
+
+    Round-2 change: lock contention no longer terminal-fails the contending
+    tabs (that cascade-failed every chain descendant). It now requeues with
+    the shared retry-budget helper from ``dispatch_job``.
+    """
     from worker import dispatcher
+
+    dispatcher._lock_contention_history.clear()
 
     url_blocked = "https://labs.google/fx/tools/flow/project/p-blocked"
     url_free = "https://labs.google/fx/tools/flow/project/p-free"
@@ -260,8 +267,11 @@ async def test_multitab_lock_contention_fails_blocked_jobs_only(monkeypatch):
     result = await dispatcher.dispatch_batch_multitab(jobs, _ProfileManagerStub(), lock)
 
     result_by_id = {r["job_id"]: r for r in result}
-    assert result_by_id["mt5-blocked"]["status"] == "failed"
-    assert "locked" in result_by_id["mt5-blocked"].get("error", "")
+    blocked = result_by_id["mt5-blocked"]
+    assert blocked["status"] == "pending"
+    assert blocked.get("claimed_at") is None
+    assert blocked.get("worker_id") is None
+    assert "project_lock_busy" in blocked.get("error", "")
     assert result_by_id["mt5-free"]["status"] == "completed"
 
 

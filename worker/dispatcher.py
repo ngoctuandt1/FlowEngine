@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import os
+import time
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Coroutine
@@ -58,6 +60,34 @@ UPLOAD_DIR = _resolve_data_dir("FLOW_UPLOAD_DIR", "uploads")
 def _auto_replace_profiles_enabled() -> bool:
     value = (os.environ.get("FLOW_AUTO_REPLACE_PROFILES") or "1").strip()
     return value != "0"
+
+
+# ----------------------------------------------------------------------
+# Project-lock contention tracking
+# ----------------------------------------------------------------------
+# When `ProjectLock.acquire()` returns False (another job in flight on the
+# same project_url), failing the current job cascades the failure to every
+# descendant in the chain (cascade_fail). Requeue instead, capped to avoid
+# infinite churn on a truly stuck project.
+LOCK_RETRY_WINDOW_SECONDS = 60.0
+LOCK_RETRY_MAX_PER_WINDOW = 5
+# project_url -> deque[float monotonic timestamps]
+_lock_contention_history: dict[str, deque[float]] = {}
+
+
+def _record_lock_contention(project_url: str) -> int:
+    """Record a contention hit and return the current count inside the window."""
+    now = time.monotonic()
+    history = _lock_contention_history.setdefault(project_url, deque())
+    cutoff = now - LOCK_RETRY_WINDOW_SECONDS
+    while history and history[0] < cutoff:
+        history.popleft()
+    history.append(now)
+    return len(history)
+
+
+def _clear_lock_contention(project_url: str) -> None:
+    _lock_contention_history.pop(project_url, None)
 
 
 def _profile_base_dir() -> Path:
@@ -506,10 +536,39 @@ async def dispatch_job(
         if not project_lock.acquire(project_url, job_id):
             if manage_profile and profile:
                 profile_manager.mark_available(profile)
+            retry_count = _record_lock_contention(project_url)
+            if retry_count > LOCK_RETRY_MAX_PER_WINDOW:
+                logger.error(
+                    "Project %s lock contention exceeded %d retries in %.0fs "
+                    "for job %s; giving up",
+                    project_url, LOCK_RETRY_MAX_PER_WINDOW,
+                    LOCK_RETRY_WINDOW_SECONDS, job_id,
+                )
+                _clear_lock_contention(project_url)
+                return {
+                    "status": "failed",
+                    "error": (
+                        f"project_lock_exhausted: {project_url} had "
+                        f">{LOCK_RETRY_MAX_PER_WINDOW} contention hits in "
+                        f"{int(LOCK_RETRY_WINDOW_SECONDS)}s"
+                    ),
+                }
+            logger.info(
+                "Project %s busy; requeueing job %s (retry %d/%d in %.0fs window)",
+                project_url, job_id, retry_count,
+                LOCK_RETRY_MAX_PER_WINDOW, LOCK_RETRY_WINDOW_SECONDS,
+            )
             return {
-                "status": "failed",
-                "error": f"Could not acquire project lock for {project_url}",
+                "status": "pending",
+                "claimed_at": None,
+                "worker_id": None,
+                "error": (
+                    f"project_lock_busy: retry {retry_count}/"
+                    f"{LOCK_RETRY_MAX_PER_WINDOW} (will requeue)"
+                ),
             }
+        # Successful acquire — reset contention counter for this project.
+        _clear_lock_contention(project_url)
 
     try:
         logger.info(
@@ -1058,15 +1117,61 @@ async def dispatch_batch_multitab(
 
     for url in distinct_urls:
         if not project_lock.acquire(url, primary_job_id):
-            logger.warning("dispatch_batch_multitab: project locked %s", url)
             blocked_urls.add(url)
-            locked_failed.extend(
-                {"job_id": j.get("id"), "status": "failed",
-                 "error": f"project locked: {url}"}
-                for j in runnable if (j.get("project_url") or "") == url
-            )
+            retry_count = _record_lock_contention(url)
+            if retry_count > LOCK_RETRY_MAX_PER_WINDOW:
+                # Truly stuck — terminal-fail the contending tabs so the
+                # chain doesn't churn forever. Mirrors the single-job path
+                # in dispatch_job (commit 6dc559d).
+                logger.error(
+                    "dispatch_batch_multitab: project %s lock contention "
+                    "exceeded %d retries in %.0fs; failing batch slice",
+                    url, LOCK_RETRY_MAX_PER_WINDOW,
+                    LOCK_RETRY_WINDOW_SECONDS,
+                )
+                _clear_lock_contention(url)
+                err = (
+                    f"project_lock_exhausted: {url} had "
+                    f">{LOCK_RETRY_MAX_PER_WINDOW} contention hits in "
+                    f"{int(LOCK_RETRY_WINDOW_SECONDS)}s"
+                )
+                locked_failed.extend(
+                    {"job_id": j.get("id"), "status": "failed",
+                     "error": err}
+                    for j in runnable
+                    if (j.get("project_url") or "") == url
+                )
+            else:
+                # Requeue: clear claim ownership so the claim loop can
+                # re-pick the job on its next cycle. Without this the batch
+                # path cascade-failed every descendant on lock contention
+                # (round-1 fixed dispatch_job; this is the multitab twin).
+                logger.info(
+                    "dispatch_batch_multitab: project %s busy; requeueing "
+                    "(retry %d/%d in %.0fs window)",
+                    url, retry_count, LOCK_RETRY_MAX_PER_WINDOW,
+                    LOCK_RETRY_WINDOW_SECONDS,
+                )
+                requeue_err = (
+                    f"project_lock_busy: retry {retry_count}/"
+                    f"{LOCK_RETRY_MAX_PER_WINDOW} (will requeue)"
+                )
+                locked_failed.extend(
+                    {
+                        "job_id": j.get("id"),
+                        "status": "pending",
+                        "claimed_at": None,
+                        "worker_id": None,
+                        "error": requeue_err,
+                    }
+                    for j in runnable
+                    if (j.get("project_url") or "") == url
+                )
         else:
             acquired.append(url)
+            # Successful acquire — drop any stale contention history so a
+            # recovered project starts each new burst with a fresh budget.
+            _clear_lock_contention(url)
 
     # Jobs with no project_url have no lock requirement and pass through.
     dispatching = [

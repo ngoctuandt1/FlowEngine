@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
 import ipaddress
 import json
 import os
 import socket
-from importlib import import_module
 from typing import Any
 from urllib.parse import urlparse
 
@@ -15,6 +13,7 @@ import httpx
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from server.db.settings_store import get_ai_settings
 from server.models.idea import IdeaGenerateRequest, IdeaGenerateResponse
 from server.services import gemini_client
 
@@ -61,37 +60,22 @@ def _normalize_optional_str(value: Any) -> str | None:
     return text or None
 
 
-async def _maybe_await(value: Any) -> Any:
-    if inspect.isawaitable(value):
-        return await value
-    return value
-
-
-async def _load_setting_from_store(key: str) -> str | None:
-    try:
-        settings_store = import_module("server.db.settings_store")
-    except ImportError:
-        return None
-
-    for getter_name in ("get_app_setting", "get_setting"):
-        getter = getattr(settings_store, getter_name, None)
-        if getter is None:
-            continue
-        return _normalize_optional_str(await _maybe_await(getter(key)))
-
-    getter = getattr(settings_store, "get_settings", None)
-    if getter is None:
-        return None
-
-    settings = await _maybe_await(getter())
-    if isinstance(settings, dict):
-        return _normalize_optional_str(settings.get(key))
-    return _normalize_optional_str(getattr(settings, key, None))
-
-
 async def _load_gemini_config() -> tuple[str | None, str]:
-    api_key = await _load_setting_from_store("gemini_api_key")
-    model = await _load_setting_from_store("gemini_model")
+    """Resolve the Gemini API key + model.
+
+    Priority is the persisted settings row (managed via the Settings UI →
+    ``server.db.settings_store.get_ai_settings``); env vars are the
+    fallback so a clean install still works without DB writes.
+    """
+    api_key: str | None = None
+    model: str | None = None
+    try:
+        stored = await get_ai_settings()
+    except Exception:  # noqa: BLE001 - DB read failures must not 500 the route
+        stored = None
+    if stored is not None:
+        api_key = _normalize_optional_str(stored.gemini_api_key)
+        model = _normalize_optional_str(stored.gemini_model)
 
     if api_key is None:
         api_key = _normalize_optional_str(os.getenv("GEMINI_API_KEY"))

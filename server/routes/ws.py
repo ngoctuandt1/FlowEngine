@@ -50,7 +50,24 @@ async def _keepalive(
 
 @router.websocket("/ws/jobs")
 async def ws_jobs(ws: WebSocket):
-    """Accept a WS connection and keep it alive for broadcasting."""
+    """Accept a WS connection and keep it alive for broadcasting.
+
+    When DASHBOARD_PASSWORD is set (prod mode), the dashboard auth middleware
+    skips websocket scopes, so this endpoint enforces the same signed-cookie
+    gate inline. Without the cookie the handshake is closed with code 4401
+    so anonymous clients cannot observe job_update broadcasts (which carry
+    prompts, URLs, and error text).
+    """
+    # Import lazily so tests can reload `server.dashboard_auth` after env
+    # changes without leaving this module bound to a stale token verifier.
+    from server import dashboard_auth
+
+    if dashboard_auth.DASHBOARD_AUTH_ENABLED:
+        token = ws.cookies.get(dashboard_auth.AUTH_COOKIE) or ""
+        if not dashboard_auth._verify_token(token):
+            await ws.close(code=4401)
+            return
+
     await ws.accept()
     _clients.add(ws)
     keepalive_task = asyncio.create_task(_keepalive(ws))

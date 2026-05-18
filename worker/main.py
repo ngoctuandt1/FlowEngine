@@ -11,13 +11,12 @@ import logging
 import os
 import signal
 import sys
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from worker.browser_pool import init_pool, shutdown_pool
-from worker.dispatcher import dispatch_job
+from worker.dispatcher import dispatch_batch, dispatch_job
 from worker.profile_manager import ProfileManager
 from worker.project_lock import ProjectLock
 from worker.remote_api import RemoteAPI
@@ -39,6 +38,13 @@ WORKER_PROFILES = [
 ]
 POLL_INTERVAL_SEC = int(os.getenv("POLL_INTERVAL_SEC", "5"))
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
+# Opt-in batch-claim wire: when set, the worker asks the server for up to
+# ``MAX_CONCURRENT_JOBS`` jobs per /claim round-trip and routes any
+# multi-job result through dispatch_batch (multi-tab orchestrator).
+# Default off — single-claim path is the live-verified baseline.
+FLOW_CLAIM_BATCH_ENABLED = os.getenv(
+    "FLOW_CLAIM_BATCH_ENABLED", "0"
+).strip().lower() in ("1", "true", "yes")
 # When ALLOW_SAME_PROFILE_CONCURRENCY=1, the dispatcher clones the profile
 # directory per Chrome launch (FLOW_USE_BASE_PROFILE=0 path) so the
 # legacy "1 job per profile" cap no longer applies. Set this to 1
@@ -49,7 +55,7 @@ ALLOW_SAME_PROFILE_CONCURRENCY = os.getenv(
 ).strip().lower() in ("1", "true", "yes")
 FLOW_USE_BASE_PROFILE = os.getenv("FLOW_USE_BASE_PROFILE", "0").strip().lower() in ("1", "true", "yes")
 FLOW_BROWSER_POOL = os.getenv("FLOW_BROWSER_POOL", "0").strip().lower() in ("1", "true", "yes")
-HEARTBEAT_INTERVAL_SEC = 30
+HEARTBEAT_INTERVAL_SEC = int(os.getenv("FLOW_HEARTBEAT_INTERVAL_SEC", "60"))
 
 # ======================================================================
 # Logging
@@ -154,6 +160,38 @@ def preflight_profiles(
 
 
 # ======================================================================
+# Heartbeat task
+# ======================================================================
+
+async def _heartbeat_loop(
+    api: RemoteAPI,
+    interval_sec: int,
+) -> None:
+    """Send ``/api/worker/heartbeat`` every ``interval_sec`` until shutdown.
+
+    The claim loop can block in ``wait_for_capacity`` for the full
+    duration of a long-running Flow job (extend: 600-900s) when
+    MAX_CONCURRENT_JOBS slots are all consumed. Coupling the heartbeat
+    to the claim cadence would let the server's stale-claim reaper
+    treat a busy-but-alive worker as dead and yank its active job back
+    to ``pending`` — the exact race that double-billed credits before
+    this guard existed. A dedicated background task keeps the heartbeat
+    firing regardless of claim-loop state.
+    """
+    while not _shutdown.is_set():
+        try:
+            await api.heartbeat()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Background heartbeat failed", exc_info=True)
+        try:
+            await asyncio.wait_for(_shutdown.wait(), timeout=interval_sec)
+        except asyncio.TimeoutError:
+            continue
+
+
+# ======================================================================
 # Main loop
 # ======================================================================
 
@@ -164,9 +202,12 @@ async def claim_loop(
 ) -> None:
     """Core claim-dispatch-update loop."""
 
-    last_heartbeat = datetime.now(UTC)
-    heartbeat_delta = timedelta(seconds=HEARTBEAT_INTERVAL_SEC)
     in_flight: set[asyncio.Task[None]] = set()
+    # Track in-flight work at JOB granularity, not asyncio.Task granularity:
+    # a single batch task may carry N jobs, so ``len(in_flight)`` undercounts
+    # capacity and lets the loop over-claim past MAX_CONCURRENT_JOBS. Each
+    # entry maps task -> number of jobs that task is dispatching.
+    in_flight_job_count: dict[asyncio.Task[None], int] = {}
     # Profiles undergoing burn/wipe-rewarm: excluded from same-profile claims
     # until recovery completes, preventing a new job from cloning a half-dead dir.
     _draining: set[str] = set()
@@ -190,24 +231,9 @@ async def claim_loop(
         SERVER_URL, WORKER_ID, WORKER_PROFILES, POLL_INTERVAL_SEC, max_concurrent,
     )
 
-    async def run_claimed_job(job: dict) -> None:
+    async def report_result(job: dict, result: dict) -> None:
         job_id = job.get("id", "?")
         profile = job.get("profile", "")
-        try:
-            result = await dispatch_job(
-                job,
-                profile_mgr,
-                project_lock,
-                manage_profile=False,
-            )
-        except Exception as exc:
-            logger.exception("Dispatch crashed for job %s", job_id)
-            result = {"status": "failed", "error": str(exc)}
-        finally:
-            if profile:
-                profile_mgr.mark_available(profile)
-                _draining.discard(profile)
-
         try:
             if result.get("requeue"):
                 # Burn-recovery success path: block the profile during the API
@@ -242,6 +268,65 @@ async def claim_loop(
         except Exception:
             logger.error("Failed to report result for job %s", job_id, exc_info=True)
 
+    async def run_claimed_job(job: dict) -> None:
+        """Single-job path: dispatch one job, release its profile, report."""
+        job_id = job.get("id", "?")
+        profile = job.get("profile", "")
+        try:
+            result = await dispatch_job(
+                job,
+                profile_mgr,
+                project_lock,
+                manage_profile=False,
+            )
+        except Exception as exc:
+            logger.exception("Dispatch crashed for job %s", job_id)
+            result = {"status": "failed", "error": str(exc)}
+        finally:
+            if profile:
+                profile_mgr.mark_available(profile)
+                _draining.discard(profile)
+
+        await report_result(job, result)
+
+    async def run_claimed_batch(jobs: list[dict]) -> None:
+        """Batch path: dispatch a server-claimed batch via ``dispatch_batch``.
+
+        ``dispatch_batch`` returns one result dict per input job (in order),
+        each enriched with ``job_id``. Profile release is handled inside
+        the batch dispatchers (multitab/L1-fresh) so we only mirror the
+        legacy single-path mark_available for jobs whose profile is still
+        present on the returned dict.
+        """
+        job_ids = [j.get("id") for j in jobs]
+        try:
+            results = await dispatch_batch(jobs, profile_mgr, project_lock)
+        except Exception as exc:
+            logger.exception("Batch dispatch crashed for jobs %s", job_ids)
+            results = [
+                {"status": "failed", "error": str(exc), "job_id": j.get("id")}
+                for j in jobs
+            ]
+        finally:
+            # Defensive: ensure every claimed profile is released even if a
+            # batch dispatcher raised before its own cleanup ran.
+            for j in jobs:
+                profile = j.get("profile", "")
+                if profile:
+                    profile_mgr.mark_available(profile)
+                    _draining.discard(profile)
+
+        # Pair results with input jobs by job_id (dispatch_batch preserves
+        # order, but match defensively in case a future dispatcher reorders).
+        by_id = {r.get("job_id"): r for r in results if r.get("job_id")}
+        for job in jobs:
+            jid = job.get("id")
+            result = by_id.get(jid) or {
+                "status": "failed",
+                "error": "batch dispatch returned no result",
+            }
+            await report_result(job, result)
+
     async def wait_for_capacity() -> None:
         if not in_flight:
             try:
@@ -260,17 +345,22 @@ async def claim_loop(
         shutdown_task.cancel()
         await asyncio.gather(shutdown_task, return_exceptions=True)
 
+    def _jobs_in_flight() -> int:
+        return sum(in_flight_job_count.values())
+
+    def _purge_done() -> None:
+        done_tasks = {task for task in in_flight if task.done()}
+        for task in done_tasks:
+            in_flight.discard(task)
+            in_flight_job_count.pop(task, None)
+
     try:
         while not _shutdown.is_set():
-            in_flight = {task for task in in_flight if not task.done()}
+            _purge_done()
 
-            now = datetime.now(UTC)
-            if now - last_heartbeat >= heartbeat_delta:
-                try:
-                    await api.heartbeat()
-                    last_heartbeat = now
-                except Exception:
-                    logger.warning("Heartbeat failed", exc_info=True)
+            # Heartbeat is owned by ``_heartbeat_loop`` (started in
+            # ``run()``) so it keeps firing while the claim loop sits in
+            # ``wait_for_capacity`` during a long Flow job.
 
             # In same-profile concurrency mode the busy/available split no
             # longer maps 1:1 to Chrome instances — each dispatch clones
@@ -290,35 +380,54 @@ async def claim_loop(
                     available = []
             else:
                 available = profile_mgr.get_available()
-            if not available or len(in_flight) >= max_concurrent:
+            jobs_active = _jobs_in_flight()
+            if not available or jobs_active >= max_concurrent:
                 await wait_for_capacity()
                 continue
 
-            slots = max_concurrent - len(in_flight)
+            slots = max_concurrent - jobs_active
             if ALLOW_SAME_PROFILE_CONCURRENCY:
                 # Repeat the rotated pool until we fill the remaining slots.
                 claim_profiles = (available * slots)[:slots]
             else:
                 claim_profiles = available[:slots]
+            # Opt-in batch claim: ask the server for up to ``slots`` jobs in
+            # one round-trip. Only activates when explicitly enabled AND
+            # there is room for more than one job — otherwise the single-
+            # claim wire (live-verified baseline) is used.
+            use_batch = FLOW_CLAIM_BATCH_ENABLED and slots > 1
+            claimed_jobs: list[dict] = []
             try:
-                job = await api.claim_job(claim_profiles)
+                if use_batch:
+                    claimed_jobs = await api.claim_batch(claim_profiles, batch_size=slots)
+                else:
+                    single = await api.claim_job(claim_profiles)
+                    if single is not None:
+                        claimed_jobs = [single]
             except Exception:
                 logger.warning("Claim request failed", exc_info=True)
-                job = None
+                claimed_jobs = []
 
-            if job is None:
+            if not claimed_jobs:
                 await wait_for_capacity()
                 continue
 
-            job_id = job.get("id", "?")
-            job_type = job.get("type", "?")
-            job_profile = job.get("profile", "")
-            logger.info("Claimed job %s [%s] profile=%s", job_id, job_type, job_profile)
+            for j in claimed_jobs:
+                jid = j.get("id", "?")
+                jtype = j.get("type", "?")
+                jprofile = j.get("profile", "")
+                logger.info("Claimed job %s [%s] profile=%s", jid, jtype, jprofile)
+                if jprofile:
+                    profile_mgr.mark_busy(jprofile, jid)
 
-            if job_profile:
-                profile_mgr.mark_busy(job_profile, job_id)
-            task = asyncio.create_task(run_claimed_job(job))
+            if len(claimed_jobs) > 1:
+                task = asyncio.create_task(run_claimed_batch(claimed_jobs))
+            else:
+                task = asyncio.create_task(run_claimed_job(claimed_jobs[0]))
             in_flight.add(task)
+            # Record job-granularity weight so capacity accounting reflects
+            # actual concurrent jobs, not just outstanding asyncio tasks.
+            in_flight_job_count[task] = len(claimed_jobs)
 
     finally:
         if in_flight:
@@ -386,9 +495,18 @@ async def run() -> None:
         download_dir=os.getenv("FLOW_DOWNLOAD_DIR", "./downloads"),
     )
 
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(api, HEARTBEAT_INTERVAL_SEC),
+        name="worker-heartbeat",
+    )
     try:
         await claim_loop(api, profile_mgr, project_lock)
     finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except (asyncio.CancelledError, Exception):
+            pass
         await shutdown_pool()
         await api.close()
         logger.info("Worker shut down cleanly.")

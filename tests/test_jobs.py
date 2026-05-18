@@ -129,13 +129,15 @@ async def test_requeue_when_parent_failed_returns_400(api_client):
 
 
 async def test_requeue_completed_job_returns_400(api_client):
+    parent = await _create_job(api_client)
     created = await _create_job(
         api_client,
         type="extend-video",
         prompt="Extend this clip",
         project_url="https://flow.example/project/123",
         media_id="parent-media-id",
-        parent_job_id=None,
+        parent_job_id=parent["id"],
+        profile=None,
     )
     completed = await _update_job(
         api_client,
