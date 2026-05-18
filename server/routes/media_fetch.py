@@ -23,11 +23,23 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, field_validator
 
 
+_ENABLED = os.environ.get("FLOW_MEDIA_FETCH_ENABLED", "0") == "1"
+_DISABLED_MESSAGE = (
+    "endpoint disabled; set FLOW_MEDIA_FETCH_ENABLED=1 to enable with caveats"
+)
+
+
 class _ValidationErrorAsBadRequestRoute(APIRoute):
     def get_route_handler(self) -> Any:
         original_route_handler = super().get_route_handler()
 
         async def custom_route_handler(request: Request) -> Any:
+            if (
+                not _ENABLED
+                and request.method == "POST"
+                and request.url.path.endswith("/fetch-url")
+            ):
+                raise HTTPException(status_code=410, detail=_DISABLED_MESSAGE)
             try:
                 return await original_route_handler(request)
             except RequestValidationError as exc:
@@ -385,6 +397,9 @@ def _build_output_path() -> Path:
 
 @router.post("/fetch-url", response_model=FetchUrlResponse)
 async def fetch_media_url(request: FetchUrlRequest) -> FetchUrlResponse:
+    if not _ENABLED:
+        raise HTTPException(status_code=410, detail=_DISABLED_MESSAGE)
+
     output_path = _build_output_path()
 
     try:
