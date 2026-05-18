@@ -9,14 +9,25 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-def _client_with_data_dir(monkeypatch, tmp_path):
-    import server.routes.media_fetch
-    import server.app
-
+def _client_with_data_dir(monkeypatch, tmp_path, *, media_fetch_enabled: bool = True):
+    if media_fetch_enabled:
+        monkeypatch.setenv("FLOW_MEDIA_FETCH_ENABLED", "1")
+    else:
+        monkeypatch.delenv("FLOW_MEDIA_FETCH_ENABLED", raising=False)
     download_dir = (tmp_path / "downloads").resolve()
     download_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("FLOW_DOWNLOAD_DIR", str(download_dir))
     monkeypatch.setenv("FLOW_YTDLP_BIN", "yt-dlp")  # bypass shutil.which lookup
+
+    import server.routes.media_fetch
+    import server.app
+
+    monkeypatch.setattr(
+        server.routes.media_fetch,
+        "_ENABLED",
+        media_fetch_enabled,
+        raising=False,
+    )
     return TestClient(server.app.app), download_dir, server.routes.media_fetch
 
 
@@ -92,6 +103,25 @@ def _find_download_output_path(calls) -> Path:
 # ---------------------------------------------------------------------------
 # URL validation tests (do not require subprocess mocking)
 # ---------------------------------------------------------------------------
+
+
+def test_fetch_url_disabled_by_default(temp_db_path, monkeypatch, tmp_path):
+    client, _, _ = _client_with_data_dir(
+        monkeypatch,
+        tmp_path,
+        media_fetch_enabled=False,
+    )
+
+    response = client.post(
+        "/api/media/fetch-url",
+        json={"url": "https://example.com/video.mp4"},
+    )
+
+    assert response.status_code == 410
+    assert response.json()["detail"] == (
+        "endpoint disabled; set FLOW_MEDIA_FETCH_ENABLED=1 to enable with caveats"
+    )
+
 
 @pytest.mark.parametrize("url", ["ftp://example.com/video.mp4", "file:///tmp/video.mp4"])
 def test_fetch_url_rejects_non_http_urls(temp_db_path, monkeypatch, tmp_path, url):
