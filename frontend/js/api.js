@@ -99,6 +99,15 @@ const API = {
     },
 
     /**
+     * Requeue a failed or cancelled job.
+     */
+    async requeue(id) {
+      return API.fetch(`/api/jobs/${id}/requeue`, {
+        method: 'POST',
+      });
+    },
+
+    /**
      * Get job counts grouped by status.
      */
     async counts() {
@@ -192,6 +201,16 @@ const API = {
       return API.fetch(`/api/profiles/${id}`, {
         method: 'PUT',
         body: JSON.stringify(data),
+      });
+    },
+
+    /**
+     * Reload profiles from Google Sheet credentials.
+     */
+    async reload(apiKey) {
+      return API.fetch('/api/profiles/reload', {
+        method: 'POST',
+        headers: { 'X-Worker-API-Key': apiKey || '' },
       });
     },
 
