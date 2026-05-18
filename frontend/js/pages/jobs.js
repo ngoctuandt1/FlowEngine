@@ -14,6 +14,8 @@
   ];
 
   const GREY_BADGE_STYLE = 'background: rgba(107, 114, 128, 0.22); border-color: rgba(107, 114, 128, 0.38); color: #e5e7eb;';
+  const SEARCH_DEBOUNCE_MS = 300;
+  const MIN_SERVER_SEARCH_LENGTH = 2;
 
   const state = {
     jobs: [],
@@ -32,6 +34,7 @@
     },
     requestId: 0,
     refreshTimer: null,
+    searchTimer: null,
     wsUnsubs: [],
     socketListener: null,
     socketTarget: null,
@@ -92,13 +95,21 @@
       if (state.filters[key]) filters[key] = state.filters[key];
     });
     const query = state.filters.search.trim();
-    if (query) filters.q = query;
+    if (query.length >= MIN_SERVER_SEARCH_LENGTH) filters.q = query;
     return filters;
   }
 
   function resetPageAndRefresh() {
     state.pagination.page = 0;
     refreshJobs();
+  }
+
+  function debounceSearchRefresh() {
+    if (state.searchTimer) clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(() => {
+      state.searchTimer = null;
+      resetPageAndRefresh();
+    }, SEARCH_DEBOUNCE_MS);
   }
 
   function searchMatches(job) {
@@ -640,7 +651,7 @@
 
       document.getElementById('jobs-search')?.addEventListener('input', (event) => {
         state.filters.search = event.target.value;
-        resetPageAndRefresh();
+        debounceSearchRefresh();
       });
 
       document.getElementById('jobs-results')?.addEventListener('change', (event) => {
@@ -707,6 +718,10 @@
       if (state.refreshTimer) {
         clearTimeout(state.refreshTimer);
         state.refreshTimer = null;
+      }
+      if (state.searchTimer) {
+        clearTimeout(state.searchTimer);
+        state.searchTimer = null;
       }
       state.wsUnsubs.forEach((unsubscribe) => {
         try {

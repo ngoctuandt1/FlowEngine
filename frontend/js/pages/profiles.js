@@ -3,8 +3,6 @@
  * List, create, edit, reload, quarantine/activate profiles.
  */
 (() => {
-  localStorage.removeItem('flowengine.workerApiKey');
-
   const TIERS = ['free', 'standard', 'pro'];
   const LOCALES = ['en-US', 'en-GB', 'vi-VN', 'ja-JP', 'ko-KR', 'zh-CN', 'de-DE', 'fr-FR'];
   const WORKER_KEY_VISIBILITY_CLEAR_DELAY_MS = 5 * 60 * 1000;
@@ -57,6 +55,7 @@
   }
 
   function renderProfileFormFields(prefix, profile = {}, options = {}) {
+    const safePrefix = escapeAttr(prefix);
     const name = profile.name || profile.profile_name || '';
     const account = profile.google_account || profile.email || '';
     const locale = profile.locale || LOCALES[0];
@@ -67,21 +66,21 @@
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Profile Name <span class="required">*</span></label>
-          <input type="text" class="form-input" id="${prefix}-name" placeholder="e.g. worker-01" value="${escapeAttr(name)}" ${nameAttrs}>
+          <input type="text" class="form-input" id="${safePrefix}-name" placeholder="e.g. worker-01" value="${escapeAttr(name)}" ${nameAttrs}>
         </div>
         <div class="form-group">
           <label class="form-label">Google Account <span class="required">*</span></label>
-          <input type="email" class="form-input" id="${prefix}-account" placeholder="user@gmail.com" value="${escapeAttr(account)}">
+          <input type="email" class="form-input" id="${safePrefix}-account" placeholder="user@gmail.com" value="${escapeAttr(account)}">
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Locale</label>
-          <select class="form-select" id="${prefix}-locale">${renderSelectOptions(LOCALES, locale)}</select>
+          <select class="form-select" id="${safePrefix}-locale">${renderSelectOptions(LOCALES, locale)}</select>
         </div>
         <div class="form-group">
           <label class="form-label">Tier</label>
-          <select class="form-select" id="${prefix}-tier">${renderSelectOptions(TIERS, tier)}</select>
+          <select class="form-select" id="${safePrefix}-tier">${renderSelectOptions(TIERS, tier)}</select>
         </div>
       </div>
     `;

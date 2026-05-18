@@ -248,7 +248,7 @@
         data-job-id="${App.escapeHtml(job.id || '')}"
         title="${App.escapeHtml(title)}"
       >
-        <a class="gallery-tile-link" href="${tileHref}" aria-label="Open project view">
+        <a class="gallery-tile-link" href="${App.escapeHtml(tileHref)}" aria-label="Open project view">
           <div class="tile-thumb">
             ${preview}
             ${stateChip}
@@ -430,11 +430,7 @@
     if (!confirm('Delete this job and remove it from the gallery?')) return;
 
     try {
-      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
-      if (!response.ok) {
-        const message = (await response.text()).trim() || `Delete failed with HTTP ${response.status}`;
-        throw new Error(message);
-      }
+      await API.jobs.delete(jobId);
       App.toast('Job deleted', 'success');
       await refreshGallery({ silent: true });
     } catch (err) {

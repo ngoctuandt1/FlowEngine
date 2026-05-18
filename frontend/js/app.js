@@ -1,6 +1,12 @@
 /**
  * FlowEngine SPA Router & App Initialization
  */
+try {
+  localStorage.removeItem('flowengine.workerApiKey');
+} catch (_) {
+  // Ignore storage access failures during early boot.
+}
+
 const ROUTE_ALIASES = { 'chain-builder': 'chains' };
 const LAZY_MODULE_MAP = {
   dashboard: 'dashboard',
@@ -484,13 +490,19 @@ const App = {
   // ---- Utilities ----
 
   /**
-   * Escape HTML to prevent XSS.
+   * Escape HTML for text and quoted attribute contexts.
    */
   escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    if (text === null || text === undefined) return '';
+    const chars = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+      '/': '&#x2F;',
+    };
+    return String(text).replace(/[&<>"'\/]/g, (char) => chars[char]);
   },
 
   /**
@@ -572,7 +584,7 @@ const App = {
    * Get the badge class for a status.
    */
   statusBadge(status) {
-    return `badge badge-${status || 'pending'}`;
+    return `badge badge-${this.escapeHtml(status || 'pending')}`;
   },
 };
 
