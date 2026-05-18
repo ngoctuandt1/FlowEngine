@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from server.dashboard_auth import (
     DASHBOARD_AUTH_ENABLED,
@@ -59,6 +61,45 @@ MEDIA_IMAGE_CACHE_CONTROL = "public, max-age=2592000, immutable"
 # caches locally for 5 minutes.
 MEDIA_PREFIXES = ("/downloads/", "/uploads/")
 MEDIA_CACHE_CONTROL = "private, max-age=300"
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "img-src 'self' data: blob: https:; "
+        "media-src 'self' blob: https:; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "script-src 'self' 'unsafe-inline'; "
+        "font-src 'self' https://fonts.gstatic.com data:; "
+        "connect-src 'self' wss: https:; "
+        "frame-ancestors 'none'"
+    ),
+}
+
+
+class SecurityHeadersMiddleware:
+    """Attach security headers outside Starlette's ServerErrorMiddleware."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    def __getattr__(self, name: str):
+        return getattr(self.app, name)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_security_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name, value in SECURITY_HEADERS.items():
+                    headers[name] = value
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
 STALE_REAPER_INTERVAL_SEC = 60
 # Flow jobs legitimately stay in ``claimed`` / ``running`` for the full
 # generation cycle: text-to-video ~ 300-600s, extend ~ 600-900s, deep
@@ -424,6 +465,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app = SecurityHeadersMiddleware(app)
 
 # -- CORS ---------------------------------------------------------------------
 # Multi-site setup: the same FlowEngine backend can serve many distinct
@@ -522,7 +564,6 @@ DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/downloads", StaticFiles(directory=str(DOWNLOAD_DIR)), name="downloads")
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-
 
 @app.middleware("http")
 async def set_static_cache_headers(request: Request, call_next):
