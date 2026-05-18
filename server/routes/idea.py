@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter
@@ -19,6 +22,11 @@ router = APIRouter(prefix="/api/idea", tags=["idea"])
 
 DEFAULT_GEMINI_MODEL = "gemini-2-flash-preview"
 MISSING_API_KEY_ERROR = "Gemini API key not configured"
+
+# SSRF guards for fetching attacker-supplied reference image URLs.
+REF_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB cap per image
+REF_IMAGE_TIMEOUT_SECONDS = 30.0
+_FORBIDDEN_HOSTNAMES = {"localhost", "internal"}
 SYSTEM_PROMPT = """You are an expert short-form video workflow planner for IdeaStudio.
 
 Return JSON only. Do not wrap the result in markdown fences or extra prose.
@@ -88,24 +96,140 @@ def _build_user_prompt(body: IdeaGenerateRequest) -> str:
     return "\n\n".join(sections)
 
 
+def _ip_is_forbidden(ip_text: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_text)
+    except ValueError:
+        # Unknown address family → reject defensively.
+        return True
+    # `is_global` is the tightest allow-list: it rejects every special-use
+    # range (private RFC1918, loopback, link-local, CGNAT 100.64/10,
+    # documentation 192.0.2/24, benchmarking 198.18/15, multicast,
+    # unspecified, reserved). The bare `is_*` predicates miss CGNAT.
+    if not ip.is_global:
+        return True
+    if ip.is_multicast:
+        return True
+    return False
+
+
+def _extract_peer_ip(response: object) -> str | None:
+    """Best-effort extraction of the live socket peer IP from an httpx Response.
+
+    Returns None when the attribute path is unavailable (e.g. mocked tests) so
+    callers can degrade to the pre-flight DNS validation alone.
+    """
+    network_stream = None
+    try:
+        network_stream = response.extensions.get("network_stream")  # type: ignore[attr-defined]
+    except Exception:
+        network_stream = None
+    if network_stream is None:
+        return None
+    try:
+        addr = network_stream.get_extra_info("server_addr")
+    except Exception:
+        return None
+    if not addr:
+        return None
+    candidate = addr[0] if isinstance(addr, (tuple, list)) else addr
+    if not isinstance(candidate, str):
+        return None
+    return candidate.split("%", 1)[0]
+
+
+def _validate_public_url(url: str) -> None:
+    """Reject URLs that would let an attacker reach internal services (SSRF).
+
+    Resolves the hostname and confirms EVERY A/AAAA record is public. Raises
+    ``RuntimeError`` for any disallowed scheme, host, or resolved address.
+    """
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise RuntimeError(f"Reference image URL must use http(s): {url}")
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise RuntimeError(f"Reference image URL is missing a host: {url}")
+    if host in _FORBIDDEN_HOSTNAMES or host.endswith(".internal") or host.endswith(".local"):
+        raise RuntimeError(f"Reference image URL host is not allowed: {url}")
+
+    try:
+        parsed_ip = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            addrinfos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        except socket.gaierror as exc:
+            raise RuntimeError(f"Reference image URL host could not be resolved: {url}") from exc
+        for family, *_rest, sockaddr in addrinfos:
+            if family not in (socket.AF_INET, socket.AF_INET6):
+                continue
+            candidate_ip = sockaddr[0] if sockaddr else None
+            if not isinstance(candidate_ip, str):
+                continue
+            # Strip IPv6 zone if present (fe80::1%eth0).
+            candidate_ip = candidate_ip.split("%", 1)[0]
+            if _ip_is_forbidden(candidate_ip):
+                raise RuntimeError(f"Reference image URL host is not allowed: {url}")
+    else:
+        if _ip_is_forbidden(str(parsed_ip)):
+            raise RuntimeError(f"Reference image URL host is not allowed: {url}")
+
+
+async def _fetch_capped(client: httpx.AsyncClient, url: str) -> tuple[bytes, str]:
+    """Stream a response with a hard size cap to defeat memory-DoS payloads."""
+
+    async with client.stream("GET", url) as response:
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "")
+        # Reject upfront when Content-Length declares an over-cap payload —
+        # cheaper than streaming the bytes just to discard them.
+        declared = response.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > REF_IMAGE_MAX_BYTES:
+            raise RuntimeError(
+                f"Reference image exceeds {REF_IMAGE_MAX_BYTES} byte limit: {url}"
+            )
+        # Validate the peer's resolved IP a second time — a DNS-rebind that
+        # flipped public → private between getaddrinfo and connect would land
+        # here. httpx exposes the live socket via the underlying network
+        # stream; we read it defensively because the attribute path differs
+        # across httpx versions.
+        peer_ip = _extract_peer_ip(response)
+        if peer_ip and _ip_is_forbidden(peer_ip):
+            raise RuntimeError(f"Reference image URL host is not allowed: {url}")
+        buffer = bytearray()
+        async for chunk in response.aiter_bytes(chunk_size=65536):
+            if len(buffer) + len(chunk) > REF_IMAGE_MAX_BYTES:
+                raise RuntimeError(
+                    f"Reference image exceeds {REF_IMAGE_MAX_BYTES} byte limit: {url}"
+                )
+            buffer.extend(chunk)
+        return bytes(buffer), content_type
+
+
 async def _download_reference_images(
     ref_image_urls: list[str] | None,
 ) -> list[gemini_client.GeminiImage]:
     if not ref_image_urls:
         return []
 
+    for url in ref_image_urls:
+        _validate_public_url(url)
+
     images: list[gemini_client.GeminiImage] = []
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    # follow_redirects=False so a 30x to http://169.254.169.254/ cannot bypass
+    # the pre-flight host validation above.
+    async with httpx.AsyncClient(
+        timeout=REF_IMAGE_TIMEOUT_SECONDS, follow_redirects=False
+    ) as client:
         for url in ref_image_urls:
-            response = await client.get(url)
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "")
+            content, content_type = await _fetch_capped(client, url)
             mime_type = content_type.split(";", 1)[0].strip().lower()
             if mime_type and not mime_type.startswith("image/"):
                 raise RuntimeError(f"Reference image URL did not return an image: {url}")
-            if not response.content:
+            if not content:
                 raise RuntimeError(f"Reference image URL returned empty content: {url}")
-            images.append(gemini_client.GeminiImage(data=response.content))
+            images.append(gemini_client.GeminiImage(data=content))
     return images
 
 
