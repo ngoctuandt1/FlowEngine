@@ -439,6 +439,77 @@ def test_fetch_url_timeout_on_windows_uses_terminate_then_kill(temp_db_path, mon
     assert proc.killed is True
 
 
+def test_fetch_url_windows_timeout_kills_descendants(temp_db_path, monkeypatch, tmp_path):
+    """Windows timeout: terminate/kill yt-dlp descendants before parent exits."""
+    client, _, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
+    _install_public_dns(monkeypatch, media_fetch)
+
+    proc = _FakeProc(b"", b"", returncode=None, pid=12345)  # type: ignore[arg-type]
+    proc._returncode = None  # type: ignore[attr-defined]
+
+    async def slow_communicate():
+        await asyncio.sleep(10)
+        return b"", b""
+
+    proc.communicate = slow_communicate  # type: ignore[assignment]
+
+    async def fake_create(*args, **kwargs):
+        return proc
+
+    class FakeChild:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+    child = FakeChild()
+
+    class FakeParent:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def children(self, recursive=False):
+            assert self.pid == proc.pid
+            assert recursive is True
+            return [child]
+
+    monkeypatch.setattr(media_fetch.asyncio, "create_subprocess_exec", fake_create)
+    monkeypatch.setattr(media_fetch.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(media_fetch.psutil, "Process", FakeParent)
+    monkeypatch.setattr(media_fetch.psutil, "wait_procs", lambda procs, timeout: ([], procs))
+
+    real_wait_for = media_fetch.asyncio.wait_for
+
+    async def fast_wait_for(awaitable, timeout):
+        if timeout and timeout > 1:
+            task = asyncio.ensure_future(awaitable)
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+            raise asyncio.TimeoutError()
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(media_fetch.asyncio, "wait_for", fast_wait_for)
+
+    response = client.post(
+        "/api/media/fetch-url",
+        json={"url": "https://example.com/video.mp4"},
+    )
+
+    assert response.status_code == 502
+    assert child.terminated is True
+    assert child.killed is True
+    assert proc.terminated is True
+    assert proc.killed is True
+
+
 def test_fetch_url_no_global_socket_monkeypatch(temp_db_path, monkeypatch, tmp_path):
     """Regression: round-2 patched ``socket.create_connection`` globally and
     leaked on timeout. Round-3 must never reassign that symbol."""

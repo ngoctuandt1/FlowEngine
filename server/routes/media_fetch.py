@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
+import psutil
 import yt_dlp  # imported for test compatibility (test monkeypatches yt_dlp.utils.DownloadError)
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -193,20 +194,43 @@ def _collect_candidate_urls(info: Any) -> list[str]:
     return found
 
 
-def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
-    """Kill the subprocess and every descendant in its process group.
+def _kill_tree(proc: asyncio.subprocess.Process, timeout_sec: float = 2.0) -> None:
+    """Kill the subprocess and every descendant in its process tree.
 
     POSIX: ``start_new_session=True`` made the child the leader of a new
     process group, so ``killpg`` reaches yt-dlp plus any ffmpeg/aria2c it
     spawned without touching unrelated server children.
 
-    Windows: ``CREATE_NEW_PROCESS_GROUP`` was set; ``terminate()`` then
-    ``kill()`` is the equivalent escalation. asyncio's transport implements
-    these against the underlying job/process group.
+    Windows: ``CREATE_NEW_PROCESS_GROUP`` does not make ``terminate()`` or
+    ``kill()`` reap descendants, so psutil enumerates children before the
+    parent exits and escalates every survivor.
     """
     if proc.returncode is not None:
         return
     if platform.system() == "Windows":
+        descendants: list[psutil.Process] = []
+        try:
+            descendants = psutil.Process(proc.pid).children(recursive=True)
+        except psutil.Error:
+            pass
+
+        for child in descendants:
+            try:
+                child.terminate()
+            except psutil.Error:
+                pass
+
+        _, alive = (
+            psutil.wait_procs(descendants, timeout=timeout_sec)
+            if descendants
+            else ([], [])
+        )
+        for child in alive:
+            try:
+                child.kill()
+            except psutil.Error:
+                pass
+
         try:
             proc.terminate()
         except (ProcessLookupError, OSError):
@@ -216,15 +240,22 @@ def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
         except (ProcessLookupError, OSError):
             pass
         return
+
+    sigterm = getattr(signal, "SIGTERM", 15)
     # ``signal.SIGKILL`` only exists on POSIX; this branch is unreachable on
     # Windows (handled above), so resolve the constant lazily to keep the
     # module importable on Windows hosts (FlowEngine dev boxes).
     sigkill = getattr(signal, "SIGKILL", getattr(signal, "SIGTERM", 15))
     try:
+        os.killpg(os.getpgid(proc.pid), sigterm)
         os.killpg(os.getpgid(proc.pid), sigkill)
     except (ProcessLookupError, PermissionError, OSError, AttributeError):
         # Fall back to direct kill; the child may have exited between the
         # ``returncode`` check and the ``killpg`` call.
+        try:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
+            pass
         try:
             proc.kill()
         except (ProcessLookupError, OSError):
@@ -235,10 +266,10 @@ async def _run_ytdlp(
     args: list[str],
     timeout_seconds: int,
 ) -> tuple[int, bytes, bytes]:
-    """Run yt-dlp as an isolated subprocess in its own process group.
+    """Run yt-dlp as an isolated subprocess in its own process tree.
 
     Returns ``(returncode, stdout, stderr)``. Raises ``TimeoutError`` after
-    killing the entire process group.
+    killing the entire process tree.
     """
     binary = _resolve_ytdlp_binary()
     popen_kwargs: dict[str, Any] = {
@@ -263,7 +294,7 @@ async def _run_ytdlp(
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
     except asyncio.TimeoutError as exc:
-        _kill_process_group(proc)
+        _kill_tree(proc)
         # Drain the pipes so ``proc`` releases its fds.
         try:
             await asyncio.wait_for(proc.wait(), timeout=2.0)
