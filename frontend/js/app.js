@@ -312,27 +312,53 @@ const App = {
 
   // ---- Modal ----
 
+  _getModalContent() {
+    const modalOverlay = document.getElementById('modal-overlay');
+    return modalOverlay?.querySelector('.modal-content') || null;
+  },
+
+  _isModalFocusableVisible(element) {
+    return Boolean(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
+  },
+
   _getModalFocusable() {
-    const modalBody = document.getElementById('modal-body');
-    if (!modalBody) return [];
+    const modalContent = this._getModalContent();
+    if (!modalContent) return [];
 
-    const selectors = [
-      'input:not([disabled]):not([type="hidden"])',
-      'button:not([disabled])',
-      '[tabindex]:not([tabindex="-1"])',
-    ];
+    const selector = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-    return Array.from(modalBody.querySelectorAll(selectors.join(',')))
-      .filter((el) => el.offsetParent !== null && typeof el.focus === 'function');
+    return Array.from(modalContent.querySelectorAll(selector))
+      .filter((el) => this._isModalFocusableVisible(el) && typeof el.focus === 'function');
+  },
+
+  _getModalFallbackFocusTarget() {
+    const modalContent = this._getModalContent();
+    if (!modalContent) return null;
+
+    const modalClose = modalContent.querySelector('.modal-close');
+    if (
+      modalClose
+      && !modalClose.disabled
+      && this._isModalFocusableVisible(modalClose)
+      && typeof modalClose.focus === 'function'
+    ) {
+      return modalClose;
+    }
+
+    if (typeof modalContent.focus !== 'function') return null;
+    if (!modalContent.hasAttribute('tabindex')) {
+      modalContent.setAttribute('tabindex', '-1');
+    }
+    return modalContent;
   },
 
   _focusModalInitial() {
-    const modalBody = document.getElementById('modal-body');
-    if (!modalBody) return;
+    const modalContent = this._getModalContent();
+    if (!modalContent) return;
 
-    const autofocusEl = modalBody.querySelector('[autofocus]');
+    const autofocusEl = modalContent.querySelector('[autofocus]');
     const focusable = this._getModalFocusable();
-    const target = focusable.includes(autofocusEl) ? autofocusEl : focusable[0];
+    const target = focusable.includes(autofocusEl) ? autofocusEl : focusable[0] || this._getModalFallbackFocusTarget();
     target?.focus();
   },
 
@@ -345,6 +371,7 @@ const App = {
     const focusable = this._getModalFocusable();
     if (!focusable.length) {
       event.preventDefault();
+      this._getModalFallbackFocusTarget()?.focus();
       return;
     }
 

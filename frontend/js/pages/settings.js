@@ -28,8 +28,6 @@
       saving: false,
       deletingAccountUid: null,
       banner: null,
-      showGeminiKey: false,
-      showNanoKey: false,
     };
   }
 
@@ -72,7 +70,6 @@
       token: stringValue(firstDefined(raw.token, raw.access_token, raw.api_token, '')),
       cookie: stringValue(firstDefined(raw.cookie, raw.cookies, raw.cookie_blob, raw.cookie_text, '')),
       expanded: options.expanded ?? true,
-      showToken: options.showToken ?? false,
     };
   }
 
@@ -193,7 +190,6 @@
     label,
     value,
     placeholder,
-    visible,
     toggleKey,
     mono = false,
   }) {
@@ -201,14 +197,13 @@
     const safeLabel = App.escapeHtml(label);
     const safePlaceholder = App.escapeHtml(placeholder);
     const safeValue = App.escapeHtml(value);
-    const ariaLabel = visible ? `Hide ${label}` : `Show ${label}`;
 
     return `
       <div class="form-group">
         <label class="form-label" for="${safeId}">${safeLabel}</label>
         <div class="settings-setup-secret-field">
           <input
-            type="${visible ? 'text' : 'password'}"
+            type="password"
             class="form-input ${mono ? 'settings-setup-mono' : ''}"
             id="${safeId}"
             placeholder="${safePlaceholder}"
@@ -221,9 +216,9 @@
             type="button"
             class="settings-setup-eye-toggle"
             data-secret-toggle="${App.escapeHtml(toggleKey)}"
-            aria-label="${App.escapeHtml(ariaLabel)}"
+            aria-label="${App.escapeHtml(`Show ${label}`)}"
           >
-            <span class="material-icons" aria-hidden="true">${visible ? 'visibility_off' : 'visibility'}</span>
+            <span class="material-icons" aria-hidden="true">visibility</span>
           </button>
         </div>
       </div>
@@ -252,7 +247,6 @@
             label: 'Gemini API Key',
             value: state.ai.gemini_api_key,
             placeholder: 'AIzaSy...',
-            visible: state.showGeminiKey,
             toggleKey: 'gemini',
             mono: true,
           })}
@@ -269,8 +263,6 @@
 
   function renderAccountRow(account, index) {
     const summary = trimmed(account.name) || 'Name missing';
-    const tokenVisible = Boolean(account.showToken);
-    const tokenToggleLabel = tokenVisible ? 'Hide Token' : 'Show Token';
     const deleteBusy = state.deletingAccountUid === account.uid;
 
     return `
@@ -311,7 +303,7 @@
               <label class="form-label" for="account-token-${App.escapeHtml(account.uid)}">Token</label>
               <div class="settings-setup-secret-field">
                 <input
-                  type="${tokenVisible ? 'text' : 'password'}"
+                  type="password"
                   class="form-input settings-setup-mono"
                   id="account-token-${App.escapeHtml(account.uid)}"
                   data-account-uid="${App.escapeHtml(account.uid)}"
@@ -326,9 +318,9 @@
                   type="button"
                   class="settings-setup-eye-toggle"
                   data-account-token-toggle="${App.escapeHtml(account.uid)}"
-                  aria-label="${App.escapeHtml(tokenToggleLabel)}"
+                  aria-label="Show Token"
                 >
-                  <span class="material-icons" aria-hidden="true">${tokenVisible ? 'visibility_off' : 'visibility'}</span>
+                  <span class="material-icons" aria-hidden="true">visibility</span>
                 </button>
               </div>
             </div>
@@ -410,7 +402,6 @@
           label: 'Nano API Key',
           value: state.ai.nano_api_key,
           placeholder: 'nano_live_...',
-          visible: state.showNanoKey,
           toggleKey: 'nano',
           mono: true,
         })}
