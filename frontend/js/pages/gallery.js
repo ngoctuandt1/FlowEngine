@@ -157,16 +157,7 @@
   }
 
   function outputUrlForJob(job) {
-    const rawUrl = String(job?.output_url || job?.media_url || '').trim();
-    if (!rawUrl) return '';
-
-    try {
-      const url = new URL(rawUrl, window.location.origin);
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
-      return url.href;
-    } catch (_) {
-      return '';
-    }
+    return primaryMedia(job)?.url || '';
   }
 
   function renderTileActions(job, status) {
