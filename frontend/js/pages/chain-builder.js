@@ -166,7 +166,7 @@
         ${items.map((item) => `
           <span
             class="tile-status-badge state-pending"
-            title="${App.escapeHtml(`${item.field} -> ${item.fallbackUsed}`)}"
+            title="${App.escapeHtml(item.field)} -> ${App.escapeHtml(item.fallbackUsed)}"
             style="opacity:0.65;"
           >
             ${App.escapeHtml(`gap:${item.field}`)}
@@ -512,7 +512,7 @@
             <button
               type="button"
               class="cbf-pill${active}"
-              data-step="${stepIndex}"
+              data-step="${App.escapeHtml(stepIndex)}"
               data-field="${App.escapeHtml(name)}"
               data-pill-value="${App.escapeHtml(value)}"
             >${App.escapeHtml(text)}</button>
@@ -642,18 +642,21 @@
   function renderIngredientsUploads(step, i) {
     const images = Array.isArray(step.ingredient_image_paths) ? step.ingredient_image_paths : [];
     const cards = images.length > 0
-      ? images.map((path, index) => `
-        <div class="card" style="padding:12px; position:relative;">
-          <button type="button" class="icon-btn step-ingredient-remove" data-step="${App.escapeHtml(i)}" data-index="${App.escapeHtml(index)}"
-                  title="Remove reference"
-                  style="position:absolute; top:8px; right:8px; width:28px; height:28px;">
-            <span class="material-icons" style="font-size:18px;">close</span>
-          </button>
-          <img src="/${App.escapeHtml(path)}" alt="Reference ${App.escapeHtml(index + 1)}"
-               style="width:100%; height:120px; object-fit:cover; border-radius:10px; border:1px solid var(--border-color);">
-          <div class="form-hint" style="margin-top:8px; word-break:break-all;">${App.escapeHtml(path)}</div>
-        </div>
-      `).join('')
+      ? images.map((path, index) => {
+        const displayIndex = index + 1;
+        return `
+          <div class="card" style="padding:12px; position:relative;">
+            <button type="button" class="icon-btn step-ingredient-remove" data-step="${App.escapeHtml(i)}" data-index="${App.escapeHtml(index)}"
+                    title="Remove reference"
+                    style="position:absolute; top:8px; right:8px; width:28px; height:28px;">
+              <span class="material-icons" style="font-size:18px;">close</span>
+            </button>
+            <img src="/${App.escapeHtml(path)}" alt="Reference ${App.escapeHtml(displayIndex)}"
+                 style="width:100%; height:120px; object-fit:cover; border-radius:10px; border:1px solid var(--border-color);">
+            <div class="form-hint" style="margin-top:8px; word-break:break-all;">${App.escapeHtml(path)}</div>
+          </div>
+        `;
+      }).join('')
       : '<div class="form-hint">No reference images uploaded yet.</div>';
 
     return `
@@ -687,7 +690,7 @@
       <section class="cbf-rail-section">
         <label class="cbf-rail-label">${label} Image ${required ? '<span class="required">*</span>' : '(optional)'}</label>
         <input type="file" class="cbf-input step-upload-input"
-               data-step="${stepIndex}" data-field="${App.escapeHtml(field)}" data-label="${App.escapeHtml(label)} image"
+               data-step="${App.escapeHtml(stepIndex)}" data-field="${App.escapeHtml(field)}" data-label="${App.escapeHtml(label)} image"
                accept="image/png,image/jpeg,image/webp">
         ${preview}
       </section>
@@ -1024,7 +1027,7 @@
       <aside class="card chain-parent-panel">
         <div class="chain-parent-thumb-wrap">
           ${thumb
-            ? `<img class="chain-parent-thumb" src="${App.escapeHtml(thumb)}" alt="${App.escapeHtml(`${getJobTypeLabel(parentPrefill.parentType)} parent thumbnail`)}">`
+            ? `<img class="chain-parent-thumb" src="${App.escapeHtml(thumb)}" alt="${App.escapeHtml(getJobTypeLabel(parentPrefill.parentType))} parent thumbnail">`
             : `<div class="chain-parent-thumb chain-parent-thumb-placeholder"><span class="material-icons">video_library</span></div>`}
         </div>
         <div class="chain-parent-panel-head">

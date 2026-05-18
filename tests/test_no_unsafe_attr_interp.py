@@ -12,6 +12,12 @@ DEFERRED_ATTR_INTERP_FILES = {
     Path("frontend/js/pages/chain-tree.js"),
     Path("frontend/js/pages/job-detail.js"),
     Path("frontend/js/pages/media-tools.js"),
+    # Round-2 tighten finds existing non-U5 offenders; leave for owning PRs.
+    Path("frontend/js/pages/create-job.js"),
+    Path("frontend/js/pages/gallery.js"),
+    Path("frontend/js/pages/home.js"),
+    Path("frontend/js/pages/project-view.js"),
+    Path("frontend/js/pages/settings.js"),
 }
 
 ATTR_INTERPOLATION = re.compile(
@@ -30,15 +36,11 @@ RISKY_ATTRS = {
     "download",
 }
 SAFE_COMMENT_MARKER = "// safe:"
-SAFE_CALL_PREFIXES = ("App.escapeHtml(", "App.safeHref(", "encodeURIComponent(")
 SAFE_CALL_EXPR = re.compile(
-    r"(?:App\.escapeHtml|App\.safeHref|encodeURIComponent)\s*\(.+\)"
+    r"(?:App\.escapeHtml|App\.safeHref|encodeURIComponent)\s*\([^+`$]*\)"
 )
 SAFE_LITERAL_EXPR = re.compile(
     r"(?:'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\$])*`|true|false|\d+(?:\.\d+)?)"
-)
-SAFE_PRIMITIVE_EXPR = re.compile(
-    r"[A-Za-z_$][\w$]*(?:Index|Count)"
 )
 
 
@@ -48,13 +50,9 @@ def is_risky_attr(attr: str) -> bool:
 
 def is_safe_attr_expr(expr: str) -> bool:
     expr = expr.strip()
-    if expr.startswith(SAFE_CALL_PREFIXES):
-        return True
     if SAFE_LITERAL_EXPR.fullmatch(expr):
         return True
     if SAFE_CALL_EXPR.fullmatch(expr):
-        return True
-    if SAFE_PRIMITIVE_EXPR.fullmatch(expr):
         return True
     return False
 
