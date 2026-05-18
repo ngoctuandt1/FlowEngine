@@ -3,6 +3,8 @@
  * List, create, edit, reload, quarantine/activate profiles.
  */
 (() => {
+  localStorage.removeItem('flowengine.workerApiKey');
+
   const TIERS = ['free', 'standard', 'pro'];
   const LOCALES = ['en-US', 'en-GB', 'vi-VN', 'ja-JP', 'ko-KR', 'zh-CN', 'de-DE', 'fr-FR'];
   const WORKER_KEY_VISIBILITY_CLEAR_DELAY_MS = 5 * 60 * 1000;
@@ -272,6 +274,9 @@
         if (settled) return;
         settled = true;
         observer.disconnect();
+        if (input) input.value = '';
+        const modalBody = document.getElementById('modal-body');
+        if (modalBody) modalBody.innerHTML = '';
         App.closeModal();
         resolve(value);
       };
