@@ -3,9 +3,33 @@
  * List, create, edit, reload, quarantine/activate profiles.
  */
 (() => {
+  localStorage.removeItem('flowengine.workerApiKey');
+
   const TIERS = ['free', 'standard', 'pro'];
   const LOCALES = ['en-US', 'en-GB', 'vi-VN', 'ja-JP', 'ko-KR', 'zh-CN', 'de-DE', 'fr-FR'];
-  const RELOAD_API_KEY_STORAGE = 'flowengine.workerApiKey';
+  const WORKER_KEY_VISIBILITY_CLEAR_DELAY_MS = 5 * 60 * 1000;
+  let cachedWorkerKey = null;
+  let workerKeyVisibilityTimer = null;
+
+  function clearCachedWorkerKey() {
+    cachedWorkerKey = null;
+  }
+
+  function scheduleWorkerKeyVisibilityClear() {
+    if (workerKeyVisibilityTimer) {
+      clearTimeout(workerKeyVisibilityTimer);
+      workerKeyVisibilityTimer = null;
+    }
+
+    if (document.visibilityState !== 'hidden' || !cachedWorkerKey) return;
+
+    workerKeyVisibilityTimer = setTimeout(() => {
+      if (document.visibilityState === 'hidden') clearCachedWorkerKey();
+      workerKeyVisibilityTimer = null;
+    }, WORKER_KEY_VISIBILITY_CLEAR_DELAY_MS);
+  }
+
+  document.addEventListener('visibilitychange', scheduleWorkerKeyVisibilityClear);
 
   function getInitials(name) {
     if (!name) return '?';
@@ -208,24 +232,131 @@
     });
   }
 
+  function promptForWorkerKey() {
+    return new Promise((resolve) => {
+      App.openModal('Worker API Key', `
+        <p style="margin:0 0 14px; color: var(--text-muted);">
+          Enter Worker API key to reload profiles from Google Sheet. Key is kept in memory only.
+        </p>
+        <div class="form-group">
+          <label class="form-label" for="worker-api-key-input">Worker API Key</label>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input
+              type="password"
+              class="form-input"
+              id="worker-api-key-input"
+              placeholder="Worker API key"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+            >
+            <button type="button" class="btn btn-icon btn-outline" id="worker-api-key-toggle" aria-label="Show worker API key">
+              <span class="material-icons" aria-hidden="true">visibility</span>
+            </button>
+          </div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:18px;">
+          <button class="btn btn-outline" id="worker-api-key-cancel">Cancel</button>
+          <button class="btn btn-primary" id="worker-api-key-submit">
+            <span class="material-icons" style="font-size:16px">sync</span> Reload
+          </button>
+        </div>
+      `);
+
+      const overlay = document.getElementById('modal-overlay');
+      const input = document.getElementById('worker-api-key-input');
+      const toggle = document.getElementById('worker-api-key-toggle');
+      const cancel = document.getElementById('worker-api-key-cancel');
+      const submit = document.getElementById('worker-api-key-submit');
+      let settled = false;
+
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        observer.disconnect();
+        if (input) input.value = '';
+        const modalBody = document.getElementById('modal-body');
+        if (modalBody) modalBody.innerHTML = '';
+        App.closeModal();
+        resolve(value);
+      };
+
+      const observer = new MutationObserver(() => {
+        if (!overlay || overlay.classList.contains('hidden')) finish(null);
+      });
+
+      if (overlay) observer.observe(overlay, { attributes: true, attributeFilter: ['class'] });
+      input?.focus();
+
+      toggle?.addEventListener('click', () => {
+        if (!input) return;
+        const showKey = input.type === 'password';
+        input.type = showKey ? 'text' : 'password';
+        toggle.setAttribute('aria-label', showKey ? 'Hide worker API key' : 'Show worker API key');
+        const icon = toggle.querySelector('.material-icons');
+        if (icon) icon.textContent = showKey ? 'visibility_off' : 'visibility';
+      });
+
+      cancel?.addEventListener('click', () => finish(null));
+      submit?.addEventListener('click', () => {
+        const apiKey = input?.value.trim() || '';
+        if (!apiKey) {
+          App.toast('Worker API key is required.', 'warning');
+          input?.focus();
+          return;
+        }
+        finish(apiKey);
+      });
+      input?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') submit?.click();
+      });
+    });
+  }
+
+  async function getWorkerKey(forcePrompt = false) {
+    if (!forcePrompt && cachedWorkerKey) return cachedWorkerKey;
+    const apiKey = await promptForWorkerKey();
+    cachedWorkerKey = apiKey || null;
+    return cachedWorkerKey;
+  }
+
+  async function callReloadProfiles(apiKey) {
+    const result = await API.profiles.reload(apiKey);
+    const count = result?.loaded ?? result?.profiles?.length ?? 0;
+    App.toast(`Reloaded ${count} profile${count === 1 ? '' : 's'} from Google Sheet.`, 'success');
+    App._loadPage('profiles');
+  }
+
   async function reloadProfiles(button) {
-    let apiKey = localStorage.getItem(RELOAD_API_KEY_STORAGE) || '';
+    if (button.disabled) return;
+    button.disabled = true;
+
+    let apiKey = await getWorkerKey();
     if (!apiKey) {
-      apiKey = prompt('Worker API key for Google Sheet reload') || '';
-      apiKey = apiKey.trim();
-      if (!apiKey) return;
-      localStorage.setItem(RELOAD_API_KEY_STORAGE, apiKey);
+      button.disabled = false;
+      return;
     }
 
-    button.disabled = true;
     button.innerHTML = '<span class="spinner"></span> Reloading...';
     try {
-      const result = await API.profiles.reload(apiKey);
-      const count = result?.loaded ?? result?.profiles?.length ?? 0;
-      App.toast(`Reloaded ${count} profile${count === 1 ? '' : 's'} from Google Sheet.`, 'success');
-      App._loadPage('profiles');
+      await callReloadProfiles(apiKey);
     } catch (err) {
-      if (err.status === 401) localStorage.removeItem(RELOAD_API_KEY_STORAGE);
+      if (err.status === 401) {
+        clearCachedWorkerKey();
+        App.toast('Worker API key rejected. Enter it again.', 'warning');
+        apiKey = await getWorkerKey(true);
+        if (apiKey) {
+          try {
+            await callReloadProfiles(apiKey);
+            return;
+          } catch (retryErr) {
+            if (retryErr.status === 401) clearCachedWorkerKey();
+            App.toast('Profile reload failed: ' + retryErr.message, 'error');
+            return;
+          }
+        }
+        return;
+      }
       App.toast('Profile reload failed: ' + err.message, 'error');
     } finally {
       button.disabled = false;
