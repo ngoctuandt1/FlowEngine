@@ -251,7 +251,11 @@ async def _run_ytdlp(
         # signal the group via ``terminate``/``kill`` without affecting peers.
         import subprocess as _subprocess
 
-        popen_kwargs["creationflags"] = _subprocess.CREATE_NEW_PROCESS_GROUP
+        creation_flags = getattr(_subprocess, "CREATE_NEW_PROCESS_GROUP", None)
+        if creation_flags is not None:
+            popen_kwargs["creationflags"] = creation_flags
+        else:
+            popen_kwargs["start_new_session"] = True
     else:
         popen_kwargs["start_new_session"] = True
 
