@@ -45,16 +45,6 @@
     'remove-object',
     'camera-move',
   ]);
-  const STUB_ACTIONS = new Set([
-    'run-workflow',
-    'batch-run',
-    'export',
-    'settings',
-    'node-upload',
-    'node-play',
-    'node-delete',
-    'node-refs',
-  ]);
   const COUNT_PILLS = [1, 2, 4];
   const IDEA_PANEL_TITLE = 'IDEA';
   const IDEA_EMPTY_COPY = 'No idea yet. Describe your video and click Generate.';
@@ -618,11 +608,6 @@
     return { ...primary, poster, files };
   }
 
-  function referenceImageCount(job) {
-    const ingredients = Array.isArray(job?.ingredient_image_paths) ? job.ingredient_image_paths.filter(Boolean).length : 0;
-    return [job?.start_image_path, job?.end_image_path, job?.ref_image_path].filter(Boolean).length + ingredients;
-  }
-
   function outputCount(job) {
     const files = renderableFiles(job);
     if (!files.length) return 1;
@@ -772,17 +757,6 @@
     `;
   }
 
-  function renderReferenceStub(job) {
-    const count = referenceImageCount(job);
-    return `
-      <button type="button" class="pv-ref-images" data-action="node-refs" data-job-id="${escapeAttr(job.id)}" title="Reference images">
-        <span>Reference images</span>
-        <span>${App.escapeHtml(String(count))}</span>
-        <span class="material-icons" aria-hidden="true">expand_more</span>
-      </button>
-    `;
-  }
-
   function renderCountPills(job) {
     const active = activeCountPill(job);
     const noun = primaryMedia(job)?.kind === 'image' && String(job?.type || '') === 'text-to-image' ? 'Image' : 'Video';
@@ -840,11 +814,6 @@
         <div class="pv-node-header">
           <div class="pv-node-type">
             <span class="pv-node-status-pill">${App.escapeHtml(statusLabel)}</span>
-          </div>
-          <div class="pv-node-actions">
-            <button type="button" class="icon-btn" data-action="node-upload" data-job-id="${escapeAttr(job.id)}" aria-label="Upload stub"><span class="material-icons">upload</span></button>
-            <button type="button" class="icon-btn" data-action="node-play" data-job-id="${escapeAttr(job.id)}" aria-label="Play stub"><span class="material-icons">play_arrow</span></button>
-            <button type="button" class="icon-btn" data-action="node-delete" data-job-id="${escapeAttr(job.id)}" aria-label="Delete stub"><span class="material-icons">delete</span></button>
           </div>
         </div>
 
@@ -1053,11 +1022,7 @@
         </div>
 
         <div class="pv-toolbar-actions">
-          <button type="button" class="btn btn-sm btn-outline" data-action="run-workflow">Run Workflow</button>
-          <button type="button" class="btn btn-sm btn-outline" data-action="batch-run">Batch Run</button>
-          <button type="button" class="btn btn-sm btn-outline" data-action="export">Export</button>
           <button type="button" class="btn btn-sm btn-outline" data-action="ai-agent">AI Agent</button>
-          <button type="button" class="btn btn-sm btn-outline" data-action="settings">Settings</button>
         </div>
       </div>
     `;
@@ -1773,10 +1738,6 @@
     location.hash = '#gallery';
   }
 
-  function toastComingSoon() {
-    App.toast('Coming soon', 'info');
-  }
-
   function nodeElementFor(jobId) {
     return Array.from(rootElement()?.querySelectorAll('.pv-node[data-job-id]') || [])
       .find((nodeEl) => String(nodeEl.dataset.jobId || '').trim() === String(jobId || '').trim()) || null;
@@ -2021,10 +1982,6 @@
       event.preventDefault();
       resetZoom();
       return;
-    }
-    if (STUB_ACTIONS.has(action)) {
-      event.preventDefault();
-      toastComingSoon();
     }
   }
 
