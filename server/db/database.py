@@ -79,6 +79,35 @@ CREATE TABLE IF NOT EXISTS jobs (
     FOREIGN KEY (chain_id) REFERENCES chains(id)
 );
 
+CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(
+    id,
+    project_url,
+    type,
+    profile,
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS jobs_fts_after_insert
+AFTER INSERT ON jobs
+BEGIN
+    INSERT INTO jobs_fts(rowid, id, project_url, type, profile)
+    VALUES (new.rowid, new.id, new.project_url, new.type, new.profile);
+END;
+
+CREATE TRIGGER IF NOT EXISTS jobs_fts_after_update
+AFTER UPDATE ON jobs
+BEGIN
+    DELETE FROM jobs_fts WHERE rowid = old.rowid;
+    INSERT INTO jobs_fts(rowid, id, project_url, type, profile)
+    VALUES (new.rowid, new.id, new.project_url, new.type, new.profile);
+END;
+
+CREATE TRIGGER IF NOT EXISTS jobs_fts_after_delete
+AFTER DELETE ON jobs
+BEGIN
+    DELETE FROM jobs_fts WHERE rowid = old.rowid;
+END;
+
 CREATE TABLE IF NOT EXISTS profiles (
     name            TEXT PRIMARY KEY,
     google_account  TEXT,
@@ -177,6 +206,70 @@ async def _ensure_template_column(db: aiosqlite.Connection, name: str, ddl: str)
     columns = {row[1] for row in rows}
     if name not in columns:
         await db.execute(f"ALTER TABLE templates ADD COLUMN {ddl}")
+
+
+async def _backfill_jobs_fts(db: aiosqlite.Connection) -> int:
+    """Idempotently rebuild jobs_fts rows from jobs."""
+    cursor = await db.execute("SELECT COUNT(*) FROM jobs")
+    count_row = await cursor.fetchone()
+    await db.execute(
+        """
+        INSERT OR REPLACE INTO jobs_fts(rowid, id, project_url, type, profile)
+        SELECT rowid, id, project_url, type, profile
+        FROM jobs
+        """
+    )
+    return count_row[0]
+
+
+async def _ensure_jobs_fts_trigram(db: aiosqlite.Connection) -> bool:
+    """Recreate index-only jobs_fts if it uses a legacy tokenizer."""
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs_fts'"
+    )
+    row = await cursor.fetchone()
+    sql = (row[0] or "").lower() if row else ""
+    if "trigram" in sql:
+        return False
+
+    await db.executescript(
+        """
+        DROP TRIGGER IF EXISTS jobs_fts_after_insert;
+        DROP TRIGGER IF EXISTS jobs_fts_after_update;
+        DROP TRIGGER IF EXISTS jobs_fts_after_delete;
+        DROP TABLE IF EXISTS jobs_fts;
+
+        CREATE VIRTUAL TABLE jobs_fts USING fts5(
+            id,
+            project_url,
+            type,
+            profile,
+            tokenize='trigram'
+        );
+
+        CREATE TRIGGER jobs_fts_after_insert
+        AFTER INSERT ON jobs
+        BEGIN
+            INSERT INTO jobs_fts(rowid, id, project_url, type, profile)
+            VALUES (new.rowid, new.id, new.project_url, new.type, new.profile);
+        END;
+
+        CREATE TRIGGER jobs_fts_after_update
+        AFTER UPDATE ON jobs
+        BEGIN
+            DELETE FROM jobs_fts WHERE rowid = old.rowid;
+            INSERT INTO jobs_fts(rowid, id, project_url, type, profile)
+            VALUES (new.rowid, new.id, new.project_url, new.type, new.profile);
+        END;
+
+        CREATE TRIGGER jobs_fts_after_delete
+        AFTER DELETE ON jobs
+        BEGIN
+            DELETE FROM jobs_fts WHERE rowid = old.rowid;
+        END;
+        """
+    )
+    return True
 
 
 async def _backfill_job_chain_ids(db: aiosqlite.Connection) -> int:
@@ -285,6 +378,11 @@ async def init_db() -> None:
         await _ensure_template_column(db, "updated_at", "updated_at TEXT")
         backfilled = await _backfill_job_chain_ids(db)
         logger.info("backfilled chain_id on %d jobs", backfilled)
+        recreated = await _ensure_jobs_fts_trigram(db)
+        if recreated:
+            logger.info("recreated jobs_fts with trigram tokenizer")
+        fts_backfilled = await _backfill_jobs_fts(db)
+        logger.info("backfilled jobs_fts on %d jobs", fts_backfilled)
         await db.commit()
 
 
