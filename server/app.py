@@ -59,6 +59,20 @@ MEDIA_IMAGE_CACHE_CONTROL = "public, max-age=2592000, immutable"
 # caches locally for 5 minutes.
 MEDIA_PREFIXES = ("/downloads/", "/uploads/")
 MEDIA_CACHE_CONTROL = "private, max-age=300"
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "img-src 'self' data: blob: https:; "
+        "media-src 'self' blob: https:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
+        "connect-src 'self' wss: https:; "
+        "frame-ancestors 'none'"
+    ),
+}
 STALE_REAPER_INTERVAL_SEC = 60
 # Flow jobs legitimately stay in ``claimed`` / ``running`` for the full
 # generation cycle: text-to-video ~ 300-600s, extend ~ 600-900s, deep
@@ -522,6 +536,15 @@ DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/downloads", StaticFiles(directory=str(DOWNLOAD_DIR)), name="downloads")
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+
+@app.middleware("http")
+async def set_security_headers(request: Request, call_next):
+    """Attach baseline browser security headers to every HTTP response."""
+    response = await call_next(request)
+    for name, value in SECURITY_HEADERS.items():
+        response.headers[name] = value
+    return response
 
 
 @app.middleware("http")
