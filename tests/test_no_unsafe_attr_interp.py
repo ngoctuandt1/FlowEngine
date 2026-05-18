@@ -91,8 +91,8 @@ def test_app_safe_href_allowlists_flow_and_same_origin_relative():
 
     if node is None:
         assert "safeHref(url)" in source
-        assert "^https:\\/\\/labs\\.google\\/" in source
-        assert "^\\/[^/]" in source
+        assert "new URL(raw, window.location.origin)" in source
+        assert "labs.google" in source
         return
 
     script = f"""
@@ -105,8 +105,9 @@ const context = {{
   console: {{ warn: (...args) => warnings.push(args), error: () => {{}}, log: () => {{}} }},
   localStorage: {{ removeItem: () => {{}} }},
   document: {{ addEventListener: () => {{}}, getElementById: () => null }},
-  window: {{}},
+  window: {{ location: {{ origin: 'https://app.example.com', hash: '' }} }},
   location: {{ hash: '' }},
+  URL: URL,
   setTimeout: () => ({{}}),
   clearTimeout: () => {{}},
 }};
@@ -115,7 +116,7 @@ vm.createContext(context);
 vm.runInContext(source, context, {{ filename: 'frontend/js/app.js' }});
 
 const App = context.__App__;
-const inputs = ['', 'javascript:alert(1)', 'data:text/html,pwn', 'https://labs.google/fx/tools/flow', '/jobs'];
+const inputs = ['', 'javascript:alert(1)', 'data:text/html,pwn', 'https://labs.google/fx/tools/flow', '/jobs', '/\\t/evil.com', '/\\\\evil.com', '//evil.com'];
 console.log(JSON.stringify({{
   outputs: inputs.map((value) => App.safeHref(value)),
   warningCount: warnings.length,
@@ -130,5 +131,5 @@ console.log(JSON.stringify({{
     )
     seen = json.loads(result.stdout)
 
-    assert seen["outputs"] == ['', '#', '#', 'https://labs.google/fx/tools/flow', '/jobs']
-    assert seen["warningCount"] == 2
+    assert seen["outputs"] == ['', '#', '#', 'https://labs.google/fx/tools/flow', '/jobs', '#', '#', '#']
+    assert seen["warningCount"] == 5
