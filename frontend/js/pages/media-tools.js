@@ -33,6 +33,7 @@
   let renderedPreviewClipId = '';
   let activeDropLane = null;
   let renderPollTimerId = 0;
+  let renderGeneration = 0;
 
   const state = {
     resources: [],
@@ -416,6 +417,15 @@
     }
   }
 
+  function invalidateRenderPolling() {
+    renderGeneration += 1;
+    clearRenderPolling();
+  }
+
+  function isRenderGenerationActive(renderId, generation) {
+    return generation === renderGeneration && state.render.isPolling && state.render.renderId === renderId;
+  }
+
   function renderErrorMessage(err) {
     if (err?.status === 422) return 'Timeline exceeds render bounds or has invalid clips.';
     if (err?.status === 429) return 'Render queue is full. Wait for an active render to finish.';
@@ -430,12 +440,13 @@
     rerender({ preserveScroll: true });
   }
 
-  async function pollRenderStatus(renderId) {
+  async function pollRenderStatus(renderId, generation = renderGeneration) {
     clearRenderPolling();
-    if (!state.render.isPolling || state.render.renderId !== renderId) return;
+    if (!isRenderGenerationActive(renderId, generation)) return;
 
     try {
       const result = await API.fetch(`/api/render/${encodeURIComponent(renderId)}`);
+      if (!isRenderGenerationActive(renderId, generation)) return;
       const progress = clamp(Number(result?.progress || 0), 0, 100);
       state.render = {
         ...state.render,
@@ -460,8 +471,12 @@
       }
 
       rerender({ preserveScroll: true });
-      renderPollTimerId = window.setTimeout(() => pollRenderStatus(renderId), RENDER_POLL_INTERVAL_MS);
+      renderPollTimerId = window.setTimeout(
+        () => pollRenderStatus(renderId, generation),
+        RENDER_POLL_INTERVAL_MS
+      );
     } catch (err) {
+      if (generation !== renderGeneration) return;
       setRenderState({ isPolling: false, status: 'failed', error: renderErrorMessage(err) });
       App.toast(renderErrorMessage(err), 'error');
     }
@@ -478,6 +493,8 @@
       return;
     }
 
+    const generation = renderGeneration + 1;
+    renderGeneration = generation;
     setRenderState({ renderId: '', status: 'queued', progress: 0, outputUrl: '', error: '', isPolling: true });
 
     try {
@@ -485,6 +502,7 @@
         method: 'POST',
         body: JSON.stringify(payload),
       });
+      if (generation !== renderGeneration) return;
       const renderId = String(result?.render_id || '').trim();
       if (!renderId) throw new Error('Render response missing render_id.');
       state.render = {
@@ -496,8 +514,12 @@
       };
       rerender({ preserveScroll: true });
       App.toast('Rendering started', 'info');
-      renderPollTimerId = window.setTimeout(() => pollRenderStatus(renderId), RENDER_POLL_INTERVAL_MS);
+      renderPollTimerId = window.setTimeout(
+        () => pollRenderStatus(renderId, generation),
+        RENDER_POLL_INTERVAL_MS
+      );
     } catch (err) {
+      if (generation !== renderGeneration) return;
       clearRenderPolling();
       setRenderState({ isPolling: false, status: 'failed', progress: 0, error: renderErrorMessage(err) });
       App.toast(renderErrorMessage(err), 'error');
@@ -505,7 +527,7 @@
   }
 
   function cancelRenderPolling() {
-    clearRenderPolling();
+    invalidateRenderPolling();
     state.render.isPolling = false;
     state.render.status = state.render.status || 'queued';
     rerender({ preserveScroll: true });
@@ -1593,7 +1615,8 @@
     },
     destroy() {
       stopPlayback({ rerenderView: false });
-      clearRenderPolling();
+      invalidateRenderPolling();
+      state.render.isPolling = false;
       clearDropHighlight();
       unbindEvents();
       rootEl = null;

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # rejected with 422 BEFORE we hand the payload to the background ffmpeg job.
 MAX_TRACKS_PER_TIMELINE = 10
 MAX_CLIPS_PER_TRACK = 100
+MAX_CLIPS_PER_TIMELINE = 100
 MAX_TOTAL_DURATION_SEC = 600.0  # 10 minutes
 
 
@@ -56,11 +57,22 @@ class TimelineTrack(BaseModel):
 
 class TimelinePayload(BaseModel):
     ratio: TimelineRatio
-    tracks: list[TimelineTrack] = Field(min_length=1, max_length=MAX_TRACKS_PER_TIMELINE)
+    tracks: list[TimelineTrack] = Field(min_length=1)
     total_duration_sec: float = Field(gt=0, le=MAX_TOTAL_DURATION_SEC)
 
     @model_validator(mode="after")
     def _validate_track_bounds(self) -> "TimelinePayload":
+        total_clips = sum(len(track.clips) for track in self.tracks)
+        if total_clips > MAX_CLIPS_PER_TIMELINE:
+            raise ValueError(
+                f"timeline exceeds {MAX_CLIPS_PER_TIMELINE} clip limit"
+            )
+
+        if len(self.tracks) > MAX_TRACKS_PER_TIMELINE:
+            raise ValueError(
+                f"timeline exceeds {MAX_TRACKS_PER_TIMELINE} track limit"
+            )
+
         for track in self.tracks:
             if len(track.clips) > MAX_CLIPS_PER_TRACK:
                 raise ValueError(

@@ -152,6 +152,29 @@ async def test_render_endpoint_rejects_too_many_clips_per_track(api_client):
 
 
 @pytest.mark.asyncio
+async def test_render_endpoint_rejects_too_many_clips_total(api_client):
+    response = await api_client.post(
+        "/api/render/timeline",
+        json={
+            "ratio": "9:16",
+            "tracks": [
+                {
+                    "kind": "video",
+                    "clips": [
+                        {"asset_id": f"t{track_index}-c{clip_index}", "start_sec": 0.0, "duration_sec": 0.5}
+                        for clip_index in range(10)
+                    ],
+                }
+                for track_index in range(11)
+            ],
+            "total_duration_sec": 60.0,
+        },
+    )
+    assert response.status_code == 422
+    assert "100" in str(response.json()["detail"])
+
+
+@pytest.mark.asyncio
 async def test_render_endpoint_concurrency_cap_returns_429(api_client, monkeypatch):
     import server.routes.render as render_route
 
