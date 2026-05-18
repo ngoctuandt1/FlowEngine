@@ -48,7 +48,7 @@
     return `
       <div class="type-selector" id="type-selector">
         ${JOB_TYPES.filter((t) => LEVEL_1_TYPES.has(t.id)).map((t) => `
-          <div class="type-option ${t.id === selectedType ? 'selected' : ''}" data-type="${t.id}">
+          <div class="type-option ${t.id === selectedType ? 'selected' : ''}" data-type="${App.escapeHtml(t.id)}">
             <span class="material-icons">${t.icon}</span>
             <div class="type-option-label">${t.shortLabel}</div>
           </div>
@@ -65,7 +65,7 @@
       .map((p) => `<option value="${App.escapeHtml(p.name)}">${App.escapeHtml(p.name)}</option>`)
       .join('');
     return `
-      <select class="form-select" id="${id}" ${required ? 'required' : ''}>
+      <select class="form-select" id="${App.escapeHtml(id)}" ${required ? 'required' : ''}>
         ${defaultOpt}${opts}
       </select>
     `;
@@ -249,12 +249,12 @@
     const cards = ingredientImagePaths.length > 0
       ? ingredientImagePaths.map((path, index) => `
         <div class="card" style="padding:12px; position:relative;">
-          <button type="button" class="icon-btn ingredient-remove" data-index="${index}"
+          <button type="button" class="icon-btn ingredient-remove" data-index="${App.escapeHtml(index)}"
                   title="Remove reference"
                   style="position:absolute; top:8px; right:8px; width:28px; height:28px;">
             <span class="material-icons" style="font-size:18px;">close</span>
           </button>
-          <img src="/${App.escapeHtml(path)}" alt="Reference ${index + 1}"
+          <img src="/${App.escapeHtml(path)}" alt="Reference ${App.escapeHtml(index + 1)}"
                style="width:100%; height:120px; object-fit:cover; border-radius:10px; border:1px solid var(--border-color);">
           <div class="form-hint" style="margin-top:8px; word-break:break-all;">${App.escapeHtml(path)}</div>
         </div>
@@ -290,7 +290,7 @@
     return `
       <div class="form-group">
         <label class="form-label">${label} Image ${required ? '<span class="required">*</span>' : '(optional)'}</label>
-        <input type="file" class="form-input" id="${id}" accept="image/png,image/jpeg,image/webp">
+        <input type="file" class="form-input" id="${App.escapeHtml(id)}" accept="image/png,image/jpeg,image/webp">
         ${preview}
       </div>
     `;

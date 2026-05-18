@@ -135,7 +135,7 @@
         ${items.map((item) => `
           <span
             class="pv-node-status-pill"
-            title="${escapeAttr(`${item.field} -> ${item.fallbackUsed}`)}"
+            title="${App.escapeHtml(`${item.field} -> ${item.fallbackUsed}`)}"
             style="opacity:0.65;"
           >
             ${App.escapeHtml(`gap:${item.field}`)}
@@ -749,7 +749,7 @@
         <div class="pv-section-label">Prompt</div>
         <div class="pv-prompt ${expanded ? 'pv-prompt--expanded' : ''}">${App.escapeHtml(text)}</div>
         ${needsToggle ? `
-          <button type="button" class="pv-prompt-toggle" data-action="prompt-toggle" data-job-id="${escapeAttr(job.id)}">
+          <button type="button" class="pv-prompt-toggle" data-action="prompt-toggle" data-job-id="${App.escapeHtml(job.id)}">
             ${expanded ? 'Show Less' : 'Show More'}
           </button>
         ` : ''}
@@ -793,7 +793,7 @@
       : mediaTile.imgTag({ src: media.url, alt: title });
 
     return `
-      <button type="button" class="pv-output" data-action="preview-output" data-job-id="${escapeAttr(job.id)}" title="Preview output">
+      <button type="button" class="pv-output" data-action="preview-output" data-job-id="${App.escapeHtml(job.id)}" title="Preview output">
         ${preview}
       </button>
     `;
@@ -808,7 +808,7 @@
     const statusLabel = statusPillLabel(job);
 
     return `
-      <div class="${classes}" data-job-id="${escapeAttr(job.id)}" data-status="${escapeAttr(status)}" style="position:absolute; left:${frame.left}px; top:${frame.top}px;">
+      <div class="${classes}" data-job-id="${App.escapeHtml(job.id)}" data-status="${App.escapeHtml(status)}" style="position:absolute; left:${frame.left}px; top:${frame.top}px;">
         ${renderOutput(job)}
 
         <div class="pv-node-header">
@@ -818,14 +818,14 @@
         </div>
 
         <div class="pv-node-footer">
-          <button type="button" class="pv-node-caption" data-action="open-node" data-job-id="${escapeAttr(job.id)}" aria-label="Open node">
+          <button type="button" class="pv-node-caption" data-action="open-node" data-job-id="${App.escapeHtml(job.id)}" aria-label="Open node">
             <span class="pv-node-name">${App.escapeHtml(nodeCaption(job))}</span>
             <span class="pv-node-meta">${App.escapeHtml(nodeMeta(job))}</span>
           </button>
           ${status === 'completed' ? '<span class="pv-node-footer-star" aria-hidden="true">\u2726</span>' : ''}
         </div>
 
-        <a class="pv-new-step-pill pv-node-action-overlay" href="${App.escapeHtml(newChainStepHref(job.id))}" data-job-id="${escapeAttr(job.id)}" title="New chain step" aria-label="New chain step">
+        <a class="pv-new-step-pill pv-node-action-overlay" href="${App.safeHref(newChainStepHref(job.id))}" data-job-id="${App.escapeHtml(job.id)}" title="New chain step" aria-label="New chain step">
           <span class="material-icons">add</span>
           <span>Chain step</span>
         </a>
@@ -982,13 +982,13 @@
       return `
         <g
           class="pv-edge"
-          data-edge-parent="${escapeAttr(edge.parent)}"
-          data-edge-child="${escapeAttr(edge.child)}"
-          data-active="${active ? 'true' : 'false'}"
+          data-edge-parent="${App.escapeHtml(edge.parent)}"
+          data-edge-child="${App.escapeHtml(edge.child)}"
+          data-active="${App.escapeHtml(active ? 'true' : 'false')}"
         >
           <path
             class="pv-edge-path ${active ? 'pv-edge-path--running' : ''}"
-            d="${escapeAttr(geometry.d)}"
+            d="${App.escapeHtml(geometry.d)}"
             fill="none"
           ></path>
           ${renderEdgeMarkerDots(samples)}
@@ -1048,7 +1048,7 @@
       <div
         class="pv-extend-hint"
         data-role="extend-hint"
-        data-visible="${state.extendHintVisible ? 'true' : 'false'}"
+        data-visible="${App.escapeHtml(state.extendHintVisible ? 'true' : 'false')}"
         style="left:${frame.left + (frame.width / 2)}px; top:${frame.top + frame.height + 28}px;"
       >Click + New chain step below to extend this chain</div>
     `;
@@ -1097,13 +1097,13 @@
       <div class="pv-idea-attachments">
         ${state.ideaRefImages.map((item, index) => `
           <div class="pv-idea-thumb">
-            <img src="${escapeAttr(item.url)}" alt="${escapeAttr(item.name || `Reference ${index + 1}`)}">
+            <img src="${App.safeHref(item.url)}" alt="${App.escapeHtml(item.name || `Reference ${index + 1}`)}">
             <button
               type="button"
               class="pv-idea-thumb-remove"
               data-action="idea-remove-ref"
-              data-index="${index}"
-              aria-label="Remove reference image ${index + 1}"
+              data-index="${App.escapeHtml(index)}"
+              aria-label="Remove reference image ${App.escapeHtml(index + 1)}"
             >&times;</button>
           </div>
         `).join('')}
@@ -1128,7 +1128,7 @@
             class="pv-idea-collapse"
             data-action="toggle-idea-rail"
             aria-expanded="${state.ideaCollapsed ? 'false' : 'true'}"
-            aria-label="${state.ideaCollapsed ? 'Open idea panel' : 'Collapse idea panel'}"
+            aria-label="${App.escapeHtml(state.ideaCollapsed ? 'Open idea panel' : 'Collapse idea panel')}"
           >
             <span class="material-icons" aria-hidden="true">expand_more</span>
           </button>
@@ -1155,8 +1155,8 @@
               <input
                 type="text"
                 class="pv-idea-input"
-                value="${escapeAttr(state.ideaDraft)}"
-                placeholder="${escapeAttr(IDEA_INPUT_PLACEHOLDER)}"
+                value="${App.escapeHtml(state.ideaDraft)}"
+                placeholder="${App.escapeHtml(IDEA_INPUT_PLACEHOLDER)}"
                 ${state.ideaPending || state.ideaUploadPending ? 'disabled' : ''}
               >
               <button
@@ -1721,8 +1721,8 @@
 
     const title = promptText(job) || typeCardLabel(job.type);
     const mediaHtml = media.kind === 'video'
-      ? `<video src="${escapeAttr(media.url)}" ${media.poster ? `poster="${escapeAttr(media.poster)}"` : ''} controls autoplay playsinline style="width:100%; max-height:75vh; background:#000; border-radius:16px;"></video>`
-      : `<img src="${escapeAttr(media.url)}" alt="${escapeAttr(title)}" style="width:100%; max-height:75vh; object-fit:contain; background:#000; border-radius:16px;">`;
+      ? `<video src="${App.safeHref(media.url)}" ${media.poster ? `poster="${App.safeHref(media.poster)}"` : ''} controls autoplay playsinline style="width:100%; max-height:75vh; background:#000; border-radius:16px;"></video>`
+      : `<img src="${App.safeHref(media.url)}" alt="${App.escapeHtml(title)}" style="width:100%; max-height:75vh; object-fit:contain; background:#000; border-radius:16px;">`;
 
     App.openModal(
       title,
@@ -2012,7 +2012,7 @@
 
     async render() {
       await loadChainData();
-      return `<div id="${PAGE_ROOT_ID}">${renderPage()}</div>`;
+      return `<div id="${App.escapeHtml(PAGE_ROOT_ID)}">${renderPage()}</div>`;
     },
 
     mount() {

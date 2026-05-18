@@ -79,8 +79,8 @@
       <a
         href="#job-detail/${encodeURIComponent(safeId)}"
         class="engine-status-job-link"
-        data-job-id="${escapeAttr(safeId)}"
-        title="${escapeAttr(safeId)}"
+        data-job-id="${App.escapeHtml(safeId)}"
+        title="${App.escapeHtml(safeId)}"
         style="color: var(--accent-hover); text-decoration: none;"
       >
         <code>${App.escapeHtml(truncateId(safeId))}</code>
@@ -279,8 +279,8 @@
       .map((worker) => {
         return `
           <tr>
-            <td title="${escapeAttr(worker.profileName)}">${App.escapeHtml(worker.profileName)}</td>
-            <td title="${escapeAttr(worker.workerId || '')}">
+            <td title="${App.escapeHtml(worker.profileName)}">${App.escapeHtml(worker.profileName)}</td>
+            <td title="${App.escapeHtml(worker.workerId || '')}">
               ${worker.workerId ? `<code>${App.escapeHtml(worker.workerId)}</code>` : '<span>-</span>'}
             </td>
             <td>${renderJobLink(worker.currentJobId)}</td>
@@ -360,7 +360,7 @@
         return `
           <tr>
             <td>${renderJobLink(job.id)}</td>
-            <td title="${escapeAttr(profile)}">${App.escapeHtml(profile)}</td>
+            <td title="${App.escapeHtml(profile)}">${App.escapeHtml(profile)}</td>
             <td>
               <div style="display:flex; align-items:center; gap:8px;">
                 <span class="material-icons" style="font-size:18px; color: var(--accent-hover);">
@@ -369,7 +369,7 @@
                 <span>${App.escapeHtml(type)}</span>
               </div>
             </td>
-            <td title="${escapeAttr(job.created_at || job.createdAt || '')}">${App.escapeHtml(formatAge(job.created_at || job.createdAt))}</td>
+            <td title="${App.escapeHtml(job.created_at || job.createdAt || '')}">${App.escapeHtml(formatAge(job.created_at || job.createdAt))}</td>
           </tr>
         `;
       })

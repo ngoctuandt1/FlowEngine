@@ -130,7 +130,7 @@
   function renderPaginationControls(visibleCount) {
     const pageSizeOptions = [25, 50, 100]
       .map((size) => `
-        <option value="${size}" ${state.pagination.pageSize === size ? 'selected' : ''}>${size}</option>
+        <option value="${App.escapeHtml(size)}" ${state.pagination.pageSize === size ? 'selected' : ''}>${size}</option>
       `)
       .join('');
     const start = state.jobs.length ? state.pagination.page * state.pagination.pageSize + 1 : 0;
@@ -176,14 +176,14 @@
   function renderActionButtons(job) {
     const id = App.escapeHtml(job.id || '');
     const buttons = [
-      `<button class="btn btn-sm btn-outline" data-action="view" data-job-id="${id}">
+      `<button class="btn btn-sm btn-outline" data-action="view" data-job-id="${App.escapeHtml(id)}">
         <span class="material-icons" style="font-size:16px">visibility</span> View
       </button>`,
     ];
 
     if (job.status === 'failed') {
       buttons.push(`
-        <button class="btn btn-sm btn-outline" data-action="retry" data-job-id="${id}">
+        <button class="btn btn-sm btn-outline" data-action="retry" data-job-id="${App.escapeHtml(id)}">
           <span class="material-icons" style="font-size:16px">restart_alt</span> Retry
         </button>
       `);
@@ -191,14 +191,14 @@
 
     if (['failed', 'cancelled'].includes(job.status)) {
       buttons.push(`
-        <button class="btn btn-sm btn-outline" data-action="requeue" data-job-id="${id}">
+        <button class="btn btn-sm btn-outline" data-action="requeue" data-job-id="${App.escapeHtml(id)}">
           <span class="material-icons" style="font-size:16px">redo</span> Requeue
         </button>
       `);
     }
 
     buttons.push(`
-      <button class="btn btn-sm btn-danger" data-action="delete" data-job-id="${id}">
+      <button class="btn btn-sm btn-danger" data-action="delete" data-job-id="${App.escapeHtml(id)}">
         <span class="material-icons" style="font-size:16px">delete</span> Delete
       </button>
     `);

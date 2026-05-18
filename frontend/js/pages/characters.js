@@ -187,7 +187,7 @@
         <button
           type="button"
           class="icon-btn"
-          data-remove-image-index="${index}"
+          data-remove-image-index="${App.escapeHtml(index)}"
           title="Remove image"
           style="position: absolute; top: 8px; right: 8px; width: 28px; height: 28px;"
         >
