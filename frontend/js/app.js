@@ -22,7 +22,7 @@ const LAZY_MODULE_MAP = {
   'batch-queue': 'batch-queue',
   chains: 'chain-builder',
 };
-const SKELETON_ROUTES = new Set(['dashboard', 'gallery', 'jobs', 'profiles', 'characters']);
+const SKELETON_ROUTES = new Set(['dashboard', 'gallery', 'jobs', 'profiles', 'characters', 'media-tools']);
 
 const App = {
   currentPage: null,
@@ -157,6 +157,7 @@ const App = {
     if (!container) return;
 
     const cardCount = Math.max(1, Number(count) || 6);
+    container.setAttribute('aria-busy', 'true');
     const cards = Array.from({ length: cardCount }, () => `
       <div class="skeleton-card" aria-hidden="true">
         <div class="skeleton-line skeleton-line--wide"></div>
@@ -272,6 +273,7 @@ const App = {
     if (SKELETON_ROUTES.has(resolvedName)) {
       this.mountSkeleton(container, resolvedName === 'dashboard' ? 4 : 6);
     } else {
+      container.setAttribute('aria-busy', 'false');
       container.innerHTML = '<div class="loading-center"><div class="spinner spinner-lg"></div></div>';
     }
     container.classList.remove('page-enter');
@@ -279,12 +281,14 @@ const App = {
     try {
       const html = await page.render();
       container.innerHTML = html;
+      container.setAttribute('aria-busy', 'false');
       container.classList.add('page-enter');
 
       // Call mount if page has post-render logic
       if (page.mount) page.mount();
     } catch (err) {
       console.error(`[App] Failed to render page '${resolvedName}':`, err);
+      container.setAttribute('aria-busy', 'false');
       container.innerHTML = `
         <div class="empty-state">
           <span class="material-icons">error_outline</span>
