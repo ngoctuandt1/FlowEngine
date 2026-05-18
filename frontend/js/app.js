@@ -505,6 +505,14 @@ const App = {
     return String(text).replace(/[&<>"'\/]/g, (char) => chars[char]);
   },
 
+  safeHref(url) {
+    const href = String(url || '');
+    if (href === '') return '';
+    if (/^https:\/\/labs\.google\//.test(href) || /^\/[^/]/.test(href)) return href;
+    console.warn('[FlowEngine] Blocked unsafe href', url);
+    return '#';
+  },
+
   /**
    * Format a date string for display.
    */

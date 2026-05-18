@@ -213,7 +213,8 @@ async function doLogin() {
   if (res.ok) {
     const params = new URLSearchParams(window.location.search);
     const next = params.get('next') || '/';
-    window.location.href = next;
+    const safeNext = next.startsWith('/') && !next.startsWith('//') && !next.includes('://') ? next : '/';
+    window.location.href = safeNext;
   } else {
     document.getElementById('err').style.display = 'block';
   }
