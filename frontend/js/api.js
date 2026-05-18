@@ -150,14 +150,11 @@ const API = {
     },
 
     /**
-     * List all chains.
-     */
-    async list() {
-      return API.fetch('/api/chains');
-    },
-
-    /**
      * Get chain details.
+     *
+     * Note: there is intentionally no `list()` here — the backend does not
+     * expose `GET /api/chains`. Callers that need a chain overview should
+     * group `API.jobs.list({...})` results by `chain_id` (see home.js).
      */
     async get(id) {
       return API.fetch(`/api/chains/${id}`);

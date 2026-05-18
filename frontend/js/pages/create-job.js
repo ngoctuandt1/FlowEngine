@@ -26,6 +26,8 @@
   let endImagePath = '';
   let refImagePath = '';
   let ingredientImagePaths = [];
+  let resolvedParentChainId = '';
+  let lastResolvedParentId = '';
   const MAX_INGREDIENT_IMAGES = 10;
   const LEVEL_1_TYPES = new Set(['text-to-video', 'frames-to-video', 'ingredients-to-video', 'text-to-image']);
 
@@ -101,6 +103,9 @@
     }
 
     if (!LEVEL_1_TYPES.has(selectedType)) {
+      const chainHintLabel = resolvedParentChainId
+        ? `${resolvedParentChainId.slice(0, 8)}…${resolvedParentChainId.slice(-4)}`
+        : '(auto — resolves from parent)';
       fields.push(`
         <div class="form-row">
           <div class="form-group">
@@ -114,6 +119,14 @@
                    placeholder="https://labs.google/fx/tools/flow/project/...">
             <span class="form-hint">Optional. Only used if no parent job is given.</span>
           </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Chain (auto)</label>
+          <input type="text" class="form-input" id="field-chain-id-display"
+                 value="${App.escapeHtml(resolvedParentChainId || '')}"
+                 placeholder="${App.escapeHtml(chainHintLabel)}"
+                 readonly>
+          <span class="form-hint">Filled from parent when Parent Job ID resolves. Leave parent blank to let the server inherit chain from the single ancestor of Project URL.</span>
         </div>
       `);
     }
@@ -296,6 +309,10 @@
     const purl = val('field-project-url');
     if (purl) data.project_url = purl;
 
+    if (parent && resolvedParentChainId && parent === lastResolvedParentId) {
+      data.chain_id = resolvedParentChainId;
+    }
+
     const model = val('field-model');
     if (model) data.model = model;
 
@@ -358,6 +375,18 @@
       }
     }
     return null;
+  }
+
+  function setResolvedParentChain(parentJobId, chainId) {
+    resolvedParentChainId = chainId || '';
+    lastResolvedParentId = parentJobId;
+    const display = document.getElementById('field-chain-id-display');
+    if (display) display.value = resolvedParentChainId;
+  }
+
+  async function fetchParentChainId(parentJobId) {
+    const parent = await API.jobs.get(parentJobId);
+    return parent?.chain_id || parent?.id || '';
   }
 
   // ---- batch mode -----------------------------------------------------------
@@ -490,27 +519,39 @@
       const opt = e.target.closest('.type-option');
       if (!opt) return;
       selectedType = opt.dataset.type;
+      resolvedParentChainId = '';
+      lastResolvedParentId = '';
       document.querySelectorAll('.type-option').forEach((el) => {
         el.classList.toggle('selected', el.dataset.type === selectedType);
       });
       document.getElementById('job-fields').innerHTML = renderFields();
       bindImageInputs();
       bindIngredientInputs();
+      bindParentLookup();
     });
 
     bindImageInputs();
     bindIngredientInputs();
+    bindParentLookup();
 
     document.getElementById('submit-job')?.addEventListener('click', async () => {
       const data = collectSingle();
       const err = validateSingle(data);
-      if (err) { App.toast(err, 'warning'); return; }
+      if (err) {
+        showResult('warn', 'Check form', App.escapeHtml(err));
+        App.toast(err, 'warning');
+        return;
+      }
 
       const btn = document.getElementById('submit-job');
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span> Creating...';
 
       try {
+        if (!LEVEL_1_TYPES.has(data.type) && data.parent_job_id) {
+          data.chain_id = await fetchParentChainId(data.parent_job_id);
+          setResolvedParentChain(data.parent_job_id, data.chain_id);
+        }
         const result = await API.jobs.create(data);
         App.toast('Job created', 'success');
         const chainId = result?.chain_id || result?.id;
@@ -527,6 +568,48 @@
     });
 
     bindReset();
+  }
+
+  function bindParentLookup() {
+    const input = document.getElementById('field-parent-job');
+    if (!input) return;
+    let inFlight = null;
+    const display = () => document.getElementById('field-chain-id-display');
+
+    input.addEventListener('change', async () => {
+      const id = input.value.trim();
+      if (!id) {
+        resolvedParentChainId = '';
+        lastResolvedParentId = '';
+        const d = display();
+        if (d) d.value = '';
+        return;
+      }
+      if (id === lastResolvedParentId && resolvedParentChainId) {
+        const d = display();
+        if (d) d.value = resolvedParentChainId;
+        return;
+      }
+      const token = Symbol('parent-lookup');
+      inFlight = token;
+      try {
+        const chainId = await fetchParentChainId(id);
+        if (inFlight !== token) return;
+        setResolvedParentChain(id, chainId);
+        const d = display();
+        if (d) d.value = chainId;
+        if (!chainId) {
+          App.toast('Parent has no chain_id yet — server will assign one.', 'warning');
+        }
+      } catch (err) {
+        if (inFlight !== token) return;
+        resolvedParentChainId = '';
+        lastResolvedParentId = '';
+        const d = display();
+        if (d) d.value = '';
+        App.toast(`Parent lookup failed: ${err.message}`, 'warning');
+      }
+    });
   }
 
   function bindBatch() {

@@ -1045,7 +1045,7 @@
             ${mediaId ? '<button type="button" class="icon-btn chain-copy-btn" data-copy-label="Media ID" data-copy-value="media_id" title="Copy media ID"><span class="material-icons">content_copy</span></button>' : ''}
           </div>
         </div>
-        <a class="chain-parent-link" href="#job-detail?id=${encodeURIComponent(parentPrefill.parentJobId)}">
+        <a class="chain-parent-link" href="#job-detail/${encodeURIComponent(parentPrefill.parentJobId)}">
           View parent <span class="material-icons">arrow_forward</span>
         </a>
       </aside>
