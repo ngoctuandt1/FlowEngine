@@ -197,36 +197,13 @@ button:hover { opacity: 0.9; }
 <div class="card">
   <h1>FlowEngine</h1>
   <p>Nhập mật khẩu để truy cập</p>
-  <form id="f" onsubmit="return doLogin()">
+  <form id="f">
     <input type="password" id="pw" placeholder="Mật khẩu" autofocus autocomplete="current-password">
     <button type="submit">Đăng nhập</button>
     <div class="err" id="err">Sai mật khẩu</div>
   </form>
 </div>
-<script>
-async function doLogin() {
-  const pw = document.getElementById('pw').value;
-  const res = await fetch('/api/auth/login', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({password: pw})
-  });
-  if (res.ok) {
-    const params = new URLSearchParams(window.location.search);
-    const next = params.get('next') || '/';
-    let safeNext = '/';
-    if (!/[\x00-\x1F\x7F\\]/.test(next)) {
-      try {
-        const u = new URL(next, window.location.origin);
-        if (u.origin === window.location.origin) safeNext = u.pathname + u.search + u.hash;
-      } catch (_) {}
-    }
-    window.location.href = safeNext;
-  } else {
-    document.getElementById('err').style.display = 'block';
-  }
-  return false;
-}
-</script>
+<script src="/js/login.js?v=2026.05.19.r1"></script>
 </body>
 </html>
 """
