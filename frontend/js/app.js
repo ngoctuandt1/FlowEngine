@@ -465,8 +465,11 @@ const App = {
     toast.innerHTML = `
       <span class="material-icons">${icons[type] || 'info'}</span>
       <span class="toast-message">${App.escapeHtml(message)}</span>
-      <button class="toast-close" onclick="this.parentElement.remove()">&times;</button>
+      <button class="toast-close" type="button">&times;</button>
     `;
+    toast.querySelector('.toast-close')?.addEventListener('click', () => {
+      this.dismissToast(toast);
+    });
 
     container.appendChild(toast);
 

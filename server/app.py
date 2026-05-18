@@ -70,7 +70,7 @@ SECURITY_HEADERS = {
         "img-src 'self' data: blob: https:; "
         "media-src 'self' blob: https:; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
         "font-src 'self' https://fonts.gstatic.com data:; "
         "connect-src 'self' wss: https:; "
         "frame-ancestors 'none'"
