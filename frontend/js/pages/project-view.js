@@ -14,11 +14,11 @@
   const ZOOM_STEP = 0.14;
   const FIT_PADDING = 80;
   const EXTEND_HINT_DELAY_MS = 600;
-  /* === U6 — canvas polish === */
+  /* === U6 - canvas polish === */
   const X_SPACING = 300;
   const Y_SPACING = 420;
   const STAGE_PADDING = 72;
-  /* U6 — portrait nodes 9:16 */
+  /* U6 - portrait nodes 9:16 */
   const DEFAULT_NODE_WIDTH = 240;
   const DEFAULT_NODE_HEIGHT = Math.round((DEFAULT_NODE_WIDTH * 16) / 9);
   const EDGE_MARKER_SPACING = 30;
@@ -26,7 +26,7 @@
   const EDGE_PORT_RADIUS = 4;
   const EDGE_SAMPLE_SEGMENTS = 72;
   /* === end U6 === */
-  /* U3 — idea/chat right rail */
+  /* U3 - idea/chat right rail */
   const IDEA_RAIL_WIDTH = 380;
   const IDEA_RAIL_COLLAPSED_WIDTH = 64;
   const MAX_IDEA_REF_IMAGES = 5;
@@ -56,12 +56,12 @@
     'node-refs',
   ]);
   const COUNT_PILLS = [1, 2, 4];
-  const IDEA_PANEL_TITLE = '\u00dd T\u01af\u1edeNG';
-  const IDEA_EMPTY_COPY = 'Chat v\u1edbi AI c\u00f3 \u0111\u00ednh \u1ea3nh \u0111\u1ea7u v\u00e0o (\u2264 5) \u0111\u1ec3 AI \u0111\u1ecdc, hi\u1ec3u v\u00e0 g\u1ee3i \u00fd k\u1ecbch b\u1ea3n. Khi \u0111\u00f3, b\u1ea5m T\u1ea1o node.';
-  const IDEA_INPUT_PLACEHOLDER = 'B\u1ea1n mu\u1ed1n...';
-  const IDEA_INPUT_SOURCE_LABEL = '\u1ea2nh \u0111\u1ea7u v\u00e0o (canvas) 1.6';
-  const IDEA_CREATE_NODES_LABEL = 'T\u1ea1o node tr\u00ean canvas';
-  const IDEA_CAPTION_TEXT = '\u1ea2nh \u0111\u1ea7u v\u00e0o l\u1ea5y s\u1ed1 (1) ImageInput tr\u00ean flow.';
+  const IDEA_PANEL_TITLE = 'IDEA';
+  const IDEA_EMPTY_COPY = 'No idea yet. Describe your video and click Generate.';
+  const IDEA_INPUT_PLACEHOLDER = 'Describe your video idea\u2026';
+  const IDEA_INPUT_SOURCE_LABEL = 'Reference image(s) (optional)';
+  const IDEA_CREATE_NODES_LABEL = 'Create nodes on canvas';
+  const IDEA_CAPTION_TEXT = 'Reference images come from the first ImageInput on the flow.';
   const IDEA_BACKEND_MISSING_TOAST = 'AI agent backend not configured';
 
   const state = {
@@ -676,12 +676,12 @@
 
   function statusPillLabel(job) {
     const status = safeStatus(job?.status);
-    if (status === 'completed') return 'Hoàn thành';
-    if (status === 'failed') return 'Thất bại';
-    if (status === 'cancelled') return 'Đã hủy';
-    if (ACTIVE_STATUSES.has(status)) return 'Đang chạy';
-    if (Number(job?.job_level) === 1) return 'Đầu vào';
-    return 'Chờ xử lý';
+    if (status === 'completed') return 'Completed';
+    if (status === 'failed') return 'Failed';
+    if (status === 'cancelled') return 'Cancelled';
+    if (ACTIVE_STATUSES.has(status)) return 'Running';
+    if (Number(job?.job_level) === 1) return 'Input';
+    return 'Pending';
   }
 
   function nodeCaption(job) {
@@ -691,7 +691,7 @@
 
   function nodeMeta(job) {
     const ratio = String(job?.aspect_ratio || '9:16').trim() || '9:16';
-    return `${ratio} • ${modeLabel(job?.type)}`;
+    return `${ratio} \u2022 ${modeLabel(job?.type)}`;
   }
 
   function latestJob(jobs) {
@@ -825,7 +825,7 @@
     `;
   }
 
-  /* === U6 — canvas polish === */
+  /* === U6 - canvas polish === */
   function renderNode(job) {
     const status = safeStatus(job?.status);
     const frame = state.layout.framesById.get(String(job.id)) || draftFrameForJob(job);
@@ -853,7 +853,7 @@
             <span class="pv-node-name">${App.escapeHtml(nodeCaption(job))}</span>
             <span class="pv-node-meta">${App.escapeHtml(nodeMeta(job))}</span>
           </button>
-          ${status === 'completed' ? '<span class="pv-node-footer-star" aria-hidden="true">✦</span>' : ''}
+          ${status === 'completed' ? '<span class="pv-node-footer-star" aria-hidden="true">\u2726</span>' : ''}
         </div>
 
         <a class="pv-new-step-pill pv-node-action-overlay" href="${App.escapeHtml(newChainStepHref(job.id))}" data-job-id="${escapeAttr(job.id)}" title="New chain step" aria-label="New chain step">
@@ -997,7 +997,7 @@
         y="${midpoint.y.toFixed(2)}"
         text-anchor="middle"
         dominant-baseline="middle"
-      >✦</text>
+      >\u2726</text>
     `;
   }
 
