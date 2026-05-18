@@ -162,7 +162,7 @@
 
     return `
       <a class="project-tile"
-         href="#project-view/${routeKey}"
+         href="${App.safeHref(`#project-view/${routeKey}`)}"
          data-job-id="${App.escapeHtml(String(job?.id || ''))}"
          title="${App.escapeHtml(displayText)}">
         <div class="tile-thumb">

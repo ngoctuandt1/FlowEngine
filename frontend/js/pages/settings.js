@@ -200,14 +200,14 @@
 
     return `
       <div class="form-group">
-        <label class="form-label" for="${safeId}">${safeLabel}</label>
+        <label class="form-label" for="${App.escapeHtml(id)}">${safeLabel}</label>
         <div class="settings-setup-secret-field">
           <input
             type="password"
             class="form-input ${mono ? 'settings-setup-mono' : ''}"
-            id="${safeId}"
-            placeholder="${safePlaceholder}"
-            value="${safeValue}"
+            id="${App.escapeHtml(id)}"
+            placeholder="${App.escapeHtml(placeholder)}"
+            value="${App.escapeHtml(value)}"
             autocapitalize="off"
             autocomplete="off"
             spellcheck="false"
@@ -458,8 +458,8 @@
     if (!root) return;
 
     const account = findAccount(uid);
-    const card = root.querySelector(`[data-account-card="${CSS.escape(uid)}"]`);
-    const header = root.querySelector(`[data-account-toggle="${CSS.escape(uid)}"]`);
+    const card = root.querySelector(`[data-account-card="${CSS.escape(uid)}"]`); // safe: CSS.escape protects selector interpolation
+    const header = root.querySelector(`[data-account-toggle="${CSS.escape(uid)}"]`); // safe: CSS.escape protects selector interpolation
     const body = card?.querySelector('.settings-setup-account-body');
     const icon = header?.querySelector('.settings-setup-account-chevron');
 

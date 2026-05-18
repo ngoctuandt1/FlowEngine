@@ -50,12 +50,12 @@
   function renderSelectOptions(values, currentValue) {
     const selected = String(currentValue || '').trim();
     return optionValues(values, selected).map((value) => {
-      return `<option value="${escapeAttr(value)}" ${selected === value ? 'selected' : ''}>${App.escapeHtml(value)}</option>`;
+      return `<option value="${App.escapeHtml(value)}" ${selected === value ? 'selected' : ''}>${App.escapeHtml(value)}</option>`;
     }).join('');
   }
 
   function renderProfileFormFields(prefix, profile = {}, options = {}) {
-    const safePrefix = escapeAttr(prefix);
+    const safePrefix = App.escapeHtml(prefix);
     const name = profile.name || profile.profile_name || '';
     const account = profile.google_account || profile.email || '';
     const locale = profile.locale || LOCALES[0];
@@ -66,21 +66,21 @@
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Profile Name <span class="required">*</span></label>
-          <input type="text" class="form-input" id="${safePrefix}-name" placeholder="e.g. worker-01" value="${escapeAttr(name)}" ${nameAttrs}>
+          <input type="text" class="form-input" id="${App.escapeHtml(prefix)}-name" placeholder="e.g. worker-01" value="${App.escapeHtml(name)}" ${nameAttrs}>
         </div>
         <div class="form-group">
           <label class="form-label">Google Account <span class="required">*</span></label>
-          <input type="email" class="form-input" id="${safePrefix}-account" placeholder="user@gmail.com" value="${escapeAttr(account)}">
+          <input type="email" class="form-input" id="${App.escapeHtml(prefix)}-account" placeholder="user@gmail.com" value="${App.escapeHtml(account)}">
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
           <label class="form-label">Locale</label>
-          <select class="form-select" id="${safePrefix}-locale">${renderSelectOptions(LOCALES, locale)}</select>
+          <select class="form-select" id="${App.escapeHtml(prefix)}-locale">${renderSelectOptions(LOCALES, locale)}</select>
         </div>
         <div class="form-group">
           <label class="form-label">Tier</label>
-          <select class="form-select" id="${safePrefix}-tier">${renderSelectOptions(TIERS, tier)}</select>
+          <select class="form-select" id="${App.escapeHtml(prefix)}-tier">${renderSelectOptions(TIERS, tier)}</select>
         </div>
       </div>
     `;
@@ -122,11 +122,11 @@
 
     return `
       <div class="profile-card"
-        data-profile-id="${escapeAttr(actionId)}"
-        data-profile-name="${escapeAttr(name)}"
-        data-profile-account="${escapeAttr(account === '-' ? '' : account)}"
-        data-profile-locale="${escapeAttr(locale === '-' ? '' : locale)}"
-        data-profile-tier="${escapeAttr(tier)}">
+        data-profile-id="${App.escapeHtml(actionId)}"
+        data-profile-name="${App.escapeHtml(name)}"
+        data-profile-account="${App.escapeHtml(account === '-' ? '' : account)}"
+        data-profile-locale="${App.escapeHtml(locale === '-' ? '' : locale)}"
+        data-profile-tier="${App.escapeHtml(tier)}">
         <div class="profile-header">
           <div class="profile-avatar ${avatarClass}">${getInitials(name)}</div>
           <div>
@@ -154,15 +154,15 @@
           ` : ''}
         </div>
         <div class="profile-actions">
-          <button class="btn btn-sm btn-outline profile-edit" data-name="${escapeAttr(name)}">
+          <button class="btn btn-sm btn-outline profile-edit" data-name="${App.escapeHtml(name)}">
             <span class="material-icons" style="font-size:14px">edit</span> Edit
           </button>
           ${
             status === 'quarantined'
-              ? `<button class="btn btn-success btn-sm profile-activate" data-id="${escapeAttr(actionId)}">
+              ? `<button class="btn btn-success btn-sm profile-activate" data-id="${App.escapeHtml(actionId)}">
                   <span class="material-icons" style="font-size:14px">check</span> Activate
                 </button>`
-              : `<button class="btn btn-danger btn-sm profile-quarantine" data-id="${escapeAttr(actionId)}">
+              : `<button class="btn btn-danger btn-sm profile-quarantine" data-id="${App.escapeHtml(actionId)}">
                   <span class="material-icons" style="font-size:14px">block</span> Quarantine
                 </button>`
           }

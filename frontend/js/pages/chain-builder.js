@@ -166,7 +166,7 @@
         ${items.map((item) => `
           <span
             class="tile-status-badge state-pending"
-            title="${App.escapeHtml(`${item.field} -> ${item.fallbackUsed}`)}"
+            title="${App.escapeHtml(item.field)} -> ${App.escapeHtml(item.fallbackUsed)}"
             style="opacity:0.65;"
           >
             ${App.escapeHtml(`gap:${item.field}`)}
@@ -512,7 +512,7 @@
             <button
               type="button"
               class="cbf-pill${active}"
-              data-step="${stepIndex}"
+              data-step="${App.escapeHtml(stepIndex)}"
               data-field="${App.escapeHtml(name)}"
               data-pill-value="${App.escapeHtml(value)}"
             >${App.escapeHtml(text)}</button>
@@ -531,7 +531,7 @@
       tag(`
         <section class="cbf-rail-section">
           <label class="cbf-rail-label">Prompt ${req ? '<span class="required">*</span>' : ''}</label>
-          <textarea class="cbf-textarea step-field" data-step="${i}" data-field="prompt"
+          <textarea class="cbf-textarea step-field" data-step="${App.escapeHtml(i)}" data-field="prompt"
             rows="5" placeholder="Describe...">${App.escapeHtml(step.prompt)}</textarea>
         </section>
       `);
@@ -557,7 +557,7 @@
       tag('aspect_ratio', `
         <section class="cbf-rail-section">
           <label class="cbf-rail-label">Aspect Ratio</label>
-          <select class="cbf-input step-field" data-step="${i}" data-field="aspect_ratio">${opts}</select>
+          <select class="cbf-input step-field" data-step="${App.escapeHtml(i)}" data-field="aspect_ratio">${opts}</select>
         </section>
       `);
     }
@@ -572,12 +572,12 @@
 
     if (step.type === 'camera-move') {
       const opts = CAMERA_PRESETS
-        .map((p) => `<option value="${p}" ${step.direction === p ? 'selected' : ''}>${p}</option>`)
+        .map((p) => `<option value="${App.escapeHtml(p)}" ${step.direction === p ? 'selected' : ''}>${App.escapeHtml(p)}</option>`)
         .join('');
       tag('direction', `
         <section class="cbf-rail-section">
           <label class="cbf-rail-label">Direction <span class="required">*</span></label>
-          <select class="cbf-input step-field" data-step="${i}" data-field="direction">
+          <select class="cbf-input step-field" data-step="${App.escapeHtml(i)}" data-field="direction">
             <option value="">Select preset...</option>
             ${opts}
           </select>
@@ -592,9 +592,9 @@
           <label class="cbf-rail-label">Bounding Box (0.0 – 1.0, optional)</label>
           <div class="form-row" style="grid-template-columns: repeat(4, 1fr);">
             ${['x','y','w','h'].map((k) => `
-              <input type="number" class="cbf-input step-bbox" data-step="${i}" data-bbox="${k}"
-                     placeholder="${k}" step="0.01" min="0" max="1"
-                     value="${b[k] != null ? b[k] : ''}">
+              <input type="number" class="cbf-input step-bbox" data-step="${App.escapeHtml(i)}" data-bbox="${App.escapeHtml(k)}"
+                     placeholder="${App.escapeHtml(k)}" step="0.01" min="0" max="1"
+                     value="${App.escapeHtml(b[k] != null ? b[k] : '')}">
             `).join('')}
           </div>
         </section>
@@ -642,31 +642,34 @@
   function renderIngredientsUploads(step, i) {
     const images = Array.isArray(step.ingredient_image_paths) ? step.ingredient_image_paths : [];
     const cards = images.length > 0
-      ? images.map((path, index) => `
-        <div class="card" style="padding:12px; position:relative;">
-          <button type="button" class="icon-btn step-ingredient-remove" data-step="${i}" data-index="${index}"
-                  title="Remove reference"
-                  style="position:absolute; top:8px; right:8px; width:28px; height:28px;">
-            <span class="material-icons" style="font-size:18px;">close</span>
-          </button>
-          <img src="/${App.escapeHtml(path)}" alt="Reference ${index + 1}"
-               style="width:100%; height:120px; object-fit:cover; border-radius:10px; border:1px solid var(--border-color);">
-          <div class="form-hint" style="margin-top:8px; word-break:break-all;">${App.escapeHtml(path)}</div>
-        </div>
-      `).join('')
+      ? images.map((path, index) => {
+        const displayIndex = index + 1;
+        return `
+          <div class="card" style="padding:12px; position:relative;">
+            <button type="button" class="icon-btn step-ingredient-remove" data-step="${App.escapeHtml(i)}" data-index="${App.escapeHtml(index)}"
+                    title="Remove reference"
+                    style="position:absolute; top:8px; right:8px; width:28px; height:28px;">
+              <span class="material-icons" style="font-size:18px;">close</span>
+            </button>
+            <img src="/${App.escapeHtml(path)}" alt="Reference ${App.escapeHtml(displayIndex)}"
+                 style="width:100%; height:120px; object-fit:cover; border-radius:10px; border:1px solid var(--border-color);">
+            <div class="form-hint" style="margin-top:8px; word-break:break-all;">${App.escapeHtml(path)}</div>
+          </div>
+        `;
+      }).join('')
       : '<div class="form-hint">No reference images uploaded yet.</div>';
 
     return `
       <section class="cbf-rail-section">
         <label class="cbf-rail-label">Reference Images <span class="required">*</span></label>
         <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
-          <button type="button" class="btn btn-outline btn-sm step-ingredient-add" data-step="${i}">
+          <button type="button" class="btn btn-outline btn-sm step-ingredient-add" data-step="${App.escapeHtml(i)}">
             <span class="material-icons">add_photo_alternate</span> Add reference image
           </button>
           <span class="form-hint">${images.length}/${MAX_INGREDIENT_IMAGES} uploaded</span>
         </div>
-        <input type="file" class="step-ingredient-input" id="step-ingredient-images-${i}"
-               data-step="${i}" accept="image/png,image/jpeg,image/webp" multiple hidden>
+        <input type="file" class="step-ingredient-input" id="step-ingredient-images-${App.escapeHtml(i)}"
+               data-step="${App.escapeHtml(i)}" accept="image/png,image/jpeg,image/webp" multiple hidden>
         <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:12px;">
           ${cards}
         </div>
@@ -687,7 +690,7 @@
       <section class="cbf-rail-section">
         <label class="cbf-rail-label">${label} Image ${required ? '<span class="required">*</span>' : '(optional)'}</label>
         <input type="file" class="cbf-input step-upload-input"
-               data-step="${stepIndex}" data-field="${field}" data-label="${App.escapeHtml(label)} image"
+               data-step="${App.escapeHtml(stepIndex)}" data-field="${App.escapeHtml(field)}" data-label="${App.escapeHtml(label)} image"
                accept="image/png,image/jpeg,image/webp">
         ${preview}
       </section>
@@ -701,7 +704,7 @@
       return `
         <div class="chain-step">
           <div class="chain-step-card">
-            <button type="button" class="chain-step-header chain-step-toggle" data-step-toggle="${i}" aria-expanded="${collapsed ? 'false' : 'true'}">
+            <button type="button" class="chain-step-header chain-step-toggle" data-step-toggle="${App.escapeHtml(i)}" aria-expanded="${App.escapeHtml(collapsed ? 'false' : 'true')}">
               <span class="chain-step-num">
                 <span class="material-icons" style="font-size:16px; vertical-align:middle;">${meta.icon || 'work'}</span>
                 Step ${i + 1}: ${App.escapeHtml(meta.label || s.type)}
@@ -713,7 +716,7 @@
             <div class="chain-step-body"${collapsed ? ' hidden' : ''}>
               ${renderStepConfig(s, i)}
               <div class="chain-step-footer">
-                <button class="icon-btn step-remove" data-step-index="${i}" title="Remove step">
+                <button class="icon-btn step-remove" data-step-index="${App.escapeHtml(i)}" title="Remove step">
                   <span class="material-icons" style="font-size:18px;">close</span>
                 </button>
               </div>
@@ -1024,7 +1027,7 @@
       <aside class="card chain-parent-panel">
         <div class="chain-parent-thumb-wrap">
           ${thumb
-            ? `<img class="chain-parent-thumb" src="${App.escapeHtml(thumb)}" alt="${App.escapeHtml(`${getJobTypeLabel(parentPrefill.parentType)} parent thumbnail`)}">`
+            ? `<img class="chain-parent-thumb" src="${App.escapeHtml(thumb)}" alt="${App.escapeHtml(getJobTypeLabel(parentPrefill.parentType))} parent thumbnail">`
             : `<div class="chain-parent-thumb chain-parent-thumb-placeholder"><span class="material-icons">video_library</span></div>`}
         </div>
         <div class="chain-parent-panel-head">
