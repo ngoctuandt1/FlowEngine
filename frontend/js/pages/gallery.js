@@ -156,6 +156,49 @@
     return App.mediaTile || window.MediaUtil;
   }
 
+  function outputUrlForJob(job) {
+    const rawUrl = String(job?.output_url || job?.media_url || '').trim();
+    if (!rawUrl) return '';
+
+    try {
+      const url = new URL(rawUrl, window.location.origin);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+      return url.href;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function renderTileActions(job, status) {
+    const outputUrl = outputUrlForJob(job);
+    if (status !== 'completed' || !outputUrl) return '';
+
+    return `
+      <div class="gallery-tile-actions" aria-label="Gallery item actions">
+        <a
+          class="gallery-tile-action"
+          data-gallery-action="download"
+          href="${App.escapeHtml(outputUrl)}"
+          download
+          title="Download output"
+          aria-label="Download output"
+        >
+          <span class="material-icons" aria-hidden="true">download</span>
+        </a>
+        <button
+          type="button"
+          class="gallery-tile-action gallery-tile-action-danger"
+          data-gallery-action="delete"
+          data-job-id="${App.escapeHtml(job.id || '')}"
+          title="Delete job"
+          aria-label="Delete job"
+        >
+          <span class="material-icons" aria-hidden="true">delete</span>
+        </button>
+      </div>
+    `;
+  }
+
   function galleryItems() {
     return state.jobs
       .map((job) => {
@@ -209,21 +252,66 @@
     }
     const tileHref = `#project-view/${encodeURIComponent(tileRouteKey)}`;
     return `
-      <a
+      <div
         class="project-tile gallery-tile status-${status}"
-        href="${tileHref}"
         data-job-id="${App.escapeHtml(job.id || '')}"
         title="${App.escapeHtml(title)}"
       >
-        <div class="tile-thumb">
-          ${preview}
-          ${stateChip}
-          ${renderDebugBadges(debugBadges)}
-        </div>
-        <div class="tile-overlay">
-          <span class="tile-date">${App.escapeHtml(App.formatTileDate(job.created_at || job.createdAt))}</span>
-        </div>
-      </a>
+        <a class="gallery-tile-link" href="${tileHref}" aria-label="Open project view">
+          <div class="tile-thumb">
+            ${preview}
+            ${stateChip}
+            ${renderDebugBadges(debugBadges)}
+          </div>
+          <div class="tile-overlay">
+            <span class="tile-date">${App.escapeHtml(App.formatTileDate(job.created_at || job.createdAt))}</span>
+          </div>
+        </a>
+        ${renderTileActions(job, status)}
+      </div>
+    `;
+  }
+
+  function renderGalleryStyles() {
+    return `
+      <style>
+        .gallery-tile { position: relative; overflow: hidden; }
+        .gallery-tile-link { color: inherit; display: block; text-decoration: none; }
+        .gallery-tile-actions {
+          display: flex;
+          gap: 6px;
+          position: absolute;
+          right: 10px;
+          top: 10px;
+          z-index: 4;
+        }
+        .gallery-tile-action {
+          align-items: center;
+          background: rgba(8, 12, 20, 0.82);
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          border-radius: 999px;
+          color: var(--text-primary);
+          cursor: pointer;
+          display: inline-flex;
+          height: 34px;
+          justify-content: center;
+          padding: 0;
+          text-decoration: none;
+          transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+          width: 34px;
+        }
+        .gallery-tile-action:hover {
+          background: rgba(18, 24, 38, 0.96);
+          border-color: rgba(255, 255, 255, 0.28);
+          color: var(--text-primary);
+          transform: translateY(-1px);
+        }
+        .gallery-tile-action .material-icons { font-size: 18px; }
+        .gallery-tile-action-danger:hover {
+          background: rgba(127, 29, 29, 0.92);
+          border-color: rgba(248, 113, 113, 0.62);
+        }
+      </style>
     `;
   }
 
@@ -338,11 +426,40 @@
 
   function renderPage() {
     return `
+      ${renderGalleryStyles()}
       <div style="display:grid; gap:16px;">
         ${renderFilters()}
         <div id="gallery-results">${renderGalleryGrid()}</div>
       </div>
     `;
+  }
+
+  async function deleteGalleryJob(jobId) {
+    if (!jobId) return;
+    if (!confirm('Delete this job and remove it from the gallery?')) return;
+
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+      if (!response.ok) {
+        const message = (await response.text()).trim() || `Delete failed with HTTP ${response.status}`;
+        throw new Error(message);
+      }
+      App.toast('Job deleted', 'success');
+      await refreshGallery({ silent: true });
+    } catch (err) {
+      App.toast('Failed to delete job: ' + err.message, 'error');
+    }
+  }
+
+  function handleGalleryClick(event) {
+    const actionEl = event.target.closest('[data-gallery-action]');
+    if (!actionEl) return;
+
+    event.stopPropagation();
+    if (actionEl.dataset.galleryAction === 'delete') {
+      event.preventDefault();
+      void deleteGalleryJob(String(actionEl.dataset.jobId || '').trim());
+    }
   }
 
   async function hydrate() {
@@ -493,6 +610,7 @@
       document.getElementById('gallery-refresh')?.addEventListener('click', () => {
         refreshGallery();
       });
+      document.getElementById('gallery-results')?.addEventListener('click', handleGalleryClick);
       attachSocketListener();
       state.wsUnsubs.push(WS.on('connected', attachSocketListener));
     },
@@ -510,6 +628,7 @@
         }
       });
       state.wsUnsubs = [];
+      document.getElementById('gallery-results')?.removeEventListener('click', handleGalleryClick);
       detachSocketListener();
     },
   };
