@@ -414,6 +414,159 @@ async def test_list_jobs_q_filters_across_searchable_fields(api_client):
     assert [job["id"] for job in by_id.json()["jobs"]] == [first.json()["id"]]
 
 
+async def test_jobs_fts_substring_match(api_client):
+    created = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Search substring project URL",
+            "profile": "SubstringProfile",
+            "project_url": "https://labs.google/fx/tools/flow/projects/SkyCastle",
+        },
+    )
+    assert created.status_code == 201
+
+    response = await api_client.get("/api/jobs", params={"q": "castle"})
+
+    assert response.status_code == 200
+    assert [job["id"] for job in response.json()["jobs"]] == [created.json()["id"]]
+
+
+async def test_jobs_fts_backfill_covers_existing_chained_rows(temp_db_path):
+    from server.db.database import init_db
+
+    created_at = "2026-01-01T00:00:00+00:00"
+    async with aiosqlite.connect(temp_db_path) as db:
+        await db.executescript(
+            """
+            CREATE TABLE chains (
+                id TEXT PRIMARY KEY,
+                profile TEXT,
+                project_url TEXT,
+                media_id TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE jobs (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                job_level INTEGER NOT NULL DEFAULT 1,
+                parent_job_id TEXT,
+                chain_id TEXT,
+                profile TEXT,
+                project_url TEXT,
+                media_id TEXT,
+                edit_url TEXT,
+                project_id TEXT,
+                prompt TEXT,
+                model TEXT NOT NULL DEFAULT 'veo-3.1-fast-lp',
+                aspect_ratio TEXT NOT NULL DEFAULT '16:9',
+                bbox_json TEXT,
+                direction TEXT,
+                start_image_path TEXT,
+                end_image_path TEXT,
+                ingredient_image_paths_json TEXT,
+                ref_image_path TEXT,
+                safety_filter TEXT,
+                output_files_json TEXT,
+                generation_id TEXT,
+                worker_id TEXT,
+                claimed_at TEXT,
+                completed_at TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE VIRTUAL TABLE jobs_fts USING fts5(
+                id,
+                project_url,
+                type,
+                profile,
+                tokenize='unicode61'
+            );
+            """
+        )
+        await db.execute(
+            """
+            INSERT INTO chains (id, profile, project_url, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-root",
+                "LegacyProfile",
+                "https://labs.google/fx/tools/flow/projects/LegacyCastle",
+                "active",
+                created_at,
+                created_at,
+            ),
+        )
+        await db.executemany(
+            """
+            INSERT INTO jobs (
+                id, type, status, job_level, parent_job_id, chain_id, profile,
+                project_url, prompt, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "legacy-root",
+                    "text-to-video",
+                    "pending",
+                    1,
+                    None,
+                    "legacy-root",
+                    "LegacyProfile",
+                    "https://labs.google/fx/tools/flow/projects/LegacyCastleRoot",
+                    "root",
+                    created_at,
+                    created_at,
+                ),
+                (
+                    "legacy-child",
+                    "extend-video",
+                    "pending",
+                    2,
+                    "legacy-root",
+                    "legacy-root",
+                    "LegacyProfile",
+                    "https://labs.google/fx/tools/flow/projects/LegacyCastleChild",
+                    "child",
+                    created_at,
+                    created_at,
+                ),
+            ],
+        )
+        await db.execute(
+            """
+            INSERT INTO jobs_fts(rowid, id, project_url, type, profile)
+            SELECT rowid, id, project_url, type, profile
+            FROM jobs
+            WHERE id = 'legacy-root'
+            """
+        )
+        await db.commit()
+
+    await init_db()
+
+    async with aiosqlite.connect(temp_db_path) as db:
+        cursor = await db.execute(
+            "SELECT id FROM jobs_fts WHERE jobs_fts MATCH ? ORDER BY id",
+            ("castlechild",),
+        )
+        rows = await cursor.fetchall()
+        cursor = await db.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'jobs_fts'"
+        )
+        fts_sql = (await cursor.fetchone())[0]
+
+    assert [row[0] for row in rows] == ["legacy-child"]
+    assert "trigram" in fts_sql
+
+
 async def test_list_jobs_q_fts_prefix_scale(api_client, temp_db_path):
     created_at = "2026-01-01T00:00:00+00:00"
     rows = [

@@ -412,7 +412,7 @@ async def list_jobs(
     if q is not None:
         query_text = q.strip().lower()
         if query_text:
-            if FTS_SAFE_QUERY_RE.fullmatch(query_text):
+            if FTS_SAFE_QUERY_RE.fullmatch(query_text) and len(query_text) >= 3:
                 clauses.append(
                     "jobs.rowid IN ("
                     "SELECT rowid FROM jobs_fts WHERE jobs_fts MATCH ?"
