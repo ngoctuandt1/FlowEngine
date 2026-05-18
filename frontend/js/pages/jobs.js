@@ -23,6 +23,12 @@
       type: '',
       profile: '',
       chain_id: '',
+      search: '',
+    },
+    pagination: {
+      page: 0,
+      pageSize: 50,
+      hasNext: false,
     },
     requestId: 0,
     refreshTimer: null,
@@ -36,6 +42,9 @@
     state.filters.type = '';
     state.filters.profile = '';
     state.filters.chain_id = '';
+    state.filters.search = '';
+    state.pagination.page = 0;
+    state.pagination.hasNext = false;
   }
 
   function jobTypeOptions() {
@@ -68,11 +77,69 @@
   }
 
   function buildJobFilters() {
-    const filters = { limit: 500 };
+    const filters = {
+      limit: state.pagination.pageSize,
+      offset: state.pagination.page * state.pagination.pageSize,
+    };
     ['status', 'type', 'profile', 'chain_id'].forEach((key) => {
       if (state.filters[key]) filters[key] = state.filters[key];
     });
     return filters;
+  }
+
+  function resetPageAndRefresh() {
+    state.pagination.page = 0;
+    refreshJobs();
+  }
+
+  function searchMatches(job) {
+    const query = state.filters.search.trim().toLowerCase();
+    if (!query) return true;
+    return [
+      job?.id,
+      job?.project_url,
+      job?.type,
+      job?.status,
+      job?.profile,
+      jobTypeLabel(job?.type),
+    ].some((value) => String(value || '').toLowerCase().includes(query));
+  }
+
+  function filteredJobs() {
+    return state.jobs.filter(searchMatches);
+  }
+
+  function renderPaginationControls(visibleCount) {
+    const pageSizeOptions = [25, 50, 100]
+      .map((size) => `
+        <option value="${size}" ${state.pagination.pageSize === size ? 'selected' : ''}>${size}</option>
+      `)
+      .join('');
+    const start = state.jobs.length ? state.pagination.page * state.pagination.pageSize + 1 : 0;
+    const end = state.pagination.page * state.pagination.pageSize + state.jobs.length;
+    const searchSuffix = state.filters.search.trim()
+      ? `, ${visibleCount} match${visibleCount === 1 ? '' : 'es'} on this page`
+      : '';
+
+    return `
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding: 14px 20px; border-top: 1px solid var(--border);">
+        <div style="display:flex; align-items:center; gap:10px; color: var(--text-muted); font-size:13px;">
+          <span>Rows per page</span>
+          <select class="form-select" id="jobs-page-size" style="width:auto; min-width:80px; padding:6px 28px 6px 10px;">
+            ${pageSizeOptions}
+          </select>
+          <span>Showing ${start}-${end}${searchSuffix}</span>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-sm btn-outline" data-action="page-prev" ${state.pagination.page === 0 ? 'disabled' : ''}>
+            <span class="material-icons" style="font-size:16px">chevron_left</span> Prev
+          </button>
+          <button class="btn btn-sm btn-outline" data-action="page-next" ${state.pagination.hasNext ? '' : 'disabled'}>
+            Next <span class="material-icons" style="font-size:16px">chevron_right</span>
+          </button>
+        </div>
+      </div>
+    `;
   }
 
   function jobTypeLabel(type) {
@@ -122,17 +189,38 @@
   }
 
   function renderJobsTable() {
+    const visibleJobs = filteredJobs();
+
     if (!state.jobs.length) {
+      const message = state.pagination.page > 0
+        ? 'Go back a page or adjust filters to find jobs.'
+        : 'Adjust the filters or create a new job to populate the history view.';
       return `
-        <div class="empty-state">
-          <span class="material-icons">work_history</span>
-          <h3>No matching jobs</h3>
-          <p>Adjust the filters or create a new job to populate the history view.</p>
+        <div class="table-container">
+          <div class="empty-state">
+            <span class="material-icons">work_history</span>
+            <h3>No matching jobs</h3>
+            <p>${message}</p>
+          </div>
+          ${state.pagination.page > 0 ? renderPaginationControls(0) : ''}
         </div>
       `;
     }
 
-    const rows = state.jobs.map((job) => {
+    if (!visibleJobs.length) {
+      return `
+        <div class="table-container">
+          <div class="empty-state">
+            <span class="material-icons">search_off</span>
+            <h3>No jobs match search</h3>
+            <p>Search checks ID, project URL, type, status, and profile on the current page.</p>
+          </div>
+          ${renderPaginationControls(0)}
+        </div>
+      `;
+    }
+
+    const rows = visibleJobs.map((job) => {
       const jobId = String(job.id || '');
       const createdAt = job.created_at || job.createdAt || '';
       const profile = job.profile || '-';
@@ -169,7 +257,7 @@
           <div>
             <h3 class="section-title">History</h3>
             <p style="margin-top:4px; color: var(--text-muted); font-size: 13px;">
-              Showing ${state.jobs.length} job${state.jobs.length === 1 ? '' : 's'}${state.filters.chain_id ? ' in this chain' : ''}.
+              Showing ${visibleJobs.length} of ${state.jobs.length} job${state.jobs.length === 1 ? '' : 's'} on page ${state.pagination.page + 1}${state.filters.chain_id ? ' in this chain' : ''}.
             </p>
           </div>
         </div>
@@ -186,6 +274,7 @@
           </thead>
           <tbody>${rows}</tbody>
         </table>
+        ${renderPaginationControls(visibleJobs.length)}
       </div>
     `;
   }
@@ -243,7 +332,17 @@
             </a>
           </div>
         ` : ''}
-        <div class="form-row" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
+        <div class="form-row" style="grid-template-columns: minmax(220px, 1.5fr) repeat(3, minmax(0, 1fr));">
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">Search current page</label>
+            <input
+              class="form-input"
+              id="jobs-search"
+              type="search"
+              placeholder="ID, project URL, type, status, profile"
+              value="${App.escapeHtml(state.filters.search)}"
+            >
+          </div>
           <div class="form-group" style="margin-bottom:0;">
             <label class="form-label">Status</label>
             <select class="form-select" id="jobs-filter-status">
@@ -290,6 +389,7 @@
     if (requestId !== state.requestId) return;
 
     state.jobs = jobsResult.status === 'fulfilled' ? normalizeJobList(jobsResult.value) : [];
+    state.pagination.hasNext = state.jobs.length === state.pagination.pageSize;
     state.profiles = profilesResult.status === 'fulfilled' ? normalizeProfiles(profilesResult.value) : [];
   }
 
@@ -311,6 +411,7 @@
       const list = await API.jobs.list(buildJobFilters());
       if (requestId !== state.requestId) return;
       state.jobs = normalizeJobList(list);
+      state.pagination.hasNext = state.jobs.length === state.pagination.pageSize;
       if (results) results.innerHTML = renderJobsTable();
     } catch (err) {
       if (requestId !== state.requestId) return;
@@ -517,16 +618,29 @@
     mount() {
       document.getElementById('jobs-filter-status')?.addEventListener('change', (event) => {
         state.filters.status = event.target.value;
-        refreshJobs();
+        resetPageAndRefresh();
       });
 
       document.getElementById('jobs-filter-type')?.addEventListener('change', (event) => {
         state.filters.type = event.target.value;
-        refreshJobs();
+        resetPageAndRefresh();
       });
 
       document.getElementById('jobs-filter-profile')?.addEventListener('change', (event) => {
         state.filters.profile = event.target.value;
+        resetPageAndRefresh();
+      });
+
+      document.getElementById('jobs-search')?.addEventListener('input', (event) => {
+        state.filters.search = event.target.value;
+        const results = document.getElementById('jobs-results');
+        if (results) results.innerHTML = renderJobsTable();
+      });
+
+      document.getElementById('jobs-results')?.addEventListener('change', (event) => {
+        if (event.target.id !== 'jobs-page-size') return;
+        state.pagination.pageSize = Number(event.target.value) || 50;
+        state.pagination.page = 0;
         refreshJobs();
       });
 
@@ -548,6 +662,18 @@
 
         const action = button.dataset.action;
         const jobId = button.dataset.jobId;
+
+        if (action === 'page-prev') {
+          state.pagination.page = Math.max(0, state.pagination.page - 1);
+          refreshJobs();
+          return;
+        }
+        if (action === 'page-next') {
+          state.pagination.page += 1;
+          refreshJobs();
+          return;
+        }
+
         if (!action || !jobId) return;
 
         if (action === 'view') {

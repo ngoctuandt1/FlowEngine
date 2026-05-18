@@ -75,7 +75,7 @@ const API = {
      * Get a single job by ID.
      */
     async get(id) {
-      return API.fetch(`/api/jobs/${id}`);
+      return API.fetch(`/api/jobs/${encodeURIComponent(id)}`);
     },
 
     /**
@@ -93,7 +93,7 @@ const API = {
      * Delete a job by ID.
      */
     async delete(id) {
-      return API.fetch(`/api/jobs/${id}`, {
+      return API.fetch(`/api/jobs/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       });
     },
@@ -102,7 +102,7 @@ const API = {
      * Requeue a failed or cancelled job.
      */
     async requeue(id) {
-      return API.fetch(`/api/jobs/${id}/requeue`, {
+      return API.fetch(`/api/jobs/${encodeURIComponent(id)}/requeue`, {
         method: 'POST',
       });
     },
@@ -166,7 +166,7 @@ const API = {
      * group `API.jobs.list({...})` results by `chain_id` (see home.js).
      */
     async get(id) {
-      return API.fetch(`/api/chains/${id}`);
+      return API.fetch(`/api/chains/${encodeURIComponent(id)}`);
     },
   },
 
@@ -195,7 +195,7 @@ const API = {
      * Update a profile.
      */
     async update(id, data) {
-      return API.fetch(`/api/profiles/${id}`, {
+      return API.fetch(`/api/profiles/${encodeURIComponent(id)}`, {
         method: 'PUT',
         body: JSON.stringify(data),
       });
@@ -215,7 +215,7 @@ const API = {
      * Quarantine a profile.
      */
     async quarantine(id) {
-      return API.fetch(`/api/profiles/${id}/quarantine`, {
+      return API.fetch(`/api/profiles/${encodeURIComponent(id)}/quarantine`, {
         method: 'POST',
       });
     },
@@ -224,7 +224,7 @@ const API = {
      * Activate a profile.
      */
     async activate(id) {
-      return API.fetch(`/api/profiles/${id}/activate`, {
+      return API.fetch(`/api/profiles/${encodeURIComponent(id)}/activate`, {
         method: 'POST',
       });
     },
