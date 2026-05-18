@@ -408,6 +408,7 @@ async def list_jobs(
     if q is not None:
         query_text = q.strip().lower()
         if query_text:
+            # Scale note: consider indexes on lower(id), lower(project_url), and lower(type).
             clauses.append(
                 "(LOWER(COALESCE(id, '')) LIKE ? ESCAPE '\\' "
                 "OR LOWER(COALESCE(project_url, '')) LIKE ? ESCAPE '\\' "

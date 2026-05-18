@@ -458,8 +458,8 @@
     if (!root) return;
 
     const account = findAccount(uid);
-    const card = root.querySelector(`[data-account-card="${uid}"]`);
-    const header = root.querySelector(`[data-account-toggle="${uid}"]`);
+    const card = root.querySelector(`[data-account-card="${CSS.escape(uid)}"]`);
+    const header = root.querySelector(`[data-account-toggle="${CSS.escape(uid)}"]`);
     const body = card?.querySelector('.settings-setup-account-body');
     const icon = header?.querySelector('.settings-setup-account-chevron');
 

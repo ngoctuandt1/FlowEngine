@@ -561,7 +561,7 @@ async def list_all_jobs(
     type: Optional[str] = Query(None),
     profile: Optional[str] = Query(None),
     chain_id: Optional[str] = Query(None),
-    q: Optional[str] = Query(None),
+    q: Optional[str] = Query(None, min_length=2, max_length=120),
     limit: int = Query(200, ge=1, le=2000),
     offset: int = Query(0, ge=0),
 ):
