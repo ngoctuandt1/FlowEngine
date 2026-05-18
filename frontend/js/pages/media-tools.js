@@ -11,6 +11,10 @@
   const DEFAULT_CLIP_DURATION_SEC = 5;
   const MIN_CLIP_DURATION_SEC = 0.5;
   const PLAYBACK_FPS = 30;
+  const RENDER_POLL_INTERVAL_MS = 2000;
+  const RENDER_MAX_TRACKS = 10;
+  const RENDER_MAX_CLIPS = 100;
+  const RENDER_MAX_DURATION_SEC = 600;
   const ASPECT_OPTIONS = ['9:16', '16:9', '1:1'];
   const TRACK_DEFS = [
     { id: 'track-1', label: 'Track 1', kind: 'text' },
@@ -28,6 +32,8 @@
   let lastPlaybackTs = 0;
   let renderedPreviewClipId = '';
   let activeDropLane = null;
+  let renderPollTimerId = 0;
+  let renderGeneration = 0;
 
   const state = {
     resources: [],
@@ -42,6 +48,14 @@
     isPlaying: false,
     seedLoaded: false,
     seedError: '',
+    render: {
+      renderId: '',
+      status: '',
+      progress: 0,
+      outputUrl: '',
+      error: '',
+      isPolling: false,
+    },
   };
 
   function buildTracks() {
@@ -165,6 +179,7 @@
     src,
     poster = '',
     localObjectUrl = '',
+    assetPath = '',
   }) {
     return {
       id: id || `asset-${++resourceCounter}`,
@@ -174,6 +189,7 @@
       src: src || '',
       poster: poster || '',
       localObjectUrl: localObjectUrl || '',
+      assetPath: assetPath || '',
     };
   }
 
@@ -279,6 +295,7 @@
           name: basename(file),
           kind,
           src: mediaUrl(file),
+          assetPath: normalized,
           id: `seed-${jobIndex + 1}-${fileIndex + 1}-${++resourceCounter}`,
         }));
       });
@@ -315,6 +332,206 @@
     } finally {
       seedPromise = null;
     }
+  }
+
+  function serverAssetIdFromResource(resource) {
+    const candidate = normalizePath(resource?.assetPath || resource?.src || '');
+    if (!candidate || /^blob:/i.test(candidate) || /^https?:/i.test(candidate)) return '';
+
+    const lower = candidate.toLowerCase();
+    const downloadsIndex = lower.lastIndexOf('/downloads/');
+    if (downloadsIndex >= 0) {
+      return `downloads/${candidate.slice(downloadsIndex + '/downloads/'.length)}`;
+    }
+
+    const uploadsIndex = lower.lastIndexOf('/uploads/');
+    if (uploadsIndex >= 0) {
+      return `uploads/${candidate.slice(uploadsIndex + '/uploads/'.length)}`;
+    }
+
+    if (lower.startsWith('downloads/') || lower.startsWith('uploads/')) return candidate;
+    return candidate.startsWith('/') ? candidate.slice(1) : candidate;
+  }
+
+  function timelineClipCount() {
+    return state.tracks.reduce((total, track) => total + track.clips.length, 0);
+  }
+
+  function buildRenderPayload() {
+    if (state.tracks.length > RENDER_MAX_TRACKS) {
+      throw new Error(`Render supports max ${RENDER_MAX_TRACKS} tracks.`);
+    }
+
+    const clipCount = timelineClipCount();
+    if (clipCount <= 0) {
+      throw new Error('Add at least one timeline clip before rendering.');
+    }
+    if (clipCount > RENDER_MAX_CLIPS) {
+      throw new Error(`Render supports max ${RENDER_MAX_CLIPS} clips total.`);
+    }
+    if (state.totalDurationSec > RENDER_MAX_DURATION_SEC) {
+      throw new Error(`Render supports max ${RENDER_MAX_DURATION_SEC}s timelines.`);
+    }
+
+    const tracks = [];
+    state.tracks.forEach((track) => {
+      const clips = [];
+      track.clips.forEach((clip) => {
+        if (clip.kind === 'text') {
+          throw new Error('Text clips are not renderable yet. Remove text clips before rendering.');
+        }
+
+        const resource = findResource(clip.assetId);
+        const assetId = serverAssetIdFromResource(resource);
+        if (!resource || !assetId) {
+          throw new Error(`${clip.name || 'Clip'} is not a server asset. Use completed outputs or uploaded assets.`);
+        }
+
+        clips.push({
+          asset_id: assetId,
+          start_sec: roundTimeline(clip.startSec),
+          duration_sec: roundTimeline(clip.durationSec),
+          trim_in: roundTimeline(clip.trimStartSec || 0),
+        });
+      });
+
+      if (clips.length) {
+        tracks.push({
+          kind: track.kind === 'audio' ? 'audio' : 'video',
+          clips,
+        });
+      }
+    });
+
+    return {
+      ratio: state.aspectRatio,
+      tracks,
+      total_duration_sec: roundTimeline(state.totalDurationSec),
+    };
+  }
+
+  function clearRenderPolling() {
+    if (renderPollTimerId) {
+      window.clearTimeout(renderPollTimerId);
+      renderPollTimerId = 0;
+    }
+  }
+
+  function invalidateRenderPolling() {
+    renderGeneration += 1;
+    clearRenderPolling();
+  }
+
+  function isRenderGenerationActive(renderId, generation) {
+    return generation === renderGeneration && state.render.isPolling && state.render.renderId === renderId;
+  }
+
+  function renderErrorMessage(err) {
+    if (err?.status === 422) return 'Timeline exceeds render bounds or has invalid clips.';
+    if (err?.status === 429) return 'Render queue is full. Wait for an active render to finish.';
+    return err?.message || 'Render request failed.';
+  }
+
+  function setRenderState(nextState) {
+    state.render = {
+      ...state.render,
+      ...nextState,
+    };
+    rerender({ preserveScroll: true });
+  }
+
+  async function pollRenderStatus(renderId, generation = renderGeneration) {
+    clearRenderPolling();
+    if (!isRenderGenerationActive(renderId, generation)) return;
+
+    try {
+      const result = await API.fetch(`/api/render/${encodeURIComponent(renderId)}`);
+      if (!isRenderGenerationActive(renderId, generation)) return;
+      const progress = clamp(Number(result?.progress || 0), 0, 100);
+      state.render = {
+        ...state.render,
+        status: result?.status || state.render.status,
+        progress,
+        outputUrl: result?.output_url || '',
+        error: result?.error || '',
+      };
+
+      if (result?.status === 'completed') {
+        state.render.isPolling = false;
+        rerender({ preserveScroll: true });
+        App.toast('Render complete', 'success');
+        return;
+      }
+
+      if (result?.status === 'failed') {
+        state.render.isPolling = false;
+        rerender({ preserveScroll: true });
+        App.toast(result?.error || 'Render failed', 'error');
+        return;
+      }
+
+      rerender({ preserveScroll: true });
+      renderPollTimerId = window.setTimeout(
+        () => pollRenderStatus(renderId, generation),
+        RENDER_POLL_INTERVAL_MS
+      );
+    } catch (err) {
+      if (generation !== renderGeneration) return;
+      setRenderState({ isPolling: false, status: 'failed', error: renderErrorMessage(err) });
+      App.toast(renderErrorMessage(err), 'error');
+    }
+  }
+
+  async function startRender() {
+    if (state.render.isPolling) return;
+
+    let payload;
+    try {
+      payload = buildRenderPayload();
+    } catch (err) {
+      App.toast(err.message || 'Timeline is not renderable.', 'error');
+      return;
+    }
+
+    const generation = renderGeneration + 1;
+    renderGeneration = generation;
+    setRenderState({ renderId: '', status: 'queued', progress: 0, outputUrl: '', error: '', isPolling: true });
+
+    try {
+      const result = await API.fetch('/api/render/timeline', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      if (generation !== renderGeneration) return;
+      const renderId = String(result?.render_id || '').trim();
+      if (!renderId) throw new Error('Render response missing render_id.');
+      state.render = {
+        ...state.render,
+        renderId,
+        status: result?.status || 'queued',
+        progress: 0,
+        isPolling: true,
+      };
+      rerender({ preserveScroll: true });
+      App.toast('Rendering started', 'info');
+      renderPollTimerId = window.setTimeout(
+        () => pollRenderStatus(renderId, generation),
+        RENDER_POLL_INTERVAL_MS
+      );
+    } catch (err) {
+      if (generation !== renderGeneration) return;
+      clearRenderPolling();
+      setRenderState({ isPolling: false, status: 'failed', progress: 0, error: renderErrorMessage(err) });
+      App.toast(renderErrorMessage(err), 'error');
+    }
+  }
+
+  function cancelRenderPolling() {
+    invalidateRenderPolling();
+    state.render.isPolling = false;
+    state.render.status = state.render.status || 'queued';
+    rerender({ preserveScroll: true });
+    App.toast('Stopped render polling. Server render continues.', 'info');
   }
 
   function insertResourceClips(trackId, resourceId, startSec) {
@@ -864,19 +1081,46 @@
     `;
   }
 
+  function renderStatusBar() {
+    const render = state.render;
+    if (!render.renderId && !render.isPolling && !render.error) return '';
+
+    const progress = clamp(Number(render.progress || 0), 0, 100);
+    const statusLabel = render.isPolling
+      ? `Rendering… ${progress}%`
+      : render.status === 'completed'
+        ? 'Render complete'
+        : render.status === 'failed'
+          ? 'Render failed'
+          : `Render ${render.status || 'idle'}`;
+
+    return `
+      <div class="tl-render-status" style="display:flex; align-items:center; gap:10px; min-width:260px; color:#f7f2e8; font-size:13px;">
+        <span>${App.escapeHtml(statusLabel)}</span>
+        <progress value="${escapeAttr(progress)}" max="100" style="width:96px; accent-color:var(--tl-accent);"></progress>
+        ${render.isPolling ? '<button type="button" class="tl-back" data-render-cancel style="min-width:76px; min-height:34px; padding:0 10px;">Cancel</button>' : ''}
+        ${render.outputUrl ? `<a class="tl-back" href="${escapeAttr(render.outputUrl)}" download style="display:inline-flex; align-items:center; justify-content:center; min-width:92px; min-height:34px; padding:0 10px; text-decoration:none;">Download</a>` : ''}
+        ${render.error ? `<span style="color:#ffb4a8; max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeAttr(render.error)}">${App.escapeHtml(render.error)}</span>` : ''}
+      </div>
+    `;
+  }
+
   function renderPageContent() {
     normalizeSelection();
+    const renderDisabled = state.render.isPolling ? 'disabled aria-disabled="true"' : '';
+    const renderLabel = state.render.isPolling ? `Rendering… ${clamp(Number(state.render.progress || 0), 0, 100)}%` : 'Render';
 
     return `
       <div class="tl-topbar">
         <button type="button" class="tl-back" data-tl-back>&larr; Back</button>
         <div class="tl-topbar-actions">
+          ${renderStatusBar()}
           <select class="tl-ratio" data-ratio-select>
             ${ASPECT_OPTIONS.map((option) => `
               <option value="${escapeAttr(option)}" ${state.aspectRatio === option ? 'selected' : ''}>${App.escapeHtml(option)}</option>
             `).join('')}
           </select>
-          <button type="button" class="tl-render-btn" data-render-stub>Render</button>
+          <button type="button" class="tl-render-btn" data-render-start ${renderDisabled}>${App.escapeHtml(renderLabel)}</button>
         </div>
       </div>
 
@@ -1170,8 +1414,13 @@
       return;
     }
 
-    if (event.target.closest('[data-render-stub]')) {
-      App.toast('Render compose not wired yet \u2014 coming soon', 'info');
+    if (event.target.closest('[data-render-start]')) {
+      startRender();
+      return;
+    }
+
+    if (event.target.closest('[data-render-cancel]')) {
+      cancelRenderPolling();
       return;
     }
 
@@ -1366,6 +1615,8 @@
     },
     destroy() {
       stopPlayback({ rerenderView: false });
+      invalidateRenderPolling();
+      state.render.isPolling = false;
       clearDropHighlight();
       unbindEvents();
       rootEl = null;
