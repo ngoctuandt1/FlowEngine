@@ -256,8 +256,6 @@ class APIError extends Error {
   }
 }
 
-const TILE_MEDIA_ERROR_HANDLER = "this.closest('.tile-thumb')?.classList.add('tile-thumb--broken'); this.remove();";
-
 // Append a versioned query string so Cloudflare's edge serves a fresh
 // response after the Cache-Control middleware change (CF was caching old
 // responses without Accept-Ranges, breaking <video> playback). Stable per
@@ -311,7 +309,7 @@ function formatTileDate(dateStr) {
 const MediaTile = {
   imgTag({ src, alt, posterFallback } = {}) {
     const imageSrc = bustMediaCache(src || posterFallback || '');
-    return `<img src="${App.escapeHtml(imageSrc)}" alt="${App.escapeHtml(alt || '')}" loading="lazy" decoding="async" onerror="${TILE_MEDIA_ERROR_HANDLER}" style="width:100%; height:100%; object-fit:cover; display:block;">`;
+    return `<img src="${App.escapeHtml(imageSrc)}" alt="${App.escapeHtml(alt || '')}" loading="lazy" decoding="async" data-media-tile-image-fallback="1" style="width:100%; height:100%; object-fit:cover; display:block;">`;
   },
 
   markBroken(element) {
@@ -401,13 +399,81 @@ const MediaTile = {
     const safeAlt = App.escapeHtml(alt || '');
     if (!derivedPoster) {
       const ariaAttr = alt ? ` aria-label="${safeAlt}"` : '';
-      return `<video class="tile-video" src="${App.escapeHtml(finalSrc)}"${ariaAttr} muted loop playsinline preload="auto" onloadedmetadata="this.currentTime=0.1" onerror="${TILE_MEDIA_ERROR_HANDLER}" onmouseenter="this.play().catch(()=>{})" onmouseleave="this.pause(); this.currentTime=0;"></video>`;
+      return `<video class="tile-video" src="${App.escapeHtml(finalSrc)}"${ariaAttr} muted loop playsinline preload="auto" data-media-tile-video="1" data-media-seek-preview="1" data-media-reset-on-leave="1"></video>`;
     }
-    return `<img class="tile-video" src="${App.escapeHtml(derivedPoster)}" alt="${safeAlt}" loading="lazy" decoding="async" data-video-src="${App.escapeHtml(rawSrc)}" onerror="return window.MediaUtil.handlePosterError(this)" onmouseenter="return window.MediaUtil.upgradeToVideo(this)">`;
+    return `<img class="tile-video" src="${App.escapeHtml(derivedPoster)}" alt="${safeAlt}" loading="lazy" decoding="async" data-video-src="${App.escapeHtml(rawSrc)}" data-media-poster-fallback="1" data-media-poster-upgrade="1">`;
   },
 };
 
+function mediaDelegateTarget(event, selector) {
+  const target = event.target;
+  return target instanceof Element ? target.closest(selector) : null;
+}
+
+function seekPreviewFrame(videoElement) {
+  try {
+    videoElement.currentTime = 0.1;
+  } catch {
+  }
+}
+
+function resetVideoFrame(videoElement) {
+  try {
+    videoElement.currentTime = 0;
+  } catch {
+  }
+}
+
+function installMediaTileDelegates() {
+  if (document.documentElement.dataset.mediaTileDelegates === '1') return;
+  document.documentElement.dataset.mediaTileDelegates = '1';
+
+  document.addEventListener('error', (event) => {
+    const poster = mediaDelegateTarget(event, 'img[data-media-poster-fallback]');
+    if (poster) {
+      MediaTile.handlePosterError(poster);
+      return;
+    }
+
+    const image = mediaDelegateTarget(event, 'img[data-media-tile-image-fallback]');
+    if (image) {
+      MediaTile.markBroken(image);
+      return;
+    }
+
+    const video = mediaDelegateTarget(event, 'video[data-media-tile-video]');
+    if (video) {
+      MediaTile.markBroken(video);
+    }
+  }, true);
+
+  document.addEventListener('loadedmetadata', (event) => {
+    const video = mediaDelegateTarget(event, 'video[data-media-seek-preview]');
+    if (video) seekPreviewFrame(video);
+  }, true);
+
+  document.addEventListener('mouseover', (event) => {
+    const poster = mediaDelegateTarget(event, 'img[data-media-poster-upgrade]');
+    if (poster) {
+      MediaTile.upgradeToVideo(poster);
+      return;
+    }
+
+    const video = mediaDelegateTarget(event, 'video[data-media-tile-video]');
+    if (video) video.play().catch(() => {});
+  });
+
+  document.addEventListener('mouseout', (event) => {
+    const video = mediaDelegateTarget(event, 'video[data-media-tile-video]');
+    if (!video || (event.relatedTarget instanceof Node && video.contains(event.relatedTarget))) return;
+
+    video.pause();
+    if (video.dataset.mediaResetOnLeave === '1') resetVideoFrame(video);
+  });
+}
+
 window.MediaUtil = MediaTile;
+installMediaTileDelegates();
 
 document.addEventListener('DOMContentLoaded', () => {
   if (typeof App !== 'undefined') {

@@ -143,9 +143,7 @@
     return `
       <div class="detail-list">${rows}${downloadsHtml}</div>
       <div style="margin-top: 20px; display: flex; gap: 8px;">
-        <button class="btn btn-danger btn-sm" onclick="DashboardPage._deleteJob('${App.escapeHtml(
-      job.id || job.job_id || ''
-    )}')">
+        <button class="btn btn-danger btn-sm" type="button" data-delete-job-id="${App.escapeHtml(job.id || job.job_id || '')}">
           <span class="material-icons" style="font-size:16px">delete</span> Delete
         </button>
       </div>
@@ -275,6 +273,10 @@
       try {
         const job = await API.jobs.get(jobId);
         App.openModal('Job Details', renderJobDetailModal(job));
+        const deleteButton = document.querySelector('[data-delete-job-id]');
+        deleteButton?.addEventListener('click', () => {
+          DashboardPage._deleteJob(deleteButton.dataset.deleteJobId || '');
+        });
       } catch (err) {
         App.toast('Failed to load job details: ' + err.message, 'error');
       }

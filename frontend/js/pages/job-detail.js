@@ -56,6 +56,7 @@
     socketTarget: null,
     rootTarget: null,
     rootClickHandler: null,
+    rootErrorHandler: null,
     debugBadges: [],
   };
 
@@ -627,7 +628,7 @@
             alt="${escapeAttr(`${jobTypeLabel(job?.type)} thumbnail`)}"
             loading="lazy"
             decoding="async"
-            onerror="var wrap=this.closest('[data-thumb-wrap]'); if (wrap) wrap.classList.add('tile-thumb--broken'); this.remove();"
+            data-job-detail-thumb="1"
           >
         </span>
       `;
@@ -1705,6 +1706,16 @@
     }
   }
 
+  function handlePageMediaError(event) {
+    const img = event.target instanceof Element
+      ? event.target.closest('img[data-job-detail-thumb]')
+      : null;
+    if (!img) return;
+
+    img.closest('[data-thumb-wrap]')?.classList.add('tile-thumb--broken');
+    img.remove();
+  }
+
   patchRouter();
   patchGlobalJobLaunch();
   patchChainTreePage();
@@ -2499,7 +2510,9 @@
 
       state.rootTarget = document.getElementById('job-detail-page');
       state.rootClickHandler = handlePageClick;
+      state.rootErrorHandler = handlePageMediaError;
       state.rootTarget?.addEventListener('click', state.rootClickHandler);
+      state.rootTarget?.addEventListener('error', state.rootErrorHandler, true);
 
       attachSocketListener();
       state.wsUnsubs.push(WS.on('connected', attachSocketListener));
@@ -2529,9 +2542,13 @@
       if (state.rootTarget && state.rootClickHandler) {
         state.rootTarget.removeEventListener('click', state.rootClickHandler);
       }
+      if (state.rootTarget && state.rootErrorHandler) {
+        state.rootTarget.removeEventListener('error', state.rootErrorHandler, true);
+      }
 
       state.rootTarget = null;
       state.rootClickHandler = null;
+      state.rootErrorHandler = null;
       state.jobId = '';
       resetLoadedState();
     },

@@ -1628,7 +1628,7 @@
             alt="${escapeAttr(label)}"
             loading="lazy"
             decoding="async"
-            onerror="this.parentElement.classList.add('tile-thumb--broken'); this.remove();"
+            data-chain-tree-thumb="1"
           >
         </div>
       `;
@@ -2250,6 +2250,16 @@
     }
   }
 
+  function handleMediaError(event) {
+    const img = event.target instanceof Element
+      ? event.target.closest('img[data-chain-tree-thumb]')
+      : null;
+    if (!img) return;
+
+    img.parentElement?.classList.add('tile-thumb--broken');
+    img.remove();
+  }
+
   const ChainTreePage = {
     name: 'chain-tree',
     title: 'Chain Tree',
@@ -2268,10 +2278,12 @@
       handlers = {
         click: (event) => { void handleClick(event); },
         change: handleChange,
+        error: handleMediaError,
       };
 
       root.addEventListener('click', handlers.click);
       root.addEventListener('change', handlers.change);
+      root.addEventListener('error', handlers.error, true);
 
       syncSelectedSummary();
       renderPage();
@@ -2282,6 +2294,7 @@
       if (root && handlers) {
         root.removeEventListener('click', handlers.click);
         root.removeEventListener('change', handlers.change);
+        root.removeEventListener('error', handlers.error, true);
       }
       root = null;
       handlers = null;

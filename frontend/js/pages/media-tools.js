@@ -827,7 +827,7 @@
           muted
           playsinline
           preload="metadata"
-          onloadeddata="this.currentTime=0.1"
+          data-resource-preview-video="1"
         ></video>
       `;
     }
@@ -1574,6 +1574,18 @@
     clearDropHighlight();
   }
 
+  function onMediaLoadedData(event) {
+    const video = event.target instanceof Element
+      ? event.target.closest('video[data-resource-preview-video]')
+      : null;
+    if (!video) return;
+
+    try {
+      video.currentTime = 0.1;
+    } catch {
+    }
+  }
+
   function bindEvents() {
     if (!rootEl) return;
     rootEl.addEventListener('click', onClick);
@@ -1584,6 +1596,7 @@
     rootEl.addEventListener('dragleave', onDragLeave);
     rootEl.addEventListener('drop', onDrop);
     rootEl.addEventListener('dragend', onDragEnd);
+    rootEl.addEventListener('loadeddata', onMediaLoadedData, true);
   }
 
   function unbindEvents() {
@@ -1596,6 +1609,7 @@
     rootEl.removeEventListener('dragleave', onDragLeave);
     rootEl.removeEventListener('drop', onDrop);
     rootEl.removeEventListener('dragend', onDragEnd);
+    rootEl.removeEventListener('loadeddata', onMediaLoadedData, true);
   }
 
   const MediaToolsPage = {
