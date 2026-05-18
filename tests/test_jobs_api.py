@@ -413,6 +413,16 @@ async def test_list_jobs_q_filters_across_searchable_fields(api_client):
     assert [job["id"] for job in by_id.json()["jobs"]] == [first.json()["id"]]
 
 
+async def test_list_jobs_q_rejects_too_short(api_client):
+    resp = await api_client.get("/api/jobs", params={"q": "a"})
+    assert resp.status_code == 422
+
+
+async def test_list_jobs_q_rejects_too_long(api_client):
+    resp = await api_client.get("/api/jobs", params={"q": "x" * 200})
+    assert resp.status_code == 422
+
+
 async def test_list_jobs_has_more_uses_extra_row(api_client):
     for index in range(3):
         created = await api_client.post(
