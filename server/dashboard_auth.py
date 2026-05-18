@@ -213,7 +213,13 @@ async function doLogin() {
   if (res.ok) {
     const params = new URLSearchParams(window.location.search);
     const next = params.get('next') || '/';
-    const safeNext = next.startsWith('/') && !next.startsWith('//') && !next.includes('://') ? next : '/';
+    let safeNext = '/';
+    if (!/[\x00-\x1F\x7F\\]/.test(next)) {
+      try {
+        const u = new URL(next, window.location.origin);
+        if (u.origin === window.location.origin) safeNext = u.pathname + u.search + u.hash;
+      } catch (_) {}
+    }
     window.location.href = safeNext;
   } else {
     document.getElementById('err').style.display = 'block';

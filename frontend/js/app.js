@@ -506,9 +506,24 @@ const App = {
   },
 
   safeHref(url) {
-    const href = String(url || '');
-    if (href === '') return '';
-    if (/^https:\/\/labs\.google\//.test(href) || /^\/[^/]/.test(href)) return href;
+    const raw = String(url || '');
+    if (raw === '') return '';
+    // Reject C0 controls (tab/newline/etc.) and backslash before parsing —
+    // browsers strip these and can promote a "/path" into "//evil.com".
+    if (/[\x00-\x1F\x7F\\]/.test(raw)) {
+      console.warn('[FlowEngine] Blocked href with control chars or backslash', url);
+      return '#';
+    }
+    let resolved;
+    try {
+      resolved = new URL(raw, window.location.origin);
+    } catch (_) {
+      console.warn('[FlowEngine] Blocked unparseable href', url);
+      return '#';
+    }
+    // Allow only: same-origin https labs.google flow URLs, or same-origin app URLs.
+    if (resolved.protocol === 'https:' && resolved.hostname === 'labs.google') return resolved.href;
+    if (resolved.origin === window.location.origin) return resolved.pathname + resolved.search + resolved.hash;
     console.warn('[FlowEngine] Blocked unsafe href', url);
     return '#';
   },
