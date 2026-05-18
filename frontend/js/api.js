@@ -58,7 +58,7 @@ const API = {
   jobs: {
     /**
      * List jobs with optional filters.
-     * @param {Object} filters - { status, type, profile, limit, offset }
+     * @param {Object} filters - { status, type, profile, q, limit, offset }
      */
     async list(filters = {}) {
       const params = new URLSearchParams();

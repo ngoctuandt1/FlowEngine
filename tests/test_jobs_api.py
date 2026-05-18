@@ -371,9 +371,69 @@ async def test_list_jobs_applies_filters(api_client):
     )
 
     assert filtered.status_code == 200
-    jobs = filtered.json()
+    jobs = filtered.json()["jobs"]
     assert len(jobs) == 1
     assert jobs[0]["id"] == first.json()["id"]
+
+
+async def test_list_jobs_q_filters_across_searchable_fields(api_client):
+    first = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Search by project URL",
+            "profile": "AlphaProfile",
+            "project_url": "https://labs.google/fx/tools/flow/projects/SkyCastle",
+        },
+    )
+    second = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "ingredients-to-video",
+            "prompt": "Search by type",
+            "ingredient_image_paths": ["uploads/search.png"],
+            "profile": "BetaProfile",
+        },
+    )
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    by_project = await api_client.get("/api/jobs", params={"q": "skycastle"})
+    by_type = await api_client.get("/api/jobs", params={"q": "INGREDIENTS"})
+    by_profile = await api_client.get("/api/jobs", params={"q": "alphaprofile"})
+    by_id = await api_client.get("/api/jobs", params={"q": first.json()["id"][:8]})
+
+    assert by_project.status_code == 200
+    assert [job["id"] for job in by_project.json()["jobs"]] == [first.json()["id"]]
+    assert by_type.status_code == 200
+    assert [job["id"] for job in by_type.json()["jobs"]] == [second.json()["id"]]
+    assert by_profile.status_code == 200
+    assert [job["id"] for job in by_profile.json()["jobs"]] == [first.json()["id"]]
+    assert by_id.status_code == 200
+    assert [job["id"] for job in by_id.json()["jobs"]] == [first.json()["id"]]
+
+
+async def test_list_jobs_has_more_uses_extra_row(api_client):
+    for index in range(3):
+        created = await api_client.post(
+            "/api/jobs",
+            json={
+                "type": "text-to-video",
+                "prompt": f"Paged search {index}",
+                "profile": "paged-profile",
+            },
+        )
+        assert created.status_code == 201
+
+    first_page = await api_client.get("/api/jobs", params={"q": "paged-profile", "limit": 2})
+    second_page = await api_client.get("/api/jobs", params={"q": "paged-profile", "limit": 2, "offset": 2})
+
+    assert first_page.status_code == 200
+    assert len(first_page.json()["jobs"]) == 2
+    assert first_page.json()["has_more"] is True
+    assert second_page.status_code == 200
+    assert len(second_page.json()["jobs"]) == 1
+    assert second_page.json()["has_more"] is False
 
 
 async def test_get_job_counts_returns_pending_totals(api_client):

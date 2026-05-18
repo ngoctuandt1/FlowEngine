@@ -561,11 +561,12 @@ async def list_all_jobs(
     type: Optional[str] = Query(None),
     profile: Optional[str] = Query(None),
     chain_id: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
     limit: int = Query(200, ge=1, le=2000),
     offset: int = Query(0, ge=0),
 ):
     """List jobs with optional filters. Default limit 200, max 2000."""
-    filters: dict = {"limit": limit, "offset": offset}
+    filters: dict = {"limit": limit + 1, "offset": offset}
     if status:
         filters["status"] = status
     if type:
@@ -574,7 +575,12 @@ async def list_all_jobs(
         filters["profile"] = profile
     if chain_id:
         filters["chain_id"] = chain_id
-    return await list_jobs(**filters)
+    if q and q.strip():
+        filters["q"] = q.strip()
+    jobs = await list_jobs(**filters)
+    has_more = len(jobs) > limit
+    page = jobs[:limit]
+    return {"jobs": page, "items": page, "has_more": has_more}
 
 
 @router.get("/jobs/l1-siblings")

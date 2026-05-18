@@ -60,6 +60,13 @@
     return Array.isArray(result) ? result : result?.jobs || [];
   }
 
+  function normalizeHasMore(result, jobs) {
+    if (result && typeof result === 'object' && !Array.isArray(result) && typeof result.has_more === 'boolean') {
+      return result.has_more;
+    }
+    return jobs.length === state.pagination.pageSize;
+  }
+
   function normalizeProfiles(result) {
     const list = Array.isArray(result) ? result : result?.profiles || [];
     return list
@@ -84,6 +91,8 @@
     ['status', 'type', 'profile', 'chain_id'].forEach((key) => {
       if (state.filters[key]) filters[key] = state.filters[key];
     });
+    const query = state.filters.search.trim();
+    if (query) filters.q = query;
     return filters;
   }
 
@@ -99,9 +108,7 @@
       job?.id,
       job?.project_url,
       job?.type,
-      job?.status,
       job?.profile,
-      jobTypeLabel(job?.type),
     ].some((value) => String(value || '').toLowerCase().includes(query));
   }
 
@@ -118,14 +125,14 @@
     const start = state.jobs.length ? state.pagination.page * state.pagination.pageSize + 1 : 0;
     const end = state.pagination.page * state.pagination.pageSize + state.jobs.length;
     const searchSuffix = state.filters.search.trim()
-      ? `, ${visibleCount} match${visibleCount === 1 ? '' : 'es'} on this page`
+      ? `, ${visibleCount} search match${visibleCount === 1 ? '' : 'es'}`
       : '';
 
     return `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding: 14px 20px; border-top: 1px solid var(--border);">
         <div style="display:flex; align-items:center; gap:10px; color: var(--text-muted); font-size:13px;">
           <span>Rows per page</span>
-          <select class="form-select" id="jobs-page-size" style="width:auto; min-width:80px; padding:6px 28px 6px 10px;">
+          <select class="form-select" id="jobs-page-size" aria-label="Rows per page" style="width:auto; min-width:80px; padding:6px 28px 6px 10px;">
             ${pageSizeOptions}
           </select>
           <span>Showing ${start}-${end}${searchSuffix}</span>
@@ -213,7 +220,7 @@
           <div class="empty-state">
             <span class="material-icons">search_off</span>
             <h3>No jobs match search</h3>
-            <p>Search checks ID, project URL, type, status, and profile on the current page.</p>
+            <p>Search checks ID, project URL, type, and profile across all jobs.</p>
           </div>
           ${renderPaginationControls(0)}
         </div>
@@ -334,12 +341,12 @@
         ` : ''}
         <div class="form-row" style="grid-template-columns: minmax(220px, 1.5fr) repeat(3, minmax(0, 1fr));">
           <div class="form-group" style="margin-bottom:0;">
-            <label class="form-label">Search current page</label>
+            <label class="form-label">Search jobs</label>
             <input
               class="form-input"
               id="jobs-search"
               type="search"
-              placeholder="ID, project URL, type, status, profile"
+              placeholder="ID, project URL, type, profile"
               value="${App.escapeHtml(state.filters.search)}"
             >
           </div>
@@ -389,7 +396,7 @@
     if (requestId !== state.requestId) return;
 
     state.jobs = jobsResult.status === 'fulfilled' ? normalizeJobList(jobsResult.value) : [];
-    state.pagination.hasNext = state.jobs.length === state.pagination.pageSize;
+    state.pagination.hasNext = jobsResult.status === 'fulfilled' ? normalizeHasMore(jobsResult.value, state.jobs) : false;
     state.profiles = profilesResult.status === 'fulfilled' ? normalizeProfiles(profilesResult.value) : [];
   }
 
@@ -411,7 +418,7 @@
       const list = await API.jobs.list(buildJobFilters());
       if (requestId !== state.requestId) return;
       state.jobs = normalizeJobList(list);
-      state.pagination.hasNext = state.jobs.length === state.pagination.pageSize;
+      state.pagination.hasNext = normalizeHasMore(list, state.jobs);
       if (results) results.innerHTML = renderJobsTable();
     } catch (err) {
       if (requestId !== state.requestId) return;
@@ -633,8 +640,7 @@
 
       document.getElementById('jobs-search')?.addEventListener('input', (event) => {
         state.filters.search = event.target.value;
-        const results = document.getElementById('jobs-results');
-        if (results) results.innerHTML = renderJobsTable();
+        resetPageAndRefresh();
       });
 
       document.getElementById('jobs-results')?.addEventListener('change', (event) => {
