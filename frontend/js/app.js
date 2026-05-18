@@ -30,6 +30,7 @@ const App = {
   lazyModuleLoads: {},
   lazyModuleReady: {},
   lazyModuleVersion: null,
+  modalOpenerEl: null,
 
   /**
    * Register a page module.
@@ -78,6 +79,7 @@ const App = {
       modalOverlay.addEventListener('click', (e) => {
         if (e.target === modalOverlay) App.closeModal();
       });
+      modalOverlay.addEventListener('keydown', (e) => App._trapModalFocus(e));
     }
 
     // ESC to close modal
@@ -310,22 +312,102 @@ const App = {
 
   // ---- Modal ----
 
+  _getModalFocusable() {
+    const modalBody = document.getElementById('modal-body');
+    if (!modalBody) return [];
+
+    const selectors = [
+      'input:not([disabled]):not([type="hidden"])',
+      'button:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])',
+    ];
+
+    return Array.from(modalBody.querySelectorAll(selectors.join(',')))
+      .filter((el) => el.offsetParent !== null && typeof el.focus === 'function');
+  },
+
+  _focusModalInitial() {
+    const modalBody = document.getElementById('modal-body');
+    if (!modalBody) return;
+
+    const autofocusEl = modalBody.querySelector('[autofocus]');
+    const focusable = this._getModalFocusable();
+    const target = focusable.includes(autofocusEl) ? autofocusEl : focusable[0];
+    target?.focus();
+  },
+
+  _trapModalFocus(event) {
+    if (event.key !== 'Tab') return;
+
+    const modalOverlay = document.getElementById('modal-overlay');
+    if (!modalOverlay || modalOverlay.classList.contains('hidden')) return;
+
+    const focusable = this._getModalFocusable();
+    if (!focusable.length) {
+      event.preventDefault();
+      return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+      return;
+    }
+
+    if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  },
+
   /**
    * Open the modal with content.
    */
   openModal(title, html) {
+    this.modalOpenerEl = document.activeElement;
     document.getElementById('modal-title').textContent = title;
     document.getElementById('modal-body').innerHTML = html;
     document.getElementById('modal-overlay').classList.remove('hidden');
     document.body.style.overflow = 'hidden';
+    this._focusModalInitial();
   },
 
   /**
    * Close the modal.
    */
   closeModal() {
-    document.getElementById('modal-overlay').classList.add('hidden');
+    const modalOverlay = document.getElementById('modal-overlay');
+    const wasOpen = modalOverlay && !modalOverlay.classList.contains('hidden');
+    modalOverlay?.classList.add('hidden');
     document.body.style.overflow = '';
+
+    if (wasOpen && this.modalOpenerEl && document.contains(this.modalOpenerEl)) {
+      this.modalOpenerEl.focus();
+    }
+    this.modalOpenerEl = null;
+  },
+
+  mountSecretField(input, toggleBtn) {
+    if (!input || !toggleBtn || toggleBtn.dataset.secretMounted === 'true') return;
+
+    const icon = toggleBtn.querySelector('.material-icons');
+    const label = (toggleBtn.getAttribute('aria-label') || 'Secret').replace(/^(Show|Hide)\s+/, '');
+    const sync = () => {
+      const visible = input.type === 'text';
+      if (icon) icon.textContent = visible ? 'visibility_off' : 'visibility';
+      toggleBtn.setAttribute('aria-label', `${visible ? 'Hide' : 'Show'} ${label}`);
+      toggleBtn.setAttribute('aria-pressed', visible ? 'true' : 'false');
+    };
+
+    toggleBtn.dataset.secretMounted = 'true';
+    sync();
+    toggleBtn.addEventListener('click', () => {
+      input.type = input.type === 'password' ? 'text' : 'password';
+      sync();
+    });
   },
 
   // ---- Toast Notifications ----
