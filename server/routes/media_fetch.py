@@ -202,12 +202,17 @@ def _kill_tree(proc: asyncio.subprocess.Process, timeout_sec: float = 2.0) -> No
     spawned without touching unrelated server children.
 
     Windows: ``CREATE_NEW_PROCESS_GROUP`` does not make ``terminate()`` or
-    ``kill()`` reap descendants, so psutil enumerates children before the
-    parent exits and escalates every survivor.
+    ``kill()`` reap descendants, so signal the parent before enumerating
+    children to prevent late respawns, then escalate every survivor.
     """
     if proc.returncode is not None:
         return
     if platform.system() == "Windows":
+        try:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
+            pass
+
         descendants: list[psutil.Process] = []
         try:
             descendants = psutil.Process(proc.pid).children(recursive=True)
@@ -231,10 +236,6 @@ def _kill_tree(proc: asyncio.subprocess.Process, timeout_sec: float = 2.0) -> No
             except psutil.Error:
                 pass
 
-        try:
-            proc.terminate()
-        except (ProcessLookupError, OSError):
-            pass
         try:
             proc.kill()
         except (ProcessLookupError, OSError):

@@ -440,12 +440,24 @@ def test_fetch_url_timeout_on_windows_uses_terminate_then_kill(temp_db_path, mon
 
 
 def test_fetch_url_windows_timeout_kills_descendants(temp_db_path, monkeypatch, tmp_path):
-    """Windows timeout: terminate/kill yt-dlp descendants before parent exits."""
+    """Windows timeout: signal parent before snapshotting/killing descendants."""
     client, _, media_fetch = _client_with_data_dir(monkeypatch, tmp_path)
     _install_public_dns(monkeypatch, media_fetch)
 
     proc = _FakeProc(b"", b"", returncode=None, pid=12345)  # type: ignore[arg-type]
     proc._returncode = None  # type: ignore[attr-defined]
+    events: list[str] = []
+
+    def terminate_parent():
+        events.append("parent.terminate")
+        proc.terminated = True
+
+    def kill_parent():
+        events.append("parent.kill")
+        proc.killed = True
+
+    proc.terminate = terminate_parent  # type: ignore[assignment]
+    proc.kill = kill_parent  # type: ignore[assignment]
 
     async def slow_communicate():
         await asyncio.sleep(10)
@@ -462,9 +474,11 @@ def test_fetch_url_windows_timeout_kills_descendants(temp_db_path, monkeypatch, 
             self.killed = False
 
         def terminate(self):
+            events.append("child.terminate")
             self.terminated = True
 
         def kill(self):
+            events.append("child.kill")
             self.killed = True
 
     child = FakeChild()
@@ -476,12 +490,18 @@ def test_fetch_url_windows_timeout_kills_descendants(temp_db_path, monkeypatch, 
         def children(self, recursive=False):
             assert self.pid == proc.pid
             assert recursive is True
+            events.append("snapshot")
+            assert events == ["parent.terminate", "snapshot"]
             return [child]
+
+    def fake_wait_procs(procs, timeout):
+        events.append("wait_descendants")
+        return [], procs
 
     monkeypatch.setattr(media_fetch.asyncio, "create_subprocess_exec", fake_create)
     monkeypatch.setattr(media_fetch.platform, "system", lambda: "Windows")
     monkeypatch.setattr(media_fetch.psutil, "Process", FakeParent)
-    monkeypatch.setattr(media_fetch.psutil, "wait_procs", lambda procs, timeout: ([], procs))
+    monkeypatch.setattr(media_fetch.psutil, "wait_procs", fake_wait_procs)
 
     real_wait_for = media_fetch.asyncio.wait_for
 
@@ -508,6 +528,14 @@ def test_fetch_url_windows_timeout_kills_descendants(temp_db_path, monkeypatch, 
     assert child.killed is True
     assert proc.terminated is True
     assert proc.killed is True
+    assert events == [
+        "parent.terminate",
+        "snapshot",
+        "child.terminate",
+        "wait_descendants",
+        "child.kill",
+        "parent.kill",
+    ]
 
 
 def test_fetch_url_no_global_socket_monkeypatch(temp_db_path, monkeypatch, tmp_path):
