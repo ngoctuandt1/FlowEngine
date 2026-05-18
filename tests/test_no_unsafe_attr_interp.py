@@ -1,4 +1,7 @@
-﻿import re
+﻿import json
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 FRONTEND_JS = Path("frontend/js")
@@ -80,3 +83,53 @@ def test_app_escape_html_is_attribute_safe():
     escape_body = source[source.index("escapeHtml(text)") : source.index("  /**", source.index("escapeHtml(text)"))]
     for escaped in ("&amp;", "&lt;", "&gt;", "&quot;", "&#39;", "&#x2F;"):
         assert escaped in escape_body
+
+
+def test_app_safe_href_allowlists_flow_and_same_origin_relative():
+    node = shutil.which("node")
+    source = Path("frontend/js/app.js").read_text(encoding="utf-8")
+
+    if node is None:
+        assert "safeHref(url)" in source
+        assert "new URL(raw, window.location.origin)" in source
+        assert "labs.google" in source
+        return
+
+    script = f"""
+const fs = require('fs');
+const vm = require('vm');
+
+const source = fs.readFileSync({json.dumps(str(Path('frontend/js/app.js').resolve()))}, 'utf8') + '\\n;globalThis.__App__ = App;';
+const warnings = [];
+const context = {{
+  console: {{ warn: (...args) => warnings.push(args), error: () => {{}}, log: () => {{}} }},
+  localStorage: {{ removeItem: () => {{}} }},
+  document: {{ addEventListener: () => {{}}, getElementById: () => null }},
+  window: {{ location: {{ origin: 'https://app.example.com', hash: '' }} }},
+  location: {{ hash: '' }},
+  URL: URL,
+  setTimeout: () => ({{}}),
+  clearTimeout: () => {{}},
+}};
+context.globalThis = context;
+vm.createContext(context);
+vm.runInContext(source, context, {{ filename: 'frontend/js/app.js' }});
+
+const App = context.__App__;
+const inputs = ['', 'javascript:alert(1)', 'data:text/html,pwn', 'https://labs.google/fx/tools/flow', '/jobs', '/\\t/evil.com', '/\\\\evil.com', '//evil.com'];
+console.log(JSON.stringify({{
+  outputs: inputs.map((value) => App.safeHref(value)),
+  warningCount: warnings.length,
+}}));
+"""
+    result = subprocess.run(
+        [node, "-e", script],
+        cwd=Path.cwd(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    seen = json.loads(result.stdout)
+
+    assert seen["outputs"] == ['', '#', '#', 'https://labs.google/fx/tools/flow', '/jobs', '#', '#', '#']
+    assert seen["warningCount"] == 5

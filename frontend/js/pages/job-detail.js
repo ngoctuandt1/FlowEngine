@@ -951,6 +951,8 @@
 
   function renderInvariantCard(job) {
     const flowUrl = flowLink(job);
+    const safeFlowUrl = App.safeHref(flowUrl);
+    const safeProjectUrl = App.safeHref(job.project_url || '');
     const profileNote = state.parent
       ? (state.profileMismatch
         ? `Mismatch with parent profile ${state.parent.profile || '(missing)'}.`
@@ -991,7 +993,7 @@
         job.project_url
           ? `
             <div class="job-detail-link-stack">
-              <a href="${escapeAttr(job.project_url)}" target="_blank" rel="noopener">${App.escapeHtml(job.project_url)}</a>
+              <a href="${escapeAttr(safeProjectUrl)}" target="_blank" rel="noopener">${App.escapeHtml(job.project_url)}</a>
               <span class="job-detail-soft-note">${App.escapeHtml(projectNote)}</span>
             </div>
           `
@@ -1002,7 +1004,7 @@
         flowUrl
           ? `
             <div class="job-detail-link-stack">
-              <a href="${escapeAttr(flowUrl)}" target="_blank" rel="noopener">Open Flow editor</a>
+              <a href="${escapeAttr(safeFlowUrl)}" target="_blank" rel="noopener">Open Flow editor</a>
               <span class="job-detail-soft-note">${App.escapeHtml(flowUrl)}</span>
             </div>
           `
@@ -1154,6 +1156,7 @@
 
   function renderStatusHeader(job) {
     const flowUrl = flowLink(job);
+    const safeFlowUrl = App.safeHref(flowUrl);
     const isTerminal = TERMINAL_STATUSES.has(job.status);
     const canRetry = RETRYABLE_STATUSES.has(job.status);
     const statusCopy = isTerminal
@@ -1198,7 +1201,7 @@
               <span class="material-icons" style="font-size:16px">delete</span> Delete
             </button>
             ${flowUrl ? `
-              <a class="btn btn-outline" href="${escapeAttr(flowUrl)}" target="_blank" rel="noopener">
+              <a class="btn btn-outline" href="${escapeAttr(safeFlowUrl)}" target="_blank" rel="noopener">
                 <span class="material-icons" style="font-size:16px">open_in_new</span> Flow
               </a>
             ` : ''}

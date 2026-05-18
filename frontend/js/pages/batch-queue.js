@@ -552,8 +552,9 @@
 
     const editUrl = buildEditUrl(row.projectUrl, row.mediaId, row.editUrl);
     if (editUrl) {
+      const safeEditUrl = App.safeHref(editUrl);
       return `
-        <a href="${App.escapeHtml(editUrl)}" target="_blank" rel="noopener" class="btn btn-sm btn-outline">
+        <a href="${App.escapeHtml(safeEditUrl)}" target="_blank" rel="noopener" class="btn btn-sm btn-outline">
           <span class="material-icons" style="font-size:16px">link</span> Open project
         </a>
       `;
