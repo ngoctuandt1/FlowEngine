@@ -381,12 +381,17 @@ async def list_jobs(
     type: Optional[str] = None,
     profile: Optional[str] = None,
     chain_id: Optional[str] = None,
+    q: Optional[str] = None,
     limit: Optional[int] = None,
     offset: int = 0,
 ) -> list[Job]:
     """List jobs with optional filters. limit=None returns all rows (internal use only)."""
     clauses: list[str] = []
     params: list = []
+
+    def like_pattern(value: str) -> str:
+        escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
 
     if status is not None:
         clauses.append("status = ?")
@@ -400,6 +405,16 @@ async def list_jobs(
     if chain_id is not None:
         clauses.append("chain_id = ?")
         params.append(chain_id)
+    if q is not None:
+        query_text = q.strip().lower()
+        if query_text:
+            clauses.append(
+                "(LOWER(COALESCE(id, '')) LIKE ? ESCAPE '\\' "
+                "OR LOWER(COALESCE(project_url, '')) LIKE ? ESCAPE '\\' "
+                "OR LOWER(COALESCE(type, '')) LIKE ? ESCAPE '\\' "
+                "OR LOWER(COALESCE(profile, '')) LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like_pattern(query_text)] * 4)
 
     where = " AND ".join(clauses) if clauses else "1"
     query = f"SELECT * FROM jobs WHERE {where} ORDER BY created_at DESC"
