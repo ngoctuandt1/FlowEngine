@@ -28,6 +28,7 @@ memory ``feedback_chrome_launch_real_user.md``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -39,6 +40,7 @@ import socket
 import subprocess
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +58,47 @@ from flow.media_id import media_id_from_url, normalize_media_id, looks_like_medi
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = platform.system() == "Windows"
+
+
+async def reset_client_for_next_job(
+    client: Any, *, target_url: str | None = None
+) -> None:
+    """Reset a FlowClient-like object while tolerating legacy test doubles."""
+    reset = client.reset_for_next_job
+    if _accepts_target_url(reset):
+        await reset(target_url=target_url)
+        return
+
+    await reset()
+
+
+@asynccontextmanager
+async def lease_client_for_target(
+    lease_factory: Any, profile: str, target_url: str | None
+) -> Any:
+    """Call a client lease factory with target_url when it supports it."""
+    if _accepts_target_url(lease_factory):
+        lease = lease_factory(profile, target_url=target_url)
+    else:
+        lease = lease_factory(profile)
+
+    async with lease as client:
+        yield client
+
+
+def _accepts_target_url(callable_obj: Any) -> bool:
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return True
+
+    return (
+        "target_url" in signature.parameters
+        or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+    )
 
 # ---- CDP port allocation ----
 # Each FlowClient instance needs a unique debug port so concurrent Chrome

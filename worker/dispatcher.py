@@ -133,7 +133,9 @@ async def _client_lease(profile: str, *, target_url: str | None = None):
     if pool is None:
         client = _make_client(profile)
         async with client:
-            await client.reset_for_next_job(target_url=target_url)
+            from flow.client import reset_client_for_next_job
+
+            await reset_client_for_next_job(client, target_url=target_url)
             yield client
         return
 
@@ -386,8 +388,10 @@ async def handle_extend(job: dict) -> dict:
         (job.get("edit_url") or job.get("project_url", ""))[:80], profile,
     )
 
-    async with _client_lease(
-        profile, target_url=job.get("edit_url") or job.get("project_url")
+    from flow.client import lease_client_for_target
+
+    async with lease_client_for_target(
+        _client_lease, profile, job.get("edit_url") or job.get("project_url")
     ) as client:
         client._job_id = job["id"]
         result = await extend_video(
@@ -416,8 +420,10 @@ async def handle_insert(job: dict) -> dict:
         job.get("bbox"), (job.get("prompt", ""))[:40], profile,
     )
 
-    async with _client_lease(
-        profile, target_url=job.get("edit_url") or job.get("project_url")
+    from flow.client import lease_client_for_target
+
+    async with lease_client_for_target(
+        _client_lease, profile, job.get("edit_url") or job.get("project_url")
     ) as client:
         client._job_id = job["id"]
         result = await insert_object(
@@ -445,8 +451,10 @@ async def handle_remove(job: dict) -> dict:
         job.get("bbox"), profile,
     )
 
-    async with _client_lease(
-        profile, target_url=job.get("edit_url") or job.get("project_url")
+    from flow.client import lease_client_for_target
+
+    async with lease_client_for_target(
+        _client_lease, profile, job.get("edit_url") or job.get("project_url")
     ) as client:
         client._job_id = job["id"]
         result = await remove_object(
@@ -473,8 +481,10 @@ async def handle_camera(job: dict) -> dict:
         job.get("direction"), profile,
     )
 
-    async with _client_lease(
-        profile, target_url=job.get("edit_url") or job.get("project_url")
+    from flow.client import lease_client_for_target
+
+    async with lease_client_for_target(
+        _client_lease, profile, job.get("edit_url") or job.get("project_url")
     ) as client:
         client._job_id = job["id"]
         result = await camera_move(

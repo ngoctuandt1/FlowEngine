@@ -36,7 +36,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from flow.client import FlowClient
+from flow.client import FlowClient, reset_client_for_next_job
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ class BrowserPool:
             # out. A failure here means the browser is compromised —
             # discard and bubble up so the caller can fall back or fail.
             try:
-                await client.reset_for_next_job(target_url=reset_url)
+                await reset_client_for_next_job(client, target_url=reset_url)
             except Exception:
                 logger.warning(
                     "Pool: reset failed for %s — discarding client", profile,
