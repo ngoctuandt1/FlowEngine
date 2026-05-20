@@ -1395,9 +1395,11 @@ def _canonical_l2_batch_failure(job: dict, exc: Exception) -> dict | None:
 
 
 def _inspect_l2_batch_results(jobs: list[dict], results: list[object]) -> list[dict]:
+    needs_rebuild = False
     inspected: list[dict] = []
     for job, result in zip(jobs, results):
         if isinstance(result, Exception):
+            needs_rebuild = True
             canonical = _canonical_l2_batch_failure(job, result)
             if canonical is not None:
                 inspected.append(canonical)
@@ -1412,11 +1414,14 @@ def _inspect_l2_batch_results(jobs: list[dict], results: list[object]) -> list[d
             result.setdefault("job_id", job.get("id"))
             inspected.append(result)
             continue
+        needs_rebuild = True
         inspected.append({
             "job_id": job.get("id"),
             "status": "failed",
             "error": f"invalid L2 batch result: {type(result).__name__}",
         })
+    if not needs_rebuild:
+        return results
     return inspected
 
 
