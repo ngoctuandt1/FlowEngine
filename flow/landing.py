@@ -6,15 +6,28 @@ import asyncio
 import time
 
 # Ordered by specificity. Earlier entries win so the hero CTA is preferred
-# over nav / footer shortcuts that share the same "Create with Flow" text
+# over nav / footer shortcuts that share the same "Create with…" text
 # but resolve to in-page scroll anchors (`href='#capabilities'` etc.) —
 # issue #48 evidence, 2026-04-24.
+#
+# Google renamed the hero CTA from "Create with Flow" → "Create with Google Flow"
+# on the marketing landing observed 2026-05-20. New label wins (more specific:
+# "Google Flow" cannot accidentally match the legacy short label, and Playwright
+# `:has-text()` substring match means the legacy selectors would also match
+# the new button — but we still want the new label first to avoid coincidental
+# matches in localized variants).
 _CREATE_WITH_FLOW_SELECTORS: tuple[str, ...] = (
-    # Hero section: scoped under <main>, exclude in-page anchors.
+    # 2026-05 hero CTA: "Create with Google Flow".
+    "main button:has-text('Create with Google Flow')",
+    "main [role='button']:has-text('Create with Google Flow')",
+    "main a:has-text('Create with Google Flow'):not([href^='#'])",
+    "button:has-text('Create with Google Flow')",
+    "[role='button']:has-text('Create with Google Flow')",
+    "a:has-text('Create with Google Flow'):not([href^='#'])",
+    # Legacy "Create with Flow" (pre-2026-05) — retained for rollout overlap.
     "main button:has-text('Create with Flow')",
     "main [role='button']:has-text('Create with Flow')",
     "main a:has-text('Create with Flow'):not([href^='#'])",
-    # Document-wide fallbacks for variants without a <main> wrapper.
     "button:has-text('Create with Flow')",
     "[role='button']:has-text('Create with Flow')",
     "a:has-text('Create with Flow'):not([href^='#'])",
