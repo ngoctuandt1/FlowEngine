@@ -8,7 +8,7 @@ FlowEngine depends on Google Flow DOM surfaces that change without notice. The e
 
 `flow.ai_locator.ai_locate(page, intent, candidates=(), include_screenshot=True, max_dom_chars=12000, cache_key=None, visibility_check=True)` returns `AILocatorResult` with `selector`, optional `coordinates`, `method`, `cost_estimate`, and `debug_log`. Methods are `candidate`, `ai`, `cache`, or `miss`. `clear_cache()` resets process-local state for tests.
 
-The helper first checks `candidates` via `page.locator(selector).first.is_visible(timeout=1500)`. Only after candidates fail and `FLOW_AI_LOCATOR_ENABLED=true` does it call AI. DOM capture uses `body.inner_html()`, strips script/style/svg/base64-heavy content, and truncates to `max_dom_chars`. Screenshots are JPEG quality 60 viewport captures when enabled. AI JSON may contain either `{ "selector": "..." }` or `{ "x": 350, "y": 549 }`; both are validated against the live page before success.
+The helper first checks `candidates` via `page.locator(selector).first.is_visible(timeout=1500)`. Only after candidates fail and `FLOW_AI_LOCATOR_ENABLED=true` does it call AI. DOM capture uses `body.inner_html()`, strips script/style/svg/base64-heavy content, and truncates to `max_dom_chars`. Caller intent, retry hints, and sanitized DOM are treated as untrusted data: intent is length-bounded, NUL-stripped, JSON-string encoded, and explicitly delimited in the prompt so user-derived text cannot masquerade as locator instructions. AI JSON may contain either `{ "selector": "..." }` or `{ "x": 350, "y": 549 }`; both are validated against the live page before success.
 
 ## 9router Backend Choice
 
