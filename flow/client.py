@@ -44,6 +44,13 @@ from typing import Any
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
+from flow.agent import (
+    disable_agent_mode_if_active,
+    extract_agent_project_id,
+    install_agent_auth_probe,
+)
+from flow.landing import recover_from_flow_landing
+from flow.login import handle_login_redirect, is_login_page
 from flow.media_id import media_id_from_url, normalize_media_id, looks_like_media_id
 
 logger = logging.getLogger(__name__)
@@ -630,9 +637,9 @@ class FlowClient:
         """Clear per-job state so the same client can run another job.
 
         Clears captured network buffers and optional navigation target.
-        Does NOT close the browser. Caller typically passes the Flow
-        homepage for L1 jobs; L2+ handlers navigate to the project/edit
-        URL themselves so target_url is usually None for those.
+        Does NOT close the browser. If target_url carries a Flow project id,
+        this hook navigates there and disables Agent mode before deterministic
+        composer automation receives the client.
         """
         self._clear_failure_cache()
         self._video_urls.clear()
@@ -642,6 +649,18 @@ class FlowClient:
         self._image_names.clear()
         # Keep _account_info — it's a cached read of /v1/credits and
         # stays valid across jobs on the same session.
+
+        project_id = extract_agent_project_id(target_url)
+
+        if target_url and not project_id:
+            logger.debug(
+                "reset_for_next_job: target_url has no Flow project id; skipping nav: %s",
+                target_url[:80],
+            )
+            return
+
+        if project_id and self.page is not None:
+            await install_agent_auth_probe(self.page)
 
         if target_url and self.page is not None:
             try:
@@ -653,6 +672,56 @@ class FlowClient:
                     "reset_for_next_job: goto %r failed: %s", target_url[:80], exc
                 )
                 raise
+
+            if project_id:
+                current = self.page.url
+                if is_login_page(current):
+                    logger.warning("reset_for_next_job: login redirect on target navigation")
+                    login_ok = await handle_login_redirect(
+                        self.page,
+                        timeout=60,
+                        profile_name=self.profile_name,
+                        client=self,
+                    )
+                    if not login_ok:
+                        raise RuntimeError("Google login required during Agent reset navigation")
+                    await self.page.goto(
+                        target_url, wait_until="domcontentloaded", timeout=30000
+                    )
+
+                await recover_from_flow_landing(
+                    self.page,
+                    logger,
+                    target_url,
+                    timeout_sec=12.0,
+                )
+                if is_login_page(self.page.url):
+                    logger.warning("reset_for_next_job: login redirect after landing recovery")
+                    login_ok = await handle_login_redirect(
+                        self.page,
+                        timeout=60,
+                        profile_name=self.profile_name,
+                        client=self,
+                    )
+                    if not login_ok:
+                        raise RuntimeError("Google login required during Agent reset recovery")
+                    await self.page.goto(
+                        target_url, wait_until="domcontentloaded", timeout=30000
+                    )
+                    await recover_from_flow_landing(
+                        self.page,
+                        logger,
+                        target_url,
+                        timeout_sec=12.0,
+                    )
+
+                await disable_agent_mode_if_active(
+                    self.page,
+                    profile_name=self.profile_name,
+                    project_id=project_id,
+                    target_url=target_url,
+                    log=logger,
+                )
 
     # ------------------------------------------------------------------
     # Mode A -- Native Chrome via CDP

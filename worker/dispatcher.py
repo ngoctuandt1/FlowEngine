@@ -120,22 +120,24 @@ def _make_client(profile: str):
 
 
 @asynccontextmanager
-async def _client_lease(profile: str):
+async def _client_lease(profile: str, *, target_url: str | None = None):
     """Yield a ready FlowClient, pooled or ephemeral depending on env.
 
     When ``FLOW_BROWSER_POOL=1`` the same Chrome instance is reused
     across jobs for *profile* (buffers cleared between jobs). Otherwise
     a fresh FlowClient is started and stopped per call — the original
-    behaviour. Handlers need no further awareness of the pool.
+    behaviour. ``target_url`` lets L2 handlers land on the project/edit
+    page before deterministic composer automation.
     """
     pool = get_pool()
     if pool is None:
         client = _make_client(profile)
         async with client:
+            await client.reset_for_next_job(target_url=target_url)
             yield client
         return
 
-    async with pool.lease(profile) as client:
+    async with pool.lease(profile, reset_url=target_url) as client:
         yield client
 
 
@@ -384,7 +386,9 @@ async def handle_extend(job: dict) -> dict:
         (job.get("edit_url") or job.get("project_url", ""))[:80], profile,
     )
 
-    async with _client_lease(profile) as client:
+    async with _client_lease(
+        profile, target_url=job.get("edit_url") or job.get("project_url")
+    ) as client:
         client._job_id = job["id"]
         result = await extend_video(
             client,
@@ -412,7 +416,9 @@ async def handle_insert(job: dict) -> dict:
         job.get("bbox"), (job.get("prompt", ""))[:40], profile,
     )
 
-    async with _client_lease(profile) as client:
+    async with _client_lease(
+        profile, target_url=job.get("edit_url") or job.get("project_url")
+    ) as client:
         client._job_id = job["id"]
         result = await insert_object(
             client,
@@ -439,7 +445,9 @@ async def handle_remove(job: dict) -> dict:
         job.get("bbox"), profile,
     )
 
-    async with _client_lease(profile) as client:
+    async with _client_lease(
+        profile, target_url=job.get("edit_url") or job.get("project_url")
+    ) as client:
         client._job_id = job["id"]
         result = await remove_object(
             client,
@@ -465,7 +473,9 @@ async def handle_camera(job: dict) -> dict:
         job.get("direction"), profile,
     )
 
-    async with _client_lease(profile) as client:
+    async with _client_lease(
+        profile, target_url=job.get("edit_url") or job.get("project_url")
+    ) as client:
         client._job_id = job["id"]
         result = await camera_move(
             client,

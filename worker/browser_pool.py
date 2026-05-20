@@ -102,9 +102,8 @@ class BrowserPool:
             Chrome profile directory name.
         reset_url:
             If given, navigate the (reused) page to this URL before
-            handing the client to the caller. Typical use: Flow homepage
-            for L1 jobs. Leave ``None`` for L2+ handlers that navigate
-            on their own.
+            handing the client to the caller. Project/edit URLs run the
+            per-job Agent-off reset hook before composer automation.
         """
         lock = await self._lock_for(profile)
         async with lock:
