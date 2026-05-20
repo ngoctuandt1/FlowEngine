@@ -42,6 +42,7 @@ import logging
 import time
 from typing import Any
 
+from flow.operations._base import CreditBudgetExceeded, L2PaywallError
 from flow.recaptcha import RecaptchaError
 
 logger = logging.getLogger(__name__)
@@ -302,7 +303,7 @@ async def dispatch_op_in_new_tab(
             result = await extend_video(
                 proxy, op_job,
                 prompt=job.get("prompt", ""),
-                model=job.get("model", "veo-3.1-fast-lp"),
+                model=job.get("model", "veo-3.1-lite"),
                 free_mode=True,
             )
         elif op_type == "camera-move":
@@ -364,6 +365,10 @@ async def dispatch_op_in_new_tab(
         return result
 
     except RecaptchaError:
+        raise
+    except L2PaywallError:
+        raise
+    except CreditBudgetExceeded:
         raise
     except Exception as exc:
         logger.exception("dispatch_op_in_new_tab failed for job %s: %s",
@@ -530,6 +535,26 @@ async def batch_dispatch_ops_multitab(
     for j, r in zip(jobs, results):
         if isinstance(r, RecaptchaError):
             raise r
+        if isinstance(r, L2PaywallError):
+            error_message = getattr(r, "message", str(r))
+            out.append({
+                "job_id": j.get("id"),
+                "status": "failed",
+                "error_kind": "paid_tier_required",
+                "error_message": error_message,
+                "error": error_message,
+            })
+            continue
+        if isinstance(r, CreditBudgetExceeded):
+            error_message = getattr(r, "message", str(r))
+            out.append({
+                "job_id": j.get("id"),
+                "status": "failed",
+                "error_kind": "credit_budget_exceeded",
+                "error_message": error_message,
+                "error": error_message,
+            })
+            continue
         if isinstance(r, Exception):
             out.append({
                 "job_id": j.get("id"),
@@ -583,7 +608,7 @@ async def _run_one_op_on_open_tab(
         result = await extend_video(
             proxy, op_job,
             prompt=job_spec.get("prompt", ""),
-            model=job_spec.get("model", "veo-3.1-fast-lp"),
+            model=job_spec.get("model", "veo-3.1-lite"),
             free_mode=True,
         )
     elif op_type == "camera-move":
@@ -826,6 +851,38 @@ async def dispatch_chain_in_tab(
                     )
                 except RecaptchaError:
                     raise
+                except L2PaywallError as exc:
+                    error_message = getattr(exc, "message", str(exc))
+                    results.append({
+                        "job_id": op_spec.get("id"),
+                        "status": "failed",
+                        "error_kind": "paid_tier_required",
+                        "error_message": error_message,
+                        "error": error_message,
+                    })
+                    for rest in chain_ops[idx + 1:]:
+                        results.append({
+                            "job_id": rest.get("id"),
+                            "status": "skipped",
+                            "error": "earlier step failed paid_tier_required",
+                        })
+                    return results
+                except CreditBudgetExceeded as exc:
+                    error_message = getattr(exc, "message", str(exc))
+                    results.append({
+                        "job_id": op_spec.get("id"),
+                        "status": "failed",
+                        "error_kind": "credit_budget_exceeded",
+                        "error_message": error_message,
+                        "error": error_message,
+                    })
+                    for rest in chain_ops[idx + 1:]:
+                        results.append({
+                            "job_id": rest.get("id"),
+                            "status": "skipped",
+                            "error": "earlier step failed credit_budget_exceeded",
+                        })
+                    return results
                 except Exception as exc:
                     last_err = str(exc)
                     logger.warning(
@@ -964,6 +1021,34 @@ async def batch_dispatch_chains(
     for ch, r in zip(chains, raw):
         if isinstance(r, RecaptchaError):
             raise r
+        if isinstance(r, L2PaywallError):
+            error_message = getattr(r, "message", str(r))
+            ops = ch.get("ops") or []
+            out.append([
+                {
+                    "job_id": op.get("id"),
+                    "status": "failed",
+                    "error_kind": "paid_tier_required",
+                    "error_message": error_message,
+                    "error": error_message,
+                }
+                for op in ops
+            ])
+            continue
+        if isinstance(r, CreditBudgetExceeded):
+            error_message = getattr(r, "message", str(r))
+            ops = ch.get("ops") or []
+            out.append([
+                {
+                    "job_id": op.get("id"),
+                    "status": "failed",
+                    "error_kind": "credit_budget_exceeded",
+                    "error_message": error_message,
+                    "error": error_message,
+                }
+                for op in ops
+            ])
+            continue
         if isinstance(r, Exception):
             ops = ch.get("ops") or []
             out.append([

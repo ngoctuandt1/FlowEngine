@@ -64,6 +64,43 @@ class LeafLockoutError(RuntimeError):
             f"url={current_url[:80]}; tile activation failed on both JS-dispatch and click paths"
         )
 
+
+L2_PAYWALL_BANNER_TEXT = "Video editing is only available for paid subscribers"
+
+
+class L2PaywallError(RuntimeError):
+    """Raised when Flow gates L2 editing behind the paid tier."""
+
+    error_kind = "paid_tier_required"
+
+    def __init__(
+        self,
+        *,
+        operation: str,
+        profile: str | None = None,
+        message: str = L2_PAYWALL_BANNER_TEXT,
+    ) -> None:
+        self.operation = operation
+        self.profile = profile or ""
+        self.message = message
+        super().__init__(message)
+
+
+class CreditBudgetExceeded(RuntimeError):
+    """Raised before submit when a job would exceed configured credits."""
+
+    error_kind = "credit_budget_exceeded"
+
+    def __init__(self, *, cost: int | float, budget: int | float) -> None:
+        self.cost = cost
+        self.budget = budget
+        self.message = (
+            f"cost {_format_credit_amount(cost)} exceeds budget "
+            f"{_format_credit_amount(budget)}"
+        )
+        super().__init__(self.message)
+
+
 logger = logging.getLogger(__name__)
 
 _CHAIN_CHILD_NO_NEW_MEDIA_KIND = "chain_child_no_new_media"
@@ -114,6 +151,12 @@ def _short_value(value: str | None, limit: int) -> str:
     return str(value)[:limit]
 
 
+def _format_credit_amount(value: int | float) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def failure_kind_from_error(job_type: str, error: str) -> str:
     text = str(error).split("[cap=", 1)[0].strip().lower()
     for token in (
@@ -128,6 +171,127 @@ def failure_kind_from_error(job_type: str, error: str) -> str:
         if token in text:
             return token
     return f"{job_type.replace('-', '_')}_failed"
+
+
+async def _locator_is_visible(locator, *, timeout_ms: int = 500) -> bool:
+    try:
+        target = getattr(locator, "first", locator)
+        visible = target.is_visible(timeout=timeout_ms)
+    except TypeError:
+        try:
+            target = getattr(locator, "first", locator)
+            visible = target.is_visible()
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+    try:
+        if inspect.isawaitable(visible):
+            visible = await visible
+    except Exception:
+        return False
+    return visible if isinstance(visible, bool) else False
+
+
+async def _text_is_visible(
+    page,
+    text: str,
+    *,
+    exact: bool = True,
+    timeout_ms: int = 500,
+) -> bool:
+    getter = getattr(page, "get_by_text", None)
+    if not callable(getter):
+        return False
+    try:
+        locator = getter(text, exact=exact)
+    except TypeError:
+        try:
+            locator = getter(text)
+        except Exception:
+            return False
+    except Exception:
+        return False
+    return await _locator_is_visible(locator, timeout_ms=timeout_ms)
+
+
+async def _role_is_visible(
+    page,
+    role: str,
+    *,
+    name: str,
+    timeout_ms: int = 500,
+) -> bool:
+    getter = getattr(page, "get_by_role", None)
+    if not callable(getter):
+        return False
+    try:
+        locator = getter(role, name=name)
+    except TypeError:
+        try:
+            locator = getter(role, name)
+        except Exception:
+            return False
+    except Exception:
+        return False
+    return await _locator_is_visible(locator, timeout_ms=timeout_ms)
+
+
+async def _upgrade_cta_is_visible(page, *, timeout_ms: int = 500) -> bool:
+    if await _role_is_visible(page, "button", name="Upgrade", timeout_ms=timeout_ms):
+        return True
+    if await _role_is_visible(page, "link", name="Upgrade", timeout_ms=timeout_ms):
+        return True
+
+    locator = getattr(page, "locator", None)
+    if not callable(locator):
+        return False
+    for selector in (
+        "button:has-text('Upgrade')",
+        "a:has-text('Upgrade')",
+        "[role='button']:has-text('Upgrade')",
+        "[role='link']:has-text('Upgrade')",
+    ):
+        try:
+            if await _locator_is_visible(locator(selector), timeout_ms=timeout_ms):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _assert_l2_available(page, op_name: str, profile: str | None) -> None:
+    """Raise only on Flow's explicit paid-tier L2 banner + Upgrade CTA."""
+    if not await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=500):
+        return
+
+    await asyncio.sleep(0.25)
+    if not await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=250):
+        return
+
+    if not await _upgrade_cta_is_visible(page, timeout_ms=500):
+        logger.info(
+            "L2 paywall banner visible for op=%s profile=%s, but Upgrade CTA missing",
+            op_name,
+            profile or "",
+        )
+        return
+
+    raise L2PaywallError(operation=op_name, profile=profile)
+
+
+def _op_name_from_button_texts(button_texts: list[str]) -> str:
+    labels = {str(text).strip().lower() for text in button_texts}
+    if labels & {"extend", "mở rộng", "mo rong", "má»Ÿ rá»™ng"}:
+        return "extend-video"
+    if labels & {"insert", "chen", "chèn", "chÃ¨n"}:
+        return "insert-object"
+    if labels & {"remove", "delete", "xoá", "xóa", "xoÃ¡", "xÃ³a"}:
+        return "remove-object"
+    if "camera" in labels:
+        return "camera-move"
+    return "level-2 operation"
 
 
 async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
@@ -194,6 +358,10 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     # Detect homepage redirect — means project doesn't belong to this account
     await _recover_editor_landing(page, target_url)
     current = page.url
+    op_name = job.get("type") or "level-2 operation"
+    profile_name = job.get("profile") or getattr(client, "profile_name", "") or ""
+
+    await _assert_l2_available(page, op_name, profile_name)
 
     if "/project/" not in current and "/edit/" not in current:
         # Landed on Flow homepage instead of project page
@@ -223,9 +391,11 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(5)
             await _recover_editor_landing(page, target_url)
+            await _assert_l2_available(page, op_name, profile_name)
 
     # Verify we're in edit mode for the right media
     current = page.url
+    await _assert_l2_available(page, op_name, profile_name)
     if "/edit/" not in current:
         # B29 (2026-04-19): when an L1 /edit/{media_id} points at a media
         # that's been consumed by a sibling extend, the SPA strips `/edit/`
@@ -444,6 +614,8 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             raise RuntimeError(message)
         if media_id:
             await _activate_clip_tile(page, media_id)
+
+    await _assert_l2_available(page, op_name, profile_name)
 
     locale = detect_locale(page.url)
     project_id = extract_project_id(page.url) or ""
@@ -740,6 +912,12 @@ async def click_action_button(
     surface as ``RuntimeError``.
     """
     # Pass 1 — exact title match (VI labels are unique, stable)
+    await _assert_l2_available(
+        page,
+        _op_name_from_button_texts(button_texts),
+        getattr(client, "profile_name", "") if client is not None else "",
+    )
+
     for text in button_texts:
         try:
             btn = page.locator(f"button[title='{text}']").first
