@@ -93,6 +93,20 @@ class _AgentDetection:
 
 
 _AGENT_BUTTON_TEXT_RE = re.compile(r"(^|\s)Agent(\s|$)", re.IGNORECASE)
+_NORMAL_MODE_CHIP_RE = re.compile(
+    r"(\b(?:video|image|veo|gemini|nano|banana|omni)\b|\bx\s*\d+\b)",
+    re.IGNORECASE,
+)
+_EDIT_ACTION_BUTTON_RE = re.compile(
+    r"\b(Extend|Insert|Remove|Camera|Mở rộng|Chèn|Xoá|Xóa)\b",
+    re.IGNORECASE,
+)
+_COMPOSER_TEXTBOX_SELECTORS = (
+    '[data-slate-editor="true"][contenteditable="true"]',
+    '[role="textbox"][contenteditable="true"]',
+    '[contenteditable="true"]',
+    "textarea",
+)
 
 _AUTH_PROBE_SCRIPT = r"""
 (() => {
@@ -244,7 +258,10 @@ async def disable_agent_mode_if_active(
         _log_agent_result(active_logger, result)
         return result
 
-    if previous_state == "missing" and await _normal_composer_visible(page):
+    if previous_state == "missing" and await _normal_composer_visible(
+        page,
+        project_id=resolved_project_id,
+    ):
         result = AgentDisableResult(
             status="unavailable",
             profile=profile_name,
@@ -268,7 +285,7 @@ async def disable_agent_mode_if_active(
                 )
                 if 200 <= api_result["status"] < 300:
                     await _refresh_project_view(page, target_url or page.url)
-                    if await _agent_confirmed_off(page):
+                    if await _agent_confirmed_off(page, project_id=resolved_project_id):
                         result = AgentDisableResult(
                             status="toggled_off_api",
                             profile=profile_name,
@@ -356,12 +373,11 @@ async def restore_agent_state(
                     message="Agent restored via reverseAPI",
                     api_status=api_result["status"],
                 )
-                active_logger.info(
-                    "Agent restore mutation | profile=%s project_id=%s method=%s api_status=%s",
-                    profile_name,
-                    token.project_id,
-                    AGENT_METHOD_API,
-                    api_result["status"],
+                _log_agent_restore_mutation(
+                    active_logger,
+                    result,
+                    previous_state=token.previous_state,
+                    restoration_token_available=True,
                 )
                 return result
 
@@ -379,11 +395,11 @@ async def restore_agent_state(
                     method=AGENT_METHOD_DOM,
                     message="Agent restored via DOM click",
                 )
-                active_logger.info(
-                    "Agent restore mutation | profile=%s project_id=%s method=%s",
-                    profile_name,
-                    token.project_id,
-                    AGENT_METHOD_DOM,
+                _log_agent_restore_mutation(
+                    active_logger,
+                    result,
+                    previous_state=token.previous_state,
+                    restoration_token_available=True,
                 )
                 return result
 
@@ -473,24 +489,33 @@ async def _button_looks_highlighted(button: Any) -> bool | None:
         return None
 
 
-async def _normal_composer_visible(page: Any, *, timeout_ms: int = 1500) -> bool:
+async def _normal_composer_visible(
+    page: Any,
+    *,
+    timeout_ms: int = 1500,
+    project_id: str | None = None,
+) -> bool:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     while asyncio.get_event_loop().time() < deadline:
-        if await _composer_visible_once(page):
+        if await _composer_visible_once(page, project_id=project_id):
             return True
         await asyncio.sleep(0.1)
     return False
 
 
-async def _composer_visible_once(page: Any) -> bool:
-    textbox_selectors = (
-        '[role="textbox"]',
-        '[contenteditable="true"]',
-        "textarea",
-    )
+async def _composer_visible_once(
+    page: Any,
+    *,
+    project_id: str | None = None,
+) -> bool:
+    if project_id:
+        current_project_id = extract_agent_project_id(getattr(page, "url", None))
+        if current_project_id != project_id:
+            return False
+
     try:
         text_input_visible = False
-        for selector in textbox_selectors:
+        for selector in _COMPOSER_TEXTBOX_SELECTORS:
             locator = page.locator(selector).first
             try:
                 if await locator.is_visible(timeout=300):
@@ -499,25 +524,22 @@ async def _composer_visible_once(page: Any) -> bool:
             except Exception:
                 continue
 
-        create_button_visible = await page.locator("button").filter(
-            has_text=re.compile(r"\bCreate\b", re.IGNORECASE)
+        if not text_input_visible:
+            return False
+
+        normal_mode_chip_visible = await page.locator("button, [role='button']").filter(
+            has_text=_NORMAL_MODE_CHIP_RE
         ).first.is_visible(timeout=500)
-        if text_input_visible and create_button_visible:
+        if normal_mode_chip_visible:
             return True
 
         submit_icon_visible = await page.locator(
             "button:has(i:text-is('arrow_forward'))"
         ).first.is_visible(timeout=500)
-        if submit_icon_visible:
-            return True
-
-        action_button_visible = await page.locator("button").filter(
-            has_text=re.compile(
-                r"\b(Extend|Insert|Remove|Camera|Create)\b",
-                re.IGNORECASE,
-            )
+        edit_action_visible = await page.locator("button, [role='button']").filter(
+            has_text=_EDIT_ACTION_BUTTON_RE
         ).first.is_visible(timeout=500)
-        return bool(text_input_visible or action_button_visible)
+        return bool(submit_icon_visible and edit_action_visible)
     except Exception:
         return False
 
@@ -583,12 +605,24 @@ async def _refresh_project_view(page: Any, target_url: str | None) -> None:
             pass
 
 
-async def _agent_confirmed_off(page: Any) -> bool:
+async def _agent_confirmed_off(
+    page: Any,
+    *,
+    project_id: str | None = None,
+) -> bool:
     detection = await _detect_agent_state(page)
     if detection.state == "off":
-        return await _normal_composer_visible(page, timeout_ms=5000)
+        return await _normal_composer_visible(
+            page,
+            timeout_ms=5000,
+            project_id=project_id,
+        )
     if detection.state == "missing":
-        return await _normal_composer_visible(page, timeout_ms=5000)
+        return await _normal_composer_visible(
+            page,
+            timeout_ms=5000,
+            project_id=project_id,
+        )
     return False
 
 
@@ -606,7 +640,11 @@ async def _disable_via_dom(
     if button is not None:
         detection = await _detect_agent_state(page)
         if detection.state == "off":
-            if api_error and not await _normal_composer_visible(page, timeout_ms=5000):
+            if api_error and not await _normal_composer_visible(
+                page,
+                timeout_ms=5000,
+                project_id=project_id,
+            ):
                 raise RuntimeError(
                     "Agent disable failed after reverseAPI error: "
                     f"profile={profile_name} project_id={project_id} "
@@ -642,7 +680,7 @@ async def _disable_via_dom(
                 except PlaywrightTimeoutError:
                     pass
 
-                if await _wait_for_dom_disabled(page):
+                if await _wait_for_dom_disabled(page, project_id=project_id):
                     result = AgentDisableResult(
                         status="toggled_off_dom",
                         profile=profile_name,
@@ -666,7 +704,7 @@ async def _disable_via_dom(
             except Exception as exc:
                 api_error = f"{api_error}; DOM fallback failed: {exc}" if api_error else str(exc)
 
-    if await _normal_composer_visible(page, timeout_ms=5000):
+    if await _normal_composer_visible(page, timeout_ms=5000, project_id=project_id):
         result = AgentDisableResult(
             status="failed_nonfatal" if api_error else "unavailable",
             profile=profile_name,
@@ -686,10 +724,15 @@ async def _disable_via_dom(
     )
 
 
-async def _wait_for_dom_disabled(page: Any, *, timeout_ms: int = 10000) -> bool:
+async def _wait_for_dom_disabled(
+    page: Any,
+    *,
+    timeout_ms: int = 10000,
+    project_id: str | None = None,
+) -> bool:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     while asyncio.get_event_loop().time() < deadline:
-        if await _agent_confirmed_off(page):
+        if await _agent_confirmed_off(page, project_id=project_id):
             return True
         await asyncio.sleep(0.2)
     return False
@@ -704,6 +747,27 @@ def _log_agent_mutation(log: logging.Logger, result: AgentDisableResult) -> None
         result.previous_detection_state,
         result.method,
         result.restoration_token_available,
+        result.status,
+        result.api_status,
+        result.message,
+    )
+
+
+def _log_agent_restore_mutation(
+    log: logging.Logger,
+    result: AgentRestoreResult,
+    *,
+    previous_state: AgentDetectionState,
+    restoration_token_available: bool,
+) -> None:
+    log.info(
+        "Agent restore mutation | profile=%s project_id=%s previous=%s method=%s "
+        "restore_token=%s status=%s api_status=%s message=%s",
+        result.profile,
+        result.project_id,
+        previous_state,
+        result.method,
+        restoration_token_available,
         result.status,
         result.api_status,
         result.message,
