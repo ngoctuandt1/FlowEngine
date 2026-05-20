@@ -6,15 +6,28 @@ import asyncio
 import time
 
 # Ordered by specificity. Earlier entries win so the hero CTA is preferred
-# over nav / footer shortcuts that share the same "Create with Flow" text
+# over nav / footer shortcuts that share the same "Create with…" text
 # but resolve to in-page scroll anchors (`href='#capabilities'` etc.) —
 # issue #48 evidence, 2026-04-24.
+#
+# Google renamed the hero CTA from "Create with Flow" → "Create with Google Flow"
+# on the marketing landing observed 2026-05-20. New label wins (more specific:
+# "Google Flow" cannot accidentally match the legacy short label, and Playwright
+# `:has-text()` substring match means the legacy selectors would also match
+# the new button — but we still want the new label first to avoid coincidental
+# matches in localized variants).
 _CREATE_WITH_FLOW_SELECTORS: tuple[str, ...] = (
-    # Hero section: scoped under <main>, exclude in-page anchors.
+    # 2026-05 hero CTA: "Create with Google Flow".
+    "main button:has-text('Create with Google Flow')",
+    "main [role='button']:has-text('Create with Google Flow')",
+    "main a:has-text('Create with Google Flow'):not([href^='#'])",
+    "button:has-text('Create with Google Flow')",
+    "[role='button']:has-text('Create with Google Flow')",
+    "a:has-text('Create with Google Flow'):not([href^='#'])",
+    # Legacy "Create with Flow" (pre-2026-05) — retained for rollout overlap.
     "main button:has-text('Create with Flow')",
     "main [role='button']:has-text('Create with Flow')",
     "main a:has-text('Create with Flow'):not([href^='#'])",
-    # Document-wide fallbacks for variants without a <main> wrapper.
     "button:has-text('Create with Flow')",
     "[role='button']:has-text('Create with Flow')",
     "a:has-text('Create with Flow'):not([href^='#'])",
@@ -338,6 +351,34 @@ async def dismiss_flow_marketing_landing(
         ):
             return True
 
+    # ReverseAPI fallback: when all CTA candidates fail (DOM rename, A/B
+    # variant, button hidden behind sticky header that resists `force=True`),
+    # navigate directly to the NextAuth signin entrypoint. The CTA itself
+    # ultimately calls this endpoint to start the Flow OAuth flow (separate
+    # AI Test Kitchen client `365941595420-...` with scope `aisandbox`).
+    # Bypassing DOM means a rename like 2026-05's "Create with Flow" →
+    # "Create with Google Flow" no longer blocks the engine.
+    logger.info("All CTA candidates exhausted — trying NextAuth signin fallback")
+    try:
+        await page.goto(
+            "https://labs.google/fx/api/auth/signin/google"
+            "?callbackUrl=https%3A%2F%2Flabs.google%2Ffx%2Ftools%2Fflow",
+            wait_until="domcontentloaded",
+            timeout=15000,
+        )
+    except Exception as exc:
+        logger.warning("NextAuth signin fallback navigation failed: %s", exc)
+        return False
+    deadline = time.monotonic() + per_click_timeout_sec
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.4)
+        if "/project/" in page.url or "/edit/" in page.url:
+            return True
+        try:
+            if await is_ready():
+                return True
+        except Exception:
+            pass
     return False
 
 

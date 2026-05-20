@@ -1,23 +1,60 @@
-"""Model selector -- pick free Veo models for 0-credit generation."""
+"""Model selector -- pick Flow video models with rollout-safe aliases."""
 
 import asyncio
 import json
 import re
 import logging
+import os
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Model name mapping (user-facing -> what to look for in DOM)
-MODEL_MAP = {
-    "veo-3.1-lite-lp": "Veo 3.1 - Lite [Lower Priority]",
-    "veo-3.1-fast-lp": "Veo 3.1 - Fast [Lower Priority]",
-    "veo-3.1-lite": "Veo 3.1 - Lite",
-    "veo-3.1-fast": "Veo 3.1 - Fast",
-    "veo-3.1-quality": "Veo 3.1 - Quality",
+# Primary video registry. Keep LP labels out of this data; legacy LP strings
+# stay in alias/fallback compatibility data below during rollout.
+MODEL_REGISTRY = {
+    "omni-flash": {"display_label": "Omni Flash", "tier": "paid"},
+    "veo-3.1-lite": {"display_label": "Veo 3.1 - Lite", "tier": "free"},
+    "veo-3.1-fast": {"display_label": "Veo 3.1 - Fast", "tier": "free"},
+    "veo-3.1-quality": {"display_label": "Veo 3.1 - Quality", "tier": "free"},
 }
 
-# Default to Lite LP (free)
-DEFAULT_MODEL = "veo-3.1-lite-lp"
+# Backwards-compatible input aliases for stored jobs and older callers.
+MODEL_ALIASES = {
+    "veo-3.1-lite-lp": "veo-3.1-lite",
+    "veo-3.1-fast-lp": "veo-3.1-fast",
+}
+
+# Legacy UI labels tolerated while rollout completes. Canonical labels are
+# always searched first, so LP labels are fallback-only.
+LEGACY_MODEL_FALLBACK_LABELS = {
+    "veo-3.1-lite": ["Veo 3.1 - Lite [Lower Priority]"],
+    "veo-3.1-fast": ["Veo 3.1 - Fast [Lower Priority]"],
+}
+
+# Model name mapping (user-facing -> what to look for in DOM)
+MODEL_MAP = {
+    key: metadata["display_label"] for key, metadata in MODEL_REGISTRY.items()
+}
+
+DEFAULT_MODEL = "veo-3.1-lite"
+DEFAULT_MAX_CREDITS_PER_JOB = 10
+
+
+class _FallbackCreditBudgetExceeded(ValueError):
+    def __init__(
+        self,
+        cost: Optional[int] = None,
+        budget: Optional[int] = None,
+        message: Optional[str] = None,
+    ):
+        synthesized_message = message or f"cost {cost} exceeds budget {budget}"
+        super().__init__(synthesized_message)
+        self.cost = cost
+        self.budget = budget
+        self.message = synthesized_message
+        self.error_kind = "credit_budget_exceeded"
+
+
 _MODEL_VARIANT_TOKENS = frozenset({"fast", "lite", "quality", "lower", "priority"})
 _MODEL_ITEM_SELECTORS = (
     "menuitem, [role='menuitem'], [role='option'], "
@@ -58,6 +95,94 @@ def _dedupe_texts(values: list[str]) -> list[str]:
         seen.add(cleaned)
         deduped.append(cleaned)
     return deduped
+
+
+def canonicalize_video_model_key(model: str | None, *, free_mode: bool = True) -> str:
+    """Return primary video registry key, preserving rollout alias compatibility."""
+    original = (model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    canonical = MODEL_ALIASES.get(original, original)
+    if canonical != original:
+        logger.warning(
+            "Video model alias used: original=%s canonical=%s",
+            original,
+            canonical,
+        )
+
+    if canonical not in MODEL_REGISTRY:
+        logger.warning(
+            "Unknown video model '%s'; falling back to %s",
+            original,
+            DEFAULT_MODEL,
+        )
+        return DEFAULT_MODEL
+
+    if free_mode and MODEL_REGISTRY[canonical]["tier"] == "paid":
+        logger.warning(
+            "Paid video model '%s' cannot be selected in free_mode; falling back to %s",
+            canonical,
+            DEFAULT_MODEL,
+        )
+        return DEFAULT_MODEL
+
+    return canonical
+
+
+def _candidate_filters_for_model(model_key: str, target_text: str) -> list[tuple[str, re.Pattern[str]]]:
+    variant = target_text.rsplit("-", 1)[-1].strip() if "-" in target_text else target_text
+    candidates: list[tuple[str, re.Pattern[str]]] = [
+        (target_text, re.compile(re.escape(target_text), re.IGNORECASE)),
+        (variant, re.compile(re.escape(variant), re.IGNORECASE)),
+    ]
+    candidates.extend(
+        (label, re.compile(re.escape(label), re.IGNORECASE))
+        for label in LEGACY_MODEL_FALLBACK_LABELS.get(model_key, [])
+    )
+
+    deduped: list[tuple[str, re.Pattern[str]]] = []
+    seen: set[str] = set()
+    for label, pattern in candidates:
+        if label in seen:
+            continue
+        seen.add(label)
+        deduped.append((label, pattern))
+    return deduped
+
+
+def _rank_model_choice(item: tuple[object, str]) -> tuple[int, str]:
+    text = item[1]
+    return (1 if "Lower Priority" in text else 0, _normalize_model_text(text))
+
+
+def _max_credits_per_job() -> int:
+    raw = os.getenv("FLOW_MAX_CREDITS_PER_JOB", str(DEFAULT_MAX_CREDITS_PER_JOB))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid FLOW_MAX_CREDITS_PER_JOB=%r; using default %d",
+            raw,
+            DEFAULT_MAX_CREDITS_PER_JOB,
+        )
+        return DEFAULT_MAX_CREDITS_PER_JOB
+    if value < 0:
+        logger.warning(
+            "Invalid negative FLOW_MAX_CREDITS_PER_JOB=%r; using default %d",
+            raw,
+            DEFAULT_MAX_CREDITS_PER_JOB,
+        )
+        return DEFAULT_MAX_CREDITS_PER_JOB
+    return value
+
+
+def _credit_budget_exceeded_class():
+    # Unit A merges before Unit D in Wave 1, so import lazily and use a plain
+    # ValueError-derived fallback until flow.operations._base.CreditBudgetExceeded exists.
+    try:
+        from flow.operations._base import CreditBudgetExceeded
+
+        return CreditBudgetExceeded
+    except ImportError:
+        return _FallbackCreditBudgetExceeded
 
 
 def _extract_model_label(raw_text: str) -> str | None:
@@ -158,10 +283,16 @@ async def _pick_free_model_item(
             family_matches.append((item, item_text))
 
     if exact_matches:
-        return exact_matches[0]
+        return sorted(exact_matches, key=_rank_model_choice)[0]
 
     if len(family_matches) == 1:
         return family_matches[0]
+
+    non_lp_family_matches = [
+        match for match in family_matches if "Lower Priority" not in match[1]
+    ]
+    if len(non_lp_family_matches) == 1:
+        return non_lp_family_matches[0]
 
     if len(family_matches) > 1 or count > 1:
         _raise_ambiguous_free_model_error(
@@ -191,24 +322,21 @@ async def select_model(
     2. Wait for the dropdown menu to appear
     3. Find the target model menuitem
     4. Click it
-    5. Verify selection via credit footer text (0 credits for LP/Lite)
+    5. Verify selection via credit footer text within configured budget
 
     Args:
         page: Playwright page
-        model: Model key from MODEL_MAP
-        free_mode: If True, force LP model regardless of model param
+        model: Model key from MODEL_MAP or legacy alias
+        free_mode: If True, use canonical free baseline unless caller passes
+            a canonical non-paid model
         profile: Chrome profile name for surfaced operator alerts
 
     Returns True if model was selected successfully.
     """
-    # Resolve target model text
-    if free_mode and "lp" not in model.lower() and "lower" not in model.lower():
-        # Force LP version
-        model = model.rstrip("-lp") + "-lp" if not model.endswith("-lp") else model
-        if model not in MODEL_MAP:
-            model = DEFAULT_MODEL
-
-    target_text = MODEL_MAP.get(model, MODEL_MAP[DEFAULT_MODEL])
+    # Resolve target model text. free_mode no longer coerces canonical models
+    # back to retired LP aliases; the canonical baseline is Veo 3.1 Lite.
+    model_key = canonicalize_video_model_key(model, free_mode=free_mode)
+    target_text = MODEL_MAP[model_key]
     logger.info("Selecting model: %s", target_text)
     last_visible_model_labels: list[str] = []
 
@@ -316,16 +444,12 @@ async def select_model(
     # In extend mode, the model panel may already show LP options directly
     # without needing to click the Veo dropdown. Clicking it would TOGGLE
     # the dropdown closed, hiding the LP items.
-    is_lp = "Lower Priority" in target_text
     base_name = target_text.split(" [")[0].strip()  # "Veo 3.1 - Fast"
-    free_model_candidates = [
-        ("Lower Priority", re.compile(r"Lower Priority", re.IGNORECASE)),
-        ("Lite", re.compile(r"Lite", re.IGNORECASE)),
-    ]
+    free_model_candidates = _candidate_filters_for_model(model_key, target_text)
 
-    # Pre-check: are LP items already visible?
+    # Pre-check: are fallback LP items already visible? Legacy-only optimization.
     dropdown_opened = False
-    if is_lp:
+    if LEGACY_MODEL_FALLBACK_LABELS.get(model_key):
         try:
             lp_items = page.locator(_MODEL_ITEM_SELECTORS).filter(
                 has_text=re.compile(r"Lower Priority", re.IGNORECASE)
@@ -377,23 +501,17 @@ async def select_model(
                     if not last_visible_model_labels and selected_text:
                         last_visible_model_labels = [selected_text]
 
-                    if candidate_text == "Lite":
-                        # 2026-05-10 LP deprecation policy: if the LP option is
-                        # gone, fall back to Veo Lite per
-                        # C:\Users\Tuan\.claude\projects\D--AI-FlowEngine\memory\project_lp_deprecation_2026_10_05.md.
-                        logger.warning(
-                            "LP option not found, falling back to Lite (per 2026-05-10 deprecation policy)"
-                        )
-
                     await selected_item.click(timeout=3000, force=True)
                     logger.info("Selected free model: %s", selected_text.strip()[:80])
                     await asyncio.sleep(0.5)
-                    ok = await _verify_credits(page, expected=0)
-                    await _close_model_panel_with_timeout(page, dropdown_opened)
+                    try:
+                        ok = await _verify_credits(page)
+                    finally:
+                        await _close_model_panel_with_timeout(page, dropdown_opened)
                     if not ok:
                         raise RuntimeError(
                             _build_free_model_failure_message(
-                                "Free model selection did not verify 0 credits - aborting to avoid paid generation",
+                                "Free model selection exceeded configured credit budget - aborting to avoid unintended paid generation",
                                 visible_models=last_visible_model_labels,
                                 profile=profile,
                             )
@@ -426,6 +544,8 @@ async def select_model(
                 if visible_model_labels:
                     last_visible_model_labels = visible_model_labels
                 last_free_mode_error = e
+                if isinstance(e, _credit_budget_exceeded_class()):
+                    raise
 
     if free_mode:
         logger.warning(
@@ -441,12 +561,14 @@ async def select_model(
             visible_model_labels = await _collect_visible_model_labels(page)
             if visible_model_labels:
                 last_visible_model_labels = visible_model_labels
-            ok = await _verify_credits(page, expected=0)
-            await _close_model_panel_with_timeout(page, dropdown_opened)
+            try:
+                ok = await _verify_credits(page)
+            finally:
+                await _close_model_panel_with_timeout(page, dropdown_opened)
             if not ok:
                 raise RuntimeError(
                     _build_free_model_failure_message(
-                        "Free model selection did not verify 0 credits after JS fallback - aborting to avoid paid generation",
+                        "Free model selection exceeded configured credit budget after JS fallback - aborting to avoid unintended paid generation",
                         visible_models=last_visible_model_labels,
                         profile=profile,
                     )
@@ -461,7 +583,7 @@ async def select_model(
             if last_visible_model_labels:
                 raise RuntimeError(
                     _build_free_model_failure_message(
-                        "Neither Lower Priority nor Lite model found in dropdown - Flow UI changed unexpectedly",
+                        f"Requested free model '{target_text}' not found in dropdown - Flow UI changed unexpectedly",
                         visible_models=last_visible_model_labels,
                         profile=profile,
                     )
@@ -487,9 +609,8 @@ async def select_model(
     logger.warning("Playwright selectors failed — trying JS fallback for model selection")
     js_ok = await _select_model_js(page, base_name)
     if js_ok:
-        ok = await _verify_credits(page, expected=0) if is_lp else True
         await _close_model_panel_with_timeout(page, dropdown_opened)
-        return ok
+        return True
 
     # Close menu
     await _close_model_panel_with_timeout(page, dropdown_opened)
@@ -558,48 +679,54 @@ async def _ensure_video_mode(page) -> None:
         logger.debug("_ensure_video_mode failed silently: %s", e)
 
 
-async def _verify_credits(page, expected: int = 0) -> bool:
-    """Verify credit cost matches expected value."""
+async def _verify_credits(page, max_cost: int | None = None) -> bool:
+    """Verify previewed credit cost fits configured per-job budget."""
+    budget = _max_credits_per_job() if max_cost is None else max_cost
     try:
         result = await page.evaluate(
-            """(expected) => {
+            """() => {
             const body = document.body.innerText || '';
 
-            // Pattern 1: "will use X credits" / "tốn X tín dụng"
+            // Pattern 1: "will use X credits" / "t?n X t?n d?ng"
             const en = body.match(/will use (\\d+) credits?/i);
             if (en) return { cost: parseInt(en[1]), source: 'en_will_use' };
-            const vi = body.match(/tốn (\\d+) tín dụng/i);
+            const vi = body.match(/t?n (\\d+) t?n d?ng/i);
             if (vi) return { cost: parseInt(vi[1]), source: 'vi_ton' };
 
-            // Pattern 2: "X credits" / "X tín dụng" near model text
+            // Pattern 2: "X credits" / "X t?n d?ng" near model text
             const credits = body.match(/(\\d+)\\s*credits?/i);
             if (credits) return { cost: parseInt(credits[1]), source: 'en_credits' };
-            const tinDung = body.match(/(\\d+)\\s*tín dụng/i);
+            const tinDung = body.match(/(\\d+)\\s*t?n d?ng/i);
             if (tinDung) return { cost: parseInt(tinDung[1]), source: 'vi_tin_dung' };
 
-            // Pattern 3: LP model selected = 0 credits (check for text indicator)
-            if (expected === 0 && /lower priority/i.test(body)) {
-                return { cost: 0, source: 'lp_text' };
-            }
-
             return null;
-        }""",
-            expected,
+        }"""
         )
 
         if result is not None:
             cost = result["cost"]
-            if cost == expected:
-                logger.info("Credit verification OK: %d credits (via %s)", cost, result["source"])
+            if cost <= budget:
+                logger.info(
+                    "Credit verification OK: %d credits <= budget %d (via %s)",
+                    cost,
+                    budget,
+                    result["source"],
+                )
                 return True
-            logger.warning("Credit mismatch: expected %d, got %d (via %s)", expected, cost, result["source"])
-            return False
+            logger.warning(
+                "Credit budget exceeded: cost %d > budget %d (via %s)",
+                cost,
+                budget,
+                result["source"],
+            )
+            raise _credit_budget_exceeded_class()(cost=cost, budget=budget)
 
-        logger.warning("Could not find credit text -- assuming OK")
-        return True
+        raise _credit_budget_exceeded_class()(cost=None, budget=budget)
     except Exception as e:
+        if isinstance(e, _credit_budget_exceeded_class()):
+            raise
         logger.warning("Credit verify error: %s", e)
-        return True
+        raise _credit_budget_exceeded_class()(cost=None, budget=budget) from e
 
 
 async def _open_model_dropdown(page) -> bool:
@@ -786,9 +913,8 @@ async def _select_model_js(
 ) -> bool:
     """JS fallback: click model option by scanning visible text.
 
-    When ``candidate_texts`` is set, probe those free-mode markers in order
-    (for example ``["Lower Priority", "Lite"]``) before falling back to the
-    requested model family/version match.
+    When ``candidate_texts`` is set, probe canonical labels first, then legacy
+    compatibility labels before falling back to requested family/version match.
     """
     normalized_base = _normalize_model_text(base_name)
     normalized_family = _normalize_model_family(base_name)
@@ -833,10 +959,13 @@ async def _select_model_js(
                     (match) => args.normalizedBase && match.normalizedText.includes(args.normalizedBase)
                 );
                 if (exact) {
-                    exact.el.click();
+                    const exactMatches = matches
+                        .filter((match) => args.normalizedBase && match.normalizedText.includes(args.normalizedBase))
+                        .sort((a, b) => Number(a.normalizedText.includes('lower priority')) - Number(b.normalizedText.includes('lower priority')));
+                    exactMatches[0].el.click();
                     return {
                         status: 'clicked',
-                        clickedText: exact.text,
+                        clickedText: exactMatches[0].text,
                         candidateText,
                     };
                 }
@@ -849,6 +978,18 @@ async def _select_model_js(
                     return {
                         status: 'clicked',
                         clickedText: familyMatches[0].text,
+                        candidateText,
+                    };
+                }
+
+                const nonLpFamilyMatches = familyMatches.filter(
+                    (match) => !match.normalizedText.includes('lower priority')
+                );
+                if (nonLpFamilyMatches.length === 1) {
+                    nonLpFamilyMatches[0].el.click();
+                    return {
+                        status: 'clicked',
+                        clickedText: nonLpFamilyMatches[0].text,
                         candidateText,
                     };
                 }
@@ -892,10 +1033,6 @@ async def _select_model_js(
         )
 
     if result and result.get("status") == "clicked":
-        if result.get("candidateText") == "Lite":
-            logger.warning(
-                "LP option not found, falling back to Lite (per 2026-05-10 deprecation policy)"
-            )
         logger.info("Selected model via JS fallback: %s", result.get("clickedText"))
         await asyncio.sleep(0.5)
         return True
