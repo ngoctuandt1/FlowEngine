@@ -11,6 +11,7 @@ from server.models.chain import Chain, ChainCreateResponse
 from server.db.chain_store import compute_aggregated_status
 from server.models.job import (
     ChainCreate,
+    DEFAULT_IMAGE_MODEL,
     Job,
     JobCreate,
     JobUpdate,
@@ -214,8 +215,8 @@ async def _validate_chain_parent_alive(req: ChainCreate) -> str | None:
 
 def _resolve_model(req: JobCreate) -> str:
     """Apply per-type default models while preserving explicit requests."""
-    if req.type.value == "text-to-image" and req.model == "veo-3.1-fast-lp":
-        return "nano-banana-pro"
+    if req.type.value == "text-to-image" and "model" not in req.model_fields_set:
+        return DEFAULT_IMAGE_MODEL
     return req.model
 
 

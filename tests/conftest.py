@@ -58,7 +58,7 @@ def sample_job_payload() -> dict:
     return {
         "type": "text-to-video",
         "prompt": "test prompt",
-        "model": "veo-3.1-fast-lp",
+        "model": "veo-3.1-fast",
         "aspect_ratio": "16:9",
     }
 

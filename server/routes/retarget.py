@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from server.db.job_store import create_job
-from server.models.job import Job, JobType
+from server.models.job import DEFAULT_MODEL, Job, JobType
 
 router = APIRouter(prefix="/api/retarget", tags=["retarget"])
 
@@ -21,7 +21,7 @@ class RetargetRequest(BaseModel):
     new_prompt: str = Field(min_length=1)
     profile: str | None = None
     aspect_ratio: str = "16:9"
-    model: str = "veo-3.1-fast-lp"
+    model: str = DEFAULT_MODEL
     frame_seconds: float = Field(default=1.0, ge=0)
 
 

@@ -16,7 +16,7 @@ async def test_init_db_backfills_chain_id_for_legacy_job_tree(temp_db_path):
             INSERT INTO jobs (
                 id, type, status, job_level, parent_job_id, chain_id,
                 model, aspect_ratio, created_at, updated_at
-            ) VALUES (?, ?, 'pending', ?, ?, ?, 'veo-3.1-lite-lp', '16:9', ?, ?)
+            ) VALUES (?, ?, 'pending', ?, ?, ?, 'veo-3.1-lite', '16:9', ?, ?)
             """,
             [
                 (root_id, "text-to-video", 1, None, None, "2026-05-02T00:00:00+00:00", "2026-05-02T00:00:00+00:00"),
@@ -29,14 +29,22 @@ async def test_init_db_backfills_chain_id_for_legacy_job_tree(temp_db_path):
     await init_db()
 
     async with aiosqlite.connect(temp_db_path) as db:
+        cursor = await db.execute("PRAGMA table_info(jobs)")
+        columns = {row[1] for row in await cursor.fetchall()}
         cursor = await db.execute(
-            "SELECT id, chain_id FROM jobs WHERE id IN (?, ?, ?) ORDER BY created_at ASC",
+            """
+            SELECT id, chain_id, error_kind, error_message
+            FROM jobs
+            WHERE id IN (?, ?, ?)
+            ORDER BY created_at ASC
+            """,
             (root_id, child_id, grandchild_id),
         )
         rows = await cursor.fetchall()
 
+    assert {"error_kind", "error_message"}.issubset(columns)
     assert rows == [
-        (root_id, root_id),
-        (child_id, root_id),
-        (grandchild_id, root_id),
+        (root_id, root_id, None, None),
+        (child_id, root_id, None, None),
+        (grandchild_id, root_id, None, None),
     ]

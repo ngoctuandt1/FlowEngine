@@ -20,13 +20,8 @@ CAMERA_PRESETS: frozenset[str] = frozenset({
     "Center", "Left", "Right", "High", "Low", "Closer", "Further",
 })
 
-DEFAULT_MODEL = "veo-3.1-lite-lp"
-
-# `server/routes/jobs.py` still uses the old fast-LP token as a text-to-image
-# sentinel to map omitted video-model defaults onto the image-model default
-# (`nano-banana-pro`). Keep the route contract stable here until that path is
-# migrated separately.
-TEXT_TO_IMAGE_ROUTE_SENTINEL = "veo-3.1-fast-lp"
+DEFAULT_MODEL = "veo-3.1-lite"
+DEFAULT_IMAGE_MODEL = "nano-banana-pro"
 CHAIN_CREATE_PROFILE_DESCRIPTION = (
     "Profile pinning: chain-level `profile` wins; if omitted, all step "
     "`JobCreate.profile` values must resolve to one consistent profile and "
@@ -156,15 +151,6 @@ class JobCreate(BaseModel):
             if isinstance(path, str) and path.strip()
         ]
 
-        # Preserve the existing text-to-image route default until that path is
-        # migrated off its fast-LP sentinel.
-        if (
-            self.type == JobType.TEXT_TO_IMAGE
-            and "model" not in self.model_fields_set
-            and self.model == DEFAULT_MODEL
-        ):
-            self.model = TEXT_TO_IMAGE_ROUTE_SENTINEL
-
         if self.type == JobType.FRAMES_TO_VIDEO:
             _require_non_empty_text(
                 self.start_image_path,
@@ -257,6 +243,8 @@ class Job(BaseModel):
     claimed_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     error: Optional[str] = None
+    error_kind: str | None = None
+    error_message: str | None = None
 
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -281,6 +269,8 @@ class JobUpdate(BaseModel):
     output_files: Optional[list[str]] = None
     generation_id: Optional[str] = None
     error: Optional[str] = None
+    error_kind: str | None = None
+    error_message: str | None = None
     completed_at: Optional[datetime] = None
     # Requeue path: clear claim ownership so the job can be picked up again
     worker_id: Optional[str] = None
