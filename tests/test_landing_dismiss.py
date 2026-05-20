@@ -86,7 +86,7 @@ def test_is_marketing_anchor_url(url, expected):
 
 
 @pytest.mark.asyncio
-async def test_returns_false_when_no_cta_visible():
+async def test_no_cta_visible_tries_nextauth_fallback_then_returns_false():
     page = FakePage()
     logger = logging.getLogger("test")
     is_ready = AsyncMock(return_value=False)
@@ -94,7 +94,11 @@ async def test_returns_false_when_no_cta_visible():
         page, logger, is_ready, per_click_timeout_sec=0.05, max_reloads=0,
     )
     assert result is False
-    is_ready.assert_not_called()  # never reached the click loop
+    assert page.goto_calls == [
+        "https://labs.google/fx/api/auth/signin/google"
+        "?callbackUrl=https%3A%2F%2Flabs.google%2Ffx%2Ftools%2Fflow"
+    ]
+    is_ready.assert_awaited_once()
 
 
 @pytest.mark.asyncio
