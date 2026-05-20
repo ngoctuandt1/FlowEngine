@@ -26,6 +26,9 @@ out of scope — Tier 2 live E2E exercises the real path.
 """
 
 import re
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from flow.operations import generate
 
@@ -158,6 +161,26 @@ def test_selector_list_is_shared_with_retry_path():
 # ---------------------------------------------------------------------------
 # Source-level trip-wires (prevent silent regression)
 # ---------------------------------------------------------------------------
+
+
+async def test_l1_credit_guard_raises_before_submit(monkeypatch):
+    monkeypatch.setenv("FLOW_MAX_CREDITS_PER_JOB", "10")
+    verify_count = AsyncMock(return_value="Video x1")
+    verify_credits = AsyncMock(return_value=40)
+    submit = AsyncMock()
+    monkeypatch.setattr(generate, "_verify_l1_output_count", verify_count)
+    monkeypatch.setattr(generate, "_verify_credits", verify_credits)
+
+    with pytest.raises(generate.CreditBudgetExceeded) as exc_info:
+        await generate._guard_l1_submit(MagicMock())
+        await submit()
+
+    assert exc_info.value.cost == 40
+    assert exc_info.value.budget == 10
+    assert getattr(exc_info.value, "error_kind") == "credit_budget_exceeded"
+    submit.assert_not_awaited()
+    verify_count.assert_awaited_once()
+    verify_credits.assert_awaited_once()
 
 
 def test_source_does_not_reintroduce_en_only_list():

@@ -30,6 +30,7 @@ def _make_locator(**async_results):
     loc = MagicMock()
     loc.first = loc
     loc.filter = MagicMock(return_value=loc)
+    loc.nth = MagicMock(return_value=loc)
     loc.click = AsyncMock(return_value=async_results.get("click"))
     loc.wait_for = AsyncMock(return_value=async_results.get("wait_for"))
     loc.inner_text = AsyncMock(return_value=async_results.get("inner_text", ""))
@@ -41,6 +42,15 @@ def _make_locator(**async_results):
 def _make_page(locator_router):
     page = MagicMock()
     page.locator = MagicMock(side_effect=locator_router)
+    page.evaluate = AsyncMock(return_value=[{
+        "index": 0,
+        "text": "Video crop_9_16 x1",
+        "iconText": ["crop_9_16"],
+        "visible": True,
+        "dataState": "",
+        "ariaExpanded": "",
+        "rect": {"top": 0, "left": 0, "width": 100, "height": 32},
+    }])
     page.wait_for_function = AsyncMock()
     page.mouse = MagicMock()
     page.mouse.click = AsyncMock()
@@ -160,6 +170,15 @@ async def test_portrait_skips_chip_click_when_already_open():
         return fallback
 
     page = _make_page(route)
+    page.evaluate = AsyncMock(return_value=[{
+        "index": 0,
+        "text": "Video crop_9_16 x1",
+        "iconText": ["crop_9_16"],
+        "visible": True,
+        "dataState": "open",
+        "ariaExpanded": "true",
+        "rect": {"top": 0, "left": 0, "width": 100, "height": 32},
+    }])
     await _set_aspect_ratio(page, "9:16")
 
     chip.click.assert_not_called()  # the core B19 invariant
@@ -168,52 +187,21 @@ async def test_portrait_skips_chip_click_when_already_open():
     chip.inner_text.assert_called()
 
 
-def test_chip_selector_uses_icon_not_model_text():
-    """B19 — aspect-ratio chip must be located by Material Icon ligature.
+def test_chip_selector_uses_role_text_menu_discovery_not_model_text():
+    """Aspect-ratio chip must be opened by role/text/menu discovery.
 
-    Pre-B19 helper located the chip via
-    ``re.compile(r"video.*x\\d", re.IGNORECASE)``. That assumed the
-    chip text always begins with the literal word "Video". In practice
-    Flow renders the **active model name** inside the chip instead:
-
-      - "Video\\ncrop_9_16\\nx1"          (legacy default model)
-      - "Veo 3.1 Fast LP\\ncrop_9_16\\nx1"
-      - "🍌 Nano Banana Pro\\ncrop_9_16\\nx1"  (Tier 2 Run 3, 2026-04-18)
-
-    The moment a non-default model is active, the "video" token
-    vanishes and the regex matches nothing — `chip.click()` hits
-    ``Locator.Timeout`` and the whole aspect-ratio flow halts. B19
-    replaces the brittle text probe with an icon-filter:
-    ``i.google-symbols`` whose text is the crop ligature
-    (``crop_9_16`` or ``crop_16_9``). Icon ligatures are stable
-    across models, locales (VI / EN), and font loading states, so
-    the selector matches regardless of which model is active or which
-    language Google Flow is rendering in.
-
-    Three independent guarantees:
-
-    1. **Icon-based source trip-wire.** Source uses a
-       ``i.google-symbols`` / ``has=`` nested filter and the crop
-       ligature regex — prevents silent regression back to
-       ``video.*x\\d`` text probe.
-    2. **Pre-B19 RED-case.** Re-build the old regex and confirm it
-       MISSES the real chip text ``"🍌 Nano Banana Pro\\ncrop_9_16\\nx1"``
-       observed in Tier 2 Run 3 — anchors the bug hypothesis so the
-       fix's observable effect is provable.
-    3. **Ligature invariance.** A single regex ``^crop_(9_16|16_9)$``
-       matches the ligature text alone across every chip variant we
-       have seen (portrait, landscape, under each model name),
-       proving the selector is locale- and model-independent.
+    Pre-B19 helper located the chip via ``video.*x`` text. Later fixes used
+    exact crop icon ligatures. Unit B's 2026-05 contract is stricter: open
+    ``button[aria-haspopup="menu"]`` candidates filtered by visible current
+    mode/model/count text and require the Radix menu to open. Crop icon text
+    may still appear in diagnostics and final ratio verification, but it is
+    not the menu-open acceptance criterion.
     """
     # (1) Source trip-wire on the actual helper.
     src = inspect.getsource(_generate_module._set_aspect_ratio)
-    assert '"crop_9_16"' in src and '"crop_16_9"' in src, (
-        "Expected `_set_aspect_ratio` to locate the aspect-ratio chip "
-        "by matching the Material Icon ligature strings "
-        '`"crop_9_16"` / `"crop_16_9"` rather than the model-name '
-        "text. Without this, the selector breaks whenever Flow "
-        "activates a non-default model or flips locale (B19, Tier 2 "
-        "Run 3/4). Source:\n" + src
+    assert "_open_composer_menu_by_role_text" in src, (
+        "Expected `_set_aspect_ratio` to open the composer chip via "
+        "role/text/menu discovery. Source:\n" + src
     )
     assert 'aria-haspopup="menu"' in src, (
         "Expected chip selector to still scope to "

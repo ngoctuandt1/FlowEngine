@@ -18,6 +18,17 @@ from flow.failure_capture import message_with_failure_capture
 from flow.operations._base import failure_kind_from_error, resolve_final_media_id
 from flow.operations._l1_status_poll import download_via_url, poll_status_via_api
 
+try:
+    from flow.operations._base import CreditBudgetExceeded
+except ImportError:
+    class CreditBudgetExceeded(Exception):
+        def __init__(self, cost=None, budget=None, message: str | None = None):
+            synthesized = message or f"credit preview cost {cost} exceeds budget {budget}"
+            super().__init__(synthesized)
+            self.cost = cost
+            self.budget = budget
+            self.error_kind = "credit_budget_exceeded"
+
 logger = logging.getLogger(__name__)
 
 install_t2v_request_capture = None
@@ -593,6 +604,10 @@ async def text_to_video(
 
     # === Step 3: Select model ===
     canonical_model = canonicalize_video_model_key(model, free_mode=free_mode)
+    logger.info("Step 2.5: Force composer Video mode before model selection")
+    await _ensure_video_composer_mode(page)
+    logger.info("Step 2.6: Force output count = x1 before model credit preview")
+    await _set_output_count(page, 1)
     logger.info(f"Step 3: Select model ({canonical_model})")
     await select_model(page, model=canonical_model, free_mode=free_mode, profile=client.profile_name)
 
@@ -620,8 +635,10 @@ async def text_to_video(
     logger.info(f"Step 5: Type prompt ({len(prompt)} chars)")
     await _type_prompt(page, prompt)
 
-    # === Step 6: Count baseline cards, clear captures, submit ===
-    logger.info("Step 6: Submit generation")
+    # === Step 6: Verify count/credits, count baseline cards, clear captures, submit ===
+    logger.info("Step 6: Verify L1 count and credit preview before submit")
+    await _guard_l1_submit(page)
+    logger.info("Step 6.1: Submit generation")
     before_cards = await _count_visible_cards(page)
     client.clear_captures()
 
@@ -952,6 +969,402 @@ async def _type_prompt(page, prompt: str):
     raise RuntimeError("Failed to find prompt editor after %d rounds" % MAX_ROUNDS)
 
 
+_COMPOSER_MENU_BUTTON_SELECTOR = 'button[aria-haspopup="menu"]'
+_OPEN_COMPOSER_MENU_SELECTOR = '[role="menu"][data-state="open"]'
+_COUNT_TOKEN_RE = re.compile(r"(?:x[1-4]|[1-4]x)", re.IGNORECASE)
+_MODE_OR_MODEL_RE = re.compile(
+    r"video|frames?|ingredients?|image|veo|omni|imagen|banana",
+    re.IGNORECASE,
+)
+_ASPECT_TEXT_RE = re.compile(r"16\s*:?\s*9|9\s*:?\s*16|landscape|portrait|square", re.IGNORECASE)
+
+
+def _max_credits_per_job() -> int:
+    return int(os.environ.get("FLOW_MAX_CREDITS_PER_JOB", "10"))
+
+
+def _normalize_composer_text(text: str | None) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _composer_chip_score(text: str | None) -> int:
+    normalized = _normalize_composer_text(text)
+    if not normalized:
+        return 0
+
+    score = 0
+    if _COUNT_TOKEN_RE.search(normalized):
+        score += 40
+    if _MODE_OR_MODEL_RE.search(normalized):
+        score += 35
+    if _ASPECT_TEXT_RE.search(normalized):
+        score += 10
+    return score
+
+
+async def _collect_composer_menu_button_candidates(page) -> list[dict]:
+    try:
+        candidates = await page.evaluate(
+            """(selector) => {
+                const visible = (element) => {
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && parseFloat(style.opacity || '1') > 0
+                        && rect.width > 0
+                        && rect.height > 0;
+                };
+                return Array.from(document.querySelectorAll(selector)).map((element, index) => {
+                    const rect = element.getBoundingClientRect();
+                    const text = (element.innerText || element.textContent || '').trim();
+                    const iconText = Array.from(element.querySelectorAll('i, svg [aria-label], [class*="icon" i]'))
+                        .map((child) => (child.innerText || child.textContent || child.getAttribute('aria-label') || '').trim())
+                        .filter(Boolean);
+                    return {
+                        index,
+                        text,
+                        iconText,
+                        visible: visible(element),
+                        dataState: element.getAttribute('data-state') || '',
+                        ariaExpanded: element.getAttribute('aria-expanded') || '',
+                        rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+                    };
+                }).filter((candidate) => candidate.visible);
+            }""",
+            _COMPOSER_MENU_BUTTON_SELECTOR,
+        )
+    except Exception as exc:
+        logger.debug("composer menu candidate collection failed: %s", exc)
+        return []
+
+    for candidate in candidates:
+        candidate["text"] = _normalize_composer_text(candidate.get("text"))
+        candidate["score"] = _composer_chip_score(candidate.get("text"))
+    return candidates
+
+
+async def _composer_menu_is_open(page) -> bool:
+    candidates = await _collect_composer_menu_button_candidates(page)
+    if any(
+        candidate.get("dataState") == "open" or candidate.get("ariaExpanded") == "true"
+        for candidate in candidates
+    ):
+        return True
+    if candidates:
+        return False
+    try:
+        return await page.locator(_OPEN_COMPOSER_MENU_SELECTOR).first.is_visible(timeout=300)
+    except Exception:
+        return False
+
+
+async def _wait_for_composer_menu_open(page, timeout_ms: int = 2500) -> bool:
+    try:
+        await page.locator(_OPEN_COMPOSER_MENU_SELECTOR).first.wait_for(
+            state="visible",
+            timeout=timeout_ms,
+        )
+        return True
+    except Exception:
+        return False
+
+
+async def _open_composer_menu_by_role_text(page, *, purpose: str = "composer"):
+    already_open = await _composer_menu_is_open(page)
+    candidates = await _collect_composer_menu_button_candidates(page)
+    scored_candidates = [candidate for candidate in candidates if candidate.get("score", 0) > 0]
+    scored_candidates.sort(
+        key=lambda candidate: (
+            candidate.get("dataState") == "open",
+            candidate.get("ariaExpanded") == "true",
+            candidate.get("score", 0),
+        ),
+        reverse=True,
+    )
+
+    for candidate in scored_candidates:
+        button = page.locator(_COMPOSER_MENU_BUTTON_SELECTOR).nth(candidate["index"])
+        try:
+            candidate_is_open = (
+                candidate.get("dataState") == "open"
+                or candidate.get("ariaExpanded") == "true"
+            )
+            if already_open and not candidate_is_open:
+                continue
+            if not already_open and not candidate_is_open:
+                await button.click(timeout=3000)
+            if candidate_is_open or await _wait_for_composer_menu_open(page):
+                logger.info(
+                    "Opened composer menu for %s via text=%r score=%s",
+                    purpose,
+                    candidate.get("text"),
+                    candidate.get("score"),
+                )
+                return button
+        except Exception as exc:
+            logger.debug(
+                "Composer menu candidate failed for %s: text=%r error=%s",
+                purpose,
+                candidate.get("text"),
+                exc,
+            )
+
+    fallback_button = page.locator(_COMPOSER_MENU_BUTTON_SELECTOR).first
+    try:
+        fallback_text = _normalize_composer_text(await fallback_button.inner_text(timeout=1000))
+        fallback_score = _composer_chip_score(fallback_text)
+        fallback_state = await fallback_button.get_attribute("data-state", timeout=1000)
+        fallback_expanded = await fallback_button.get_attribute("aria-expanded", timeout=1000)
+        fallback_is_open = fallback_state == "open" or fallback_expanded == "true"
+        if fallback_score > 0 or already_open:
+            if already_open and not fallback_is_open:
+                raise RuntimeError("open composer menu trigger was not first button")
+            if (
+                not already_open
+                and not fallback_is_open
+            ):
+                await fallback_button.click(timeout=3000)
+            if fallback_is_open or await _wait_for_composer_menu_open(page):
+                logger.info(
+                    "Opened composer menu for %s via first visible text fallback=%r score=%s",
+                    purpose,
+                    fallback_text,
+                    fallback_score,
+                )
+                return fallback_button
+    except Exception as exc:
+        logger.debug("Composer first-button fallback failed for %s: %s", purpose, exc)
+
+    diagnostics = [
+        {
+            "text": candidate.get("text"),
+            "score": candidate.get("score"),
+            "state": candidate.get("dataState"),
+            "expanded": candidate.get("ariaExpanded"),
+            "icons": candidate.get("iconText"),
+        }
+        for candidate in candidates
+    ]
+    raise RuntimeError(
+        f"Could not open composer menu for {purpose}; visible menu buttons={diagnostics}"
+    )
+
+
+async def _close_composer_menu_by_click_outside(page) -> None:
+    if not await _composer_menu_is_open(page):
+        return
+    await page.mouse.click(10, 10)
+    try:
+        await page.locator(_OPEN_COMPOSER_MENU_SELECTOR).first.wait_for(
+            state="hidden",
+            timeout=2000,
+        )
+    except Exception:
+        logger.debug("Composer menu did not report hidden after click-outside")
+
+
+async def _find_open_composer_tab(page, label: str):
+    tabs = page.locator(f'{_OPEN_COMPOSER_MENU_SELECTOR} [role="tab"]')
+    observed_tabs = []
+    try:
+        count = await tabs.count()
+    except Exception as exc:
+        return None, None, [f"<tab-count-unavailable:{exc}>"]
+    label_re = re.compile(rf"(^|\s){re.escape(label)}(\s|$)", re.IGNORECASE)
+    for index in range(count):
+        tab = tabs.nth(index)
+        try:
+            text = _normalize_composer_text(await tab.inner_text(timeout=1000))
+            state = await tab.get_attribute("data-state")
+            observed_tabs.append(f"{text!r}={state}")
+            if label_re.search(text):
+                return tab, state, observed_tabs
+        except Exception as exc:
+            observed_tabs.append(f"<unreadable:{exc}>")
+    return None, None, observed_tabs
+
+
+async def _ensure_video_composer_mode(page, *, keep_open: bool = False):
+    chip_btn = await _open_composer_menu_by_role_text(page, purpose="Video mode")
+    tab, state, observed_tabs = await _find_open_composer_tab(page, "Video")
+    if tab is None:
+        legacy_tab = page.locator('[id$="-trigger-VIDEO"]').first
+        try:
+            legacy_state = await legacy_tab.get_attribute("data-state")
+            if legacy_state != "active":
+                await legacy_tab.click(timeout=2000)
+                await page.wait_for_function(
+                    '() => document.querySelector(\'[id$="-trigger-VIDEO"]\')?.dataset.state === "active"',
+                    timeout=2000,
+                )
+            if not keep_open:
+                await _close_composer_menu_by_click_outside(page)
+            logger.info("Composer forced to Video mode via trigger fallback; tabs=%s", observed_tabs)
+            return chip_btn
+        except Exception as exc:
+            await _close_composer_menu_by_click_outside(page)
+            raise RuntimeError(
+                f"Composer Video tab not found; observed tabs={observed_tabs}"
+            ) from exc
+
+    if state != "active":
+        await tab.click(timeout=3000)
+        await asyncio.sleep(0.3)
+        tab, state, observed_tabs = await _find_open_composer_tab(page, "Video")
+        if state != "active":
+            await _close_composer_menu_by_click_outside(page)
+            raise RuntimeError(f"Composer Video tab did not become active; observed tabs={observed_tabs}")
+        logger.info("Composer forced to Video mode; tabs=%s", observed_tabs)
+
+    if not keep_open:
+        await _close_composer_menu_by_click_outside(page)
+    return chip_btn
+
+
+async def _select_video_composer_subtab(page, label: str) -> None:
+    await _ensure_video_composer_mode(page, keep_open=True)
+    tab, state, observed_tabs = await _find_open_composer_tab(page, label)
+    if tab is None:
+        await _close_composer_menu_by_click_outside(page)
+        raise RuntimeError(f"Composer sub-tab not found: {label}; observed tabs={observed_tabs}")
+    if state != "active":
+        await tab.click(timeout=3000)
+        await asyncio.sleep(0.3)
+        tab, state, observed_tabs = await _find_open_composer_tab(page, label)
+        if state != "active":
+            await _close_composer_menu_by_click_outside(page)
+            raise RuntimeError(f"Composer sub-tab did not become active: {label}; observed tabs={observed_tabs}")
+    logger.info("Composer sub-tab active: %s", label)
+
+
+async def _read_credit_preview_cost(page) -> int | None:
+    try:
+        result = await page.evaluate(
+            r"""() => {
+                const text = document.body?.innerText || '';
+                const patterns = [
+                    /will\s+use\s+(\d+)\s+credits?/i,
+                    /(?:cost|costs|requires?|use|uses)\s+(\d+)\s+credits?/i,
+                    /(\d+)\s+credits?/i,
+                    /(\d+)\s+tín\s*dụng/i,
+                    /(\d+)\s+tin\s*dung/i,
+                ];
+                for (const pattern of patterns) {
+                    const match = text.match(pattern);
+                    if (match) return parseInt(match[1], 10);
+                }
+                return null;
+            }"""
+        )
+    except Exception as exc:
+        logger.debug("Credit preview read failed: %s", exc)
+        return None
+    return int(result) if result is not None else None
+
+
+async def _verify_credits(page, *, budget: int | None = None) -> int | None:
+    resolved_budget = _max_credits_per_job() if budget is None else budget
+    cost = await _read_credit_preview_cost(page)
+    if cost is None:
+        logger.info("Credit preview not found after model/count selection")
+        return None
+    if cost > resolved_budget:
+        logger.warning("Credit budget exceeded before submit: cost %d > budget %d", cost, resolved_budget)
+        raise CreditBudgetExceeded(cost=cost, budget=resolved_budget)
+    logger.info("Credit preview OK before submit: %d <= %d", cost, resolved_budget)
+    return cost
+
+
+async def _verify_l1_output_count(page, count: int = 1) -> str:
+    candidates = await _collect_composer_menu_button_candidates(page)
+    scored_candidates = [candidate for candidate in candidates if candidate.get("score", 0) > 0]
+    scored_candidates.sort(key=lambda candidate: candidate.get("score", 0), reverse=True)
+    if not scored_candidates:
+        raise RuntimeError(
+            f"L1 output count verification failed: no visible composer count chip; candidates={candidates}"
+        )
+
+    chip_text = scored_candidates[0].get("text", "")
+    if not _chip_text_matches_output_count(chip_text, count):
+        raise RuntimeError(
+            f"L1 output count verification failed: expected x{count}/1x, composer chip text={chip_text!r}; refusing to submit"
+        )
+    return chip_text
+
+
+async def _guard_l1_submit(page) -> None:
+    chip_text = await _verify_l1_output_count(page, 1)
+    logger.info("L1 output count verified before submit: %s", chip_text)
+    budget = _max_credits_per_job()
+    cost = await _verify_credits(page, budget=budget)
+    if cost is not None and cost > budget:
+        raise CreditBudgetExceeded(cost=cost, budget=budget)
+
+
+async def _verify_frames_upload_affordances(page, timeout_sec: float = 5.0) -> None:
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            affordances = await page.evaluate(
+                """() => {
+                    const visible = (element) => {
+                        const style = getComputedStyle(element);
+                        const rect = element.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+                    const hasUploadNearLabel = (label) => {
+                        const nodes = Array.from(document.querySelectorAll('*')).filter((element) => {
+                            return visible(element) && (element.textContent || '').trim() === label;
+                        });
+                        return nodes.some((node) => {
+                            let current = node;
+                            for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+                                if (current.querySelector?.('input[type="file"], button, [role="button"]')) return true;
+                            }
+                            return false;
+                        });
+                    };
+                    return { start: hasUploadNearLabel('Start'), end: hasUploadNearLabel('End') };
+                }"""
+            )
+            if affordances and affordances.get("start") and affordances.get("end"):
+                logger.info("Frames upload affordances verified: Start and End")
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(0.4)
+    raise RuntimeError("Frames mode verification failed: Start/End upload affordances not visible")
+
+
+async def _verify_ingredients_upload_affordance(page, timeout_sec: float = 5.0) -> None:
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            visible = await page.evaluate(
+                """() => Array.from(document.querySelectorAll('button, [role="button"]')).some((element) => {
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    const text = (element.innerText || element.textContent || '').trim().toLowerCase();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && rect.width > 0
+                        && rect.height > 0
+                        && (text === '+' || text.includes('add') || text.includes('upload'));
+                })"""
+            )
+            if visible:
+                logger.info("Ingredients upload affordance verified")
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(0.4)
+    raise RuntimeError("Ingredients mode verification failed: upload affordance not visible")
+
+
 # Flow Video aspect ratios map to Radix trigger id suffixes.
 # 16:9 is the panel default; 1:1 / 4:3 / 3:4 exist only in image mode.
 RATIO_IDS = {"9:16": "PORTRAIT", "16:9": "LANDSCAPE"}
@@ -995,26 +1408,11 @@ async def _set_aspect_ratio(page, ratio: str):
 
     suffix = RATIO_IDS[ratio]
 
-    # Locate the aspect-ratio chip by its Material Icon ligature, not by
-    # surrounding text. The chip always contains an `<i class="google-symbols">`
-    # whose text is the crop ligature (`crop_9_16` or `crop_16_9`). The
-    # surrounding label (model name: "Video", "Veo 3.1 Fast LP",
-    # "🍌 Nano Banana Pro", …) varies per account/session and is
-    # locale-dependent — relying on it breaks whenever the model changes
-    # or the browser locale flips to VI.
-    #
-    # We match via CSS `:has-text("crop_9_16"|"crop_16_9")` on the
-    # button's own textContent, which is `"Videocrop_16_9x1"` (or
-    # `"<model>crop_9_16x1"`). The crop ligature is a stable substring
-    # regardless of the surrounding label, so a CSS `:has-text` substring
-    # match is sufficient — no regex gymnastics, no newline edge cases
-    # (`innerText` vs `textContent` diverge on block children). This
-    # avoids the `has=<nested-locator>` path that previously failed to
-    # resolve against the real DOM (B19, Tier 2 Run 3/4).
-    chip_btn = page.locator(
-        'button[aria-haspopup="menu"]:has-text("crop_9_16"), '
-        'button[aria-haspopup="menu"]:has-text("crop_16_9")'
-    ).first
+    # Open the composer chip by role + visible text/current count/model, then
+    # keep icon strings only as diagnostic text in failure logs. Flow's 2026-05
+    # composer moved these controls inside one Radix menu, so acceptance hinges
+    # on a real menu-open result, not exact Material ligatures.
+    chip_btn = await _open_composer_menu_by_role_text(page, purpose="aspect ratio")
 
     # Radix DropdownMenu trigger reflects open/closed via `data-state`.
     # A preceding interaction (model-selector dropdown dismiss, DOM
@@ -1023,21 +1421,7 @@ async def _set_aspect_ratio(page, ratio: str):
     # and the subsequent `wait_for("[role=\"menu\"][data-state=\"open\"]")`
     # times out (B19, Tier 2 Run 3-6).
     # Only click to open when the trigger is currently closed.
-    current_state = await chip_btn.get_attribute("data-state", timeout=2000)
-    if current_state != "open":
-        await chip_btn.click(timeout=3000)
-
-    await page.locator('[role="menu"][data-state="open"]').wait_for(
-        state="visible", timeout=3000,
-    )
-
-    video_tab = page.locator('[id$="-trigger-VIDEO"]').first
-    if await video_tab.get_attribute("data-state") != "active":
-        await video_tab.click(timeout=2000)
-        await page.wait_for_function(
-            '() => document.querySelector(\'[id$="-trigger-VIDEO"]\')?.dataset.state === "active"',
-            timeout=2000,
-        )
+    await _ensure_video_composer_mode(page, keep_open=True)
 
     trigger = page.locator(f'[id$="-trigger-{suffix}"]').first
     await trigger.click(timeout=3000)
@@ -1050,9 +1434,12 @@ async def _set_aspect_ratio(page, ratio: str):
     # Click-outside to close. Top-left viewport is a safe dead zone outside
     # both the bottom-center composer and the bottom-right chip panel.
     await page.mouse.click(10, 10)
-    await page.locator('[role="menu"][data-state="open"]').wait_for(
-        state="hidden", timeout=2000,
-    )
+    try:
+        await page.locator(_OPEN_COMPOSER_MENU_SELECTOR).first.wait_for(
+            state="hidden", timeout=2000,
+        )
+    except Exception:
+        logger.debug("Aspect ratio menu did not report hidden after click-outside")
 
     expected_icon = "crop_9_16" if ratio == "9:16" else "crop_16_9"
     chip_text = await chip_btn.inner_text(timeout=2000)
@@ -1102,18 +1489,8 @@ async def _set_output_count(page, count: int = 1):
     if count < 1 or count > 4:
         raise ValueError(f"count must be 1..4, got {count}")
 
-    chip_btn = page.locator(
-        'button[aria-haspopup="menu"]:has-text("crop_9_16"), '
-        'button[aria-haspopup="menu"]:has-text("crop_16_9")'
-    ).first
-
-    current_state = await chip_btn.get_attribute("data-state", timeout=2000)
-    if current_state != "open":
-        await chip_btn.click(timeout=3000)
-
-    await page.locator('[role="menu"][data-state="open"]').wait_for(
-        state="visible", timeout=3000,
-    )
+    chip_btn = await _open_composer_menu_by_role_text(page, purpose="output count")
+    await _ensure_video_composer_mode(page, keep_open=True)
 
     trigger = page.locator(f'[id$="-trigger-{count}"]').first
     await trigger.click(timeout=3000)
@@ -1124,9 +1501,12 @@ async def _set_output_count(page, count: int = 1):
     )
 
     await page.mouse.click(10, 10)
-    await page.locator('[role="menu"][data-state="open"]').wait_for(
-        state="hidden", timeout=2000,
-    )
+    try:
+        await page.locator(_OPEN_COMPOSER_MENU_SELECTOR).first.wait_for(
+            state="hidden", timeout=2000,
+        )
+    except Exception:
+        logger.debug("Output count menu did not report hidden after click-outside")
 
     chip_text = await chip_btn.inner_text(timeout=2000)
     expected = f"x{count}"

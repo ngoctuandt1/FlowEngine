@@ -27,9 +27,13 @@ from flow.operations.generate import (
     NEW_PROJECT_SELECTORS,
     _count_visible_cards,
     _dismiss_overlays,
+    _ensure_video_composer_mode,
+    _guard_l1_submit,
     _set_aspect_ratio,
     _set_output_count,
+    _select_video_composer_subtab,
     _type_prompt,
+    _verify_frames_upload_affordances,
     _wait_for_composer,
 )
 
@@ -418,18 +422,23 @@ async def frames_to_video(
     project_id = extract_project_id(project_url_full)
 
     await _wait_for_composer(page)
+    await _ensure_video_composer_mode(page)
+    await _set_output_count(page, 1)
     await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
+    await _ensure_video_composer_mode(page)
     await _set_aspect_ratio(page, aspect_ratio)
     await _set_output_count(page, 1)
     await _ensure_frames_mode(page)
     await _close_composer_menu(page)
     await _verify_frames_mode(page)
+    await _verify_frames_upload_affordances(page)
     await _upload_frame(page, "Start", start_image_path)
     if end_image_path:
         await _upload_frame(page, "End", end_image_path)
 
     await _type_prompt(page, prompt)
 
+    await _guard_l1_submit(page)
     before_cards = await _count_visible_cards(page)
     client.clear_captures()
     confirmed = await submit_with_confirmation(
@@ -517,9 +526,7 @@ async def _verify_frames_mode(page, timeout_sec: float = 5.0) -> None:
 
 
 async def _ensure_frames_mode(page) -> None:
-    await _open_composer_menu(page)
-    await _click_tab(page, "Video")
-    await _click_tab(page, "Frames")
+    await _select_video_composer_subtab(page, "Frames")
 
 
 async def _composer_menu_is_open(page) -> bool:
