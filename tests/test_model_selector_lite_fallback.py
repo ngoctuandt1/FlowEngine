@@ -1,4 +1,4 @@
-"""Unit tests for LP -> Lite fallback in the free model selector path."""
+"""Unit tests for canonical video model selection with LP rollout fallback."""
 
 import logging
 import re
@@ -105,6 +105,7 @@ def _simulate_js_selection(
 
         exact_matches = [match for match in matches if normalized_base in match[1]]
         if exact_matches:
+            exact_matches.sort(key=lambda match: "lower priority" in match[1])
             clicked_text = exact_matches[0][0]
             _record_click(clicked_text, clicked_texts, click_errors)
             return {
@@ -233,22 +234,22 @@ async def test_select_model_prefers_lower_priority_when_only_lp_exists(
     assert page._clicked_texts == ["Veo 3.1 - Fast [Lower Priority]"]
     assert "falling back to Lite" not in caplog.text
     _selector_stubs["open_dropdown"].assert_not_called()
-    _selector_stubs["verify_credits"].assert_awaited_once_with(page, expected=0)
+    _selector_stubs["verify_credits"].assert_awaited_once_with(page)
 
 
-async def test_select_model_falls_back_to_lite_when_lp_is_missing(
+async def test_select_model_selects_canonical_lite_without_lp_warning(
     _selector_stubs, caplog
 ):
     page = _make_select_model_page(["Veo 3.1 - Lite"])
 
     with caplog.at_level(logging.WARNING, logger="flow.model_selector"):
-        result = await select_model(page, model="veo-3.1-fast-lp")
+        result = await select_model(page, model="veo-3.1-lite")
 
     assert result is True
     assert page._clicked_texts == ["Veo 3.1 - Lite"]
-    assert "LP option not found, falling back to Lite" in caplog.text
+    assert "falling back to Lite" not in caplog.text
     _selector_stubs["open_dropdown"].assert_awaited_once()
-    _selector_stubs["verify_credits"].assert_awaited_once_with(page, expected=0)
+    _selector_stubs["verify_credits"].assert_awaited_once_with(page)
 
 
 async def test_select_model_prefers_lp_when_lp_and_lite_both_exist(
@@ -265,17 +266,17 @@ async def test_select_model_prefers_lp_when_lp_and_lite_both_exist(
     assert page._clicked_texts == ["Veo 3.1 - Fast [Lower Priority]"]
     assert "falling back to Lite" not in caplog.text
     _selector_stubs["open_dropdown"].assert_not_called()
-    _selector_stubs["verify_credits"].assert_awaited_once_with(page, expected=0)
+    _selector_stubs["verify_credits"].assert_awaited_once_with(page)
 
 
-async def test_select_model_raises_when_neither_lp_nor_lite_exists(
+async def test_select_model_raises_when_canonical_model_is_missing(
     _selector_stubs,
 ):
     page = _make_select_model_page(["Veo Quality", "Veo Imagen"])
 
     with pytest.raises(
         RuntimeError,
-        match="free_model_select_failed: Neither Lower Priority nor Lite model found in dropdown",
+        match="free_model_select_failed: Requested free model 'Veo 3.1 - Fast' not found in dropdown",
     ) as excinfo:
         await select_model(page, model="veo-3.1-fast-lp", profile="profile-a")
 
@@ -287,25 +288,49 @@ async def test_select_model_raises_when_neither_lp_nor_lite_exists(
     _selector_stubs["verify_credits"].assert_not_called()
 
 
-async def test_select_model_picks_matching_lite_variant_when_multiple_versions_exist(
+async def test_select_model_picks_matching_canonical_variant_when_multiple_versions_exist(
     _selector_stubs,
 ):
-    page = _make_select_model_page(["Veo 3.0 Lite", "Veo 3.1 Lite"])
+    page = _make_select_model_page(["Veo 3.0 - Fast", "Veo 3.1 - Fast"])
 
     result = await select_model(page, model="veo-3.1-fast-lp")
 
     assert result is True
-    assert page._clicked_texts == ["Veo 3.1 Lite"]
+    assert page._clicked_texts == ["Veo 3.1 - Fast"]
     _selector_stubs["open_dropdown"].assert_awaited_once()
-    _selector_stubs["verify_credits"].assert_awaited_once_with(page, expected=0)
+    _selector_stubs["verify_credits"].assert_awaited_once_with(page)
 
 
-async def test_select_model_uses_js_fallback_and_prefers_lp_before_lite(
+async def test_select_model_uses_js_fallback_and_prefers_canonical_before_lp(
     _selector_stubs, caplog
 ):
     page = _make_select_model_page(
         ["Veo Quality"],
-        js_option_texts=["Veo 3.1 - Fast [Lower Priority]", "Veo 3.1 Lite"],
+        js_option_texts=["Veo 3.1 - Fast [Lower Priority]", "Veo 3.1 - Fast"],
+        force_playwright_miss=True,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="flow.model_selector"):
+        result = await select_model(page, model="veo-3.1-fast-lp")
+
+    assert result is True
+    assert page._clicked_texts == ["Veo 3.1 - Fast"]
+    assert page._js_calls[-1]["candidateTexts"] == [
+        "Veo 3.1 - Fast",
+        "Fast",
+        "Veo 3.1 - Fast [Lower Priority]",
+    ]
+    assert "falling back to Lite" not in caplog.text
+    _selector_stubs["open_dropdown"].assert_awaited_once()
+    _selector_stubs["verify_credits"].assert_awaited_once_with(page)
+
+
+async def test_select_model_uses_js_fallback_and_accepts_legacy_lp(
+    _selector_stubs, caplog
+):
+    page = _make_select_model_page(
+        ["Veo Quality"],
+        js_option_texts=["Veo 3.1 - Fast [Lower Priority]"],
         force_playwright_miss=True,
     )
 
@@ -314,30 +339,14 @@ async def test_select_model_uses_js_fallback_and_prefers_lp_before_lite(
 
     assert result is True
     assert page._clicked_texts == ["Veo 3.1 - Fast [Lower Priority]"]
-    assert page._js_calls[-1]["candidateTexts"] == ["Lower Priority", "Lite"]
+    assert page._js_calls[-1]["candidateTexts"] == [
+        "Veo 3.1 - Fast",
+        "Fast",
+        "Veo 3.1 - Fast [Lower Priority]",
+    ]
     assert "falling back to Lite" not in caplog.text
     _selector_stubs["open_dropdown"].assert_awaited_once()
-    _selector_stubs["verify_credits"].assert_awaited_once_with(page, expected=0)
-
-
-async def test_select_model_uses_js_fallback_and_falls_back_to_lite(
-    _selector_stubs, caplog
-):
-    page = _make_select_model_page(
-        ["Veo Quality"],
-        js_option_texts=["Veo 3.1 Lite"],
-        force_playwright_miss=True,
-    )
-
-    with caplog.at_level(logging.WARNING, logger="flow.model_selector"):
-        result = await select_model(page, model="veo-3.1-fast-lp")
-
-    assert result is True
-    assert page._clicked_texts == ["Veo 3.1 Lite"]
-    assert page._js_calls[-1]["candidateTexts"] == ["Lower Priority", "Lite"]
-    assert "LP option not found, falling back to Lite" in caplog.text
-    _selector_stubs["open_dropdown"].assert_awaited_once()
-    _selector_stubs["verify_credits"].assert_awaited_once_with(page, expected=0)
+    _selector_stubs["verify_credits"].assert_awaited_once_with(page)
 
 
 async def test_select_model_raises_when_js_fallback_finds_neither_lp_nor_lite(
@@ -351,7 +360,7 @@ async def test_select_model_raises_when_js_fallback_finds_neither_lp_nor_lite(
 
     with pytest.raises(
         RuntimeError,
-        match="free_model_select_failed: Neither Lower Priority nor Lite model found in dropdown",
+        match="free_model_select_failed: Requested free model 'Veo 3.1 - Fast' not found in dropdown",
     ) as excinfo:
         await select_model(page, model="veo-3.1-fast-lp", profile="profile-b")
 
@@ -383,7 +392,7 @@ async def test_select_model_raises_when_free_item_click_keeps_failing(
     _selector_stubs["verify_credits"].assert_not_called()
 
 
-async def test_select_model_raises_when_credit_verification_never_reaches_zero(
+async def test_select_model_raises_when_credit_budget_verification_fails(
     _selector_stubs,
 ):
     page = _make_select_model_page(["Veo 3.1 - Fast [Lower Priority]"])
@@ -391,7 +400,7 @@ async def test_select_model_raises_when_credit_verification_never_reaches_zero(
 
     with pytest.raises(
         RuntimeError,
-        match="free_model_select_failed: Free model selection did not verify 0 credits after JS fallback",
+        match="free_model_select_failed: Free model selection exceeded configured credit budget",
     ) as excinfo:
         await select_model(page, model="veo-3.1-fast-lp", profile="profile-c")
 

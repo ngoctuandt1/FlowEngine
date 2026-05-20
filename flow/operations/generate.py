@@ -9,7 +9,7 @@ from pathlib import Path
 from flow.navigation import flow_url, extract_project_id
 from flow.login import is_login_page, handle_login_redirect
 from flow.landing import dismiss_flow_marketing_landing, recover_from_flow_canvas_page
-from flow.model_selector import select_model, DEFAULT_MODEL
+from flow.model_selector import canonicalize_video_model_key, select_model, DEFAULT_MODEL
 from flow.selector_chain import click_first_visible
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
@@ -592,8 +592,9 @@ async def text_to_video(
     await _wait_for_composer(page)
 
     # === Step 3: Select model ===
-    logger.info(f"Step 3: Select model ({model})")
-    await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
+    canonical_model = canonicalize_video_model_key(model, free_mode=free_mode)
+    logger.info(f"Step 3: Select model ({canonical_model})")
+    await select_model(page, model=canonical_model, free_mode=free_mode, profile=client.profile_name)
 
     # === Step 4: Aspect ratio ===
     # The aspect ratio is typically set in the model options panel
