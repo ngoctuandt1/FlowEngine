@@ -9,6 +9,8 @@ import pytest
 from flow import model_selector as model_selector_mod
 from flow.model_selector import select_model
 
+CreditBudgetExceeded = model_selector_mod._credit_budget_exceeded_class()
+
 _MODEL_VARIANT_TOKENS = {"fast", "lite", "quality", "lower", "priority"}
 
 
@@ -396,15 +398,16 @@ async def test_select_model_raises_when_credit_budget_verification_fails(
     _selector_stubs,
 ):
     page = _make_select_model_page(["Veo 3.1 - Fast [Lower Priority]"])
-    _selector_stubs["verify_credits"].return_value = False
+    _selector_stubs["verify_credits"].side_effect = CreditBudgetExceeded(
+        cost=40,
+        budget=10,
+    )
 
-    with pytest.raises(
-        RuntimeError,
-        match="free_model_select_failed: Free model selection exceeded configured credit budget",
-    ) as excinfo:
+    with pytest.raises(CreditBudgetExceeded) as excinfo:
         await select_model(page, model="veo-3.1-fast-lp", profile="profile-c")
 
-    message = str(excinfo.value)
-    assert "Profile=profile-c" in message
-    assert 'Visible=["Veo 3.1 - Fast [Lower Priority]"]' in message
-    assert _selector_stubs["verify_credits"].await_count == 4
+    assert excinfo.value.cost == 40
+    assert excinfo.value.budget == 10
+    assert excinfo.value.error_kind == "credit_budget_exceeded"
+    assert _selector_stubs["verify_credits"].await_count == 1
+    assert _selector_stubs["close_panel"].await_count == 1

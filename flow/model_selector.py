@@ -5,6 +5,7 @@ import json
 import re
 import logging
 import os
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,18 @@ DEFAULT_MAX_CREDITS_PER_JOB = 10
 
 
 class _FallbackCreditBudgetExceeded(ValueError):
-    pass
+    def __init__(
+        self,
+        cost: Optional[int] = None,
+        budget: Optional[int] = None,
+        message: Optional[str] = None,
+    ):
+        synthesized_message = message or f"cost {cost} exceeds budget {budget}"
+        super().__init__(synthesized_message)
+        self.cost = cost
+        self.budget = budget
+        self.message = synthesized_message
+        self.error_kind = "credit_budget_exceeded"
 
 
 _MODEL_VARIANT_TOKENS = frozenset({"fast", "lite", "quality", "lower", "priority"})
@@ -492,8 +504,10 @@ async def select_model(
                     await selected_item.click(timeout=3000, force=True)
                     logger.info("Selected free model: %s", selected_text.strip()[:80])
                     await asyncio.sleep(0.5)
-                    ok = await _verify_credits(page)
-                    await _close_model_panel_with_timeout(page, dropdown_opened)
+                    try:
+                        ok = await _verify_credits(page)
+                    finally:
+                        await _close_model_panel_with_timeout(page, dropdown_opened)
                     if not ok:
                         raise RuntimeError(
                             _build_free_model_failure_message(
@@ -531,14 +545,7 @@ async def select_model(
                     last_visible_model_labels = visible_model_labels
                 last_free_mode_error = e
                 if isinstance(e, _credit_budget_exceeded_class()):
-                    await _close_model_panel_with_timeout(page, dropdown_opened)
-                    raise RuntimeError(
-                        _build_free_model_failure_message(
-                            str(e),
-                            visible_models=last_visible_model_labels,
-                            profile=profile,
-                        )
-                    ) from e
+                    raise
 
     if free_mode:
         logger.warning(
@@ -554,8 +561,10 @@ async def select_model(
             visible_model_labels = await _collect_visible_model_labels(page)
             if visible_model_labels:
                 last_visible_model_labels = visible_model_labels
-            ok = await _verify_credits(page)
-            await _close_model_panel_with_timeout(page, dropdown_opened)
+            try:
+                ok = await _verify_credits(page)
+            finally:
+                await _close_model_panel_with_timeout(page, dropdown_opened)
             if not ok:
                 raise RuntimeError(
                     _build_free_model_failure_message(
@@ -710,20 +719,14 @@ async def _verify_credits(page, max_cost: int | None = None) -> bool:
                 budget,
                 result["source"],
             )
-            raise _credit_budget_exceeded_class()(
-                f"Credit cost {cost} exceeds FLOW_MAX_CREDITS_PER_JOB={budget}"
-            )
+            raise _credit_budget_exceeded_class()(cost=cost, budget=budget)
 
-        raise _credit_budget_exceeded_class()(
-            f"Missing credit preview before submit (FLOW_MAX_CREDITS_PER_JOB={budget})"
-        )
+        raise _credit_budget_exceeded_class()(cost=None, budget=budget)
     except Exception as e:
         if isinstance(e, _credit_budget_exceeded_class()):
             raise
         logger.warning("Credit verify error: %s", e)
-        raise _credit_budget_exceeded_class()(
-            f"Missing credit preview before submit (FLOW_MAX_CREDITS_PER_JOB={budget})"
-        ) from e
+        raise _credit_budget_exceeded_class()(cost=None, budget=budget) from e
 
 
 async def _open_model_dropdown(page) -> bool:

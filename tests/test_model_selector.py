@@ -394,8 +394,12 @@ async def test_credit_verification_rejects_cost_above_budget(monkeypatch):
     page = MagicMock()
     page.evaluate = AsyncMock(return_value={"cost": 10, "source": "unit"})
 
-    with pytest.raises(ValueError, match="Credit cost 10 exceeds FLOW_MAX_CREDITS_PER_JOB=9"):
+    with pytest.raises(ValueError, match="cost 10 exceeds budget 9") as excinfo:
         await model_selector_mod._verify_credits(page)
+
+    assert excinfo.value.cost == 10
+    assert excinfo.value.budget == 9
+    assert excinfo.value.error_kind == "credit_budget_exceeded"
 
 
 async def test_credit_verification_requires_preview(monkeypatch):
@@ -403,5 +407,9 @@ async def test_credit_verification_requires_preview(monkeypatch):
     page = MagicMock()
     page.evaluate = AsyncMock(return_value=None)
 
-    with pytest.raises(ValueError, match="Missing credit preview before submit"):
+    with pytest.raises(ValueError, match="cost None exceeds budget 10") as excinfo:
         await model_selector_mod._verify_credits(page)
+
+    assert excinfo.value.cost is None
+    assert excinfo.value.budget == 10
+    assert excinfo.value.error_kind == "credit_budget_exceeded"
