@@ -20,10 +20,13 @@ import time
 
 from flow.operations._l1_batch import (
     _capture_gen_id_from_window,
+    _capture_submit_metadata_from_window,
     _collect_media_ids_after,
+    _extract_submit_metadata,
     _scan_api_for_gen,
     build_l1_result,
 )
+from flow.operations._l1_status_poll import _ingest_response
 from flow.operations._batch import _attach_job_id
 
 
@@ -280,3 +283,110 @@ def test_sentinel_canary_never_read_by_helpers():
     assert _collect_media_ids_after(c, since_ts=0) == [_MID_A]
     # If anything mutated _gen_id from the sentinel, fail loudly:
     assert c._gen_id == "SENTINEL_DO_NOT_READ"
+
+
+def test_extract_submit_metadata_from_current_flow_batch_response():
+    body = {
+        "remainingCredits": 24995,
+        "workflows": [
+            {
+                "name": "8be6d93b-4429-4d43-b504-deb0882455ef",
+                "metadata": {
+                    "displayName": "Red cat walking through flowers",
+                    "primaryMediaId": "725babfc-1cbb-4139-a5f2-b6060edb9854",
+                    "batchId": "batch-live-2026-05-21",
+                },
+            }
+        ],
+        "media": [
+            {
+                "name": "725babfc-1cbb-4139-a5f2-b6060edb9854",
+                "projectId": "fabdce49-e7da-4f9e-b391-c99bbf2a1d99",
+                "workflowId": "8be6d93b-4429-4d43-b504-deb0882455ef",
+                "workflowStepId": "CAE",
+                "mediaMetadata": {
+                    "batchId": "batch-live-2026-05-21",
+                    "mediaStatus": {
+                        "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_PENDING"
+                    },
+                },
+            }
+        ],
+    }
+
+    meta = _extract_submit_metadata(body)
+
+    assert meta == {
+        "gen_id": "8be6d93b-4429-4d43-b504-deb0882455ef",
+        "workflow_id": "8be6d93b-4429-4d43-b504-deb0882455ef",
+        "media_id": "725babfc-1cbb-4139-a5f2-b6060edb9854",
+        "project_id": "fabdce49-e7da-4f9e-b391-c99bbf2a1d99",
+        "batch_id": "batch-live-2026-05-21",
+        "workflow_step_id": "CAE",
+    }
+
+
+def test_capture_submit_metadata_uses_current_batch_window():
+    c = _FakeClient()
+    c._batch_responses = [
+        {
+            "body": {
+                "workflows": [{"name": "workflow-old"}],
+                "media": [{"name": _MID_A, "projectId": "project-old"}],
+            }
+        },
+        {
+            "body": {
+                "workflows": [{"name": "8be6d93b-4429-4d43-b504-deb0882455ef"}],
+                "media": [
+                    {
+                        "name": "725babfc-1cbb-4139-a5f2-b6060edb9854",
+                        "projectId": "fabdce49-e7da-4f9e-b391-c99bbf2a1d99",
+                    }
+                ],
+            }
+        },
+    ]
+
+    meta = _capture_submit_metadata_from_window(
+        c,
+        calls_before=0,
+        batch_resp_before=1,
+    )
+
+    assert meta["gen_id"] == "8be6d93b-4429-4d43-b504-deb0882455ef"
+    assert meta["media_id"] == "725babfc-1cbb-4139-a5f2-b6060edb9854"
+    assert meta["project_id"] == "fabdce49-e7da-4f9e-b391-c99bbf2a1d99"
+
+
+def test_status_parser_completes_current_media_metadata_response():
+    media_id = "725babfc-1cbb-4139-a5f2-b6060edb9854"
+    out = {
+        media_id: {
+            "status": "pending",
+            "media_id": None,
+            "media_url": None,
+            "progress_pct": -1,
+            "dom_state": "unknown",
+        }
+    }
+    response = {
+        "media": [
+            {
+                "name": media_id,
+                "projectId": "fabdce49-e7da-4f9e-b391-c99bbf2a1d99",
+                "workflowId": "8be6d93b-4429-4d43-b504-deb0882455ef",
+                "workflowStepId": "CAE",
+                "mediaMetadata": {
+                    "mediaStatus": {
+                        "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SUCCESSFUL"
+                    }
+                },
+            }
+        ]
+    }
+
+    _ingest_response(response, out)
+
+    assert out[media_id]["status"] == "completed"
+    assert out[media_id]["media_id"] == media_id
