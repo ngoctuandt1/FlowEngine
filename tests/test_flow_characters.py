@@ -14,6 +14,7 @@ from flow.characters import (
     resolve_character_tags,
     validate_character_tags,
 )
+from flow.operations import generate
 
 
 class FakeLocator:
@@ -69,6 +70,26 @@ class FakeLocator:
         return self.text
 
 
+class FakeLocatorList:
+    def __init__(self, locators):
+        self.locators = locators
+        self.filters = []
+
+    @property
+    def first(self):
+        return self.nth(0)
+
+    def filter(self, **kwargs):
+        self.filters.append(kwargs)
+        return self
+
+    def nth(self, index):
+        return self.locators[index]
+
+    async def count(self):
+        return len(self.locators)
+
+
 class FakeKeyboard:
     def __init__(self):
         self.presses = []
@@ -82,7 +103,7 @@ class FakeKeyboard:
 
 
 class FakePage:
-    def __init__(self, client=None, *, create_button=True):
+    def __init__(self, client=None, *, create_button=True, split_create_buttons=False):
         self.client = client
         self.keyboard = FakeKeyboard()
         self.gotos = []
@@ -97,6 +118,14 @@ class FakePage:
             text="arrow_forward Create",
             on_click=self._record_entity_call,
         )
+        self.prompt_create_button = FakeLocator(
+            visible=True,
+            enabled=True,
+            count=1,
+            text="add_2 Create",
+            on_click=self._record_copy_entity_call,
+        )
+        self.split_create_buttons = split_create_buttons
         self.missing = FakeLocator(visible=False, count=0)
         self.context = SimpleNamespace(
             request=SimpleNamespace(post=AsyncMock(return_value=FakePromptResponse()))
@@ -118,7 +147,13 @@ class FakePage:
     def locator(self, selector):
         if selector == CHARACTER_EDITOR_SELECTOR:
             return self.editor
+        if selector == "button":
+            if self.split_create_buttons:
+                return FakeLocatorList([self.prompt_create_button, self.create_button])
+            return FakeLocatorList([self.create_button])
         if selector.startswith("button:has"):
+            if self.split_create_buttons:
+                return self.missing
             return self.create_button
         return self.missing
 
@@ -130,6 +165,17 @@ class FakePage:
                     "method": "POST",
                     "status": 200,
                     "body": {"entityId": "entity-123"},
+                }
+            )
+
+    def _record_copy_entity_call(self):
+        if self.client is not None:
+            self.client._calls.append(
+                {
+                    "url": "https://aisandbox-pa.googleapis.com/v1/flow/entities:copyEntity",
+                    "method": "POST",
+                    "status": 200,
+                    "body": {"entityId": "wrong-entity"},
                 }
             )
 
@@ -152,6 +198,13 @@ def _regex_text(pattern):
 def _client(*, create_button=True):
     client = SimpleNamespace(_calls=[])
     page = FakePage(client, create_button=create_button)
+    client.page = page
+    return client
+
+
+def _client_with_split_create_buttons():
+    client = SimpleNamespace(_calls=[])
+    page = FakePage(client, split_create_buttons=True)
     client.page = page
     return client
 
@@ -203,9 +256,38 @@ async def test_create_character_via_ui_uses_nano_banana_path():
 
 
 @pytest.mark.asyncio
+async def test_create_character_via_ui_clicks_arrow_forward_create_only():
+    client = _client_with_split_create_buttons()
+
+    result = await create_character_via_ui(
+        client,
+        project_id="d254e570-f789-4afd-a0df-457682534809",
+        prompt="Describe character",
+    )
+
+    assert client.page.prompt_create_button.clicks == 0
+    assert client.page.create_button.clicks == 1
+    assert result["entity_id"] == "entity-123"
+
+
+@pytest.mark.asyncio
 async def test_create_character_via_ui_timeout_when_entity_call_not_observed(monkeypatch):
     client = _client()
     client.page.create_button.on_click = None
+
+    with pytest.raises(CharacterCreateError, match="not confirmed"):
+        await create_character_via_ui(
+            client,
+            project_id="d254e570-f789-4afd-a0df-457682534809",
+            prompt="Describe character",
+            timeout_sec=0.01,
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_character_via_ui_ignores_copy_entity_confirmation():
+    client = _client()
+    client.page.create_button.on_click = client.page._record_copy_entity_call
 
     with pytest.raises(CharacterCreateError, match="not confirmed"):
         await create_character_via_ui(
@@ -241,3 +323,21 @@ async def test_generate_character_prompt_uses_captured_trpc_shape():
         data={"json": {"archetype": "THE_FAMILIAR"}},
         timeout=15_000,
     )
+
+
+@pytest.mark.asyncio
+async def test_text_to_video_blocks_unresolved_character_tag_before_submit(monkeypatch):
+    type_prompt = AsyncMock()
+    submit = AsyncMock()
+    monkeypatch.setattr(generate, "_type_prompt", type_prompt)
+    monkeypatch.setattr(generate, "submit_with_confirmation", submit)
+
+    page = SimpleNamespace(goto=AsyncMock())
+    client = SimpleNamespace(page=page, profile_name="profile-a")
+
+    with pytest.raises(CharacterTagValidationError, match="@Missing"):
+        await generate.text_to_video(client, "Use @Missing")
+
+    page.goto.assert_not_awaited()
+    type_prompt.assert_not_awaited()
+    submit.assert_not_awaited()

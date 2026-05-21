@@ -64,6 +64,24 @@ async def test_create_character_accepts_wave5_ref_image_url(api_client, characte
     assert body["image_paths"] == ["uploads/wave5.png"]
 
 
+@pytest.mark.parametrize(
+    "ref_image_url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "https://user:pass@example.com/portrait.png",
+        "https://tracker.example/pixel.png?id=session",
+    ],
+)
+async def test_create_character_rejects_remote_ref_image_url(api_client, ref_image_url):
+    response = await api_client.post(
+        "/api/characters",
+        json={"name": "Remote Ref", "ref_image_url": ref_image_url},
+    )
+
+    assert response.status_code == 400
+    assert "uploaded image path" in response.json()["detail"]
+
+
 async def test_list_characters(api_client, character_upload_dir):
     _write_upload(character_upload_dir, "bravo.png")
     _write_upload(character_upload_dir, "alpha.png")

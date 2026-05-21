@@ -50,6 +50,18 @@ def _normalize_image_path(path_value: str) -> str:
     return Path("uploads", *resolved.relative_to(UPLOAD_DIR).parts).as_posix()
 
 
+def _normalize_ref_image_url(ref_image_url: str) -> str:
+    """Restrict character reference images to local upload paths."""
+    if ref_image_url.lower().startswith(("http://", "https://")):
+        raise HTTPException(
+            400,
+            "ref_image_url must reference an uploaded image path under /uploads",
+        )
+    if ref_image_url.startswith("/"):
+        ref_image_url = ref_image_url[1:]
+    return _normalize_image_path(ref_image_url)
+
+
 def _normalize_image_paths(image_paths: list[str]) -> list[str]:
     """Validate and normalize image path payloads."""
     return [_normalize_image_path(path) for path in image_paths]
@@ -74,10 +86,8 @@ def _normalized_character_payload(body: CharacterCreate | CharacterUpdate) -> di
         if payload.get("ref_image_url") is None and normalized_paths:
             payload["ref_image_url"] = normalized_paths[0]
     ref_image_url = payload.get("ref_image_url")
-    if ref_image_url and not ref_image_url.lower().startswith(("http://", "https://")):
-        if ref_image_url.startswith("/"):
-            ref_image_url = ref_image_url[1:]
-        payload["ref_image_url"] = _normalize_image_path(ref_image_url)
+    if ref_image_url:
+        payload["ref_image_url"] = _normalize_ref_image_url(ref_image_url)
         if "image_paths" not in payload:
             payload["image_paths"] = [payload["ref_image_url"]]
     return payload

@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from flow.navigation import flow_url, extract_project_id
+from flow.characters import validate_character_tags
 from flow.login import is_login_page, handle_login_redirect
 from flow.landing import dismiss_flow_marketing_landing, recover_from_flow_canvas_page
 from flow.model_selector import canonicalize_video_model_key, select_model, DEFAULT_MODEL
@@ -271,6 +272,7 @@ async def text_to_video(
     model: str = DEFAULT_MODEL,
     aspect_ratio: str = "16:9",
     free_mode: bool = True,
+    known_characters=None,
 ) -> dict:
     """Execute text-to-video generation.
 
@@ -295,6 +297,14 @@ async def text_to_video(
             "profile": str,
         }
     """
+    character_resolution = validate_character_tags(prompt, known_characters)
+    if character_resolution.resolved:
+        setattr(
+            client,
+            "_resolved_characters",
+            [reference.__dict__ for reference in character_resolution.resolved],
+        )
+
     page = client.page
     capture_ready = _install_t2v_capture_if_enabled(client)
     if capture_ready:

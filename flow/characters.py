@@ -7,6 +7,7 @@ import asyncio
 import logging
 import re
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 from flow.navigation import flow_url
 
@@ -23,7 +24,7 @@ CHARACTER_TAG_ERROR_COPY = (
 )
 
 _TAG_RE = re.compile(r"(?<![\w.-])@([A-Za-z0-9][A-Za-z0-9_-]{0,63})")
-_CREATE_ENTITY_URL_RE = re.compile(r"/v1/flow/entities(?:$|[?#:/])", re.IGNORECASE)
+_CREATE_ENTITY_PATH = "/v1/flow/entities"
 
 
 class CharacterTagValidationError(ValueError):
@@ -339,15 +340,24 @@ async def _click_new_character(page: Any) -> None:
 
 async def _click_create(page: Any) -> bool:
     candidates = [
-        page.locator("button:has(i:text-is('arrow_forward'))").filter(
-            has_text=re.compile(r"Create", re.IGNORECASE)
+        (
+            page.locator("button:has(i:text-is('arrow_forward'))").filter(
+                has_text=re.compile(r"Create", re.IGNORECASE)
+            ),
+            False,
         ),
-        page.get_by_role("button", name=re.compile(r"Create", re.IGNORECASE)),
-        page.locator("button[type='button']").filter(
-            has_text=re.compile(r"Create", re.IGNORECASE)
+        (
+            page.locator("button").filter(
+                has_text=re.compile(
+                    r"(?:^|\s)arrow_forward\s+Create(?:\s|$)|"
+                    r"(?:^|\s)Create\s+arrow_forward(?:\s|$)",
+                    re.IGNORECASE,
+                )
+            ),
+            True,
         ),
     ]
-    for candidate in candidates:
+    for candidate, require_arrow_text in candidates:
         count = await candidate.count()
         for index in range(count):
             button = candidate.nth(index)
@@ -355,6 +365,8 @@ async def _click_create(page: Any) -> bool:
                 if not await button.is_visible(timeout=500):
                     continue
                 if not await button.is_enabled(timeout=300):
+                    continue
+                if require_arrow_text and not await _is_arrow_forward_create_button(button):
                     continue
                 await button.click(timeout=5_000, force=True)
                 return True
@@ -364,12 +376,40 @@ async def _click_create(page: Any) -> bool:
     return False
 
 
+async def _is_arrow_forward_create_button(button: Any) -> bool:
+    try:
+        text = await button.inner_text(timeout=500)
+    except Exception:
+        return True
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    return "arrow_forward" in normalized and "create" in normalized
+
+
 def _latest_entity_call(calls: list[dict[str, Any]]) -> dict[str, Any] | None:
     for call in reversed(calls):
-        url = str(call.get("url") or "")
-        if _CREATE_ENTITY_URL_RE.search(url):
+        if _is_successful_create_entity_call(call):
             return call
     return None
+
+
+def _is_successful_create_entity_call(call: dict[str, Any]) -> bool:
+    method = str(call.get("method") or "").upper()
+    if method != "POST":
+        return False
+
+    try:
+        status = int(call.get("status"))
+    except (TypeError, ValueError):
+        return False
+    if status < 200 or status >= 300:
+        return False
+
+    url = str(call.get("url") or "")
+    try:
+        path = urlsplit(url).path.rstrip("/")
+    except Exception:
+        return False
+    return path == _CREATE_ENTITY_PATH
 
 
 def _extract_entity_id(body: Any) -> str | None:
