@@ -15,6 +15,7 @@ import logging
 import os
 
 from flow.download import download_video
+from flow.landing import dismiss_flow_marketing_landing, recover_from_flow_canvas_page
 from flow.login import handle_login_redirect, is_login_page
 from flow.model_selector import DEFAULT_MODEL, select_model
 from flow.navigation import extract_project_id, flow_url
@@ -23,6 +24,7 @@ from flow.wait import wait_for_completion
 from flow.operations._base import resolve_final_media_id
 from flow.operations.frames_to_video import (
     COMPOSER_MENU_SELECTORS,
+    NEW_PROJECT_SELECTORS,
     _click_new_project,
     _close_composer_menu,
     _extract_replay_media_ids,
@@ -59,7 +61,23 @@ else:
 
 logger = logging.getLogger(__name__)
 
-INGREDIENT_PLUS_SELECTOR = "button:not([title*='Add Media']):has(i:text-is('add'))"
+# 2026-05 Flow UI: the per-ingredient `+` button is rendered as
+# `<button><i>add_2</i><span>Create</span></button>` (32×32, icon
+# ligature `add_2`, NOT the legacy `add` icon). The sibling `add\nAdd
+# Clip` button is a 28×28 timeline-add control and must be excluded —
+# clicking it opens the wrong dialog. We anchor on the exact icon
+# ligature `add_2` and accept the new label `Create`. Live-probed
+# 2026-05-21 — see docs/livetest-2026-05-21/l1_ingredients_upload_probe.json.
+INGREDIENT_PLUS_SELECTOR = (
+    # Composer ingredient trigger: `<button><i>add_2</i><span>Create</span></button>`
+    # at the bottom-left of the prompt composer (32×32 icon button). Live-probed
+    # 2026-05-21 — see docs/livetest-2026-05-21/l1_ingredients_upload_probe.json.
+    # We anchor on `add_2` icon AND require the button to contain the literal
+    # "Create" text WITHOUT "New project" (the homepage `+ New project` button
+    # also has icon `add_2`; if both are momentarily in the DOM we click the wrong
+    # one). `has-text` matches substring, so the negation excludes homepage tile.
+    "button:has(i:text-is('add_2')):has-text('Create'):not(:has-text('New project')):not([title*='Add Media'])"
+)
 
 
 def _reverse_i2v_enabled() -> bool:
@@ -186,6 +204,32 @@ async def ingredients_to_video(
     if "/vi/" in current:
         locale = "vi"
 
+    # 2026-05-21 hardening: Flow sometimes serves the marketing landing
+    # ("Create with Flow" CTA) even for logged-in sessions — same surface
+    # `text_to_video` already handles (see flow/operations/generate.py:444).
+    # Without dismissing it, `_click_new_project` immediately fails because
+    # the "+ New project" button isn't in the marketing DOM. Live-burned
+    # by Bug B ingredients on s17524h173 right after a profile re-warm.
+    async def _new_project_ready() -> bool:
+        for selector in NEW_PROJECT_SELECTORS:
+            try:
+                if await page.locator(selector).first.is_visible(timeout=500):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    if not await _new_project_ready():
+        try:
+            await dismiss_flow_marketing_landing(page, logger, _new_project_ready)
+        except Exception as exc:
+            logger.warning("ingredients: marketing-landing dismissal failed: %s", exc)
+        if not await _new_project_ready():
+            try:
+                await recover_from_flow_canvas_page(page, logger, homepage)
+            except Exception as exc:
+                logger.warning("ingredients: canvas recovery failed: %s", exc)
+
     await _dismiss_overlays(page)
     await _click_new_project(page)
 
@@ -302,17 +346,100 @@ async def _click_exact_tab(page, label: str) -> None:
 
 
 async def _upload_ingredient(page, image_path: str) -> None:
+    """Upload a single ingredient image via the 2026-05 media picker.
+
+    Flow's UI no longer exposes a direct file <input>; clicking the
+    `add_2 Create` button opens a media picker dialog. The picker has
+    an `Upload media` action that finally surfaces a file chooser.
+    After upload the picker may show a "Notice" rights confirmation
+    and an `Add to Prompt` button — both must be handled before the
+    chip appears in the composer. Live-probed via
+    `scripts/probe_l1_composer_uploads.py ingredients`; evidence at
+    docs/livetest-2026-05-21/l1_ingredients_upload_probe.json.
+    """
     plus_button = await _locate_ingredient_plus_button(page)
     await plus_button.click(timeout=3000)
-    upload_item = page.locator("[role='menuitem']:text-is('Upload image')").first
-    if not await upload_item.is_visible(timeout=3000):
-        raise RuntimeError("Ingredient upload action not found after clicking the + button")
 
-    async with page.expect_file_chooser() as chooser_info:
-        await upload_item.click(timeout=3000)
+    # Wait for picker dialog (Radix role="dialog") to mount + render its
+    # tabs. The picker has sidebar nav (All / Images / Videos / Voices /
+    # Characters / Avatar / Uploads). Switch to the Uploads tab first so
+    # the `upload Upload media` action button renders; without the tab
+    # click, the All-Media tab shows project clips and no upload CTA.
+    try:
+        uploads_tab = page.locator(
+            "[role='dialog'] button:has-text('Uploads'), "
+            "[role='dialog'] [role='tab']:has-text('Uploads')"
+        ).last
+        if await uploads_tab.is_visible(timeout=3000):
+            await uploads_tab.click(timeout=2000)
+            await asyncio.sleep(0.4)
+    except Exception as exc:
+        logger.debug("Uploads tab not visible or already active: %s", exc)
+
+    upload_button = page.locator(
+        "[role='dialog'] button:has(i:text-is('upload')):has-text('Upload media'), "
+        "[role='dialog'] button:has-text('Upload media'), "
+        "button:has-text('Upload media'), "
+        "[role='menuitem']:has-text('Upload media'), "
+        "[role='menuitem']:text-is('Upload image')"
+    ).last
+    if not await upload_button.is_visible(timeout=6000):
+        raise RuntimeError(
+            "Ingredient upload action not found after clicking the + button"
+        )
+
+    async with page.expect_file_chooser(timeout=8000) as chooser_info:
+        await upload_button.click(timeout=3000)
     chooser = await chooser_info.value
     await chooser.set_files(image_path)
-    await asyncio.sleep(0.15)
+    await asyncio.sleep(0.5)
+
+    await _accept_ingredient_rights_notice(page)
+    await _click_add_to_prompt_if_present(page)
+    await asyncio.sleep(0.3)
+
+
+async def _accept_ingredient_rights_notice(page) -> None:
+    """Accept the 2026-05 'I have the rights' notice dialog if present.
+
+    First media upload per session opens a Workspace rights-confirmation
+    dialog. The button is labelled "I agree" (and may appear as
+    [role='button']). Best-effort: missing dialog is a no-op.
+    """
+    try:
+        dialog = page.locator("[role='dialog']:has-text('Notice')").last
+        if not await dialog.is_visible(timeout=2000):
+            return
+        agree = dialog.locator(
+            "button:has-text('I agree'), [role='button']:has-text('I agree')"
+        ).last
+        if await agree.is_visible(timeout=1500):
+            await agree.click(timeout=3000)
+            await asyncio.sleep(1.0)
+            logger.info("Accepted ingredient upload rights notice")
+    except Exception as exc:
+        logger.debug("Ingredient rights notice not accepted or absent: %s", exc)
+
+
+async def _click_add_to_prompt_if_present(page) -> None:
+    """Confirm picker selection via the 2026-05 'Add to Prompt' button.
+
+    After upload completes the picker shows a primary CTA labelled
+    `Add to Prompt`. Clicking it commits the upload to the composer
+    chip list. If the picker auto-closes (some variants) the button is
+    absent and we proceed silently.
+    """
+    try:
+        add_button = page.locator(
+            "button:has-text('Add to Prompt'), "
+            "[role='button']:has-text('Add to Prompt')"
+        ).last
+        if await add_button.is_visible(timeout=4000):
+            await add_button.click(timeout=3000)
+            await asyncio.sleep(0.6)
+            logger.info("Clicked 'Add to Prompt' to attach ingredient")
+    except Exception as exc:
+        logger.debug("'Add to Prompt' not present after upload: %s", exc)
 
 
 async def _upload_ingredient_with_retry(page, image_path: str, expected_count: int) -> None:
