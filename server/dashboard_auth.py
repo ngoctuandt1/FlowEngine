@@ -111,6 +111,7 @@ PUBLIC_PATH_PREFIXES = (
     "/assets/",
     "/downloads/",
     "/uploads/",
+    "/api/shares/",
     "/api/worker/",
 )
 
