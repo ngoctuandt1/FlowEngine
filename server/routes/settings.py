@@ -2,20 +2,31 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Response
+from urllib.parse import urlparse
+
+from fastapi import APIRouter, HTTPException, Request, Response
+
+from flow.settings import (
+    FlowAuthContext,
+    FlowSettingsClient,
+    FlowSettingsProxyError,
+)
 
 from server.db.settings_store import (
     create_veo_account,
     delete_veo_account,
+    get_flow_view_settings,
     get_ai_settings,
     list_veo_accounts,
     update_ai_settings,
+    update_flow_view_settings_fields,
     update_veo_account,
 )
 from server.models.settings import (
     AISettings,
     AISettingsPublic,
     AISettingsUpdate,
+    FlowViewSettings,
     VeoAccount,
     VeoAccountCreate,
     VeoAccountPublic,
@@ -24,6 +35,7 @@ from server.models.settings import (
 
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+_flow_settings_client = FlowSettingsClient()
 
 
 def _redact_secret(value: str) -> str:
@@ -48,6 +60,106 @@ def _to_veo_public(account: VeoAccount) -> VeoAccountPublic:
         cookie=_redact_secret(account.cookie),
         enabled=account.enabled,
     )
+
+
+def _merge_view_settings(
+    stored: FlowViewSettings,
+    flow_payload: dict | None,
+) -> FlowViewSettings:
+    merged = stored.model_dump()
+    if flow_payload:
+        merged.update(flow_payload)
+    return FlowViewSettings(**merged)
+
+
+def _origin_for_url(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
+def _assert_same_origin_mutation(request: Request) -> None:
+    from server import dashboard_auth
+
+    if not dashboard_auth.DASHBOARD_AUTH_ENABLED:
+        return
+
+    request_origin = _origin_for_url(str(request.url))
+    header_origin = request.headers.get("origin")
+    if header_origin:
+        if _origin_for_url(header_origin) != request_origin:
+            raise HTTPException(status_code=403, detail="Cross-origin settings mutation rejected")
+        return
+
+    referer = request.headers.get("referer")
+    if referer and _origin_for_url(referer) == request_origin:
+        return
+
+    raise HTTPException(status_code=403, detail="Settings mutation requires same-origin header")
+
+
+async def _flow_auth_context() -> FlowAuthContext:
+    accounts = await list_veo_accounts()
+    account = next((item for item in accounts if item.enabled), None)
+    if account is None:
+        return FlowAuthContext(headers={})
+    return FlowAuthContext.from_credentials(token=account.token, cookie=account.cookie)
+
+
+def _flow_proxy_exception(exc: FlowSettingsProxyError) -> HTTPException:
+    status_code = 504 if exc.error_kind == "flow_timeout" else 502
+    detail = {
+        "error_kind": exc.error_kind,
+        "message": exc.message,
+    }
+    if exc.status_code is not None:
+        detail["flow_status_code"] = exc.status_code
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+def _flow_auth_unavailable() -> FlowSettingsProxyError:
+    return FlowSettingsProxyError(
+        "flow_auth_unavailable",
+        "Flow auth context is unavailable",
+    )
+
+
+def _view_settings_update_fields(body: FlowViewSettings) -> dict:
+    fields = body.model_dump(exclude_unset=True)
+    if not fields:
+        fields = body.model_dump()
+    return fields
+
+
+@router.get("", response_model=FlowViewSettings)
+async def get_view_settings_endpoint():
+    """Return effective Flow view settings."""
+    stored = await get_flow_view_settings()
+    auth_context = await _flow_auth_context()
+    if not auth_context.is_available:
+        return stored
+    try:
+        flow_payload = await _flow_settings_client.get_user_settings(auth_context)
+    except FlowSettingsProxyError as exc:
+        raise _flow_proxy_exception(exc) from exc
+    return _merge_view_settings(stored, flow_payload)
+
+
+@router.post("", response_model=FlowViewSettings)
+async def update_view_settings_endpoint(body: FlowViewSettings, request: Request):
+    """Persist and proxy Flow view settings."""
+    _assert_same_origin_mutation(request)
+    auth_context = await _flow_auth_context()
+    if not auth_context.is_available:
+        raise _flow_proxy_exception(_flow_auth_unavailable())
+    fields = _view_settings_update_fields(body)
+    try:
+        await _flow_settings_client.update_user_settings(
+            fields,
+            auth_context,
+        )
+    except FlowSettingsProxyError as exc:
+        raise _flow_proxy_exception(exc) from exc
+    return await update_flow_view_settings_fields(fields)
 
 
 @router.get("/ai", response_model=AISettingsPublic)
