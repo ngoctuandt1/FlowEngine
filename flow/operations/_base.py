@@ -22,6 +22,14 @@ from flow.login import is_login_page, handle_login_redirect
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.download import download_video
+from flow.reverse_api import (
+    ReverseApiOutcome,
+    env_flag,
+    log_reverse_api_disabled,
+    log_reverse_api_unavailable,
+    reverse_api_preferred,
+    run_reverse_api_first,
+)
 
 
 class LeafLockoutError(RuntimeError):
@@ -102,6 +110,82 @@ class CreditBudgetExceeded(ValueError):
 
 
 logger = logging.getLogger(__name__)
+
+
+def l2_reverse_api_enabled(operation_env_var: str | None = None) -> bool:
+    """Return whether L2 reverse API should be attempted for this operation."""
+
+    if not reverse_api_preferred():
+        return False
+    if not operation_env_var:
+        return True
+    return env_flag(operation_env_var, default=True)
+
+
+def is_fatal_l2_reverse_api_error(exc: BaseException) -> bool:
+    """Validation/paywall/budget errors must not fall back to UI."""
+
+    if isinstance(exc, (L2PaywallError, CreditBudgetExceeded, ValueError)):
+        return True
+    text = str(exc).lower()
+    fatal_tokens = (
+        "paid_tier_required",
+        L2_PAYWALL_BANNER_TEXT.lower(),
+        "credit_budget_exceeded",
+        "validation",
+        "http 400",
+        "invalid argument",
+        "paywall",
+    )
+    return any(token in text for token in fatal_tokens)
+
+
+async def run_l2_reverse_api_first(
+    *,
+    operation: str,
+    call,
+    log: logging.Logger | None = None,
+    available: bool = True,
+    unavailable_reason: str = "captured template unavailable",
+    metadata: dict | None = None,
+    timeout_sec: float | None = None,
+) -> ReverseApiOutcome:
+    """Central L2 reverse-API preference gate with fatal-error policy."""
+
+    return await run_reverse_api_first(
+        operation=operation,
+        call=call,
+        log=log or logger,
+        available=available,
+        unavailable_reason=unavailable_reason,
+        metadata=metadata,
+        timeout_sec=timeout_sec,
+        is_fatal_error=is_fatal_l2_reverse_api_error,
+    )
+
+
+def log_l2_reverse_api_unavailable(
+    log: logging.Logger,
+    *,
+    operation: str,
+    reason: str,
+    metadata: dict | None = None,
+) -> None:
+    log_reverse_api_unavailable(
+        log,
+        operation=operation,
+        reason=reason,
+        metadata=metadata,
+    )
+
+
+def log_l2_reverse_api_disabled(
+    log: logging.Logger,
+    *,
+    operation: str,
+    metadata: dict | None = None,
+) -> None:
+    log_reverse_api_disabled(log, operation=operation, metadata=metadata)
 
 _CHAIN_CHILD_NO_NEW_MEDIA_KIND = "chain_child_no_new_media"
 

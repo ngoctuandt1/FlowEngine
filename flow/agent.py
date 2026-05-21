@@ -11,6 +11,12 @@ from typing import Any, Literal
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from flow.navigation import extract_project_id
+from flow.reverse_api import (
+    log_reverse_api_disabled,
+    redact_reverse_api_value,
+    redacted_error,
+    reverse_api_preferred,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -244,7 +250,16 @@ async def disable_agent_mode_if_active(
         _log_agent_result(active_logger, result)
         return result
 
-    await install_agent_auth_probe(page)
+    effective_reverse_api = allow_reverse_api and reverse_api_preferred()
+    if allow_reverse_api and not effective_reverse_api:
+        log_reverse_api_disabled(
+            active_logger,
+            operation="agent-disable",
+            metadata={"project_id": resolved_project_id, "profile": profile_name},
+        )
+    if effective_reverse_api:
+        await install_agent_auth_probe(page)
+
     detection = await _detect_agent_state(page)
     previous_state = detection.state
     if previous_state == "off":
@@ -273,7 +288,7 @@ async def disable_agent_mode_if_active(
         return result
 
     api_error: str | None = None
-    if allow_reverse_api:
+    if effective_reverse_api:
         try:
             token = await _wait_for_bearer_token(page)
             if token:
@@ -307,12 +322,12 @@ async def disable_agent_mode_if_active(
                 else:
                     api_error = (
                         f"reverseAPI returned HTTP {api_result['status']}: "
-                        f"{str(api_result.get('text') or '')[:240]}"
+                        f"{redact_reverse_api_value(str(api_result.get('text') or '')[:240])}"
                     )
             else:
                 api_error = "reverseAPI unavailable: no Bearer token captured from page context"
         except Exception as exc:
-            api_error = f"reverseAPI failed: {exc}"
+            api_error = f"reverseAPI failed: {redacted_error(exc)}"
 
     dom_result = await _disable_via_dom(
         page,
@@ -354,8 +369,17 @@ async def restore_agent_state(
             message="Previous Agent state was not on",
         )
 
-    await install_agent_auth_probe(page)
-    if allow_reverse_api:
+    effective_reverse_api = allow_reverse_api and reverse_api_preferred()
+    if allow_reverse_api and not effective_reverse_api:
+        log_reverse_api_disabled(
+            active_logger,
+            operation="agent-restore",
+            metadata={"project_id": token.project_id, "profile": profile_name},
+        )
+    if effective_reverse_api:
+        await install_agent_auth_probe(page)
+
+    if effective_reverse_api:
         bearer = await _wait_for_bearer_token(page)
         if bearer:
             api_result = await _patch_agent_state(
