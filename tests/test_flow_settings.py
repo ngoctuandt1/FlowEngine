@@ -46,6 +46,18 @@ async def test_flow_settings_client_posts_captured_trpc_shape():
     }
 
 
+def test_flow_auth_context_uses_explicit_credentials_only():
+    context = FlowAuthContext.from_credentials(
+        token="raw-token",
+        cookie="SID=secret-cookie",
+    )
+
+    assert context.headers == {
+        "authorization": "Bearer raw-token",
+        "cookie": "SID=secret-cookie",
+    }
+
+
 async def test_flow_settings_client_gets_user_settings_with_trpc_input():
     requests: list[httpx.Request] = []
 
@@ -101,6 +113,60 @@ async def test_flow_settings_client_maps_http_error_without_body_leak():
             assert exc.error_kind == "flow_error"
             assert exc.status_code == 401
             assert "raw-secret-token" not in exc.message
+        else:
+            raise AssertionError("expected FlowSettingsProxyError")
+
+
+async def test_flow_settings_client_rejects_trpc_error_envelope():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "error": {
+                    "message": "raw-secret-token",
+                    "data": {"httpStatus": 403},
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = FlowSettingsClient(http_client=http_client, timeout_seconds=1)
+        try:
+            await client.update_user_settings(
+                {"return_silent_videos": False},
+                FlowAuthContext(headers={"authorization": "Bearer raw-secret-token"}),
+            )
+        except FlowSettingsProxyError as exc:
+            assert exc.error_kind == "flow_error"
+            assert exc.status_code == 403
+            assert "raw-secret-token" not in exc.message
+        else:
+            raise AssertionError("expected FlowSettingsProxyError")
+
+
+async def test_flow_settings_client_rejects_embedded_non_ok_status():
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "data": {
+                        "json": {
+                            "result": {},
+                            "status": 500,
+                        }
+                    }
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = FlowSettingsClient(http_client=http_client, timeout_seconds=1)
+        try:
+            await client.get_user_settings(FlowAuthContext(headers={"cookie": "SID=x"}))
+        except FlowSettingsProxyError as exc:
+            assert exc.error_kind == "flow_error"
+            assert exc.status_code == 500
         else:
             raise AssertionError("expected FlowSettingsProxyError")
 

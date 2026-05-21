@@ -111,11 +111,37 @@ async def get_flow_view_settings() -> FlowViewSettings:
 
 
 async def update_flow_view_settings(update: FlowViewSettings) -> FlowViewSettings:
-    current = await get_flow_view_settings()
-    merged = current.model_dump()
-    merged.update(update.model_dump())
-    settings = FlowViewSettings(**merged)
-    await _upsert_json_setting(FLOW_VIEW_SETTINGS_KEY, settings.model_dump())
+    return await update_flow_view_settings_fields(update.model_dump())
+
+
+async def update_flow_view_settings_fields(fields: dict[str, Any]) -> FlowViewSettings:
+    now = _now_iso()
+    async with get_db() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (FLOW_VIEW_SETTINGS_KEY,),
+            )
+            row = await cursor.fetchone()
+            current_payload = json.loads(row["value"]) if row and row["value"] else {}
+            merged = FlowViewSettings(**current_payload).model_dump()
+            merged.update(fields)
+            settings = FlowViewSettings(**merged)
+            await db.execute(
+                """
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (FLOW_VIEW_SETTINGS_KEY, json.dumps(settings.model_dump()), now),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
     return settings
 
 

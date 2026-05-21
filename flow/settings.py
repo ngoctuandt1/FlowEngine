@@ -14,23 +14,29 @@ _GET_USER_SETTINGS_URL = f"{_FLOW_TRPC_BASE_URL}/videoFx.getUserSettings"
 _UPDATE_USER_SETTINGS_URL = f"{_FLOW_TRPC_BASE_URL}/videoFx.updateUserSettings"
 _GET_USER_SETTINGS_INPUT = {"json": None, "meta": {"values": ["undefined"]}}
 _DEFAULT_TIMEOUT_SECONDS = 10.0
-_AUTH_HEADER_NAMES = ("authorization", "cookie")
 
 
 @dataclass(frozen=True)
 class FlowAuthContext:
-    """Whitelisted auth headers for same-origin Flow requests."""
+    """Explicit Flow auth headers captured/stored outside dashboard cookies."""
 
     headers: dict[str, str]
 
     @classmethod
-    def from_headers(cls, headers: Any) -> "FlowAuthContext":
-        allowed: dict[str, str] = {}
-        for name in _AUTH_HEADER_NAMES:
-            value = headers.get(name) if hasattr(headers, "get") else None
-            if isinstance(value, str) and value:
-                allowed[name] = value
-        return cls(headers=allowed)
+    def from_credentials(cls, *, token: str | None, cookie: str | None) -> "FlowAuthContext":
+        headers: dict[str, str] = {}
+
+        normalized_token = _clean_header_value(token)
+        if normalized_token:
+            if not normalized_token.lower().startswith("bearer "):
+                normalized_token = f"Bearer {normalized_token}"
+            headers["authorization"] = normalized_token
+
+        normalized_cookie = _clean_header_value(cookie)
+        if normalized_cookie:
+            headers["cookie"] = normalized_cookie
+
+        return cls(headers=headers)
 
     @property
     def is_available(self) -> bool:
@@ -52,6 +58,15 @@ class FlowSettingsProxyTimeout(FlowSettingsProxyError):
 
     def __init__(self) -> None:
         super().__init__("flow_timeout", "Flow settings request timed out")
+
+
+def _clean_header_value(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped or "\r" in stripped or "\n" in stripped:
+        return None
+    return stripped
 
 
 class FlowSettingsClient:
@@ -142,12 +157,55 @@ async def _json_response(response: httpx.Response) -> dict[str, Any]:
 
 
 def _extract_result(data: dict[str, Any]) -> dict[str, Any]:
-    result = (
-        data.get("result", {})
-        .get("data", {})
-        .get("json", {})
-        .get("result", {})
-    )
+    top_level_error = data.get("error")
+    if isinstance(top_level_error, dict):
+        raise FlowSettingsProxyError(
+            "flow_error",
+            "Flow settings request failed",
+            _extract_error_status(top_level_error),
+        )
+
+    json_payload = data.get("result", {}).get("data", {}).get("json")
+    if not isinstance(json_payload, dict):
+        raise FlowSettingsProxyError(
+            "flow_invalid_response",
+            "Flow settings response missing result envelope",
+        )
+
+    nested_error = json_payload.get("error")
+    if isinstance(nested_error, dict):
+        raise FlowSettingsProxyError(
+            "flow_error",
+            "Flow settings request failed",
+            _extract_error_status(nested_error),
+        )
+
+    status = json_payload.get("status")
+    if isinstance(status, int) and (status < 200 or status >= 300):
+        raise FlowSettingsProxyError(
+            "flow_error",
+            "Flow settings request failed",
+            status,
+        )
+
+    result = json_payload.get("result")
     if isinstance(result, dict):
         return result
-    return {}
+    raise FlowSettingsProxyError(
+        "flow_invalid_response",
+        "Flow settings response missing result envelope",
+    )
+
+
+def _extract_error_status(error_payload: dict[str, Any]) -> int | None:
+    for key in ("status", "httpStatus"):
+        value = error_payload.get(key)
+        if isinstance(value, int):
+            return value
+    data = error_payload.get("data")
+    if isinstance(data, dict):
+        return _extract_error_status(data)
+    json_payload = error_payload.get("json")
+    if isinstance(json_payload, dict):
+        return _extract_error_status(json_payload)
+    return None
