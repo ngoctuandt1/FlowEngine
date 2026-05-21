@@ -86,7 +86,7 @@ class L2PaywallError(RuntimeError):
         super().__init__(message)
 
 
-class CreditBudgetExceeded(RuntimeError):
+class CreditBudgetExceeded(ValueError):
     """Raised before submit when a job would exceed configured credits."""
 
     error_kind = "credit_budget_exceeded"
