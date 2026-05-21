@@ -10,6 +10,7 @@ from server.db.database import get_db
 from server.models.settings import (
     AISettings,
     AISettingsUpdate,
+    FlowViewSettings,
     VeoAccount,
     VeoAccountCreate,
     VeoAccountUpdate,
@@ -17,6 +18,7 @@ from server.models.settings import (
 
 
 AI_SETTINGS_KEY = "ai"
+FLOW_VIEW_SETTINGS_KEY = "flow_view"
 REDACTED_PREFIX = "***"
 
 
@@ -99,6 +101,22 @@ async def update_ai_settings(update: AISettingsUpdate) -> AISettings:
     )
     await _upsert_json_setting(AI_SETTINGS_KEY, merged.model_dump())
     return merged
+
+
+async def get_flow_view_settings() -> FlowViewSettings:
+    payload = await _get_json_setting(FLOW_VIEW_SETTINGS_KEY)
+    if payload is None:
+        return FlowViewSettings()
+    return FlowViewSettings(**payload)
+
+
+async def update_flow_view_settings(update: FlowViewSettings) -> FlowViewSettings:
+    current = await get_flow_view_settings()
+    merged = current.model_dump()
+    merged.update(update.model_dump())
+    settings = FlowViewSettings(**merged)
+    await _upsert_json_setting(FLOW_VIEW_SETTINGS_KEY, settings.model_dump())
+    return settings
 
 
 async def list_veo_accounts() -> list[VeoAccount]:

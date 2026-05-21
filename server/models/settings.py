@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import uuid
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 DEFAULT_GEMINI_MODEL = "gemini-2-flash-preview"
@@ -47,6 +47,18 @@ class AISettingsPublic(BaseModel):
     gemini_api_key: str = ""
     gemini_model: str = DEFAULT_GEMINI_MODEL
     nano_api_key: str = ""
+
+
+class FlowViewSettings(BaseModel):
+    """Stored Flow view settings payload.
+
+    Unknown keys are intentionally allowed so Engine can preserve and proxy
+    Flow view-settings fields discovered after this integration shipped.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    return_silent_videos: bool = False
 
 
 class VeoAccount(BaseModel):

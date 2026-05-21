@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
+
+from flow.settings import (
+    FlowAuthContext,
+    FlowSettingsClient,
+    FlowSettingsProxyError,
+)
 
 from server.db.settings_store import (
     create_veo_account,
     delete_veo_account,
+    get_flow_view_settings,
     get_ai_settings,
     list_veo_accounts,
     update_ai_settings,
+    update_flow_view_settings,
     update_veo_account,
 )
 from server.models.settings import (
     AISettings,
     AISettingsPublic,
     AISettingsUpdate,
+    FlowViewSettings,
     VeoAccount,
     VeoAccountCreate,
     VeoAccountPublic,
@@ -24,6 +33,7 @@ from server.models.settings import (
 
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+_flow_settings_client = FlowSettingsClient()
 
 
 def _redact_secret(value: str) -> str:
@@ -48,6 +58,59 @@ def _to_veo_public(account: VeoAccount) -> VeoAccountPublic:
         cookie=_redact_secret(account.cookie),
         enabled=account.enabled,
     )
+
+
+def _merge_view_settings(
+    stored: FlowViewSettings,
+    flow_payload: dict | None,
+) -> FlowViewSettings:
+    merged = stored.model_dump()
+    if flow_payload:
+        merged.update(flow_payload)
+    return FlowViewSettings(**merged)
+
+
+def _flow_auth_context(request: Request) -> FlowAuthContext:
+    return FlowAuthContext.from_headers(request.headers)
+
+
+def _flow_proxy_exception(exc: FlowSettingsProxyError) -> HTTPException:
+    status_code = 504 if exc.error_kind == "flow_timeout" else 502
+    detail = {
+        "error_kind": exc.error_kind,
+        "message": exc.message,
+    }
+    if exc.status_code is not None:
+        detail["flow_status_code"] = exc.status_code
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+@router.get("", response_model=FlowViewSettings)
+async def get_view_settings_endpoint(request: Request):
+    """Return effective Flow view settings."""
+    stored = await get_flow_view_settings()
+    auth_context = _flow_auth_context(request)
+    if not auth_context.is_available:
+        return stored
+    try:
+        flow_payload = await _flow_settings_client.get_user_settings(auth_context)
+    except FlowSettingsProxyError as exc:
+        raise _flow_proxy_exception(exc) from exc
+    return _merge_view_settings(stored, flow_payload)
+
+
+@router.post("", response_model=FlowViewSettings)
+async def update_view_settings_endpoint(body: FlowViewSettings, request: Request):
+    """Persist and proxy Flow view settings."""
+    auth_context = _flow_auth_context(request)
+    try:
+        await _flow_settings_client.update_user_settings(
+            body.model_dump(),
+            auth_context,
+        )
+    except FlowSettingsProxyError as exc:
+        raise _flow_proxy_exception(exc) from exc
+    return await update_flow_view_settings(body)
 
 
 @router.get("/ai", response_model=AISettingsPublic)

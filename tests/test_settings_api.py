@@ -124,3 +124,157 @@ async def test_ai_settings_post_alias_accepts_same_payload(api_client):
     assert body["gemini_api_key"].endswith("POST")
     assert body["gemini_model"] == "gemini-2-flash-preview"
     assert body["nano_api_key"].endswith("NANO")
+
+class _RecordingFlowSettingsClient:
+    def __init__(self, *, get_payload=None, update_exc=None, get_exc=None):
+        self.get_payload = get_payload or {}
+        self.update_exc = update_exc
+        self.get_exc = get_exc
+        self.updates = []
+        self.get_auth_headers = None
+
+    async def get_user_settings(self, auth_context):
+        self.get_auth_headers = dict(auth_context.headers)
+        if self.get_exc is not None:
+            raise self.get_exc
+        return self.get_payload
+
+    async def update_user_settings(self, payload, auth_context):
+        self.updates.append((payload, dict(auth_context.headers)))
+        if self.update_exc is not None:
+            raise self.update_exc
+        return {}
+
+
+async def test_view_settings_post_default_body_forwards_false(api_client, monkeypatch):
+    import server.routes.settings as settings_route
+
+    flow_client = _RecordingFlowSettingsClient()
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.post("/api/settings", json={})
+
+    assert response.status_code == 200
+    assert response.json() == {"return_silent_videos": False}
+    assert flow_client.updates == [({"return_silent_videos": False}, {})]
+
+
+async def test_view_settings_post_forwards_passthrough_payload_and_auth(
+    api_client,
+    monkeypatch,
+):
+    import server.routes.settings as settings_route
+
+    flow_client = _RecordingFlowSettingsClient()
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.post(
+        "/api/settings",
+        json={"return_silent_videos": True, "grid_density": "compact"},
+        headers={
+            "Authorization": "Bearer raw-secret-token",
+            "Cookie": "SID=raw-secret-cookie",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "return_silent_videos": True,
+        "grid_density": "compact",
+    }
+    assert flow_client.updates == [
+        (
+            {"return_silent_videos": True, "grid_density": "compact"},
+            {
+                "authorization": "Bearer raw-secret-token",
+                "cookie": "SID=raw-secret-cookie",
+            },
+        )
+    ]
+
+
+async def test_view_settings_get_merges_engine_defaults_with_flow_payload(
+    api_client,
+    monkeypatch,
+):
+    import server.routes.settings as settings_route
+
+    flow_client = _RecordingFlowSettingsClient(
+        get_payload={
+            "lastAcknowledgedChangeLogId": "change-1",
+            "completedOnboardingIds": ["AGENT"],
+        }
+    )
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.get(
+        "/api/settings",
+        headers={"Authorization": "Bearer raw-secret-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "return_silent_videos": False,
+        "lastAcknowledgedChangeLogId": "change-1",
+        "completedOnboardingIds": ["AGENT"],
+    }
+    assert flow_client.get_auth_headers == {"authorization": "Bearer raw-secret-token"}
+
+
+async def test_view_settings_post_timeout_returns_structured_504(
+    api_client,
+    monkeypatch,
+):
+    from flow.settings import FlowSettingsProxyTimeout
+    import server.routes.settings as settings_route
+
+    flow_client = _RecordingFlowSettingsClient(update_exc=FlowSettingsProxyTimeout())
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.post(
+        "/api/settings",
+        json={"return_silent_videos": True},
+        headers={"Authorization": "Bearer raw-secret-token"},
+    )
+
+    assert response.status_code == 504
+    assert response.json() == {
+        "detail": {
+            "error_kind": "flow_timeout",
+            "message": "Flow settings request timed out",
+        }
+    }
+    assert "raw-secret-token" not in response.text
+
+
+async def test_view_settings_post_flow_error_returns_structured_502(
+    api_client,
+    monkeypatch,
+):
+    from flow.settings import FlowSettingsProxyError
+    import server.routes.settings as settings_route
+
+    flow_client = _RecordingFlowSettingsClient(
+        update_exc=FlowSettingsProxyError(
+            "flow_error",
+            "Flow settings request failed",
+            401,
+        )
+    )
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.post(
+        "/api/settings",
+        json={"return_silent_videos": True},
+        headers={"Cookie": "SID=raw-secret-cookie"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": {
+            "error_kind": "flow_error",
+            "message": "Flow settings request failed",
+            "flow_status_code": 401,
+        }
+    }
+    assert "raw-secret-cookie" not in response.text
