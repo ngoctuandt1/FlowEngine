@@ -73,15 +73,8 @@ async def test_job_soft_delete_restore_and_permanent_delete(api_client) -> None:
     assert [(item.type, item.job_id) for item in trash] == [("job", job_id)]
 
     restored = await api_client.post("/api/trash/restore", json={"job_ids": [job_id]})
-    if restored.status_code == 404:
-        from server.routes.trash import restore_trash_endpoint
-        from server.models.trash import TrashMutationRequest
-
-        restored_body = await restore_trash_endpoint(TrashMutationRequest(job_ids=[job_id]))
-        assert restored_body.restored_jobs == 1
-    else:
-        assert restored.status_code == 200
-        assert restored.json()["restored_jobs"] == 1
+    assert restored.status_code == 200
+    assert restored.json()["restored_jobs"] == 1
     assert (await get_job(job_id)).id == job_id
 
     deleted_again = await api_client.delete(f"/api/jobs/{job_id}")
@@ -91,15 +84,8 @@ async def test_job_soft_delete_restore_and_permanent_delete(api_client) -> None:
         "/api/trash/permanent",
         json={"job_ids": [job_id]},
     )
-    if purged.status_code == 404:
-        from server.routes.trash import permanent_delete_trash_endpoint
-        from server.models.trash import TrashMutationRequest
-
-        purged_body = await permanent_delete_trash_endpoint(TrashMutationRequest(job_ids=[job_id]))
-        assert purged_body.deleted_jobs == 1
-    else:
-        assert purged.status_code == 200
-        assert purged.json()["deleted_jobs"] == 1
+    assert purged.status_code == 200
+    assert purged.json()["deleted_jobs"] == 1
     assert await get_job(job_id) is None
     assert await list_trash_items() == []
 

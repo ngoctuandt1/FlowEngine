@@ -1038,7 +1038,7 @@ page.locator('generic:has-text("Create")')
 # Upload / templates
 #character-upload-trigger
 #character-upload-input
-character image cards: [data-character-image-path]
+character image remove buttons: [data-remove-image-index]
 
 # Flow character composer
 route: /fx/tools/flow/project/{project_id}/characters
@@ -1054,7 +1054,7 @@ submit: button/generic text "Create" or icon "arrow_forward"
 frontend route: #trash
 restore all: button[data-action="restore-all"] / text "Restore All"
 delete all: button[data-action="delete-all"] / text "Delete All"
-trash rows: [data-trash-item-id] when rendered by row/card helpers
+trash rows: plain <tr> rows inside #trash-page table body; no row data attribute is emitted
 
 # Flow trash page
 route: /fx/tools/flow/project/{project_id}/trash
