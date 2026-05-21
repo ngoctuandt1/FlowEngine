@@ -243,6 +243,7 @@ def _resolve_upload_paths(path_values: list[str] | None) -> list[str]:
 async def handle_text_to_video(job: dict) -> dict:
     """Text-to-video: create new project, generate video from prompt."""
     from flow.operations.generate import text_to_video
+    from server.db.character_store import list_characters
 
     profile = job.get("profile", "")
     if not profile:
@@ -253,6 +254,11 @@ async def handle_text_to_video(job: dict) -> dict:
         (job.get("prompt", ""))[:60], job.get("model"), profile,
     )
 
+    character_kwargs = {}
+    project_id = job.get("project_id")
+    if project_id:
+        character_kwargs["known_characters"] = await list_characters(project_id=project_id)
+
     async with _client_lease(profile) as client:
         client._job_id = job["id"]
         result = await text_to_video(
@@ -261,6 +267,7 @@ async def handle_text_to_video(job: dict) -> dict:
             model=job.get("model", "veo-3.1-lite"),
             aspect_ratio=job.get("aspect_ratio", "16:9"),
             free_mode=True,
+            **character_kwargs,
         )
 
     logger.info("text-to-video DONE | files=%d media_id=%s",
