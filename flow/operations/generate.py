@@ -971,6 +971,8 @@ async def _type_prompt(page, prompt: str):
 
 _COMPOSER_MENU_BUTTON_SELECTOR = 'button[aria-haspopup="menu"]'
 _OPEN_COMPOSER_MENU_SELECTOR = '[role="menu"][data-state="open"]'
+_AI_LOCATOR_TRUE_VALUES = {"1", "true", "yes", "on"}
+_COMPOSER_VIDEO_TAB_AI_CACHE_KEY = "flow.operations.generate.composer_video_tab"
 _COUNT_TOKEN_RE = re.compile(r"(?:x[1-4]|[1-4]x)", re.IGNORECASE)
 _MODE_OR_MODEL_RE = re.compile(
     r"video|frames?|ingredients?|image|veo|omni|imagen|banana",
@@ -981,6 +983,21 @@ _ASPECT_TEXT_RE = re.compile(r"16\s*:?\s*9|9\s*:?\s*16|landscape|portrait|square
 
 def _max_credits_per_job() -> int:
     return int(os.environ.get("FLOW_MAX_CREDITS_PER_JOB", "10"))
+
+
+def _ai_locator_enabled() -> bool:
+    return os.getenv("FLOW_AI_LOCATOR_ENABLED", "false").lower() in _AI_LOCATOR_TRUE_VALUES
+
+
+async def _click_ai_locator_result(page, result, *, timeout_ms: int = 3000) -> bool:
+    if result.selector:
+        target = page.locator(result.selector).first
+        await target.click(timeout=timeout_ms)
+        return True
+    if result.coordinates:
+        await page.mouse.click(*result.coordinates)
+        return True
+    return False
 
 
 def _normalize_composer_text(text: str | None) -> str:
@@ -1186,6 +1203,8 @@ async def _find_open_composer_tab(page, label: str):
 
 
 async def _ensure_video_composer_mode(page, *, keep_open: bool = False):
+    from flow.ai_locator import ai_locate
+
     chip_btn = await _open_composer_menu_by_role_text(page, purpose="Video mode")
     tab, state, observed_tabs = await _find_open_composer_tab(page, "Video")
     if tab is None:
@@ -1203,19 +1222,78 @@ async def _ensure_video_composer_mode(page, *, keep_open: bool = False):
             logger.info("Composer forced to Video mode via trigger fallback; tabs=%s", observed_tabs)
             return chip_btn
         except Exception as exc:
+            if not _ai_locator_enabled():
+                await _close_composer_menu_by_click_outside(page)
+                raise RuntimeError(
+                    f"Composer Video tab not found; observed tabs={observed_tabs}"
+                ) from exc
+            result = await ai_locate(
+                page,
+                (
+                    "In the currently open Google Flow composer menu, find the Video "
+                    "tab button only. Do not choose Frames, Ingredients, Image, upload "
+                    "controls, output-count chips, aspect controls, model controls, or "
+                    "any edit-view mode button."
+                ),
+                candidates=(),
+                cache_key=_COMPOSER_VIDEO_TAB_AI_CACHE_KEY,
+            )
+            try:
+                if await _click_ai_locator_result(page, result, timeout_ms=3000):
+                    await asyncio.sleep(0.3)
+                    logger.info(
+                        "Composer forced to Video mode via AI locator; tabs=%s",
+                        observed_tabs,
+                    )
+                    if not keep_open:
+                        await _close_composer_menu_by_click_outside(page)
+                    return chip_btn
+            except Exception as ai_exc:
+                logger.debug("Composer Video tab AI fallback failed: %s", ai_exc)
             await _close_composer_menu_by_click_outside(page)
             raise RuntimeError(
                 f"Composer Video tab not found; observed tabs={observed_tabs}"
             ) from exc
 
     if state != "active":
-        await tab.click(timeout=3000)
-        await asyncio.sleep(0.3)
-        tab, state, observed_tabs = await _find_open_composer_tab(page, "Video")
+        primary_error = None
+        try:
+            await tab.click(timeout=3000)
+            await asyncio.sleep(0.3)
+            tab, state, observed_tabs = await _find_open_composer_tab(page, "Video")
+        except Exception as exc:
+            primary_error = exc
+        used_ai_fallback = False
         if state != "active":
-            await _close_composer_menu_by_click_outside(page)
-            raise RuntimeError(f"Composer Video tab did not become active; observed tabs={observed_tabs}")
-        logger.info("Composer forced to Video mode; tabs=%s", observed_tabs)
+            if _ai_locator_enabled():
+                result = await ai_locate(
+                    page,
+                    (
+                        "In the currently open Google Flow composer menu, find the Video "
+                        "tab button only. Do not choose Frames, Ingredients, Image, upload "
+                        "controls, output-count chips, aspect controls, model controls, or "
+                        "any edit-view mode button."
+                    ),
+                    candidates=(),
+                    cache_key=_COMPOSER_VIDEO_TAB_AI_CACHE_KEY,
+                )
+                try:
+                    if await _click_ai_locator_result(page, result, timeout_ms=3000):
+                        await asyncio.sleep(0.3)
+                        tab, state, observed_tabs = await _find_open_composer_tab(page, "Video")
+                        used_ai_fallback = True
+                except Exception as exc:
+                    logger.debug("Composer Video tab AI fallback failed: %s", exc)
+            if state == "active":
+                logger.info("Composer forced to Video mode via AI locator; tabs=%s", observed_tabs)
+            elif primary_error is not None and not _ai_locator_enabled():
+                await _close_composer_menu_by_click_outside(page)
+                raise primary_error
+            else:
+                await _close_composer_menu_by_click_outside(page)
+                raise RuntimeError(f"Composer Video tab did not become active; observed tabs={observed_tabs}")
+        if not used_ai_fallback:
+            logger.info("Composer forced to Video mode; tabs=%s", observed_tabs)
 
     if not keep_open:
         await _close_composer_menu_by_click_outside(page)
