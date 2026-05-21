@@ -2,7 +2,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from flow.ai_locator import AILocatorResult
 from flow.operations import frames_to_video, ingredients
+from flow.operations import generate as generate_op
 
 
 def _make_locator(*, visible: bool = False):
@@ -124,3 +126,108 @@ async def test_open_composer_menu_all_selector_miss_raises_current_contract(monk
 
 def test_ingredients_uses_shared_composer_menu_selectors():
     assert ingredients.COMPOSER_MENU_SELECTORS is frames_to_video.COMPOSER_MENU_SELECTORS
+
+
+@pytest.mark.asyncio
+async def test_generate_video_tab_fast_path_skips_ai(monkeypatch):
+    monkeypatch.setenv("FLOW_AI_LOCATOR_ENABLED", "true")
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    ai_spy = AsyncMock()
+    monkeypatch.setattr("flow.ai_locator.ai_locate", ai_spy)
+
+    chip = MagicMock()
+    tab = MagicMock()
+    monkeypatch.setattr(generate_op, "_open_composer_menu_by_role_text", AsyncMock(return_value=chip))
+    monkeypatch.setattr(
+        generate_op,
+        "_find_open_composer_tab",
+        AsyncMock(return_value=(tab, "active", ["'Video'=active"])),
+    )
+    monkeypatch.setattr(generate_op, "_close_composer_menu_by_click_outside", AsyncMock())
+
+    assert await generate_op._ensure_video_composer_mode(MagicMock()) is chip
+    ai_spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generate_video_tab_ai_fallback_uses_cache_key(monkeypatch):
+    monkeypatch.setenv("FLOW_AI_LOCATOR_ENABLED", "true")
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    ai_spy = AsyncMock(
+        return_value=AILocatorResult(
+            selector="#video-tab",
+            coordinates=None,
+            method="ai",
+            cost_estimate=0.0,
+            debug_log=[],
+        )
+    )
+    monkeypatch.setattr("flow.ai_locator.ai_locate", ai_spy)
+
+    chip = MagicMock()
+    ai_tab = MagicMock()
+    ai_tab.first = ai_tab
+    ai_tab.click = AsyncMock()
+    legacy_tab = MagicMock()
+    legacy_tab.first = legacy_tab
+    legacy_tab.get_attribute = AsyncMock(side_effect=RuntimeError("missing legacy tab"))
+
+    page = MagicMock()
+
+    def _locator(selector):
+        if selector == '[id$="-trigger-VIDEO"]':
+            return legacy_tab
+        if selector == "#video-tab":
+            return ai_tab
+        return _make_locator(visible=False)
+
+    page.locator = MagicMock(side_effect=_locator)
+    monkeypatch.setattr(generate_op, "_open_composer_menu_by_role_text", AsyncMock(return_value=chip))
+    monkeypatch.setattr(
+        generate_op,
+        "_find_open_composer_tab",
+        AsyncMock(return_value=(None, None, ["'Image'=active"])),
+    )
+    monkeypatch.setattr(generate_op, "_close_composer_menu_by_click_outside", AsyncMock())
+
+    assert await generate_op._ensure_video_composer_mode(page) is chip
+    ai_tab.click.assert_awaited_once_with(timeout=3000)
+    ai_spy.assert_awaited_once()
+    assert ai_spy.await_args.kwargs["cache_key"] == generate_op._COMPOSER_VIDEO_TAB_AI_CACHE_KEY
+
+
+@pytest.mark.asyncio
+async def test_generate_video_tab_ai_disabled_and_miss_preserve_error(monkeypatch):
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    ai_spy = AsyncMock()
+    monkeypatch.setattr("flow.ai_locator.ai_locate", ai_spy)
+
+    page = MagicMock()
+    legacy_tab = MagicMock()
+    legacy_tab.first = legacy_tab
+    legacy_tab.get_attribute = AsyncMock(side_effect=RuntimeError("missing legacy tab"))
+    page.locator.return_value = legacy_tab
+
+    monkeypatch.setattr(generate_op, "_open_composer_menu_by_role_text", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        generate_op,
+        "_find_open_composer_tab",
+        AsyncMock(return_value=(None, None, ["'Image'=active"])),
+    )
+    monkeypatch.setattr(generate_op, "_close_composer_menu_by_click_outside", AsyncMock())
+
+    with pytest.raises(RuntimeError, match="Composer Video tab not found"):
+        await generate_op._ensure_video_composer_mode(page)
+    ai_spy.assert_not_awaited()
+
+    monkeypatch.setenv("FLOW_AI_LOCATOR_ENABLED", "true")
+    ai_spy.return_value = AILocatorResult(
+        selector=None,
+        coordinates=None,
+        method="miss",
+        cost_estimate=0.0,
+        debug_log=["ai_not_found"],
+    )
+    with pytest.raises(RuntimeError, match="Composer Video tab not found"):
+        await generate_op._ensure_video_composer_mode(page)
+    assert ai_spy.await_count == 1

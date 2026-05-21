@@ -32,6 +32,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from flow import model_selector as model_selector_mod
+from flow.ai_locator import AILocatorResult
 from flow.model_selector import _close_model_panel, select_model
 from flow.operations._base import CreditBudgetExceeded
 
@@ -195,6 +196,96 @@ async def test_non_lp_model_skips_precheck_and_opens_directly(monkeypatch):
     await select_model(page, model="veo-3.1-quality", free_mode=False)
 
     open_spy.assert_called_once()
+
+
+async def test_select_model_fast_path_skips_ai_locator(monkeypatch):
+    monkeypatch.setenv("FLOW_AI_LOCATOR_ENABLED", "true")
+    ai_spy = AsyncMock()
+    monkeypatch.setattr("flow.ai_locator.ai_locate", ai_spy)
+    monkeypatch.setattr(model_selector_mod, "_ensure_video_mode", AsyncMock())
+    monkeypatch.setattr(model_selector_mod, "_switch_to_video_tab", AsyncMock(return_value=True))
+    monkeypatch.setattr(model_selector_mod, "_open_model_dropdown", AsyncMock(return_value=True))
+    monkeypatch.setattr(model_selector_mod, "_verify_credits", AsyncMock(return_value=True))
+
+    page = _make_select_model_page(lp_count=2)
+
+    assert await select_model(page, model="veo-3.1-fast-lp") is True
+    ai_spy.assert_not_awaited()
+
+
+async def test_select_model_ai_fallback_opens_chip_after_candidates_fail(monkeypatch):
+    monkeypatch.setenv("FLOW_AI_LOCATOR_ENABLED", "true")
+    ai_spy = AsyncMock(
+        return_value=AILocatorResult(
+            selector="#ai-chip",
+            coordinates=None,
+            method="ai",
+            cost_estimate=0.0,
+            debug_log=[],
+        )
+    )
+    monkeypatch.setattr("flow.ai_locator.ai_locate", ai_spy)
+    monkeypatch.setattr(model_selector_mod, "_ensure_video_mode", AsyncMock())
+    monkeypatch.setattr(model_selector_mod, "_switch_to_video_tab", AsyncMock(return_value=True))
+    monkeypatch.setattr(model_selector_mod, "_open_model_dropdown", AsyncMock(return_value=True))
+
+    missing = MagicMock()
+    missing.first = missing
+    missing.is_visible = AsyncMock(return_value=False)
+
+    ai_chip = MagicMock()
+    ai_chip.first = ai_chip
+    ai_chip.click = AsyncMock()
+
+    selected_item = MagicMock()
+    selected_item.click = AsyncMock()
+    selected_item.inner_text = AsyncMock(return_value="Veo 3.1 - Quality")
+
+    model_items = MagicMock()
+    model_items.filter.return_value = model_items
+    model_items.first = selected_item
+    model_items.first.is_visible = AsyncMock(return_value=True)
+
+    editor_loc = MagicMock()
+    editor_loc.count = AsyncMock(return_value=1)
+    editor_loc.last = MagicMock()
+    editor_loc.last.click = AsyncMock()
+
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=False)
+
+    def _locator(selector):
+        if selector == "#ai-chip":
+            return ai_chip
+        if "menuitem" in selector and "role='menuitem'" in selector:
+            return model_items
+        if selector == "[data-slate-editor='true']":
+            return editor_loc
+        return missing
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    assert await select_model(page, model="veo-3.1-quality", free_mode=False) is True
+    ai_chip.click.assert_awaited_once_with(timeout=3000)
+    ai_spy.assert_awaited_once()
+    assert ai_spy.await_args.kwargs["cache_key"] == model_selector_mod._MODEL_CHIP_AI_CACHE_KEY
+
+
+async def test_select_model_ai_disabled_preserves_failure(monkeypatch):
+    ai_spy = AsyncMock()
+    monkeypatch.setattr("flow.ai_locator.ai_locate", ai_spy)
+
+    missing = MagicMock()
+    missing.first = missing
+    missing.is_visible = AsyncMock(return_value=False)
+    page = MagicMock()
+    page.locator.return_value = missing
+    page.evaluate = AsyncMock(return_value=False)
+
+    with pytest.raises(RuntimeError, match="Could not open model selector chip"):
+        await select_model(page, model="veo-3.1-lite")
+
+    ai_spy.assert_not_awaited()
 
 
 async def test_precheck_exception_falls_back_to_open(monkeypatch):

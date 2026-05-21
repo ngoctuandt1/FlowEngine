@@ -5,11 +5,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from flow.landing import (
+    _LANDING_CTA_AI_CACHE_KEY,
+    _find_landing_cta,
     recover_from_flow_canvas_page,
     is_flow_canvas_page,
     is_flow_landing_url,
     recover_from_flow_landing,
 )
+from flow.ai_locator import AILocatorResult
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +121,83 @@ async def test_recover_from_flow_landing_ignores_url_if_cta_is_visible():
 
     assert recovered is True
     cta.click.assert_awaited_once()
+
+
+async def test_find_landing_cta_fast_path_skips_ai(monkeypatch):
+    monkeypatch.setenv("FLOW_AI_LOCATOR_ENABLED", "true")
+    ai_spy = AsyncMock()
+    monkeypatch.setattr("flow.landing.ai_locate", ai_spy)
+
+    page = MagicMock()
+    cta = MagicMock()
+    cta.first = cta
+    cta.is_visible = AsyncMock(return_value=True)
+    page.locator.return_value = cta
+
+    result = await _find_landing_cta(page)
+
+    assert result is cta
+    ai_spy.assert_not_awaited()
+
+
+async def test_find_landing_cta_ai_fallback_uses_cache_key(monkeypatch):
+    monkeypatch.setenv("FLOW_AI_LOCATOR_ENABLED", "true")
+    ai_spy = AsyncMock(
+        return_value=AILocatorResult(
+            selector="#ai-cta",
+            coordinates=None,
+            method="ai",
+            cost_estimate=0.0,
+            debug_log=[],
+        )
+    )
+    monkeypatch.setattr("flow.landing.ai_locate", ai_spy)
+
+    page = MagicMock()
+    missing = MagicMock()
+    missing.first = missing
+    missing.is_visible = AsyncMock(return_value=False)
+    ai_cta = MagicMock()
+    ai_cta.first = ai_cta
+
+    def _locator(selector):
+        if selector == "#ai-cta":
+            return ai_cta
+        return missing
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    result = await _find_landing_cta(page)
+
+    assert result is ai_cta
+    ai_spy.assert_awaited_once()
+    assert ai_spy.await_args.kwargs["cache_key"] == _LANDING_CTA_AI_CACHE_KEY
+
+
+async def test_find_landing_cta_disabled_and_ai_miss_return_none(monkeypatch):
+    ai_spy = AsyncMock()
+    monkeypatch.setattr("flow.landing.ai_locate", ai_spy)
+
+    page = MagicMock()
+    missing = MagicMock()
+    missing.first = missing
+    missing.is_visible = AsyncMock(return_value=False)
+    page.locator.return_value = missing
+
+    assert await _find_landing_cta(page) is None
+    ai_spy.assert_not_awaited()
+
+    monkeypatch.setenv("FLOW_AI_LOCATOR_ENABLED", "true")
+    ai_spy.return_value = AILocatorResult(
+        selector=None,
+        coordinates=None,
+        method="miss",
+        cost_estimate=0.0,
+        debug_log=["ai_not_found"],
+    )
+
+    assert await _find_landing_cta(page) is None
+    assert ai_spy.await_count == 1
 
 
 async def test_recover_from_flow_canvas_continues_after_goto_abort(monkeypatch):

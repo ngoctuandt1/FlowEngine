@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+
+from flow.ai_locator import ai_locate
 
 # Ordered by specificity. Earlier entries win so the hero CTA is preferred
 # over nav / footer shortcuts that share the same "Create with Flow" text
@@ -19,6 +22,43 @@ _CREATE_WITH_FLOW_SELECTORS: tuple[str, ...] = (
     "[role='button']:has-text('Create with Flow')",
     "a:has-text('Create with Flow'):not([href^='#'])",
 )
+
+_AI_LOCATOR_TRUE_VALUES = {"1", "true", "yes", "on"}
+_LANDING_CTA_AI_CACHE_KEY = "flow.landing.create_with_flow_cta"
+
+
+class _CoordinateClickTarget:
+    def __init__(self, page, coordinates: tuple[int, int]):
+        self._page = page
+        self._coordinates = coordinates
+
+    async def click(self, **_kwargs):
+        await self._page.mouse.click(*self._coordinates)
+
+
+def _ai_locator_enabled() -> bool:
+    return os.getenv("FLOW_AI_LOCATOR_ENABLED", "false").lower() in _AI_LOCATOR_TRUE_VALUES
+
+
+async def _find_landing_cta_with_ai(page):
+    if not _ai_locator_enabled():
+        return None
+
+    result = await ai_locate(
+        page,
+        (
+            "Find the visible Google Flow marketing landing CTA that enters the "
+            "authenticated Flow app. Prefer the hero Create with Flow button; "
+            "do not choose in-page anchor links, nav links, footer links, or scroll targets."
+        ),
+        candidates=(),
+        cache_key=_LANDING_CTA_AI_CACHE_KEY,
+    )
+    if result.selector:
+        return page.locator(result.selector).first
+    if result.coordinates:
+        return _CoordinateClickTarget(page, result.coordinates)
+    return None
 
 
 # URL fragments observed on the marketing landing when the CTA click only
@@ -191,7 +231,7 @@ async def _find_landing_cta(page):
                 return candidate
         except Exception:
             continue
-    return None
+    return await _find_landing_cta_with_ai(page)
 
 
 async def _dismiss_landing_once(
@@ -263,6 +303,41 @@ async def _dismiss_landing_once(
             selector, per_click_timeout_sec, page.url[:120],
         )
 
+    cta = await _find_landing_cta_with_ai(page)
+    if cta is None:
+        return False
+
+    logger.info("Flow marketing landing detected - clicking AI-located CTA")
+    if is_marketing_anchor_url(page.url):
+        try:
+            await page.evaluate(
+                "() => history.replaceState(null, '', location.pathname)"
+            )
+        except Exception:
+            pass
+
+    try:
+        await cta.click(timeout=5000, force=True)
+    except Exception as exc:
+        logger.warning("AI-located CTA click failed: %s", exc)
+        return False
+
+    deadline = time.monotonic() + per_click_timeout_sec
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.4)
+        if "/project/" in page.url or "/edit/" in page.url:
+            return True
+        try:
+            if await is_ready():
+                return True
+        except Exception:
+            pass
+
+    logger.warning(
+        "AI-located CTA did not mount app within %.0fs (url=%s)",
+        per_click_timeout_sec,
+        page.url[:120],
+    )
     return False
 
 

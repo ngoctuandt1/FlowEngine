@@ -38,6 +38,24 @@ MODEL_MAP = {
 
 DEFAULT_MODEL = "veo-3.1-lite"
 DEFAULT_MAX_CREDITS_PER_JOB = 10
+_AI_LOCATOR_TRUE_VALUES = {"1", "true", "yes", "on"}
+_MODEL_CHIP_AI_CACHE_KEY = "flow.model_selector.model_chip"
+_MODEL_DROPDOWN_AI_CACHE_KEY = "flow.model_selector.model_dropdown"
+
+
+def _ai_locator_enabled() -> bool:
+    return os.getenv("FLOW_AI_LOCATOR_ENABLED", "false").lower() in _AI_LOCATOR_TRUE_VALUES
+
+
+async def _click_ai_locator_result(page, result, *, timeout_ms: int = 3000) -> bool:
+    if result.selector:
+        target = page.locator(result.selector).first
+        await target.click(timeout=timeout_ms)
+        return True
+    if result.coordinates:
+        await page.mouse.click(*result.coordinates)
+        return True
+    return False
 
 
 class _FallbackCreditBudgetExceeded(ValueError):
@@ -333,6 +351,8 @@ async def select_model(
 
     Returns True if model was selected successfully.
     """
+    from flow.ai_locator import ai_locate
+
     # Resolve target model text. free_mode no longer coerces canonical models
     # back to retired LP aliases; the canonical baseline is Veo 3.1 Lite.
     model_key = canonicalize_video_model_key(model, free_mode=free_mode)
@@ -407,6 +427,25 @@ async def select_model(
                 logger.info("Opened model dropdown via JS fallback")
         except Exception:
             pass
+
+    if not opened and _ai_locator_enabled():
+        result = await ai_locate(
+            page,
+            (
+                "Open the Google Flow composer settings/model chip. Target the "
+                "visible chip button near the composer that opens the Radix menu "
+                "containing Image, Video, Frames, Ingredients, aspect ratio, output "
+                "count, and model controls."
+            ),
+            candidates=(),
+            cache_key=_MODEL_CHIP_AI_CACHE_KEY,
+        )
+        try:
+            if await _click_ai_locator_result(page, result, timeout_ms=3000):
+                opened = True
+                logger.info("Opened model dropdown via AI locator")
+        except Exception as exc:
+            logger.debug("AI locator model chip click failed: %s", exc)
 
     if not opened:
         if free_mode:
@@ -739,6 +778,8 @@ async def _open_model_dropdown(page) -> bool:
 
     Clicking this opens the actual dropdown with LP model options.
     """
+    from flow.ai_locator import ai_locate
+
     # Playwright: find button with "Veo" text + "arrow_drop_down" (the model name button)
     # First pass: prefer non-LP button (standard model name).
     # Second pass: accept LP button too (account remembered LP selection).
@@ -809,6 +850,25 @@ async def _open_model_dropdown(page) -> bool:
             return True
     except Exception:
         pass
+
+    if _ai_locator_enabled():
+        result = await ai_locate(
+            page,
+            (
+                "In the open Google Flow composer settings panel on the Video tab, "
+                "find the visible current video model dropdown button with arrow_drop_down. "
+                "Do not choose model menu items, output count, aspect ratio, or mode tabs."
+            ),
+            candidates=(),
+            cache_key=_MODEL_DROPDOWN_AI_CACHE_KEY,
+        )
+        try:
+            if await _click_ai_locator_result(page, result, timeout_ms=3000):
+                logger.info("Opened model dropdown via AI locator")
+                await asyncio.sleep(1.0)
+                return True
+        except Exception as exc:
+            logger.debug("AI locator model dropdown click failed: %s", exc)
 
     logger.warning("Could not find model dropdown button inside panel")
     return False
