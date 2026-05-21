@@ -26,10 +26,12 @@
   let endImagePath = '';
   let refImagePath = '';
   let ingredientImagePaths = [];
+  let voiceAssets = [];
   let resolvedParentChainId = '';
   let lastResolvedParentId = '';
   const MAX_INGREDIENT_IMAGES = 10;
   const LEVEL_1_TYPES = new Set(['text-to-video', 'frames-to-video', 'ingredients-to-video', 'text-to-image']);
+  const VOICE_SUPPORTED_TYPES = new Set(['text-to-video']);
 
   // ---- helpers --------------------------------------------------------------
 
@@ -161,6 +163,10 @@
       fields.push(renderIngredientsUploads());
     }
 
+    if (VOICE_SUPPORTED_TYPES.has(selectedType)) {
+      fields.push(renderVoiceSelect());
+    }
+
     // Profile pin — only meaningful for L1 (no parent). Still render for
     // L2+ but disable with a hint; worker inherits from parent anyway.
     const l2 = !LEVEL_1_TYPES.has(selectedType);
@@ -245,6 +251,22 @@
     `;
   }
 
+  function renderVoiceSelect() {
+    const options = voiceAssets
+      .map((asset) => `<option value="${App.escapeHtml(asset.id)}">${App.escapeHtml(asset.name || asset.id)}</option>`)
+      .join('');
+    return `
+      <div class="form-group">
+        <label class="form-label">Voice (optional)</label>
+        <select class="form-select" id="field-voice-asset-id">
+          <option value="">None</option>
+          ${options}
+        </select>
+        <span class="form-hint">Flow preset voices attach through the composer UI before submit.</span>
+      </div>
+    `;
+  }
+
   function renderIngredientsUploads() {
     const cards = ingredientImagePaths.length > 0
       ? ingredientImagePaths.map((path, index) => `
@@ -321,6 +343,9 @@
 
     const profile = val('field-profile');
     if (profile && LEVEL_1_TYPES.has(selectedType)) data.profile = profile;
+
+    const voiceAssetId = val('field-voice-asset-id');
+    if (voiceAssetId && VOICE_SUPPORTED_TYPES.has(selectedType)) data.voice_asset_id = voiceAssetId;
 
     if (selectedType === 'frames-to-video') {
       if (startImagePath) data.start_image_path = startImagePath;
@@ -445,6 +470,16 @@
     }
   }
 
+  async function fetchVoiceAssets() {
+    try {
+      const list = await API.fetch('/api/assets?type=voice');
+      voiceAssets = Array.isArray(list) ? list : [];
+    } catch (err) {
+      console.warn('[CreateJob] could not load voice assets:', err.message);
+      voiceAssets = [];
+    }
+  }
+
   const CreateJobPage = {
     name: 'create',
     title: 'Create Job',
@@ -452,6 +487,7 @@
 
     async render() {
       await fetchProfiles();
+      await fetchVoiceAssets();
       return `
         <div class="card" style="max-width: 640px; margin: 0 auto;">
           ${renderModeTabs()}

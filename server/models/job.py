@@ -93,6 +93,11 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+VOICE_SUPPORTED_JOB_TYPES = frozenset({
+    JobType.TEXT_TO_VIDEO,
+})
+
+
 class BBox(BaseModel):
     """Normalized bounding box (0-1 range)."""
     x: float = Field(ge=0, le=1)
@@ -130,6 +135,7 @@ class JobCreate(BaseModel):
     end_image_path: Optional[str] = None
     ingredient_image_paths: list[str] = Field(default_factory=list)
     ref_image_path: Optional[str] = None
+    voice_asset_id: Optional[str] = None
 
     @model_validator(mode="after")
     def _validate_create_request(self) -> "JobCreate":
@@ -145,11 +151,18 @@ class JobCreate(BaseModel):
         self.start_image_path = _normalize_optional_text(self.start_image_path)
         self.end_image_path = _normalize_optional_text(self.end_image_path)
         self.ref_image_path = _normalize_optional_text(self.ref_image_path)
+        self.voice_asset_id = _normalize_optional_text(self.voice_asset_id)
         self.ingredient_image_paths = [
             path.strip()
             for path in self.ingredient_image_paths
             if isinstance(path, str) and path.strip()
         ]
+
+        if self.voice_asset_id is not None and self.type not in VOICE_SUPPORTED_JOB_TYPES:
+            supported = ", ".join(sorted(job_type.value for job_type in VOICE_SUPPORTED_JOB_TYPES))
+            raise ValueError(
+                f"voice_asset_id is only supported for UI-attached video jobs: {supported}"
+            )
 
         if self.type == JobType.FRAMES_TO_VIDEO:
             _require_non_empty_text(
@@ -233,6 +246,7 @@ class Job(BaseModel):
     end_image_path: Optional[str] = None
     ingredient_image_paths: list[str] = Field(default_factory=list)
     ref_image_path: Optional[str] = None
+    voice_asset_id: Optional[str] = None
 
     # Output
     output_files: list[str] = Field(default_factory=list)
