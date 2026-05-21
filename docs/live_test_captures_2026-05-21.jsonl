@@ -1,0 +1,1 @@
+{"ts":"2026-05-21T14:00:51+07:00","test":"preflight","event":"recaptcha_detected","status":"BLOCKED","profile":"s17524h173","cdp":"http://127.0.0.1:19400","url":"https://labs.google/fx/tools/flow","credits_burned":0,"note":"Detected before authenticated project-list confirmation; no test ops, submits, retries, or UI actions executed after detection."}
