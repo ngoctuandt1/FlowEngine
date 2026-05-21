@@ -61,14 +61,6 @@ class FakePage:
         if getattr(self, "on_reload", None) is not None:
             self.on_reload()
 
-    async def goto(self, url, wait_until=None, timeout=None):
-        self.goto_calls = getattr(self, "goto_calls", [])
-        self.goto_calls.append(url)
-        self.url = url
-        if getattr(self, "on_goto", None) is not None:
-            self.on_goto(url)
-
-
 @pytest.mark.parametrize(
     "url,expected",
     [
@@ -86,7 +78,7 @@ def test_is_marketing_anchor_url(url, expected):
 
 
 @pytest.mark.asyncio
-async def test_no_cta_visible_tries_nextauth_fallback_then_returns_false():
+async def test_returns_false_when_no_cta_visible():
     page = FakePage()
     logger = logging.getLogger("test")
     is_ready = AsyncMock(return_value=False)
@@ -94,11 +86,7 @@ async def test_no_cta_visible_tries_nextauth_fallback_then_returns_false():
         page, logger, is_ready, per_click_timeout_sec=0.05, max_reloads=0,
     )
     assert result is False
-    assert page.goto_calls == [
-        "https://labs.google/fx/api/auth/signin/google"
-        "?callbackUrl=https%3A%2F%2Flabs.google%2Ffx%2Ftools%2Fflow"
-    ]
-    is_ready.assert_awaited_once()
+    is_ready.assert_not_called()  # never reached the click loop
 
 
 @pytest.mark.asyncio
