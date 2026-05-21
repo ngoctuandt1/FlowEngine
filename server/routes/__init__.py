@@ -1,6 +1,7 @@
 """Route module exports."""
 
 from server.routes.jobs import router as jobs_router
+from server.routes.assets import router as assets_router
 from server.routes.prompt_builder import router as prompt_builder_router
 from server.routes.media_cut import router as media_cut_router
 from server.routes.media_merge import router as media_merge_router
@@ -18,6 +19,7 @@ from server.routes.ws import router as ws_router
 
 __all__ = [
     "jobs_router",
+    "assets_router",
     "prompt_builder_router",
     "media_cut_router",
     "media_merge_router",

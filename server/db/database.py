@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     end_image_path  TEXT,
     ingredient_image_paths_json TEXT,
     ref_image_path  TEXT,
+    voice_asset_id  TEXT,
     safety_filter   TEXT,
 
     -- Output
@@ -379,6 +380,10 @@ async def init_db() -> None:
             "ingredient_image_paths_json TEXT",
         )
         await _ensure_job_column(db, "ref_image_path", "ref_image_path TEXT")
+        await _ensure_job_column(db, "voice_asset_id", "voice_asset_id TEXT")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_voice_asset_id ON jobs(voice_asset_id)"
+        )
         await _ensure_job_column(db, "error_kind", "error_kind TEXT")
         await _ensure_job_column(db, "error_message", "error_message TEXT")
         await _ensure_character_column(db, "description", "description TEXT")
