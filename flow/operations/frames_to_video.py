@@ -573,7 +573,7 @@ async def _open_composer_menu(page) -> None:
 
 async def _collect_visible_menu_button_texts(page) -> list[str]:
     return await page.evaluate(
-        """() => {
+        r"""() => {
             const visible = (el) => {
                 const style = getComputedStyle(el);
                 const rect = el.getBoundingClientRect();
@@ -615,47 +615,166 @@ async def _close_composer_menu(page) -> None:
 
 
 async def _upload_frame(page, label: str, image_path: str) -> None:
-    target_attr = f"flow-{label.lower()}-upload"
-    found = await page.evaluate(
-        """(args) => {
-            const label = args.label;
-            const targetAttr = args.targetAttr;
-            for (const input of document.querySelectorAll('input[type="file"]')) {
-                input.removeAttribute('data-upload-target');
-            }
+    slot = await _locate_frame_upload_slot(page, label)
+    await _click_slot_then_upload_file(page, slot, image_path, label=label)
+    await _accept_upload_rights_notice(page)
+    await _wait_for_frame_upload_applied(page, label)
 
+
+async def _locate_frame_upload_slot(page, label: str) -> dict:
+    slot = await page.evaluate(
+        r"""(label) => {
             const visible = (el) => {
-                const s = getComputedStyle(el);
-                const r = el.getBoundingClientRect();
-                return s.display !== 'none' && s.visibility !== 'hidden'
-                    && r.width > 0 && r.height > 0;
+                const style = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none'
+                    && style.visibility !== 'hidden'
+                    && Number(style.opacity || 1) !== 0
+                    && rect.width > 0
+                    && rect.height > 0;
             };
-
-            const candidates = Array.from(document.querySelectorAll('*')).filter((el) => {
+            const center = (el, source) => {
+                const rect = el.getBoundingClientRect();
+                return {
+                    x: Math.round(rect.left + rect.width / 2),
+                    y: Math.round(rect.top + rect.height / 2),
+                    w: Math.round(rect.width),
+                    h: Math.round(rect.height),
+                    source,
+                    text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+                };
+            };
+            const exactLabels = Array.from(document.querySelectorAll('body *')).filter((el) => {
                 if (!visible(el)) return false;
-                return (el.textContent || '').trim() === label;
+                const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                return text === label;
             });
-
-            for (const node of candidates) {
-                let cur = node;
-                for (let depth = 0; cur && depth < 6; depth += 1, cur = cur.parentElement) {
-                    const input = cur.querySelector?.('input[type="file"]');
-                    if (input) {
-                        input.setAttribute('data-upload-target', targetAttr);
-                        return true;
+            for (const textNode of exactLabels) {
+                let current = textNode;
+                for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+                    const clickables = Array.from(current.querySelectorAll('button, [role="button"], label'))
+                        .filter(visible);
+                    if (clickables.length) {
+                        clickables.sort((a, b) => {
+                            const aRect = a.getBoundingClientRect();
+                            const bRect = b.getBoundingClientRect();
+                            return (aRect.width * aRect.height) - (bRect.width * bRect.height);
+                        });
+                        return center(clickables[0], 'descendant-clickable');
+                    }
+                    const rect = current.getBoundingClientRect();
+                    if (rect.width >= 40 && rect.height >= 40 && rect.width <= 220 && rect.height <= 140) {
+                        return center(current, 'ancestor-slot');
                     }
                 }
             }
-            return false;
+            return null;
         }""",
-        {"label": label, "targetAttr": target_attr},
+        label,
     )
-    if not found:
-        raise RuntimeError(f"Could not locate file input for {label} frame")
+    if not slot:
+        raise RuntimeError(f"Could not locate upload slot for {label} frame")
+    return slot
 
-    input = page.locator(f"input[type='file'][data-upload-target='{target_attr}']").first
-    await input.set_input_files(image_path, timeout=10000)
-    await asyncio.sleep(1)
+
+async def _click_slot_then_upload_file(page, slot: dict, image_path: str, *, label: str) -> None:
+    try:
+        async with page.expect_file_chooser(timeout=4000) as chooser_info:
+            await page.mouse.click(slot["x"], slot["y"])
+        chooser = await chooser_info.value
+        await chooser.set_files(image_path)
+        await asyncio.sleep(1)
+        logger.info("%s frame upload used direct file chooser", label)
+        return
+    except Exception:
+        logger.info("%s frame slot opened picker instead of direct chooser", label)
+
+    await _click_picker_upload_media(page, image_path, label=f"{label} frame")
+
+
+async def _click_picker_upload_media(page, image_path: str, *, label: str) -> None:
+    selectors = [
+        "button:has(i:text-is('upload')):has-text('Upload media')",
+        "button:has-text('Upload media')",
+        "[role='button']:has-text('Upload media')",
+        "button:has(i:text-is('upload'))",
+    ]
+    last_error: Exception | None = None
+    for selector in selectors:
+        button = page.locator(selector).last
+        try:
+            if not await button.is_visible(timeout=3000):
+                continue
+            async with page.expect_file_chooser(timeout=5000) as chooser_info:
+                await button.click(timeout=3000)
+            chooser = await chooser_info.value
+            await chooser.set_files(image_path)
+            await asyncio.sleep(1)
+            logger.info("%s upload used media-picker Upload media action", label)
+            return
+        except Exception as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"Could not locate Upload media action for {label}") from last_error
+
+
+async def _accept_upload_rights_notice(page) -> None:
+    try:
+        dialog = page.locator("[role='dialog']:has-text('Notice')").last
+        if not await dialog.is_visible(timeout=2500):
+            return
+        agree = dialog.locator("button:has-text('I agree'), [role='button']:has-text('I agree')").last
+        if await agree.is_visible(timeout=1000):
+            await agree.click(timeout=3000)
+            await asyncio.sleep(2)
+            logger.info("Accepted upload rights notice")
+    except Exception as exc:
+        logger.debug("Upload rights notice not accepted or absent: %s", exc)
+
+
+async def _wait_for_frame_upload_applied(page, label: str, timeout_sec: float = 45.0) -> None:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        try:
+            applied = await page.evaluate(
+                r"""(label) => {
+                    const visible = (el) => {
+                        const style = getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && Number(style.opacity || 1) !== 0
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+                    const frameRow = Array.from(document.querySelectorAll('body *')).find((el) => {
+                        if (!visible(el)) return false;
+                        const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                        return text.includes('Swap first and last frames')
+                            && text.includes('Start')
+                            && text.includes('End');
+                    });
+                    const scope = frameRow || document.body;
+                    const media = Array.from(scope.querySelectorAll('img, video, canvas')).filter(visible);
+                    if (media.length > 0) return {ok: true, reason: 'media-in-frame-row', count: media.length};
+                    const noticeOpen = Array.from(document.querySelectorAll('[role="dialog"]'))
+                        .some((el) => visible(el) && /notice/i.test(el.innerText || el.textContent || ''));
+                    if (noticeOpen) return {ok: false, reason: 'notice-open'};
+                    const pickerOpen = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'))
+                        .some((el) => visible(el) && /upload media|images|uploads/i.test(el.innerText || el.textContent || ''));
+                    if (pickerOpen) return {ok: false, reason: 'picker-open'};
+                    return {ok: false, reason: 'waiting'};
+                }""",
+                label,
+            )
+            if applied and applied.get("ok"):
+                logger.info("%s frame upload attached: %s", label, applied)
+                return
+        except Exception:
+            pass
+        await _accept_upload_rights_notice(page)
+        await asyncio.sleep(1)
+    raise RuntimeError(f"{label} frame upload did not attach before timeout")
 
 
 def _resolve_image_input_path(path_value: str, *, label: str) -> str:
