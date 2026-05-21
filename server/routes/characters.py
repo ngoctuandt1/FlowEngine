@@ -11,6 +11,7 @@ from server.db.character_store import (
     delete_character,
     get_character,
     list_characters,
+    project_exists,
     update_character,
 )
 from server.models.character import Character, CharacterCreate, CharacterUpdate
@@ -54,25 +55,59 @@ def _normalize_image_paths(image_paths: list[str]) -> list[str]:
     return [_normalize_image_path(path) for path in image_paths]
 
 
+async def _validate_project_binding(project_id: str | None) -> None:
+    """Reject character rows bound to missing projects."""
+    if project_id is None:
+        return
+    if not await project_exists(project_id):
+        raise HTTPException(404, f"Project {project_id} not found")
+
+
+def _normalized_character_payload(body: CharacterCreate | CharacterUpdate) -> dict:
+    """Normalize legacy image_paths and Wave 5 ref_image_url fields."""
+
+    payload = body.model_dump(exclude_unset=True)
+    image_paths = payload.get("image_paths")
+    if image_paths is not None:
+        normalized_paths = _normalize_image_paths(image_paths)
+        payload["image_paths"] = normalized_paths
+        if payload.get("ref_image_url") is None and normalized_paths:
+            payload["ref_image_url"] = normalized_paths[0]
+    ref_image_url = payload.get("ref_image_url")
+    if ref_image_url and not ref_image_url.lower().startswith(("http://", "https://")):
+        if ref_image_url.startswith("/"):
+            ref_image_url = ref_image_url[1:]
+        payload["ref_image_url"] = _normalize_image_path(ref_image_url)
+        if "image_paths" not in payload:
+            payload["image_paths"] = [payload["ref_image_url"]]
+    return payload
+
+
 @router.post("", response_model=Character, status_code=201)
 async def create_character_endpoint(body: CharacterCreate):
     """Create a reusable character entry."""
+    await _validate_project_binding(body.project_id)
+    payload = _normalized_character_payload(body)
     character = Character(
-        name=body.name,
-        description=body.description,
-        image_paths=_normalize_image_paths(body.image_paths),
+        project_id=payload.get("project_id"),
+        name=payload["name"],
+        ref_image_url=payload.get("ref_image_url"),
+        voice_id=payload.get("voice_id"),
+        description=payload.get("description"),
+        image_paths=payload.get("image_paths") or [],
     )
     try:
-        await create_character(character)
+        character = await create_character(character)
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"Character '{body.name}' already exists") from None
     return character
 
 
 @router.get("", response_model=list[Character])
-async def list_characters_endpoint():
+async def list_characters_endpoint(project_id: str | None = None):
     """List all characters."""
-    return await list_characters()
+    await _validate_project_binding(project_id)
+    return await list_characters(project_id=project_id)
 
 
 @router.get("/{character_id}", response_model=Character)
@@ -91,9 +126,8 @@ async def update_character_endpoint(character_id: str, body: CharacterUpdate):
     if existing is None:
         raise HTTPException(404, f"Character {character_id} not found")
 
-    payload = body.model_dump(exclude_unset=True)
-    if "image_paths" in payload:
-        payload["image_paths"] = _normalize_image_paths(payload["image_paths"])
+    await _validate_project_binding(body.project_id)
+    payload = _normalized_character_payload(body)
 
     try:
         updated = await update_character(character_id, CharacterUpdate(**payload))

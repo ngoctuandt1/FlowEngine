@@ -20,7 +20,10 @@
   function emptyDraft() {
     return {
       id: '',
+      project_id: '',
       name: '',
+      ref_image_url: '',
+      voice_id: '',
       description: '',
       image_paths: [],
       created_at: '',
@@ -31,7 +34,10 @@
   function cloneCharacter(character) {
     return {
       id: character?.id || '',
+      project_id: character?.project_id || '',
       name: character?.name || '',
+      ref_image_url: character?.ref_image_url || '',
+      voice_id: character?.voice_id || '',
       description: character?.description || '',
       image_paths: Array.isArray(character?.image_paths) ? [...character.image_paths] : [],
       created_at: character?.created_at || '',
@@ -80,7 +86,10 @@
 
     return state.characters.filter((character) => {
       const haystack = [
+        character.project_id,
         character.name,
+        character.ref_image_url,
+        character.voice_id,
         character.description,
         ...(Array.isArray(character.image_paths) ? character.image_paths : []),
       ]
@@ -121,6 +130,9 @@
           </div>
           <span class="badge badge-completed">Saved</span>
         </div>
+        <div class="form-hint" style="word-break: break-word;">
+          Project ${App.escapeHtml(character.project_id || 'global')} · Ref ${App.escapeHtml(character.ref_image_url || 'none')}
+        </div>
         <div class="job-prompt ${character.description ? '' : 'empty'}" style="min-height: 0;">
           ${character.description ? App.escapeHtml(character.description) : 'No description'}
         </div>
@@ -155,7 +167,7 @@
             type="search"
             class="form-input"
             id="characters-search"
-            placeholder="Find by name, description, or upload path"
+            placeholder="Find by name, project, ref image, voice, or upload path"
             value="${App.escapeHtml(state.search)}"
           >
         </div>
@@ -238,6 +250,44 @@
               placeholder="e.g. Ivy Tran"
               value="${App.escapeHtml(state.draft.name)}"
             >
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="character-project-id">Project ID</label>
+            <input
+              type="text"
+              class="form-input"
+              id="character-project-id"
+              data-field="project_id"
+              placeholder="Flow project UUID (optional)"
+              value="${App.escapeHtml(state.draft.project_id)}"
+            >
+            <p class="form-hint">When set, backend validates project exists before save.</p>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="character-ref-image-url">Reference Image URL</label>
+              <input
+                type="text"
+                class="form-input"
+                id="character-ref-image-url"
+                data-field="ref_image_url"
+                placeholder="uploads/portrait.png or https://..."
+                value="${App.escapeHtml(state.draft.ref_image_url)}"
+              >
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="character-voice-id">Voice ID</label>
+              <input
+                type="text"
+                class="form-input"
+                id="character-voice-id"
+                data-field="voice_id"
+                placeholder="Optional Flow voice/media id"
+                value="${App.escapeHtml(state.draft.voice_id)}"
+              >
+            </div>
           </div>
 
           <div class="form-group">
@@ -367,8 +417,9 @@
     const name = state.draft.name.trim();
     if (!name) return 'Character name is required.';
     if (name.length > 64) return 'Character name must be 64 characters or fewer.';
-    if (!Array.isArray(state.draft.image_paths) || state.draft.image_paths.length === 0) {
-      return 'Upload at least one reference image.';
+    const hasRefImage = !!state.draft.ref_image_url.trim();
+    if (!hasRefImage && (!Array.isArray(state.draft.image_paths) || state.draft.image_paths.length === 0)) {
+      return 'Provide a reference image URL or upload at least one image.';
     }
     if (state.draft.image_paths.length > MAX_IMAGES) {
       return `A character can include at most ${MAX_IMAGES} images.`;
@@ -379,6 +430,9 @@
   function buildPayload() {
     return {
       name: state.draft.name.trim(),
+      project_id: state.draft.project_id.trim() || null,
+      ref_image_url: state.draft.ref_image_url.trim() || null,
+      voice_id: state.draft.voice_id.trim() || null,
       description: state.draft.description.trim() || null,
       image_paths: [...state.draft.image_paths],
     };
