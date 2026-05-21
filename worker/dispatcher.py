@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Coroutine
 
-from flow.operations._base import LeafLockoutError
+from flow.operations._base import CreditBudgetExceeded, L2PaywallError, LeafLockoutError
 from flow.recaptcha import RecaptchaError
 from flow.retry import with_retry
 from profile_list import configured_profile_list_file
@@ -726,6 +726,36 @@ async def dispatch_job(
             "error_message": error_message,
         }
 
+    except L2PaywallError as exc:
+        error_message = getattr(exc, "message", str(exc))
+        logger.warning(
+            "Job %s paid-tier L2 gate: op=%s profile=%s",
+            job_id,
+            getattr(exc, "operation", job_type),
+            getattr(exc, "profile", profile) or profile,
+        )
+        return {
+            "status": "failed",
+            "error_kind": "paid_tier_required",
+            "error_message": error_message,
+            "error": error_message,
+        }
+
+    except CreditBudgetExceeded as exc:
+        error_message = getattr(exc, "message", str(exc))
+        logger.warning(
+            "Job %s credit budget exceeded: cost=%s budget=%s",
+            job_id,
+            getattr(exc, "cost", "?"),
+            getattr(exc, "budget", "?"),
+        )
+        return {
+            "status": "failed",
+            "error_kind": "credit_budget_exceeded",
+            "error_message": error_message,
+            "error": error_message,
+        }
+
     except Exception as exc:
         # --- Auto-login via AIgglog when session expired ---
         from flow.login import NeedAutoLogin, run_aigglog_sync
@@ -750,6 +780,34 @@ async def dispatch_job(
                     result["status"] = "completed"
                     result.setdefault("profile", profile)
                     return result
+                except L2PaywallError as retry_exc:
+                    error_message = getattr(retry_exc, "message", str(retry_exc))
+                    logger.warning(
+                        "Job %s paid-tier L2 gate after login retry: op=%s profile=%s",
+                        job_id,
+                        getattr(retry_exc, "operation", job_type),
+                        getattr(retry_exc, "profile", profile) or profile,
+                    )
+                    return {
+                        "status": "failed",
+                        "error_kind": "paid_tier_required",
+                        "error_message": error_message,
+                        "error": error_message,
+                    }
+                except CreditBudgetExceeded as retry_exc:
+                    error_message = getattr(retry_exc, "message", str(retry_exc))
+                    logger.warning(
+                        "Job %s credit budget exceeded after login retry: cost=%s budget=%s",
+                        job_id,
+                        getattr(retry_exc, "cost", "?"),
+                        getattr(retry_exc, "budget", "?"),
+                    )
+                    return {
+                        "status": "failed",
+                        "error_kind": "credit_budget_exceeded",
+                        "error_message": error_message,
+                        "error": error_message,
+                    }
                 except Exception as retry_exc:
                     logger.exception("Retry after AIgglog failed for job %s", job_id)
                     return {
@@ -837,6 +895,17 @@ async def dispatch_batch_l1_same_project(
                 await _handle_burned_profile_for_batch(profile, profile_manager)
                 return [{"job_id": j.get("id"), "status": "failed",
                          "error": err, "error_message": err} for j in jobs]
+            except CreditBudgetExceeded as exc:
+                error_message = getattr(exc, "message", str(exc))
+                logger.warning(
+                    "Batch L1 credit budget exceeded: cost=%s budget=%s",
+                    getattr(exc, "cost", "?"),
+                    getattr(exc, "budget", "?"),
+                )
+                return [{"job_id": j.get("id"), "status": "failed",
+                         "error_kind": "credit_budget_exceeded",
+                         "error_message": error_message,
+                         "error": error_message} for j in jobs]
             except Exception as exc:
                 logger.exception("Batch L1 unexpected failure: %s", exc)
                 return [{"job_id": j.get("id"), "status": "failed",
@@ -1247,6 +1316,34 @@ async def dispatch_batch_multitab(
                      "error": err, "error_message": err}
                     for j in dispatching
                 ]
+            except L2PaywallError as exc:
+                error_message = getattr(exc, "message", str(exc))
+                logger.warning(
+                    "Batch multitab paid-tier L2 gate: op=%s profile=%s",
+                    getattr(exc, "operation", "level-2 operation"),
+                    getattr(exc, "profile", profile) or profile,
+                )
+                return pre_failed + locked_failed + [
+                    {"job_id": j.get("id"), "status": "failed",
+                     "error_kind": "paid_tier_required",
+                     "error_message": error_message,
+                     "error": error_message}
+                    for j in dispatching
+                ]
+            except CreditBudgetExceeded as exc:
+                error_message = getattr(exc, "message", str(exc))
+                logger.warning(
+                    "Batch multitab credit budget exceeded: cost=%s budget=%s",
+                    getattr(exc, "cost", "?"),
+                    getattr(exc, "budget", "?"),
+                )
+                return pre_failed + locked_failed + [
+                    {"job_id": j.get("id"), "status": "failed",
+                     "error_kind": "credit_budget_exceeded",
+                     "error_message": error_message,
+                     "error": error_message}
+                    for j in dispatching
+                ]
             except Exception as exc:
                 logger.exception("Batch multitab unexpected failure: %s", exc)
                 return pre_failed + locked_failed + [
@@ -1257,6 +1354,11 @@ async def dispatch_batch_multitab(
 
         dispatched_index: dict[object, dict] = {}
         for j, r in zip(dispatching, results):
+            if isinstance(r, Exception):
+                canonical = _canonical_l2_batch_failure(j, r)
+                if canonical is None:
+                    canonical = {"job_id": j.get("id"), "status": "failed", "error": str(r)}
+                r = canonical
             r.setdefault("job_id", j.get("id"))
             r.setdefault("profile", profile)
             dispatched_index[j.get("id")] = r
@@ -1288,6 +1390,59 @@ L2_BATCH_OPS: frozenset[str] = frozenset(
     {"extend-video", "camera-move", "insert-object", "remove-object"}
 )
 _L2_BATCH_OPS = L2_BATCH_OPS  # legacy alias, internal use
+
+
+def _canonical_l2_batch_failure(job: dict, exc: Exception) -> dict | None:
+    if isinstance(exc, L2PaywallError):
+        error_message = getattr(exc, "message", str(exc))
+        return {
+            "job_id": job.get("id"),
+            "status": "failed",
+            "error_kind": "paid_tier_required",
+            "error_message": error_message,
+            "error": error_message,
+        }
+    if isinstance(exc, CreditBudgetExceeded):
+        error_message = getattr(exc, "message", str(exc))
+        return {
+            "job_id": job.get("id"),
+            "status": "failed",
+            "error_kind": "credit_budget_exceeded",
+            "error_message": error_message,
+            "error": error_message,
+        }
+    return None
+
+
+def _inspect_l2_batch_results(jobs: list[dict], results: list[object]) -> list[dict]:
+    needs_rebuild = False
+    inspected: list[dict] = []
+    for job, result in zip(jobs, results):
+        if isinstance(result, Exception):
+            needs_rebuild = True
+            canonical = _canonical_l2_batch_failure(job, result)
+            if canonical is not None:
+                inspected.append(canonical)
+                continue
+            inspected.append({
+                "job_id": job.get("id"),
+                "status": "failed",
+                "error": str(result),
+            })
+            continue
+        if isinstance(result, dict):
+            result.setdefault("job_id", job.get("id"))
+            inspected.append(result)
+            continue
+        needs_rebuild = True
+        inspected.append({
+            "job_id": job.get("id"),
+            "status": "failed",
+            "error": f"invalid L2 batch result: {type(result).__name__}",
+        })
+    if not needs_rebuild:
+        return results
+    return inspected
 
 
 async def dispatch_batch(
@@ -1332,7 +1487,16 @@ async def dispatch_batch(
         and (j.get("type") or "") in _L2_BATCH_OPS
         for j in jobs
     ):
-        return await dispatch_batch_multitab(jobs, profile_manager, project_lock)
+        try:
+            l2_results = await dispatch_batch_multitab(jobs, profile_manager, project_lock)
+        except (L2PaywallError, CreditBudgetExceeded) as exc:
+            out: list[dict] = []
+            for j in jobs:
+                canonical = _canonical_l2_batch_failure(j, exc)
+                if canonical is not None:
+                    out.append(canonical)
+            return out
+        return _inspect_l2_batch_results(jobs, l2_results)
 
     # Mixed or unsupported batch — degrade gracefully to sequential dispatch.
     logger.warning(

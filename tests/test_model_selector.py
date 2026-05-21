@@ -248,10 +248,10 @@ def test_precheck_source_uses_lp_regex_and_skip_message():
     )
 
     lp_regex_count = select_src.count('re.compile(r"Lower Priority"')
-    assert lp_regex_count >= 2, (
-        f"Pre-check should use the same 'Lower Priority' regex as the "
-        f"retry-loop filter (expected ≥ 2 occurrences in select_model, "
-        f"found {lp_regex_count})."
+    assert lp_regex_count >= 1, (
+        f"Pre-check should keep the 'Lower Priority' regex in select_model "
+        f"while retry-loop candidates come from the alias fallback helper "
+        f"(expected ≥ 1 occurrence in select_model, found {lp_regex_count})."
     )
 
 
@@ -347,3 +347,69 @@ def test_no_fuzzy_veo_selector():
             f"(re.compile(r'^Veo', re.IGNORECASE)) so the intent is "
             f"principled and the match is anchored."
         )
+
+
+def test_unit_a_primary_video_registry_and_aliases(caplog):
+    assert model_selector_mod.DEFAULT_MODEL == "veo-3.1-lite"
+    assert set(model_selector_mod.MODEL_REGISTRY) == {
+        "omni-flash",
+        "veo-3.1-lite",
+        "veo-3.1-fast",
+        "veo-3.1-quality",
+    }
+    assert model_selector_mod.MODEL_REGISTRY["omni-flash"]["tier"] == "paid"
+    assert all("Lower Priority" not in label for label in model_selector_mod.MODEL_MAP.values())
+    assert model_selector_mod.MODEL_ALIASES == {
+        "veo-3.1-lite-lp": "veo-3.1-lite",
+        "veo-3.1-fast-lp": "veo-3.1-fast",
+    }
+
+    with caplog.at_level(logging.WARNING, logger="flow.model_selector"):
+        canonical = model_selector_mod.canonicalize_video_model_key("veo-3.1-fast-lp")
+
+    assert canonical == "veo-3.1-fast"
+    assert "original=veo-3.1-fast-lp canonical=veo-3.1-fast" in caplog.text
+
+
+def test_unit_a_paid_model_never_selected_for_free_profiles(caplog):
+    with caplog.at_level(logging.WARNING, logger="flow.model_selector"):
+        canonical = model_selector_mod.canonicalize_video_model_key(
+            "omni-flash", free_mode=True
+        )
+
+    assert canonical == "veo-3.1-lite"
+    assert "Paid video model 'omni-flash' cannot be selected in free_mode" in caplog.text
+
+
+async def test_credit_verification_accepts_cost_at_budget(monkeypatch):
+    monkeypatch.setenv("FLOW_MAX_CREDITS_PER_JOB", "10")
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value={"cost": 10, "source": "unit"})
+
+    assert await model_selector_mod._verify_credits(page) is True
+
+
+async def test_credit_verification_rejects_cost_above_budget(monkeypatch):
+    monkeypatch.setenv("FLOW_MAX_CREDITS_PER_JOB", "9")
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value={"cost": 10, "source": "unit"})
+
+    with pytest.raises(ValueError, match="cost 10 exceeds budget 9") as excinfo:
+        await model_selector_mod._verify_credits(page)
+
+    assert excinfo.value.cost == 10
+    assert excinfo.value.budget == 9
+    assert excinfo.value.error_kind == "credit_budget_exceeded"
+
+
+async def test_credit_verification_requires_preview(monkeypatch):
+    monkeypatch.delenv("FLOW_MAX_CREDITS_PER_JOB", raising=False)
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=None)
+
+    with pytest.raises(ValueError, match="cost None exceeds budget 10") as excinfo:
+        await model_selector_mod._verify_credits(page)
+
+    assert excinfo.value.cost is None
+    assert excinfo.value.budget == 10
+    assert excinfo.value.error_kind == "credit_budget_exceeded"

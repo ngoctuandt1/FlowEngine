@@ -61,14 +61,6 @@ class FakePage:
         if getattr(self, "on_reload", None) is not None:
             self.on_reload()
 
-    async def goto(self, url, wait_until=None, timeout=None):
-        self.goto_calls = getattr(self, "goto_calls", [])
-        self.goto_calls.append(url)
-        self.url = url
-        if getattr(self, "on_goto", None) is not None:
-            self.on_goto(url)
-
-
 @pytest.mark.parametrize(
     "url,expected",
     [
