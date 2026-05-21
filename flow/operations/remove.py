@@ -20,7 +20,9 @@ from flow.operations._base import (
     count_visible_cards,
     draw_bbox_on_video,
     finalize_operation,
+    finalize_l2_reverse_api_after_accept,
     l2_reverse_api_enabled,
+    l2_reverse_api_template_has_auth,
     run_l2_reverse_api_first,
 )
 from flow.operations._l1_status_poll import (
@@ -316,12 +318,19 @@ async def remove_object(
         reverse_unavailable_reason = f"remove_api unavailable: {_REMOVE_API_IMPORT_ERROR}"
     elif template is None:
         reverse_unavailable_reason = "captured remove template unavailable"
+    elif not l2_reverse_api_template_has_auth(template):
+        reverse_unavailable_reason = "captured remove template missing authorization header"
     else:
         reverse_unavailable_reason = ""
     reverse_outcome = await run_l2_reverse_api_first(
         operation="remove-object",
         log=logger,
-        available=reverse_enabled and template is not None and replay_remove_via_api is not None,
+        available=(
+            reverse_enabled
+            and template is not None
+            and replay_remove_via_api is not None
+            and l2_reverse_api_template_has_auth(template)
+        ),
         unavailable_reason=reverse_unavailable_reason,
         metadata={
             "project_id": project_id,
@@ -435,10 +444,15 @@ async def _run_remove_reverse_api(
         replay_count,
         replay_media_ids,
     )
-    return await _finalize_remove_replay_result(
+    return await finalize_l2_reverse_api_after_accept(
         client,
-        job,
-        project_id=project_id,
-        locale=locale,
-        replay_media_id=replay_media_id,
+        operation="remove-object",
+        media_id=replay_media_id,
+        finalize_call=lambda: _finalize_remove_replay_result(
+            client,
+            job,
+            project_id=project_id,
+            locale=locale,
+            replay_media_id=replay_media_id,
+        ),
     )

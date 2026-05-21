@@ -25,7 +25,9 @@ from flow.operations._base import (
     click_action_button,
     count_visible_cards,
     finalize_operation,
+    finalize_l2_reverse_api_after_accept,
     l2_reverse_api_enabled,
+    l2_reverse_api_template_has_auth,
     run_l2_reverse_api_first,
 )
 from flow.operations._l1_status_poll import (
@@ -500,12 +502,19 @@ async def camera_move(
         reverse_unavailable_reason = f"camera_api unavailable: {_CAMERA_API_IMPORT_ERROR}"
     elif template is None:
         reverse_unavailable_reason = "captured camera template unavailable"
+    elif not l2_reverse_api_template_has_auth(template):
+        reverse_unavailable_reason = "captured camera template missing authorization header"
     else:
         reverse_unavailable_reason = ""
     reverse_outcome = await run_l2_reverse_api_first(
         operation="camera-move",
         log=logger,
-        available=reverse_enabled and template is not None and replay_camera_via_api is not None,
+        available=(
+            reverse_enabled
+            and template is not None
+            and replay_camera_via_api is not None
+            and l2_reverse_api_template_has_auth(template)
+        ),
         unavailable_reason=reverse_unavailable_reason,
         metadata={
             "project_id": project_id,
@@ -646,12 +655,17 @@ async def _run_camera_reverse_api(
         replay_count,
         replay_media_ids,
     )
-    return await _finalize_camera_replay_result(
+    return await finalize_l2_reverse_api_after_accept(
         client,
-        job,
-        project_id=project_id,
-        locale=locale,
-        replay_media_id=replay_media_id,
+        operation="camera-move",
+        media_id=replay_media_id,
+        finalize_call=lambda: _finalize_camera_replay_result(
+            client,
+            job,
+            project_id=project_id,
+            locale=locale,
+            replay_media_id=replay_media_id,
+        ),
     )
 
 async def _click_preset(page, direction: str) -> bool:

@@ -20,7 +20,9 @@ from flow.operations._base import (
     click_action_button,
     count_visible_cards,
     finalize_operation,
+    finalize_l2_reverse_api_after_accept,
     l2_reverse_api_enabled,
+    l2_reverse_api_template_has_auth,
     run_l2_reverse_api_first,
 )
 from flow.operations._l1_status_poll import (
@@ -180,8 +182,8 @@ async def _finalize_replay_result(
     UI page is purely a session/auth carrier here -- no DOM is touched.
 
     Raises ``RuntimeError`` (with forensic capture) on any non-success
-    terminal state, missing media url, or download failure. The caller
-    is expected to fall back to the UI path on ``RuntimeError``.
+    terminal state, missing media url, or download failure. Callers must
+    not fall back to UI after a reverse submit has returned a media id.
     """
     _record_replay_media_id(client, replay_media_id)
 
@@ -226,8 +228,7 @@ async def _finalize_replay_result(
     if status != "completed":
         # 'pending' here means the 10 min hard timeout elapsed without a
         # terminal status; 'timeout' is what poll_status_via_api sets in
-        # that case. Either way, treat as a hard fail so the UI fallback
-        # path can take over.
+        # that case. Either way, fail after accepted reverse submit.
         message = (
             f"extend-video replay: status API did not reach completed "
             f"(status={status}) for media_id={replay_media_id}"
@@ -352,12 +353,19 @@ async def extend_video(
         reverse_unavailable_reason = f"extend_api unavailable: {_EXTEND_API_IMPORT_ERROR}"
     elif template is None:
         reverse_unavailable_reason = "captured extend template unavailable"
+    elif not l2_reverse_api_template_has_auth(template):
+        reverse_unavailable_reason = "captured extend template missing authorization header"
     else:
         reverse_unavailable_reason = ""
     reverse_outcome = await run_l2_reverse_api_first(
         operation="extend-video",
         log=logger,
-        available=reverse_enabled and template is not None and replay_extend_via_api is not None,
+        available=(
+            reverse_enabled
+            and template is not None
+            and replay_extend_via_api is not None
+            and l2_reverse_api_template_has_auth(template)
+        ),
         unavailable_reason=reverse_unavailable_reason,
         metadata={
             "project_id": project_id,
@@ -541,12 +549,17 @@ async def _run_extend_reverse_api(
         replay_count,
         replay_media_ids,
     )
-    return await _finalize_replay_result(
+    return await finalize_l2_reverse_api_after_accept(
         client,
-        job,
-        project_id=project_id,
-        locale=locale,
-        replay_media_id=replay_media_id,
+        operation="extend-video",
+        media_id=replay_media_id,
+        finalize_call=lambda: _finalize_replay_result(
+            client,
+            job,
+            project_id=project_id,
+            locale=locale,
+            replay_media_id=replay_media_id,
+        ),
     )
 
 async def _verify_extend_panel(page, timeout_sec: float = 5.0) -> bool:
