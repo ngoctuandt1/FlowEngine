@@ -41,6 +41,53 @@ async def test_list_projects_after_create(api_client):
     assert body[0]["name"] == "Project X"
     assert body[0]["description"] == "Demo"
     assert body[0]["cover_thumb_url"] is None
+    assert body[0]["deleted_at"] is None
+
+
+async def test_delete_project_soft_deletes_and_hides_from_normal_views(api_client):
+    created = await api_client.post(
+        "/api/projects",
+        json={"name": "Deleted Project", "description": "Demo"},
+    )
+    assert created.status_code == 201
+    project_id = created.json()["id"]
+
+    delete_response = await api_client.delete(f"/api/projects/{project_id}")
+    assert delete_response.status_code == 204
+
+    list_response = await api_client.get("/api/projects")
+    assert list_response.status_code == 200
+    assert list_response.json() == []
+
+    detail_response = await api_client.get(f"/api/projects/{project_id}")
+    assert detail_response.status_code == 404
+
+    trash_response = await api_client.get("/api/trash")
+    assert trash_response.status_code == 200
+    assert trash_response.json()["items"] == [
+        {
+            "type": "project",
+            "job_id": None,
+            "project_id": project_id,
+            "name": "Deleted Project",
+            "prompt": None,
+            "deleted_at": trash_response.json()["items"][0]["deleted_at"],
+        }
+    ]
+
+
+async def test_update_project_does_not_modify_soft_deleted_project(api_client):
+    created = await api_client.post("/api/projects", json={"name": "Deleted Project"})
+    assert created.status_code == 201
+    project_id = created.json()["id"]
+    assert (await api_client.delete(f"/api/projects/{project_id}")).status_code == 204
+
+    update_response = await api_client.put(
+        f"/api/projects/{project_id}",
+        json={"name": "Should Not Update"},
+    )
+
+    assert update_response.status_code == 404
 
 
 async def test_project_cover_thumb_resolves_from_latest_job(api_client):
@@ -148,3 +195,74 @@ async def test_get_project_detail_includes_real_api_created_chain(api_client):
     assert body["chains"][0]["completed_jobs"] == 2
     assert body["chains"][0]["status"] == "completed"
     assert body["cover_thumb_url"] == "/downloads/detail-thumb-002.png"
+
+
+async def test_restore_project_preserves_existing_chain_and_cover(api_client):
+    created_project = await api_client.post(
+        "/api/projects",
+        json={"name": "Restore Project Chain"},
+    )
+    assert created_project.status_code == 201
+    project_id = created_project.json()["id"]
+
+    chain_response = await api_client.post(
+        "/api/chains",
+        json={
+            "profile": "project-restore-profile",
+            "jobs": [
+                {
+                    "type": "text-to-video",
+                    "prompt": "Restore project parent",
+                    "project_id": project_id,
+                },
+                {"type": "extend-video", "prompt": "Restore project child"},
+            ],
+        },
+    )
+    assert chain_response.status_code == 201
+    chain = chain_response.json()
+    first_job_id = chain["jobs"][0]["id"]
+    second_job_id = chain["jobs"][1]["id"]
+
+    assert (
+        await api_client.put(
+            f"/api/worker/jobs/{first_job_id}",
+            json={
+                "status": "completed",
+                "project_url": "https://flow.example/project/restore-001",
+                "media_id": "restore-media-001",
+                "output_files": ["downloads/restore-thumb-001.png"],
+                "profile": "project-restore-profile",
+            },
+        )
+    ).status_code == 200
+    assert (
+        await api_client.put(
+            f"/api/worker/jobs/{second_job_id}",
+            json={
+                "status": "completed",
+                "project_url": "https://flow.example/project/restore-001",
+                "media_id": "restore-media-002",
+                "output_files": ["downloads/restore-thumb-002.png"],
+                "profile": "project-restore-profile",
+            },
+        )
+    ).status_code == 200
+
+    assert (await api_client.delete(f"/api/projects/{project_id}")).status_code == 204
+    assert (await api_client.get(f"/api/projects/{project_id}")).status_code == 404
+    restore = await api_client.post(
+        "/api/trash/restore",
+        json={"project_ids": [project_id]},
+    )
+    assert restore.status_code == 200
+
+    detail = await api_client.get(f"/api/projects/{project_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["id"] == project_id
+    assert body["cover_thumb_url"] == "/downloads/restore-thumb-002.png"
+    assert len(body["chains"]) == 1
+    assert body["chains"][0]["id"] == chain["chain_id"]
+    assert body["chains"][0]["job_count"] == 2
+    assert body["chains"][0]["completed_jobs"] == 2

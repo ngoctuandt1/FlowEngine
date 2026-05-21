@@ -56,6 +56,7 @@ class Project(BaseModel):
     description: Optional[str] = None
     cover_chain_id: Optional[str] = None
     cover_job_id: Optional[str] = None
+    deleted_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -67,6 +68,7 @@ class ProjectSummary(BaseModel):
     name: str
     description: Optional[str] = None
     cover_thumb_url: Optional[str] = None
+    deleted_at: Optional[datetime] = None
     updated_at: datetime
     created_at: datetime
 

@@ -26,6 +26,7 @@ const LAZY_MODULE_MAP = {
   'job-detail': 'job-detail',
   jobs: 'jobs',
   'batch-queue': 'batch-queue',
+  trash: 'trash',
   chains: 'chain-builder',
 };
 const SKELETON_ROUTES = new Set(['dashboard', 'gallery', 'jobs', 'profiles', 'characters', 'media-tools']);
