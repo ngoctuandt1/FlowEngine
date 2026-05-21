@@ -137,6 +137,84 @@ async def test_agent_dom_fallback_disables_after_missing_reverse_api(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_agent_reverse_api_success_precedes_dom_fallback(monkeypatch, caplog):
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def bearer(*_args, **_kwargs):
+        return "Bearer super-secret-token"
+
+    async def agent_on(*_args, **_kwargs):
+        return agent._AgentDetection("on")
+
+    async def patch_agent_state(*_args, **_kwargs):
+        return {"status": 200, "ok": True, "text": "{}"}
+
+    async def confirmed_off(*_args, **_kwargs):
+        return True
+
+    async def agent_button_forbidden(*_args, **_kwargs):
+        raise AssertionError("DOM fallback should not run after reverse API success")
+
+    monkeypatch.delenv("FLOW_PREFER_REVERSE_API", raising=False)
+    monkeypatch.setattr(agent, "install_agent_auth_probe", no_op)
+    monkeypatch.setattr(agent, "_wait_for_bearer_token", bearer)
+    monkeypatch.setattr(agent, "_detect_agent_state", agent_on)
+    monkeypatch.setattr(agent, "_patch_agent_state", patch_agent_state)
+    monkeypatch.setattr(agent, "_refresh_project_view", no_op)
+    monkeypatch.setattr(agent, "_agent_confirmed_off", confirmed_off)
+    monkeypatch.setattr(agent, "_agent_button", agent_button_forbidden)
+    caplog.set_level(logging.INFO, logger="flow.agent")
+
+    result = await agent.disable_agent_mode_if_active(
+        _DomFallbackPage(),
+        profile_name="profile-a",
+        target_url=PROJECT_URL,
+    )
+
+    assert result.status == "toggled_off_api"
+    assert result.method == agent.AGENT_METHOD_API
+    assert "Agent disable mutation" in caplog.text
+    assert "super-secret-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_agent_env_disabled_skips_reverse_api(monkeypatch):
+    button = _Button()
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    async def bearer_forbidden(*_args, **_kwargs):
+        raise AssertionError("reverse API token probe should not run when env disabled")
+
+    async def agent_on(*_args, **_kwargs):
+        return agent._AgentDetection("on")
+
+    async def agent_button(*_args, **_kwargs):
+        return button
+
+    async def dom_disabled(*_args, **_kwargs):
+        return True
+
+    monkeypatch.setenv("FLOW_PREFER_REVERSE_API", "0")
+    monkeypatch.setattr(agent, "install_agent_auth_probe", no_op)
+    monkeypatch.setattr(agent, "_wait_for_bearer_token", bearer_forbidden)
+    monkeypatch.setattr(agent, "_detect_agent_state", agent_on)
+    monkeypatch.setattr(agent, "_agent_button", agent_button)
+    monkeypatch.setattr(agent, "_wait_for_dom_disabled", dom_disabled)
+
+    result = await agent.disable_agent_mode_if_active(
+        _DomFallbackPage(),
+        profile_name="profile-a",
+        target_url=PROJECT_URL,
+    )
+
+    assert result.status == "toggled_off_dom"
+    assert button.clicks == 1
+
+
+@pytest.mark.asyncio
 async def test_agent_restore_mutation_log_includes_required_context(
     monkeypatch,
     caplog,

@@ -22,6 +22,14 @@ from flow.login import is_login_page, handle_login_redirect
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
 from flow.download import download_video
+from flow.reverse_api import (
+    ReverseApiOutcome,
+    env_flag,
+    log_reverse_api_disabled,
+    log_reverse_api_unavailable,
+    reverse_api_preferred,
+    run_reverse_api_first,
+)
 
 
 class LeafLockoutError(RuntimeError):
@@ -101,7 +109,197 @@ class CreditBudgetExceeded(ValueError):
         super().__init__(self.message)
 
 
+class L2ReverseApiPostAcceptError(RuntimeError):
+    """Raised after reverse API accepts an L2 submit but finalization fails."""
+
+    error_kind = "reverse_api_post_accept_failed"
+
+    def __init__(
+        self,
+        *,
+        operation: str,
+        media_id: str,
+        cause: BaseException,
+    ) -> None:
+        self.operation = operation
+        self.media_id = media_id
+        self.cause = cause
+        message = (
+            f"{operation} reverse API accepted media_id={media_id}; "
+            f"UI fallback disabled after accepted submit: {cause}"
+        )
+        super().__init__(message)
+
+
 logger = logging.getLogger(__name__)
+
+
+def l2_reverse_api_enabled(operation_env_var: str | None = None) -> bool:
+    """Return whether L2 reverse API should be attempted for this operation."""
+
+    if not reverse_api_preferred():
+        return False
+    if not operation_env_var:
+        return True
+    return env_flag(operation_env_var, default=True)
+
+
+def l2_reverse_api_template_has_auth(template: dict | None) -> bool:
+    if not isinstance(template, dict):
+        return False
+    headers = template.get("headers")
+    if not isinstance(headers, dict):
+        return False
+    for name, value in headers.items():
+        if str(name).lower() == "authorization" and str(value).strip():
+            return True
+    return False
+
+
+def is_fatal_l2_reverse_api_error(exc: BaseException) -> bool:
+    """Validation/paywall/budget errors must not fall back to UI."""
+
+    if isinstance(
+        exc,
+        (L2PaywallError, CreditBudgetExceeded, L2ReverseApiPostAcceptError, ValueError),
+    ):
+        return True
+    if getattr(exc, "error_kind", "") in {
+        "paid_tier_required",
+        "credit_budget_exceeded",
+        "reverse_api_post_accept_failed",
+    }:
+        return True
+    text = str(exc).lower()
+    fatal_tokens = (
+        "paid_tier_required",
+        L2_PAYWALL_BANNER_TEXT.lower(),
+        "credit_budget_exceeded",
+        "paywall",
+    )
+    return any(token in text for token in fatal_tokens)
+
+
+def _l2_reverse_api_inflight_state(client) -> dict:
+    state = getattr(client, "_l2_reverse_api_inflight", None)
+    if isinstance(state, dict):
+        return state
+    state = {}
+    setattr(client, "_l2_reverse_api_inflight", state)
+    return state
+
+
+def _mark_l2_reverse_api_inflight(
+    client,
+    *,
+    operation: str,
+    media_id: str,
+    status: str,
+    error: str = "",
+) -> None:
+    if not media_id:
+        return
+    state = _l2_reverse_api_inflight_state(client)
+    entry = {
+        "operation": operation,
+        "media_id": media_id,
+        "status": status,
+    }
+    if error:
+        entry["error"] = error
+    state[media_id] = entry
+
+
+async def finalize_l2_reverse_api_after_accept(
+    client,
+    *,
+    operation: str,
+    media_id: str,
+    finalize_call,
+):
+    """Finalize accepted L2 reverse submit without allowing UI fallback."""
+
+    _mark_l2_reverse_api_inflight(
+        client,
+        operation=operation,
+        media_id=media_id,
+        status="accepted",
+    )
+    try:
+        result = finalize_call()
+        if inspect.isawaitable(result):
+            result = await result
+    except L2ReverseApiPostAcceptError:
+        raise
+    except Exception as exc:
+        _mark_l2_reverse_api_inflight(
+            client,
+            operation=operation,
+            media_id=media_id,
+            status="post_accept_failed",
+            error=str(exc),
+        )
+        raise L2ReverseApiPostAcceptError(
+            operation=operation,
+            media_id=media_id,
+            cause=exc,
+        ) from exc
+
+    _mark_l2_reverse_api_inflight(
+        client,
+        operation=operation,
+        media_id=media_id,
+        status="completed",
+    )
+    return result
+
+
+async def run_l2_reverse_api_first(
+    *,
+    operation: str,
+    call,
+    log: logging.Logger | None = None,
+    available: bool = True,
+    unavailable_reason: str = "captured template unavailable",
+    metadata: dict | None = None,
+    timeout_sec: float | None = None,
+) -> ReverseApiOutcome:
+    """Central L2 reverse-API preference gate with fatal-error policy."""
+
+    return await run_reverse_api_first(
+        operation=operation,
+        call=call,
+        log=log or logger,
+        available=available,
+        unavailable_reason=unavailable_reason,
+        metadata=metadata,
+        timeout_sec=timeout_sec,
+        is_fatal_error=is_fatal_l2_reverse_api_error,
+    )
+
+
+def log_l2_reverse_api_unavailable(
+    log: logging.Logger,
+    *,
+    operation: str,
+    reason: str,
+    metadata: dict | None = None,
+) -> None:
+    log_reverse_api_unavailable(
+        log,
+        operation=operation,
+        reason=reason,
+        metadata=metadata,
+    )
+
+
+def log_l2_reverse_api_disabled(
+    log: logging.Logger,
+    *,
+    operation: str,
+    metadata: dict | None = None,
+) -> None:
+    log_reverse_api_disabled(log, operation=operation, metadata=metadata)
 
 _CHAIN_CHILD_NO_NEW_MEDIA_KIND = "chain_child_no_new_media"
 

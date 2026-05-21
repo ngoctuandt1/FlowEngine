@@ -10,6 +10,11 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from flow.navigation import flow_url
+from flow.reverse_api import (
+    log_reverse_api_disabled,
+    log_reverse_api_unavailable,
+    reverse_api_preferred,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -309,6 +314,20 @@ async def create_character_via_ui(
     """Create a Flow character via UI-only fallback path."""
 
     resolution = validate_character_tags(prompt, known_characters)
+    if reverse_api_preferred():
+        log_reverse_api_unavailable(
+            logger,
+            operation="character-create",
+            reason="captured safe flow/entities request body unavailable",
+            metadata={"project_id": project_id, "model": model},
+        )
+    else:
+        log_reverse_api_disabled(
+            logger,
+            operation="character-create",
+            metadata={"project_id": project_id, "model": model},
+        )
+
     page = client.page
     target_url = await open_character_creator(page, project_id, locale=locale)
     await fill_character_prompt(page, prompt)

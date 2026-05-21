@@ -25,6 +25,10 @@ from flow.operations._base import (
     click_action_button,
     count_visible_cards,
     finalize_operation,
+    finalize_l2_reverse_api_after_accept,
+    l2_reverse_api_enabled,
+    l2_reverse_api_template_has_auth,
+    run_l2_reverse_api_first,
 )
 from flow.operations._l1_status_poll import (
     poll_status_via_api,
@@ -234,7 +238,7 @@ def _direction_is_position(direction: str) -> bool:
 
 
 def _reverse_camera_enabled() -> bool:
-    return os.getenv("FLOW_CAMERA_VIA_REVERSE", "0") == "1"
+    return l2_reverse_api_enabled("FLOW_CAMERA_VIA_REVERSE")
 
 
 def _install_camera_capture_if_enabled(client) -> bool:
@@ -481,7 +485,9 @@ async def camera_move(
     Returns: Result dict
     """
     page = client.page
-    capture_ready = _install_camera_capture_if_enabled(client)
+    reverse_enabled = _reverse_camera_enabled()
+    if reverse_enabled:
+        _install_camera_capture_if_enabled(client)
 
     # Step 1: Navigate
     edit_url_val, project_id, locale = await navigate_to_edit(client, job)
@@ -489,42 +495,49 @@ async def camera_move(
     # Step 2: Wait for video
     await wait_for_video_loaded(page)
 
-    if capture_ready and _job_is_l3_plus(job):
-        template = _current_camera_template(client)
-        if template is not None and replay_camera_via_api is not None:
-            try:
-                client.clear_captures()
-                replay_result = await replay_camera_via_api(
-                    client,
-                    parent_media_id=job["media_id"],
-                    direction=direction,
-                )
-                replay_media_ids = _extract_replay_media_ids(replay_result)
-                if not replay_media_ids:
-                    raise RuntimeError(
-                        "Camera reverse-API replay returned no media_id"
-                    )
-                replay_media_id = replay_media_ids[0]
-                replay_count = getattr(client, "_camera_replay_count", 0) + 1
-                setattr(client, "_camera_replay_count", replay_count)
-                logger.info(
-                    "Camera replay submit accepted via reverse API "
-                    "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
-                    replay_count,
-                    replay_media_ids,
-                )
-                return await _finalize_camera_replay_result(
-                    client,
-                    job,
-                    project_id=project_id,
-                    locale=locale,
-                    replay_media_id=replay_media_id,
-                )
-            except RuntimeError as exc:
-                logger.warning(
-                    "Camera reverse-API replay failed; falling back to UI path: %s",
-                    exc,
-                )
+    template = _current_camera_template(client) if reverse_enabled else None
+    if not reverse_enabled:
+        reverse_unavailable_reason = "operation reverse API disabled"
+    elif replay_camera_via_api is None:
+        reverse_unavailable_reason = f"camera_api unavailable: {_CAMERA_API_IMPORT_ERROR}"
+    elif template is None:
+        reverse_unavailable_reason = "captured camera template unavailable"
+    elif not l2_reverse_api_template_has_auth(template):
+        reverse_unavailable_reason = "captured camera template missing authorization header"
+    else:
+        reverse_unavailable_reason = ""
+    reverse_outcome = await run_l2_reverse_api_first(
+        operation="camera-move",
+        log=logger,
+        available=(
+            reverse_enabled
+            and template is not None
+            and replay_camera_via_api is not None
+            and l2_reverse_api_template_has_auth(template)
+        ),
+        unavailable_reason=reverse_unavailable_reason,
+        metadata={
+            "project_id": project_id,
+            "parent_media_id": job.get("media_id"),
+            "template_url": template.get("url") if isinstance(template, dict) else None,
+            "direction": direction,
+        },
+        timeout_sec=660.0,
+        call=lambda: _run_camera_reverse_api(
+            client,
+            job,
+            direction=direction,
+            project_id=project_id,
+            locale=locale,
+        ),
+    )
+    if reverse_outcome.succeeded:
+        return reverse_outcome.result
+    if reverse_outcome.status == "recoverable_error":
+        logger.warning(
+            "Camera reverse-API replay failed; falling back to UI path: %s",
+            reverse_outcome.error,
+        )
 
     # Step 3: Click Camera button
     clicked = await click_action_button(page, CAMERA_BUTTONS, client=client)
@@ -613,6 +626,47 @@ async def camera_move(
         download_prefix="cam",
     )
 
+
+async def _run_camera_reverse_api(
+    client,
+    job: dict,
+    *,
+    direction: str,
+    project_id: str,
+    locale: str,
+) -> dict:
+    if replay_camera_via_api is None:
+        raise RuntimeError("camera_api unavailable")
+    client.clear_captures()
+    replay_result = await replay_camera_via_api(
+        client,
+        parent_media_id=job["media_id"],
+        direction=direction,
+    )
+    replay_media_ids = _extract_replay_media_ids(replay_result)
+    if not replay_media_ids:
+        raise RuntimeError("Camera reverse-API replay returned no media_id")
+    replay_media_id = replay_media_ids[0]
+    replay_count = getattr(client, "_camera_replay_count", 0) + 1
+    setattr(client, "_camera_replay_count", replay_count)
+    logger.info(
+        "Camera replay submit accepted via reverse API "
+        "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
+        replay_count,
+        replay_media_ids,
+    )
+    return await finalize_l2_reverse_api_after_accept(
+        client,
+        operation="camera-move",
+        media_id=replay_media_id,
+        finalize_call=lambda: _finalize_camera_replay_result(
+            client,
+            job,
+            project_id=project_id,
+            locale=locale,
+            replay_media_id=replay_media_id,
+        ),
+    )
 
 async def _click_preset(page, direction: str) -> bool:
     """Click a camera preset by name and verify it becomes active.

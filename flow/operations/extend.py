@@ -20,6 +20,10 @@ from flow.operations._base import (
     click_action_button,
     count_visible_cards,
     finalize_operation,
+    finalize_l2_reverse_api_after_accept,
+    l2_reverse_api_enabled,
+    l2_reverse_api_template_has_auth,
+    run_l2_reverse_api_first,
 )
 from flow.operations._l1_status_poll import (
     poll_status_via_api,
@@ -56,7 +60,7 @@ EXTEND_ICON_SELECTORS = [
 
 
 def _reverse_extend_enabled() -> bool:
-    return os.getenv("FLOW_EXTEND_VIA_REVERSE", "0") == "1"
+    return l2_reverse_api_enabled("FLOW_EXTEND_VIA_REVERSE")
 
 
 def _install_extend_capture_if_enabled(client) -> bool:
@@ -178,8 +182,8 @@ async def _finalize_replay_result(
     UI page is purely a session/auth carrier here -- no DOM is touched.
 
     Raises ``RuntimeError`` (with forensic capture) on any non-success
-    terminal state, missing media url, or download failure. The caller
-    is expected to fall back to the UI path on ``RuntimeError``.
+    terminal state, missing media url, or download failure. Callers must
+    not fall back to UI after a reverse submit has returned a media id.
     """
     _record_replay_media_id(client, replay_media_id)
 
@@ -224,8 +228,7 @@ async def _finalize_replay_result(
     if status != "completed":
         # 'pending' here means the 10 min hard timeout elapsed without a
         # terminal status; 'timeout' is what poll_status_via_api sets in
-        # that case. Either way, treat as a hard fail so the UI fallback
-        # path can take over.
+        # that case. Either way, fail after accepted reverse submit.
         message = (
             f"extend-video replay: status API did not reach completed "
             f"(status={status}) for media_id={replay_media_id}"
@@ -333,7 +336,9 @@ async def extend_video(
     Returns: Result dict with project_url, media_id, edit_url, output_files, etc.
     """
     page = client.page
-    capture_ready = _install_extend_capture_if_enabled(client)
+    reverse_enabled = _reverse_extend_enabled()
+    if reverse_enabled:
+        _install_extend_capture_if_enabled(client)
 
     # Step 1: Navigate
     edit_url_val, project_id, locale = await navigate_to_edit(client, job)
@@ -341,63 +346,64 @@ async def extend_video(
     # Step 2: Wait for video
     await wait_for_video_loaded(page)
 
-    # Hybrid reverse-API path: after L2 has captured a request template, L3+
-    # can replay the extend submit AND finalize via Flow's own status +
-    # direct-URL APIs -- the entire submit/wait/download tail skips the UI,
-    # so DOM-driven `wait_for_completion` cannot observe a signal that the
-    # SPA never receives. See `_finalize_replay_result` for the rationale.
-    if capture_ready:
-        template = _current_extend_template(client)
-        if template is not None and replay_extend_via_api is not None:
-            try:
-                client.clear_captures()
-                replay_result = await replay_extend_via_api(
-                    client,
-                    parent_media_id=job["media_id"],
-                    prompt=prompt,
-                )
-                replay_media_ids = _extract_replay_media_ids(replay_result)
-                if not replay_media_ids:
-                    raise RuntimeError(
-                        "Extend reverse-API replay returned no media_id"
-                    )
-                replay_media_id = replay_media_ids[0]
-                replay_count = getattr(client, "_extend_replay_count", 0) + 1
-                setattr(client, "_extend_replay_count", replay_count)
-                logger.info(
-                    "Extend replay submit accepted via reverse API "
-                    "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
-                    replay_count,
-                    replay_media_ids,
-                )
-                return await _finalize_replay_result(
-                    client,
-                    job,
-                    project_id=project_id,
-                    locale=locale,
-                    replay_media_id=replay_media_id,
-                )
-            except RuntimeError as exc:
-                logger.warning(
-                    "Extend reverse-API replay failed; falling back to UI path: %s",
-                    exc,
-                )
+    template = _current_extend_template(client) if reverse_enabled else None
+    if not reverse_enabled:
+        reverse_unavailable_reason = "operation reverse API disabled"
+    elif replay_extend_via_api is None:
+        reverse_unavailable_reason = f"extend_api unavailable: {_EXTEND_API_IMPORT_ERROR}"
+    elif template is None:
+        reverse_unavailable_reason = "captured extend template unavailable"
+    elif not l2_reverse_api_template_has_auth(template):
+        reverse_unavailable_reason = "captured extend template missing authorization header"
+    else:
+        reverse_unavailable_reason = ""
+    reverse_outcome = await run_l2_reverse_api_first(
+        operation="extend-video",
+        log=logger,
+        available=(
+            reverse_enabled
+            and template is not None
+            and replay_extend_via_api is not None
+            and l2_reverse_api_template_has_auth(template)
+        ),
+        unavailable_reason=reverse_unavailable_reason,
+        metadata={
+            "project_id": project_id,
+            "parent_media_id": job.get("media_id"),
+            "template_url": template.get("url") if isinstance(template, dict) else None,
+        },
+        timeout_sec=660.0,
+        call=lambda: _run_extend_reverse_api(
+            client,
+            job,
+            prompt=prompt,
+            project_id=project_id,
+            locale=locale,
+        ),
+    )
+    if reverse_outcome.succeeded:
+        return reverse_outcome.result
+    if reverse_outcome.status == "recoverable_error":
+        logger.warning(
+            "Extend reverse-API replay failed; falling back to UI path: %s",
+            reverse_outcome.error,
+        )
 
     # Step 3: Ensure Extend panel open.
     #
     # Flow UI opens an edit URL with one of the 4 modes already selected
     # (usually Extend for videos with remaining extend budget). In that
-    # state the Extend button is already the active mode — clicking it
+    # state the Extend button is already the active mode; clicking it
     # again is a no-op at best or a toggle-close at worst, and the click
     # locator may not match because Flow marks the active mode specially.
     #
-    # So: probe panel state FIRST. If already open → skip the click.
-    # If not open → click Extend button, then re-verify.
+    # So: probe panel state FIRST. If already open, skip the click.
+    # If not open, click Extend button, then re-verify.
     await asyncio.sleep(2)  # let action rail render
 
     panel_open = await _verify_extend_panel(page)
     if panel_open:
-        logger.info("Extend panel already open — skipping Extend button click")
+        logger.info("Extend panel already open, skipping Extend button click")
     else:
         clicked = await click_action_button(page, EXTEND_BUTTONS, client=client)
         if not clicked:
@@ -421,7 +427,7 @@ async def extend_video(
                     const btns = document.querySelectorAll('button, [role="button"]');
                     for (const btn of btns) {
                         const text = (btn.innerText || '').toLowerCase();
-                        if (text.includes('extend') || text.includes('mở rộng')
+                        if (text.includes('extend') || text.includes('mo rong')
                             || text.includes('keyboard_double_arrow_right')) {
                             btn.click();
                             return true;
@@ -497,7 +503,7 @@ async def extend_video(
             )
         except Exception:
             pass
-        message = "Extend submit not confirmed — generation did not start"
+        message = "Extend submit not confirmed; generation did not start"
         message = await message_with_failure_capture(
             client,
             "extend_submit_not_confirmed",
@@ -514,6 +520,47 @@ async def extend_video(
         download_prefix="ext",
     )
 
+
+async def _run_extend_reverse_api(
+    client,
+    job: dict,
+    *,
+    prompt: str,
+    project_id: str,
+    locale: str,
+) -> dict:
+    if replay_extend_via_api is None:
+        raise RuntimeError("extend_api unavailable")
+    client.clear_captures()
+    replay_result = await replay_extend_via_api(
+        client,
+        parent_media_id=job["media_id"],
+        prompt=prompt,
+    )
+    replay_media_ids = _extract_replay_media_ids(replay_result)
+    if not replay_media_ids:
+        raise RuntimeError("Extend reverse-API replay returned no media_id")
+    replay_media_id = replay_media_ids[0]
+    replay_count = getattr(client, "_extend_replay_count", 0) + 1
+    setattr(client, "_extend_replay_count", replay_count)
+    logger.info(
+        "Extend replay submit accepted via reverse API "
+        "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
+        replay_count,
+        replay_media_ids,
+    )
+    return await finalize_l2_reverse_api_after_accept(
+        client,
+        operation="extend-video",
+        media_id=replay_media_id,
+        finalize_call=lambda: _finalize_replay_result(
+            client,
+            job,
+            project_id=project_id,
+            locale=locale,
+            replay_media_id=replay_media_id,
+        ),
+    )
 
 async def _verify_extend_panel(page, timeout_sec: float = 5.0) -> bool:
     """Detect that Flow's Extend panel is open.

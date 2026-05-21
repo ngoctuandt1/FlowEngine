@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import flow.operations.extend as extend_mod
+from flow.operations._base import L2ReverseApiPostAcceptError
 
 
 def _client():
@@ -65,7 +66,7 @@ async def test_env_off_uses_ui_path_without_capture(monkeypatch):
     client = _client()
     mocks = _patch_common(monkeypatch)
     install = MagicMock()
-    get_template = MagicMock(return_value={"template": True})
+    get_template = MagicMock(return_value={"headers": {"authorization": "Bearer tok"}})
     replay = AsyncMock(return_value={"media_id": "api-mid"})
     monkeypatch.setattr(extend_mod, "install_extend_request_capture", install)
     monkeypatch.setattr(extend_mod, "get_extend_request_template", get_template)
@@ -122,7 +123,7 @@ async def test_env_on_template_replays_and_finalizes_via_status_api(
     mocks["download_via_url"].return_value = saved_path
 
     install = MagicMock()
-    get_template = MagicMock(return_value={"template": True})
+    get_template = MagicMock(return_value={"headers": {"authorization": "Bearer tok"}})
     replay = AsyncMock(return_value={"media_id": "api-mid"})
     create_task = MagicMock()
     monkeypatch.setattr(extend_mod, "install_extend_request_capture", install)
@@ -184,7 +185,7 @@ async def test_env_on_replay_runtime_error_falls_back_to_ui(monkeypatch):
     monkeypatch.setattr(
         extend_mod,
         "get_extend_request_template",
-        MagicMock(return_value={"template": True}),
+        MagicMock(return_value={"headers": {"authorization": "Bearer tok"}}),
     )
     replay = AsyncMock(side_effect=RuntimeError("bad replay"))
     monkeypatch.setattr(extend_mod, "replay_extend_via_api", replay)
@@ -204,9 +205,8 @@ async def test_env_on_replay_runtime_error_falls_back_to_ui(monkeypatch):
     mocks["download_via_url"].assert_not_awaited()
 
 
-async def test_env_on_replay_status_failed_falls_back_to_ui(monkeypatch, tmp_path):
-    """A replay that submits OK but whose status API reports failure must
-    fall through to the UI path, not raise upward."""
+async def test_env_on_replay_status_failed_does_not_fall_back_to_ui(monkeypatch, tmp_path):
+    """After reverse submit returns a media id, UI fallback would duplicate work."""
     monkeypatch.setenv("FLOW_EXTEND_VIA_REVERSE", "1")
     client = _client()
     client.download_dir = str(tmp_path)
@@ -223,7 +223,7 @@ async def test_env_on_replay_status_failed_falls_back_to_ui(monkeypatch, tmp_pat
     monkeypatch.setattr(
         extend_mod,
         "get_extend_request_template",
-        MagicMock(return_value={"template": True}),
+        MagicMock(return_value={"headers": {"authorization": "Bearer tok"}}),
     )
     monkeypatch.setattr(
         extend_mod,
@@ -231,18 +231,19 @@ async def test_env_on_replay_status_failed_falls_back_to_ui(monkeypatch, tmp_pat
         AsyncMock(return_value={"media_id": "api-mid"}),
     )
 
-    result = await extend_mod.extend_video(
-        client,
-        {"media_id": "parent-mid", "edit_url": "edit-url"},
-        prompt="next",
-    )
+    with pytest.raises(L2ReverseApiPostAcceptError) as exc_info:
+        await extend_mod.extend_video(
+            client,
+            {"media_id": "parent-mid", "edit_url": "edit-url"},
+            prompt="next",
+        )
 
-    # Fallback path produced the UI-finalize result.
-    assert result == {"ok": True, "media_id": "final-mid"}
+    assert exc_info.value.media_id == "api-mid"
+    assert client._l2_reverse_api_inflight["api-mid"]["status"] == "post_accept_failed"
     mocks["poll_status_via_api"].assert_awaited_once()
     mocks["download_via_url"].assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
-    mocks["finalize_operation"].assert_awaited_once()
+    mocks["submit_with_confirmation"].assert_not_awaited()
+    mocks["finalize_operation"].assert_not_awaited()
 
 
 async def test_replay_media_id_is_recorded_synchronously_without_wait(
@@ -259,7 +260,7 @@ async def test_replay_media_id_is_recorded_synchronously_without_wait(
     monkeypatch.setattr(
         extend_mod,
         "get_extend_request_template",
-        MagicMock(return_value={"template": True}),
+        MagicMock(return_value={"headers": {"authorization": "Bearer tok"}}),
     )
     monkeypatch.setattr(
         extend_mod,

@@ -1,6 +1,9 @@
-﻿from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 import flow.operations.insert as insert_mod
+from flow.operations._base import L2ReverseApiPostAcceptError
 
 BBOX = {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}
 
@@ -51,11 +54,11 @@ def _patch_common(monkeypatch, *, tmp_path=None):
 
 
 async def test_env_off_uses_ui_path_without_capture(monkeypatch):
-    monkeypatch.delenv("FLOW_INSERT_VIA_REVERSE", raising=False)
+    monkeypatch.setenv("FLOW_INSERT_VIA_REVERSE", "0")
     client = _client()
     mocks = _patch_common(monkeypatch)
     install = MagicMock()
-    get_template = MagicMock(return_value={"template": True})
+    get_template = MagicMock(return_value={"headers": {"authorization": "Bearer tok"}})
     replay = AsyncMock(return_value="api-mid")
     monkeypatch.setattr(insert_mod, "install_insert_request_capture", install)
     monkeypatch.setattr(insert_mod, "get_insert_request_template", get_template)
@@ -78,29 +81,33 @@ async def test_env_off_uses_ui_path_without_capture(monkeypatch):
     mocks["download_via_url"].assert_not_awaited()
 
 
-async def test_env_on_l2_uses_ui_path_with_capture(monkeypatch):
+async def test_env_on_l2_template_replays_with_capture(monkeypatch, tmp_path):
     monkeypatch.setenv("FLOW_INSERT_VIA_REVERSE", "1")
     client = _client()
-    mocks = _patch_common(monkeypatch)
+    client.download_dir = str(tmp_path)
+    saved_path = str(tmp_path / "ins_replay_api-mid.mp4")
+    mocks = _patch_common(monkeypatch, tmp_path=tmp_path)
+    mocks["download_via_url"].return_value = saved_path
     install = MagicMock()
-    get_template = MagicMock(return_value={"template": True})
+    get_template = MagicMock(return_value={"headers": {"authorization": "Bearer tok"}})
     replay = AsyncMock(return_value="api-mid")
     monkeypatch.setattr(insert_mod, "install_insert_request_capture", install)
     monkeypatch.setattr(insert_mod, "get_insert_request_template", get_template)
     monkeypatch.setattr(insert_mod, "replay_insert_via_api", replay)
 
-    await insert_mod.insert_object(
+    result = await insert_mod.insert_object(
         client,
         {"media_id": "parent-mid", "edit_url": "edit-url", "job_level": 2},
         prompt="add kite",
         bbox=BBOX,
     )
 
+    assert result["media_id"] == "api-mid"
     install.assert_called_once_with(client)
-    get_template.assert_not_called()
-    replay.assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
-    mocks["poll_status_via_api"].assert_not_awaited()
+    get_template.assert_called_once_with(client)
+    replay.assert_awaited_once()
+    mocks["submit_with_confirmation"].assert_not_awaited()
+    mocks["poll_status_via_api"].assert_awaited_once()
 
 
 async def test_env_on_no_template_uses_ui_path_with_capture(monkeypatch):
@@ -137,7 +144,7 @@ async def test_env_on_template_replays_job_prompt_bbox_and_status_download(monke
     mocks = _patch_common(monkeypatch, tmp_path=tmp_path)
     mocks["download_via_url"].return_value = saved_path
     install = MagicMock()
-    get_template = MagicMock(return_value={"template": True})
+    get_template = MagicMock(return_value={"headers": {"authorization": "Bearer tok"}})
     replay = AsyncMock(return_value="api-mid")
     monkeypatch.setattr(insert_mod, "install_insert_request_capture", install)
     monkeypatch.setattr(insert_mod, "get_insert_request_template", get_template)
@@ -194,7 +201,7 @@ async def test_env_on_replay_runtime_error_falls_back_to_ui(monkeypatch):
     monkeypatch.setattr(
         insert_mod,
         "get_insert_request_template",
-        MagicMock(return_value={"template": True}),
+        MagicMock(return_value={"headers": {"authorization": "Bearer tok"}}),
     )
     monkeypatch.setattr(insert_mod, "replay_insert_via_api", replay)
 
@@ -213,7 +220,7 @@ async def test_env_on_replay_runtime_error_falls_back_to_ui(monkeypatch):
     mocks["download_via_url"].assert_not_awaited()
 
 
-async def test_env_on_replay_status_failed_falls_back_to_ui(monkeypatch, tmp_path):
+async def test_env_on_replay_status_failed_does_not_fall_back_to_ui(monkeypatch, tmp_path):
     monkeypatch.setenv("FLOW_INSERT_VIA_REVERSE", "1")
     client = _client()
     client.download_dir = str(tmp_path)
@@ -225,19 +232,21 @@ async def test_env_on_replay_status_failed_falls_back_to_ui(monkeypatch, tmp_pat
     monkeypatch.setattr(
         insert_mod,
         "get_insert_request_template",
-        MagicMock(return_value={"template": True}),
+        MagicMock(return_value={"headers": {"authorization": "Bearer tok"}}),
     )
     monkeypatch.setattr(insert_mod, "replay_insert_via_api", AsyncMock(return_value="api-mid"))
 
-    result = await insert_mod.insert_object(
-        client,
-        {"media_id": "parent-mid", "edit_url": "edit-url", "job_level": 3},
-        prompt="add kite",
-        bbox=BBOX,
-    )
+    with pytest.raises(L2ReverseApiPostAcceptError) as exc_info:
+        await insert_mod.insert_object(
+            client,
+            {"media_id": "parent-mid", "edit_url": "edit-url", "job_level": 3},
+            prompt="add kite",
+            bbox=BBOX,
+        )
 
-    assert result == {"ok": True, "media_id": "final-mid"}
+    assert exc_info.value.media_id == "api-mid"
+    assert client._l2_reverse_api_inflight["api-mid"]["status"] == "post_accept_failed"
     mocks["poll_status_via_api"].assert_awaited_once()
     mocks["download_via_url"].assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
-    mocks["finalize_operation"].assert_awaited_once()
+    mocks["submit_with_confirmation"].assert_not_awaited()
+    mocks["finalize_operation"].assert_not_awaited()

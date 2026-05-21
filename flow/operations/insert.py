@@ -20,6 +20,10 @@ from flow.operations._base import (
     count_visible_cards,
     draw_bbox_on_video,
     finalize_operation,
+    finalize_l2_reverse_api_after_accept,
+    l2_reverse_api_enabled,
+    l2_reverse_api_template_has_auth,
+    run_l2_reverse_api_first,
 )
 from flow.operations._l1_status_poll import (
     poll_status_via_api,
@@ -50,7 +54,7 @@ INSERT_ICON_SELECTOR = "button:has(span:has-text('add_box'))"
 
 
 def _reverse_insert_enabled() -> bool:
-    return os.getenv("FLOW_INSERT_VIA_REVERSE", "0") == "1"
+    return l2_reverse_api_enabled("FLOW_INSERT_VIA_REVERSE")
 
 
 def _install_insert_capture_if_enabled(client) -> bool:
@@ -301,7 +305,9 @@ async def insert_object(
     page = client.page
     prompt = prompt or job.get("prompt", "")
     bbox = bbox or job.get("bbox") or {}
-    capture_ready = _install_insert_capture_if_enabled(client)
+    reverse_enabled = _reverse_insert_enabled()
+    if reverse_enabled:
+        _install_insert_capture_if_enabled(client)
 
     # Step 1: Navigate
     edit_url_val, project_id, locale = await navigate_to_edit(client, job)
@@ -309,43 +315,49 @@ async def insert_object(
     # Step 2: Wait for video
     await wait_for_video_loaded(page)
 
-    if capture_ready and _job_is_l3_plus(job):
-        template = _current_insert_template(client)
-        if template is not None and replay_insert_via_api is not None:
-            try:
-                client.clear_captures()
-                replay_result = await replay_insert_via_api(
-                    client,
-                    parent_media_id=job["media_id"],
-                    prompt=prompt,
-                    bbox=bbox,
-                )
-                replay_media_ids = _extract_replay_media_ids(replay_result)
-                if not replay_media_ids:
-                    raise RuntimeError(
-                        "Insert reverse-API replay returned no media_id"
-                    )
-                replay_media_id = replay_media_ids[0]
-                replay_count = getattr(client, "_insert_replay_count", 0) + 1
-                setattr(client, "_insert_replay_count", replay_count)
-                logger.info(
-                    "Insert replay submit accepted via reverse API "
-                    "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
-                    replay_count,
-                    replay_media_ids,
-                )
-                return await _finalize_insert_replay_result(
-                    client,
-                    job,
-                    project_id=project_id,
-                    locale=locale,
-                    replay_media_id=replay_media_id,
-                )
-            except RuntimeError as exc:
-                logger.warning(
-                    "Insert reverse-API replay failed; falling back to UI path: %s",
-                    exc,
-                )
+    template = _current_insert_template(client) if reverse_enabled else None
+    if not reverse_enabled:
+        reverse_unavailable_reason = "operation reverse API disabled"
+    elif replay_insert_via_api is None:
+        reverse_unavailable_reason = f"insert_api unavailable: {_INSERT_API_IMPORT_ERROR}"
+    elif template is None:
+        reverse_unavailable_reason = "captured insert template unavailable"
+    elif not l2_reverse_api_template_has_auth(template):
+        reverse_unavailable_reason = "captured insert template missing authorization header"
+    else:
+        reverse_unavailable_reason = ""
+    reverse_outcome = await run_l2_reverse_api_first(
+        operation="insert-object",
+        log=logger,
+        available=(
+            reverse_enabled
+            and template is not None
+            and replay_insert_via_api is not None
+            and l2_reverse_api_template_has_auth(template)
+        ),
+        unavailable_reason=reverse_unavailable_reason,
+        metadata={
+            "project_id": project_id,
+            "parent_media_id": job.get("media_id"),
+            "template_url": template.get("url") if isinstance(template, dict) else None,
+        },
+        timeout_sec=660.0,
+        call=lambda: _run_insert_reverse_api(
+            client,
+            job,
+            prompt=prompt,
+            bbox=bbox,
+            project_id=project_id,
+            locale=locale,
+        ),
+    )
+    if reverse_outcome.succeeded:
+        return reverse_outcome.result
+    if reverse_outcome.status == "recoverable_error":
+        logger.warning(
+            "Insert reverse-API replay failed; falling back to UI path: %s",
+            reverse_outcome.error,
+        )
 
     # Step 3: Click Insert button
     clicked = await click_action_button(page, INSERT_BUTTONS, client=client)
@@ -374,7 +386,7 @@ async def insert_object(
         drew = await draw_bbox_on_video(page, bbox)
         if not drew:
             logger.warning(
-                "Bbox drawing failed or unverified — Flow may fall back to default region"
+                "Bbox drawing failed or unverified; Flow may fall back to default region"
             )
 
     # Step 5: Type prompt (optional)
@@ -409,6 +421,49 @@ async def insert_object(
         download_prefix="ins",
     )
 
+
+async def _run_insert_reverse_api(
+    client,
+    job: dict,
+    *,
+    prompt: str,
+    bbox: dict,
+    project_id: str,
+    locale: str,
+) -> dict:
+    if replay_insert_via_api is None:
+        raise RuntimeError("insert_api unavailable")
+    client.clear_captures()
+    replay_result = await replay_insert_via_api(
+        client,
+        parent_media_id=job["media_id"],
+        prompt=prompt,
+        bbox=bbox,
+    )
+    replay_media_ids = _extract_replay_media_ids(replay_result)
+    if not replay_media_ids:
+        raise RuntimeError("Insert reverse-API replay returned no media_id")
+    replay_media_id = replay_media_ids[0]
+    replay_count = getattr(client, "_insert_replay_count", 0) + 1
+    setattr(client, "_insert_replay_count", replay_count)
+    logger.info(
+        "Insert replay submit accepted via reverse API "
+        "(count=%d media_ids=%s) -- finalizing via status API + direct URL download",
+        replay_count,
+        replay_media_ids,
+    )
+    return await finalize_l2_reverse_api_after_accept(
+        client,
+        operation="insert-object",
+        media_id=replay_media_id,
+        finalize_call=lambda: _finalize_insert_replay_result(
+            client,
+            job,
+            project_id=project_id,
+            locale=locale,
+            replay_media_id=replay_media_id,
+        ),
+    )
 
 async def _type_insert_prompt(page, prompt: str):
     """Type into the insert prompt field.

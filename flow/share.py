@@ -9,6 +9,12 @@ from urllib.parse import urlparse
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from flow.reverse_api import (
+    log_reverse_api_disabled,
+    log_reverse_api_unavailable,
+    reverse_api_preferred,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +121,15 @@ async def copy_flow_share_link(page, *, timeout_ms: int = 10_000) -> FlowShareLi
     ``flowAgent:shareApplet`` literal because discovery only proved tool-share
     static JS references, not project/job share mutation bodies.
     """
+    if reverse_api_preferred():
+        log_reverse_api_unavailable(
+            logger,
+            operation="share-link-mint",
+            reason="captured safe project-share request body unavailable",
+        )
+    else:
+        log_reverse_api_disabled(logger, operation="share-link-mint")
+
     share_selector = await _click_first_visible(page, SHARE_BUTTON_SELECTORS, timeout_ms)
     if share_selector is None:
         logger.info("Flow share button unavailable on current surface")
