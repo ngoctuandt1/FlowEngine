@@ -168,6 +168,20 @@ URL: `/fx/{locale}/tools/flow/project/{project_uuid}`
 
 URL: `/fx/{locale}/tools/flow/project/{project_uuid}/edit/{media_uuid}`
 
+### L2 paywall banner
+
+Free-tier profiles can open the edit URL but Flow replaces L2 editing controls with a paid-tier banner.
+
+| Element | Exact text / selector |
+|---|---|
+| Banner text | `Video editing is only available for paid subscribers` |
+| Banner text selector | `text="Video editing is only available for paid subscribers"` |
+| Upgrade CTA text | `Upgrade` |
+| Upgrade CTA selector | `button:has-text("Upgrade"), a:has-text("Upgrade")` |
+| Canonical engine result | `error_kind="paid_tier_required"`, `error_message="Video editing is only available for paid subscribers"` |
+
+Positive signal is banner text plus Upgrade CTA. Missing Extend/Insert/Remove/Camera buttons are diagnostics only; do not treat missing buttons alone as paid-tier proof.
+
 ### Top Bar
 
 | Element | VI ✅ | EN ✅ | DOM Selector |
@@ -608,6 +622,27 @@ async def _type_prompt(page, prompt: str, timeout_sec: float = 15.0) -> None:
 > Verified 2026-04-17 on EN profile. See B1a session report.
 
 Clicking the model chip at the bottom-right of the composer opens a **single Radix `DropdownMenuContent`** panel that bundles ALL generation options: media type, source type, aspect ratio, quantity, model, credits.
+
+### 2026-05 composer panel structure
+
+Current project-level composer uses a chip-based Radix menu, not a legacy standalone `DropdownMenu` for each field. Open the bottom-right chip, select `VIDEO`, select source sub-tab, force quantity `1`, then choose model.
+
+| Target | Selector / signal |
+|---|---|
+| Closed chip | `button[aria-haspopup="menu"][data-state="closed"]` near bottom-right composer; text resembles `Image ... x1` or `Video ... x1` |
+| Open chip | `button[aria-haspopup="menu"][data-state="open"]` |
+| Open panel | `div[role="menu"][data-state="open"].DropdownMenuContent` |
+| Video mode trigger | `[id$="-trigger-VIDEO"]` with `data-state="active"` after click |
+| Image mode trigger | `[id$="-trigger-IMAGE"]` |
+| Frames source sub-tab | `[id$="-trigger-VIDEO_FRAMES"]` inside the open panel |
+| Ingredients source sub-tab | `[id$="-trigger-VIDEO_REFERENCES"]` inside the open panel |
+| Aspect 16:9 | `[id$="-trigger-LANDSCAPE"]` or chip text containing `crop_16_9` after close |
+| Aspect 9:16 | `[id$="-trigger-PORTRAIT"]` or chip text containing `crop_9_16` after close |
+| Quantity x1 | `[id$="-trigger-1"]` with `data-state="active"`; reject chip text containing `x2`, `x3`, or `x4` |
+| Model menu button | nested `button[aria-haspopup="menu"]` whose text contains a model label and `arrow_drop_down` |
+| Credit preview | `a[href*="googleone"]` with text like `5 credits` or `10 credits` |
+
+Video models: `Veo 3.1 - Lite`, `Veo 3.1 - Fast`, `Veo 3.1 - Quality`, and paid `Omni Flash`. Image models: Nano Banana Pro, Nano Banana 2, and Imagen 4. Legacy Lower Priority labels may appear only as fallback labels during rollout.
 
 ### Chip button (trigger)
 

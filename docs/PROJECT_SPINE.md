@@ -2,10 +2,11 @@
 
 > This is the canonical spine. Read first. Update whenever architecture, code map, or deploy topology changes.
 
-- Last synced: `46f6bf0` (`origin/master`) on 2026-05-09 after UX + worker fixes.
-- Scope: tracks current `master` through the 2026-05-09 session.
+- Last synced: `b0e62e0` (`origin/master`) on 2026-05-21 after the 2026-05 Flow feature update merge train.
+- Scope: tracks current `master` through the 2026-05 Wave 4 finale.
 - Purpose: one 5-minute sync doc for future feature work.
 - Recent epics:
+  - 2026-05-21 Flow feature update: composer automation now targets the chip-based Radix menu (not legacy standalone dropdowns), forces Video mode plus output count x1 before submit, keeps LP model aliases as input compatibility only, persists structured `error_kind` / `error_message` failures, and treats free-tier L2 edit paywall as canonical `paid_tier_required` instead of a generic automation failure. Final live-verify checklist lives in this doc under §9.
   - 2026-05-09 UX + worker bug fixes: 8 commits (`c9eaff7`–`46f6bf0`). (1) `fix(nav)`: skip `b28_leaf_lockout` when editor already mounted after routing-slug redirect — `flow/operations/_base.py`. (2) `fix(upscale)`: project-root fallback in `_ensure_edit_view` when tile activation fails for L5+ extend — `flow/upscale.py`. Both live-verified: run #7 + run #8 both 17/17. (3) `fix(home)`: "Tạo project" button navigates to `#create` (create-job form) instead of creating an empty project shell and showing "No chain nodes yet". (4) `fix(create-job)`: form only shows L1 types (T2V/T2I/Frames/Refs), not L2 ops (extend/insert/remove/camera); after job created, navigates to `#project-view/{chain_id}`. Asset version bumped to `v=2026.05.09.r4`.
   - 2026-05-08 canvas recovery + perf hardening: 10 commits (`838bcf5`–`be9ab96`). Canvas page detection + recovery in `flow/landing.py` (new `is_flow_canvas_page`, `recover_from_flow_canvas_page`); wired into `generate.py` after marketing-landing bypass. GZip middleware subclass (`_APIGZipMiddleware`) excludes `/downloads/` and `/uploads/` to preserve `Accept-Ranges: bytes` on 206 partial-content video responses. Composite index `(status, created_at DESC)` on `jobs`. Home page unified gallery (one tile per chain, type badge, L1 prompt, `groupByChain`). Event-driven settle waits replacing `asyncio.sleep` across 4 L1 ops (generate, image, frames_to_video, ingredients) — estimated ~6-10s per L1 job. See [session-reports/2026-05-08_canvas-recovery-perf-hardening.md](session-reports/2026-05-08_canvas-recovery-perf-hardening.md).
   - 2026-05-05 claim-batch follow-up + infra hardening: 3 PRs (#200-#202). Live-verified L3 batch claim+dispatch (3 jobs, 314s, PASS). PR #200: `FLOW_CLAIM_BATCH_MAX` env knob for server-side batch cap. PR #201: 3-layer fix for root-owned file poisoning in profile dirs (sudo purge helper + systemd `chown -Rh` self-heal + `ProfileSwapper` fallback). PR #202: `LeafLockoutError` hard-fail for B28 extend-chain leaf-lockout (8s timeout, working URL poll, `_click_video_tile` fallback). See [session-reports/2026-05-05_claim-batch-followup-infra-hardening.md](session-reports/2026-05-05_claim-batch-followup-infra-hardening.md).
@@ -82,6 +83,14 @@ This matrix reflects `server/models/job.py::JobCreate` validation plus the minim
 | `insert-object` | L2+ | `bbox` | Usually also carries `prompt`; must target an existing clip via parent or explicit target context. |
 | `remove-object` | L2+ | `bbox` | BBox-only op; must target an existing clip via parent or explicit target context. |
 | `camera-move` | L2+ | `direction` from `CAMERA_PRESETS` | Must target an existing clip via parent or explicit target context. |
+
+### Flow UI and model contract
+
+- Composer UI: project-level generation options live in one chip-triggered Radix `menu` (`aria-haspopup="menu"`), not a legacy `DropdownMenu`; inside Video mode, Frames and Ingredients are source sub-tabs in the same panel.
+- Video models: primary keys are `veo-3.1-lite`, `veo-3.1-fast`, `veo-3.1-quality`, and paid `omni-flash`; legacy `*-lp` keys are accepted only as aliases and are canonicalized before selection.
+- Image models: image generation supports Nano Banana Pro, Nano Banana 2, and Imagen 4. Keep image keys separate from video model registry.
+- L1 safety: automation forces Video mode, output count `x1`, then checks credit preview before submit; `FLOW_MAX_CREDITS_PER_JOB` defaults to `10`.
+- Edit view: L2+ jobs use timeline edit pages; free-tier profiles see a paid-subscriber banner instead of usable Extend/Insert/Remove/Camera controls.
 
 ## 4. Local quickstart
 
@@ -194,12 +203,13 @@ Top fields only. For any schema change, read both the Pydantic model and the bac
 |---|---|
 | `BBox` | Normalized `x`, `y`, `w`, `h` floats in the 0-1 range. |
 | `JobCreate` | Request body: `type`, optional `prompt`, `model`, `aspect_ratio`, `profile`, `parent_job_id`, `chain_id`, `project_url`, `media_id`, `bbox`, `direction`, `start_image_path`, `end_image_path`, `ingredient_image_paths`, `ref_image_path`. Image-input path fields are usually `uploads/...` paths rooted at `FLOW_UPLOAD_DIR`. |
-| `Job` | Full record: `id`, `type`, `status`, `job_level`, `parent_job_id`, `chain_id`, `profile`, `project_url`, `media_id`, `edit_url`, all create-time operation fields, `output_files`, `generation_id`, `worker_id`, `claimed_at`, `completed_at`, `error`, `created_at`, `updated_at`. |
-| `JobUpdate` | Worker update payload only: `status`, `project_url`, `media_id`, `edit_url`, `profile`, `output_files`, `generation_id`, `error`, `completed_at`. |
+| `Job` | Full record: `id`, `type`, `status`, `job_level`, `parent_job_id`, `chain_id`, `profile`, `project_url`, `media_id`, `edit_url`, all create-time operation fields, `output_files`, `generation_id`, `worker_id`, `claimed_at`, `completed_at`, `error`, `error_kind`, `error_message`, `created_at`, `updated_at`. |
+| `JobUpdate` | Worker update payload only: `status`, `project_url`, `media_id`, `edit_url`, `profile`, `output_files`, `generation_id`, `error`, `error_kind`, `error_message`, `completed_at`. |
 
 DB notes:
 
-- `jobs` stores the same shape in SQLite-friendly form: `id/type/status TEXT`, `job_level INTEGER`, `parent_job_id/chain_id/profile/project_url/media_id/edit_url TEXT`, `bbox_json/ingredient_image_paths_json/output_files_json TEXT`, `generation_id/worker_id/error TEXT`, and timestamp text columns.
+- `jobs` stores the same shape in SQLite-friendly form: `id/type/status TEXT`, `job_level INTEGER`, `parent_job_id/chain_id/profile/project_url/media_id/edit_url TEXT`, `bbox_json/ingredient_image_paths_json/output_files_json TEXT`, `generation_id/worker_id/error/error_kind/error_message TEXT`, and timestamp text columns.
+- Canonical structured error kinds: `paid_tier_required` for free-tier L2 edit paywall and `credit_budget_exceeded` when previewed credit cost exceeds the configured job budget. `error` stays populated for legacy consumers; new callers should prefer `error_kind` plus `error_message`.
 - Current `jobs` DDL still includes an unused `safety_filter TEXT` column in fresh databases, but the live job API does not wire or persist that field. `TemplateStep` still accepts the legacy enum. See [docs/SAFETY_FILTER_NOTE.md](SAFETY_FILTER_NOTE.md).
 
 ### Chain models
@@ -536,6 +546,15 @@ Base route anchors live in [frontend/index.html](../frontend/index.html). Dynami
 | [frontend/js/pages/job-detail.js](../frontend/js/pages/job-detail.js) | Job Detail | `#job-detail` base anchor plus dynamic `#job-detail/{job_id}` and alias `#job/{job_id}` | `GET /api/jobs/{id}`, `GET /api/jobs/{id}/children`, `POST /api/jobs`, `DELETE /api/jobs/{id}`, `WS /ws/jobs` | `#job-detail` is an off-nav base anchor in `index.html`, `#job-detail/{job_id}` rides the base router, and `job-detail.js` patches routing additionally to accept the off-nav alias `#job/{job_id}`. |
 | [frontend/js/pages/chain-tree.js](../frontend/js/pages/chain-tree.js) | Chain Tree | `#chain-tree` | `GET /api/jobs`, `GET /api/chains/{id}`, `GET /api/jobs?chain_id=...` | Top-level nav route. |
 | [frontend/js/pages/engine-status.js](../frontend/js/pages/engine-status.js) | Engine Status | `#engine-status` | `GET /health`, `GET /api/jobs/counts`, `GET /api/profiles`, `GET /api/jobs?status=pending`, `GET /api/jobs?status=failed`, `GET /api/jobs/{id}`, `WS /ws/jobs` | Top-level nav route. |
+
+### 2026-05 live-verify checklist
+
+- Profiles required: `ngoctuandt20` free tier, currently inactive per project memory, and `s17524h173` paid ULTRA.
+- Credit budget estimate: ~50 credits total; keep `FLOW_MAX_CREDITS_PER_JOB=10` for smoke unless intentionally validating budget failure.
+- Free-tier capture: screenshot L2 edit view showing `Video editing is only available for paid subscribers`, `Upgrade` CTA, URL with `/edit/{media_id}`, and network/worker result carrying `error_kind="paid_tier_required"`.
+- Paid capture: screenshot project composer panel after opening chip, Video mode active, Frames/Ingredients source tabs visible, output count `x1`, Veo 3.1 Lite/Fast/Quality and Omni Flash model list.
+- Submit capture: network request/response for one paid ULTRA L1 submit plus completed job row containing `project_url`, `media_id`, `edit_url`, `error_kind=null`, and output file.
+- Regression capture: screenshot failed credit-guard path or mocked worker update showing `error_kind="credit_budget_exceeded"` and `error_message="cost N exceeds budget M"`.
 
 ## 10. Deferred / archived scope
 
