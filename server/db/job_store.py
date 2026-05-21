@@ -286,6 +286,10 @@ async def create_job(
     project_id_column = "project_id, " if include_project_id else ""
     project_id_placeholder = "?, " if include_project_id else ""
     project_id_value = (job.project_id,) if include_project_id else ()
+    include_voice_asset_id = "voice_asset_id" in columns
+    voice_asset_column = "voice_asset_id, " if include_voice_asset_id else ""
+    voice_asset_placeholder = "?, " if include_voice_asset_id else ""
+    voice_asset_value = (job.voice_asset_id,) if include_voice_asset_id else ()
     include_error_kind = "error_kind" in columns
     include_error_message = "error_message" in columns
     error_columns = ""
@@ -306,6 +310,7 @@ async def create_job(
             profile, {project_id_column}project_url, media_id, edit_url,
             prompt, model, aspect_ratio, bbox_json, direction,
             start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
+            {voice_asset_column}
             output_files_json, generation_id,
             worker_id, claimed_at, completed_at, error, {error_columns}
             created_at, updated_at
@@ -313,7 +318,7 @@ async def create_job(
             ?, ?, ?, ?, ?, ?,
             ?, {project_id_placeholder}?, ?, ?,
             ?, ?, ?, ?, ?,
-            ?, ?, ?, ?,
+            ?, ?, ?, ?, {voice_asset_placeholder}
             ?, ?,
             ?, ?, ?, ?, {error_placeholders}
             ?, ?
@@ -340,6 +345,7 @@ async def create_job(
             job.end_image_path,
             json.dumps(job.ingredient_image_paths) if job.ingredient_image_paths else None,
             job.ref_image_path,
+            *voice_asset_value,
             json.dumps(job.output_files) if job.output_files else None,
             job.generation_id,
             job.worker_id,
@@ -800,7 +806,7 @@ async def get_related_jobs(
                 profile, project_url, media_id, edit_url,
                 prompt, model, aspect_ratio, bbox_json, direction,
                 start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
-                output_files_json, generation_id,
+                voice_asset_id, output_files_json, generation_id,
                 worker_id, claimed_at, completed_at, error, error_kind, error_message,
                 created_at, updated_at
             ) AS (
@@ -810,7 +816,7 @@ async def get_related_jobs(
                     jobs.profile, jobs.project_url, jobs.media_id, jobs.edit_url,
                     jobs.prompt, jobs.model, jobs.aspect_ratio, jobs.bbox_json, jobs.direction,
                     jobs.start_image_path, jobs.end_image_path, jobs.ingredient_image_paths_json,
-                    jobs.ref_image_path, jobs.output_files_json, jobs.generation_id,
+                    jobs.ref_image_path, jobs.voice_asset_id, jobs.output_files_json, jobs.generation_id,
                     jobs.worker_id, jobs.claimed_at, jobs.completed_at, jobs.error,
                     jobs.error_kind, jobs.error_message,
                     jobs.created_at, jobs.updated_at
@@ -827,7 +833,7 @@ async def get_related_jobs(
                     parent.aspect_ratio, parent.bbox_json, parent.direction,
                     parent.start_image_path, parent.end_image_path,
                     parent.ingredient_image_paths_json, parent.ref_image_path,
-                    parent.output_files_json, parent.generation_id,
+                    parent.voice_asset_id, parent.output_files_json, parent.generation_id,
                     parent.worker_id, parent.claimed_at, parent.completed_at, parent.error,
                     parent.error_kind, parent.error_message,
                     parent.created_at, parent.updated_at

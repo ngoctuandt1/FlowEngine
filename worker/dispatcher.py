@@ -258,6 +258,9 @@ async def handle_text_to_video(job: dict) -> dict:
     project_id = job.get("project_id")
     if project_id:
         character_kwargs["known_characters"] = await list_characters(project_id=project_id)
+    voice_asset_id = job.get("voice_asset_id")
+    if voice_asset_id:
+        character_kwargs["voice_asset_id"] = voice_asset_id
 
     async with _client_lease(profile) as client:
         client._job_id = job["id"]

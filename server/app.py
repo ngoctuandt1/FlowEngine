@@ -27,6 +27,7 @@ from server.routes.projects import router as projects_router
 from server.routes.render import router as render_router
 from server.routes.share import router as share_router
 from server.routes import (
+    assets_router,
     characters_router,
     jobs_router,
     llm_router,
@@ -532,6 +533,7 @@ app.add_api_route("/api/auth/logout", api_logout, methods=["POST"])
 
 # -- API routes ----------------------------------------------------------------
 app.include_router(jobs_router)
+app.include_router(assets_router)
 app.include_router(share_router)
 app.include_router(projects_router)
 app.include_router(prompt_builder_router)

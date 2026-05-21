@@ -246,6 +246,7 @@ def _build_job(req: JobCreate, *, profile: Optional[str] = None,
         end_image_path=req.end_image_path,
         ingredient_image_paths=req.ingredient_image_paths,
         ref_image_path=req.ref_image_path,
+        voice_asset_id=req.voice_asset_id,
         profile=profile,
         job_level=job_level,
     )

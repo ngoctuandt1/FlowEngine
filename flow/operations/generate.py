@@ -271,6 +271,7 @@ async def text_to_video(
     prompt: str,
     model: str = DEFAULT_MODEL,
     aspect_ratio: str = "16:9",
+    voice_asset_id: str | None = None,
     free_mode: bool = True,
     known_characters=None,
 ) -> dict:
@@ -645,6 +646,10 @@ async def text_to_video(
     logger.info(f"Step 5: Type prompt ({len(prompt)} chars)")
     await _type_prompt(page, prompt)
 
+    if voice_asset_id:
+        logger.info("Step 5.5: Attach voice asset %s via composer UI", voice_asset_id)
+        await _select_voice_asset(page, voice_asset_id)
+
     # === Step 6: Verify count/credits, count baseline cards, clear captures, submit ===
     logger.info("Step 6: Verify L1 count and credit preview before submit")
     await _guard_l1_submit(page)
@@ -981,6 +986,11 @@ async def _type_prompt(page, prompt: str):
 
 _COMPOSER_MENU_BUTTON_SELECTOR = 'button[aria-haspopup="menu"]'
 _OPEN_COMPOSER_MENU_SELECTOR = '[role="menu"][data-state="open"]'
+_VOICE_ASSET_PICKER_SELECTOR = (
+    '[role="dialog"]:visible, '
+    '[role="menu"][data-state="open"]:visible, '
+    '[data-radix-popper-content-wrapper]:visible'
+)
 _AI_LOCATOR_TRUE_VALUES = {"1", "true", "yes", "on"}
 _COMPOSER_VIDEO_TAB_AI_CACHE_KEY = "flow.operations.generate.composer_video_tab"
 _COUNT_TOKEN_RE = re.compile(r"(?:x[1-4]|[1-4]x)", re.IGNORECASE)
@@ -1324,6 +1334,140 @@ async def _select_video_composer_subtab(page, label: str) -> None:
             await _close_composer_menu_by_click_outside(page)
             raise RuntimeError(f"Composer sub-tab did not become active: {label}; observed tabs={observed_tabs}")
     logger.info("Composer sub-tab active: %s", label)
+
+
+async def _select_voice_asset(page, voice_asset_id: str) -> None:
+    """Attach a Flow voice preset through the composer asset picker UI."""
+
+    voice_id = str(voice_asset_id or "").strip()
+    if not voice_id:
+        return
+
+    await _open_voice_asset_picker(page)
+    await _activate_voice_picker_tab(page)
+    await _click_voice_asset_option(page, voice_id)
+    await _verify_voice_asset_selected(page, voice_id)
+
+
+async def _open_voice_asset_picker(page) -> None:
+    selectors = [
+        "button[aria-label*='Add Media' i]",
+        "button[title*='Add Media' i]",
+        "button:has(i:text-is('add'))",
+        "button:has-text('add')",
+    ]
+    last_error: Exception | None = None
+    for selector in selectors:
+        try:
+            button = page.locator(selector).first
+            if not await button.is_visible(timeout=800):
+                continue
+            await button.click(timeout=3000)
+            await page.locator(_VOICE_ASSET_PICKER_SELECTOR).first.wait_for(
+                state="visible",
+                timeout=3000,
+            )
+            return
+        except Exception as exc:
+            last_error = exc
+            logger.debug("Voice picker trigger failed via %s: %s", selector, exc)
+    raise RuntimeError("Could not open voice asset picker") from last_error
+
+
+async def _activate_voice_picker_tab(page) -> None:
+    picker = page.locator(_VOICE_ASSET_PICKER_SELECTOR).first
+    tab = picker.locator(
+        '[role="tab"]:has-text("Voices"), '
+        'button:has-text("voice_selection"), '
+        'button:has-text("Voices")'
+    ).first
+    try:
+        await tab.click(timeout=3000)
+        await asyncio.sleep(0.2)
+        state = await tab.get_attribute("data-state", timeout=1000)
+        if state not in (None, "active"):
+            raise RuntimeError(f"Voices tab state is {state!r}")
+    except Exception as exc:
+        observed = await _voice_picker_diagnostics(page)
+        raise RuntimeError(f"Voice picker Voices tab not found; observed={observed}") from exc
+
+
+async def _click_voice_asset_option(page, voice_asset_id: str) -> None:
+    escaped = re.escape(voice_asset_id)
+    picker = page.locator(_VOICE_ASSET_PICKER_SELECTOR).first
+    option = picker.locator(
+        f'[data-media-id="{voice_asset_id}"], '
+        f'[data-id="{voice_asset_id}"], '
+        f'button:has-text("{voice_asset_id}"), '
+        f'[role="option"]:has-text("{voice_asset_id}")'
+    ).first
+    try:
+        await option.click(timeout=4000)
+        await asyncio.sleep(0.4)
+        return
+    except Exception as exc:
+        observed = await _voice_picker_diagnostics(page)
+        raise RuntimeError(
+            f"Voice asset {voice_asset_id!r} not selectable; observed={observed}; pattern={escaped}"
+        ) from exc
+
+
+async def _verify_voice_asset_selected(page, voice_asset_id: str) -> None:
+    try:
+        selected = await page.evaluate(
+            """(voiceId) => {
+                const visible = (element) => {
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    return style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && parseFloat(style.opacity || '1') > 0
+                        && rect.width > 0
+                        && rect.height > 0;
+                };
+                const selectedTokens = [
+                    '[aria-selected="true"]',
+                    '[data-state="checked"]',
+                    '[data-state="active"]',
+                    '[data-selected="true"]',
+                ];
+                return Array.from(document.querySelectorAll('button, [role="option"], [role="gridcell"], [data-media-id], [data-id]'))
+                    .filter(visible)
+                    .some((element) => {
+                        const text = (element.innerText || element.textContent || '').trim();
+                        const mediaId = element.getAttribute('data-media-id') || element.getAttribute('data-id') || '';
+                        if (mediaId !== voiceId && text !== voiceId) return false;
+                        return selectedTokens.some((selector) => element.matches(selector) || element.querySelector(selector));
+                    });
+            }""",
+            voice_asset_id,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Voice asset selection verification failed: {voice_asset_id}") from exc
+
+    if not selected:
+        candidates = await _voice_picker_diagnostics(page)
+        raise RuntimeError(
+            f"Voice asset selected state not verified for {voice_asset_id!r}; observed={candidates}"
+        )
+
+
+async def _voice_picker_diagnostics(page) -> list[dict]:
+    try:
+        return await page.evaluate(
+            """(selector) => Array.from(document.querySelectorAll(selector))
+                .slice(0, 20)
+                .map((element) => ({
+                    text: (element.innerText || element.textContent || '').trim().slice(0, 120),
+                    role: element.getAttribute('role') || '',
+                    state: element.getAttribute('data-state') || '',
+                    selected: element.getAttribute('aria-selected') || '',
+                    mediaId: element.getAttribute('data-media-id') || element.getAttribute('data-id') || '',
+                }))""",
+            f"{_VOICE_ASSET_PICKER_SELECTOR} button, {_VOICE_ASSET_PICKER_SELECTOR} [role='tab'], {_VOICE_ASSET_PICKER_SELECTOR} [role='option']",
+        )
+    except Exception as exc:
+        return [{"error": str(exc)}]
 
 
 async def _read_credit_preview_cost(page) -> int | None:

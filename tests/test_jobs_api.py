@@ -65,6 +65,47 @@ async def test_post_ingredients_to_video_round_trips_ingredient_paths(api_client
     assert body["ingredient_image_paths"] == ["uploads/a.png", "uploads/b.png"]
 
 
+async def test_post_l1_video_job_round_trips_voice_asset_id(api_client, temp_db_path):
+    response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "A narrated launch film",
+            "voice_asset_id": "achernar",
+        },
+    )
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["voice_asset_id"] == "achernar"
+
+    fetched = await api_client.get(f"/api/jobs/{created['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["voice_asset_id"] == "achernar"
+
+    async with aiosqlite.connect(temp_db_path) as db:
+        cursor = await db.execute(
+            "SELECT voice_asset_id FROM jobs WHERE id = ?",
+            (created["id"],),
+        )
+        row = await cursor.fetchone()
+    assert row == ("achernar",)
+
+
+async def test_post_unsupported_job_rejects_voice_asset_id(api_client):
+    response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-image",
+            "prompt": "A portrait",
+            "voice_asset_id": "achernar",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "voice_asset_id is only supported" in response.text
+
+
 async def test_post_job_with_missing_parent_returns_404(api_client):
     response = await api_client.post(
         "/api/jobs",
