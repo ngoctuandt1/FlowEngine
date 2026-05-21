@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS projects (
     description    TEXT,
     cover_chain_id TEXT,
     cover_job_id   TEXT,
+    deleted_at     TEXT,
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
 );
@@ -77,6 +78,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- Timestamps
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
+    deleted_at      TEXT,
 
     FOREIGN KEY (parent_job_id) REFERENCES jobs(id),
     FOREIGN KEY (chain_id) REFERENCES chains(id)
@@ -189,6 +191,15 @@ async def _ensure_job_column(db: aiosqlite.Connection, name: str, ddl: str) -> N
     columns = {row[1] for row in rows}
     if name not in columns:
         await db.execute(f"ALTER TABLE jobs ADD COLUMN {ddl}")
+
+
+async def _ensure_project_column(db: aiosqlite.Connection, name: str, ddl: str) -> None:
+    """Add a projects column if it is missing from an existing database."""
+    cursor = await db.execute("PRAGMA table_info(projects)")
+    rows = await cursor.fetchall()
+    columns = {row[1] for row in rows}
+    if name not in columns:
+        await db.execute(f"ALTER TABLE projects ADD COLUMN {ddl}")
 
 
 async def _ensure_character_column(
@@ -351,6 +362,8 @@ async def init_db() -> None:
         )
         await _ensure_job_column(db, "start_image_path", "start_image_path TEXT")
         await _ensure_job_column(db, "end_image_path", "end_image_path TEXT")
+        await _ensure_job_column(db, "deleted_at", "deleted_at TEXT")
+        await _ensure_project_column(db, "deleted_at", "deleted_at TEXT")
         # `project_id` stays as an application-level association. A DB-level
         # FK on `jobs.project_id` conflicts with existing chain/job flows
         # (L1 jobs self-seed chain_id before any chain row exists) and also

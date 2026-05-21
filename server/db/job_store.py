@@ -58,6 +58,19 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+async def _ensure_column(db, *, table: str, name: str, ddl: str) -> None:
+    cursor = await db.execute(f"PRAGMA table_info({table})")
+    rows = await cursor.fetchall()
+    if any(row[1] == name for row in rows):
+        return
+    await db.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
+async def _ensure_soft_delete_columns(db) -> None:
+    await _ensure_column(db, table="projects", name="deleted_at", ddl="deleted_at TEXT")
+    await _ensure_column(db, table="jobs", name="deleted_at", ddl="deleted_at TEXT")
+
+
 async def _broadcast_cascaded_jobs(jobs: list[Job]) -> None:
     if not jobs:
         return
@@ -83,17 +96,18 @@ async def _cascade_cancel_descendants(
         WITH RECURSIVE descendants(id, depth) AS (
             SELECT id, 1
             FROM jobs
-            WHERE parent_job_id = ?
+            WHERE parent_job_id = ? AND deleted_at IS NULL
             UNION ALL
             SELECT child.id, descendants.depth + 1
             FROM jobs AS child
             JOIN descendants ON child.parent_job_id = descendants.id
-            WHERE descendants.depth < ?
+            WHERE descendants.depth < ? AND child.deleted_at IS NULL
         )
         SELECT jobs.id
         FROM jobs
         JOIN descendants ON descendants.id = jobs.id
         WHERE jobs.status IN ({status_placeholders})
+          AND jobs.deleted_at IS NULL
         ORDER BY jobs.created_at ASC
         """,
         (
@@ -157,18 +171,19 @@ async def _resync_cascade_cancelled_descendants(db, parent_job_id: str, now: str
         WITH RECURSIVE descendants(id, depth) AS (
             SELECT id, 1
             FROM jobs
-            WHERE parent_job_id = ?
+            WHERE parent_job_id = ? AND deleted_at IS NULL
             UNION ALL
             SELECT child.id, descendants.depth + 1
             FROM jobs AS child
             JOIN descendants ON child.parent_job_id = descendants.id
-            WHERE descendants.depth < ?
+            WHERE descendants.depth < ? AND child.deleted_at IS NULL
         )
         SELECT jobs.id
         FROM jobs
         JOIN descendants ON descendants.id = jobs.id
         WHERE jobs.status = ?
           AND jobs.error LIKE ?
+          AND jobs.deleted_at IS NULL
         ORDER BY jobs.created_at ASC
         """,
         (
@@ -224,7 +239,7 @@ async def _resync_cascade_cancelled_descendants(db, parent_job_id: str, now: str
         target_ids,
     )
     cursor = await db.execute(
-        f"SELECT * FROM jobs WHERE id IN ({placeholders}) ORDER BY created_at ASC",
+        f"SELECT * FROM jobs WHERE id IN ({placeholders}) AND deleted_at IS NULL ORDER BY created_at ASC",
         target_ids,
     )
     rows = await cursor.fetchall()
@@ -256,7 +271,7 @@ async def _validate_project_id(db, job: Job, columns: set[str]) -> None:
     if "project_id" not in columns or not job.project_id:
         return
     cursor = await db.execute(
-        "SELECT 1 FROM projects WHERE id = ?",
+        "SELECT 1 FROM projects WHERE id = ? AND deleted_at IS NULL",
         (job.project_id,),
     )
     row = await cursor.fetchone()
@@ -280,6 +295,8 @@ async def create_job(
             return await create_job(job, db=db, commit=True)
 
     columns = await _job_columns(db)
+    await _ensure_soft_delete_columns(db)
+    columns.add("deleted_at")
     await _ensure_chain_row(db, job)
     await _validate_project_id(db, job, columns)
     include_project_id = "project_id" in columns
@@ -313,7 +330,7 @@ async def create_job(
             {voice_asset_column}
             output_files_json, generation_id,
             worker_id, claimed_at, completed_at, error, {error_columns}
-            created_at, updated_at
+            created_at, updated_at, deleted_at
         ) VALUES (
             ?, ?, ?, ?, ?, ?,
             ?, {project_id_placeholder}?, ?, ?,
@@ -321,7 +338,7 @@ async def create_job(
             ?, ?, ?, ?, {voice_asset_placeholder}
             ?, ?,
             ?, ?, ?, ?, {error_placeholders}
-            ?, ?
+            ?, ?, ?
         )
         """,
         (
@@ -355,6 +372,7 @@ async def create_job(
             *error_values,
             job.created_at.isoformat(),
             job.updated_at.isoformat(),
+            job.deleted_at.isoformat() if job.deleted_at else None,
         ),
     )
     if commit:
@@ -392,7 +410,11 @@ async def create_chain_with_jobs(chain: Chain, jobs: list[Job]) -> list[Job]:
 async def get_job(job_id: str) -> Optional[Job]:
     """Fetch a single job by id, or None."""
     async with get_db() as db:
-        cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+        await _ensure_soft_delete_columns(db)
+        cursor = await db.execute(
+            "SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL",
+            (job_id,),
+        )
         row = await cursor.fetchone()
         if row is None:
             return None
@@ -410,7 +432,7 @@ async def list_jobs(
     offset: int = 0,
 ) -> list[Job]:
     """List jobs with optional filters. limit=None returns all rows (internal use only)."""
-    clauses: list[str] = []
+    clauses: list[str] = ["deleted_at IS NULL"]
     params: list = []
     uses_fts = False
     query_text = ""
@@ -462,6 +484,7 @@ async def list_jobs(
             query_params.append(offset)
 
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         try:
             cursor = await db.execute(query, query_params)
         except sqlite3.OperationalError:
@@ -515,6 +538,7 @@ async def list_pending_l1_siblings(
         limit = 20
 
     clauses = [
+        "deleted_at IS NULL",
         "status = 'pending'",
         "job_level = 1",
         "type = 'text-to-video'",
@@ -536,6 +560,7 @@ async def list_pending_l1_siblings(
     params.append(limit)
 
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
         return [_row_to_job(r) for r in rows]
@@ -574,6 +599,7 @@ async def list_pending_l2_siblings(
 
     placeholders = ",".join("?" for _ in L2_OP_TYPES)
     clauses = [
+        "deleted_at IS NULL",
         "status = 'pending'",
         "job_level = 2",
         f"type IN ({placeholders})",
@@ -591,6 +617,7 @@ async def list_pending_l2_siblings(
     params.append(limit)
 
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
         return [_row_to_job(r) for r in rows]
@@ -626,6 +653,7 @@ async def list_pending_l3_siblings(
 
     placeholders = ",".join("?" for _ in L2_OP_TYPES)
     clauses = [
+        "deleted_at IS NULL",
         "status = 'pending'",
         "job_level >= 3",
         f"type IN ({placeholders})",
@@ -643,6 +671,7 @@ async def list_pending_l3_siblings(
     params.append(limit)
 
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
         return [_row_to_job(r) for r in rows]
@@ -683,10 +712,11 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
     params.append(_now_iso())
 
     params.append(job_id)
-    sql = f"UPDATE jobs SET {', '.join(sets)} WHERE id = ?"
+    sql = f"UPDATE jobs SET {', '.join(sets)} WHERE id = ? AND deleted_at IS NULL"
 
     cascaded_jobs: list[Job] = []
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         await db.execute("BEGIN IMMEDIATE")
         try:
             cursor = await db.execute(sql, params)
@@ -745,8 +775,13 @@ async def update_job(job_id: str, update: JobUpdate) -> Optional[Job]:
 async def get_children(parent_job_id: str) -> list[Job]:
     """Return all direct children of a given parent job."""
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         cursor = await db.execute(
-            "SELECT * FROM jobs WHERE parent_job_id = ? ORDER BY created_at",
+            """
+            SELECT * FROM jobs
+            WHERE parent_job_id = ? AND deleted_at IS NULL
+            ORDER BY created_at
+            """,
             (parent_job_id,),
         )
         rows = await cursor.fetchall()
@@ -766,11 +801,13 @@ async def list_completed_jobs_by_project_url(
     rows share the same `profile`).
     """
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         cursor = await db.execute(
             """
             SELECT * FROM jobs
             WHERE project_url = ?
               AND status = 'completed'
+              AND deleted_at IS NULL
             ORDER BY datetime(completed_at) DESC, datetime(updated_at) DESC
             LIMIT ?
             """,
@@ -783,8 +820,13 @@ async def list_completed_jobs_by_project_url(
 async def get_jobs_by_chain(chain_id: str) -> list[Job]:
     """Return every job on a chain, oldest first, in one query."""
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         cursor = await db.execute(
-            "SELECT * FROM jobs WHERE chain_id = ? ORDER BY created_at ASC",
+            """
+            SELECT * FROM jobs
+            WHERE chain_id = ? AND deleted_at IS NULL
+            ORDER BY created_at ASC
+            """,
             (chain_id,),
         )
         rows = await cursor.fetchall()
@@ -798,6 +840,7 @@ async def get_related_jobs(
 ) -> Optional[dict]:
     """Fetch one job's lineage, adjacent relatives, and root-scoped stats."""
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         lineage_cursor = await db.execute(
             """
             WITH RECURSIVE ancestors(
@@ -821,7 +864,7 @@ async def get_related_jobs(
                     jobs.error_kind, jobs.error_message,
                     jobs.created_at, jobs.updated_at
                 FROM jobs
-                WHERE id = ?
+                WHERE id = ? AND deleted_at IS NULL
 
                 UNION ALL
 
@@ -840,6 +883,7 @@ async def get_related_jobs(
                 FROM jobs AS parent
                 JOIN ancestors ON ancestors.parent_job_id = parent.id
                 WHERE ancestors.parent_job_id IS NOT NULL
+                  AND parent.deleted_at IS NULL
                   AND ancestors.depth < ?
             ),
             root_job AS (
@@ -852,6 +896,7 @@ async def get_related_jobs(
                 SELECT 0, jobs.id, jobs.status
                 FROM jobs
                 JOIN root_job ON jobs.id = root_job.id
+                WHERE jobs.deleted_at IS NULL
 
                 UNION ALL
 
@@ -859,6 +904,7 @@ async def get_related_jobs(
                 FROM jobs AS child
                 JOIN chain_tree ON child.parent_job_id = chain_tree.id
                 WHERE chain_tree.depth < ?
+                  AND child.deleted_at IS NULL
             )
             SELECT
                 ancestors.*,
@@ -883,8 +929,11 @@ async def get_related_jobs(
                 END AS relation,
                 jobs.*
             FROM jobs
-            WHERE parent_job_id = ?
-               OR (? IS NOT NULL AND parent_job_id = ? AND id <> ?)
+            WHERE deleted_at IS NULL
+              AND (
+                  parent_job_id = ?
+                  OR (? IS NOT NULL AND parent_job_id = ? AND id <> ?)
+              )
             ORDER BY created_at ASC
             """,
             (
@@ -970,8 +1019,10 @@ async def claim_next_job(
                 FROM jobs j
                 JOIN jobs parent ON j.parent_job_id = parent.id
                 WHERE j.status = 'pending'
+                  AND j.deleted_at IS NULL
                   AND j.job_level >= 2
                   AND parent.status = 'completed'
+                  AND parent.deleted_at IS NULL
                   AND parent.profile IN ({placeholders})
                   AND parent.project_url IS NOT NULL
                   AND parent.media_id IS NOT NULL
@@ -980,6 +1031,7 @@ async def claim_next_job(
                       WHERE active.project_url = parent.project_url
                         AND active.project_url IS NOT NULL
                         AND active.status IN ('claimed', 'running')
+                        AND active.deleted_at IS NULL
                   ) < ?
                 ORDER BY j.created_at ASC
                 LIMIT 1
@@ -994,7 +1046,7 @@ async def claim_next_job(
                 parent_select = "SELECT profile, project_url, media_id, edit_url"
                 if "project_id" in columns:
                     parent_select += ", project_id"
-                parent_select += " FROM jobs WHERE id = ?"
+                parent_select += " FROM jobs WHERE id = ? AND deleted_at IS NULL"
                 parent_cur = await db.execute(
                     parent_select,
                     (job_dict["parent_job_id"],),
@@ -1056,6 +1108,7 @@ async def claim_next_job(
                 SELECT *
                 FROM jobs
                 WHERE status = 'pending'
+                  AND deleted_at IS NULL
                   AND job_level = 1
                   AND (profile IS NULL OR profile IN ({placeholders}))
                 ORDER BY created_at ASC
@@ -1077,7 +1130,7 @@ async def claim_next_job(
                         claimed_at = ?,
                         profile = ?,
                         updated_at = ?
-                    WHERE id = ?
+                    WHERE id = ? AND deleted_at IS NULL
                     """,
                     (worker_id, now, assigned_profile, now, job_dict["id"]),
                 )
@@ -1180,9 +1233,11 @@ async def claim_next_batch(
                     FROM jobs j
                     JOIN jobs parent ON j.parent_job_id = parent.id
                     WHERE j.status = 'pending'
+                      AND j.deleted_at IS NULL
                       AND j.job_level >= 2
                       {excluded_clause}
                       AND parent.status = 'completed'
+                      AND parent.deleted_at IS NULL
                       AND parent.profile IN ({ph})
                       AND parent.project_url IS NOT NULL
                       AND parent.media_id IS NOT NULL
@@ -1191,6 +1246,7 @@ async def claim_next_batch(
                           WHERE active.project_url = parent.project_url
                             AND active.project_url IS NOT NULL
                             AND active.status IN ('claimed', 'running')
+                            AND active.deleted_at IS NULL
                       ) < ?
                     ORDER BY j.created_at ASC
                     LIMIT ?
@@ -1216,7 +1272,7 @@ async def claim_next_batch(
                     parent_select = "SELECT profile, project_url, media_id, edit_url"
                     if include_project_id:
                         parent_select += ", project_id"
-                    parent_select += " FROM jobs WHERE id = ?"
+                    parent_select += " FROM jobs WHERE id = ? AND deleted_at IS NULL"
                     parent_cur = await db.execute(
                         parent_select, (job_dict["parent_job_id"],),
                     )
@@ -1324,6 +1380,7 @@ async def claim_next_batch(
                         SELECT *
                         FROM jobs
                         WHERE status = 'pending'
+                          AND deleted_at IS NULL
                           AND job_level = 1
                           {excluded_clause}
                           AND (profile IS NULL OR profile IN ({ph}))
@@ -1358,7 +1415,7 @@ async def claim_next_batch(
                             claimed_at = ?,
                             profile = ?,
                             updated_at = ?
-                        WHERE id = ? AND status = 'pending'
+                        WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
                         """,
                         (
                             worker_id, now, assigned_profile, now, job_dict["id"],
@@ -1408,10 +1465,14 @@ async def claim_specific_pending_job(
     """
     now = _now_iso()
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         await db.execute("BEGIN IMMEDIATE")
         try:
             cursor = await db.execute(
-                "SELECT * FROM jobs WHERE id = ? AND status = 'pending'",
+                """
+                SELECT * FROM jobs
+                WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
+                """,
                 (job_id,),
             )
             row = await cursor.fetchone()
@@ -1429,7 +1490,7 @@ async def claim_specific_pending_job(
                     claimed_at = ?,
                     profile = ?,
                     updated_at = ?
-                WHERE id = ? AND status = 'pending'
+                WHERE id = ? AND status = 'pending' AND deleted_at IS NULL
                 """,
                 (worker_id, now, assigned_profile, now, job_id),
             )
@@ -1452,8 +1513,14 @@ async def claim_specific_pending_job(
 async def get_job_counts() -> dict[str, int]:
     """Return job counts grouped by status."""
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         cursor = await db.execute(
-            "SELECT status, COUNT(*) as cnt FROM jobs GROUP BY status"
+            """
+            SELECT status, COUNT(*) as cnt
+            FROM jobs
+            WHERE deleted_at IS NULL
+            GROUP BY status
+            """
         )
         rows = await cursor.fetchall()
         counts = {s.value: 0 for s in JobStatus}
@@ -1467,10 +1534,12 @@ async def recover_stale_jobs(stale_minutes: int = 30) -> list[Job]:
     cutoff = (datetime.now(UTC) - timedelta(minutes=stale_minutes)).isoformat()
 
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         cursor = await db.execute(
             """
             SELECT * FROM jobs
             WHERE status IN ('claimed', 'running')
+              AND deleted_at IS NULL
               AND updated_at < ?
             ORDER BY created_at ASC
             """,
@@ -1514,11 +1583,15 @@ async def recover_stale_jobs(stale_minutes: int = 30) -> list[Job]:
 
 
 async def delete_job(job_id: str) -> Optional[Job]:
-    """Delete only leaf pending jobs; otherwise preserve the row and cancel it."""
+    """Soft-delete an active leaf job while preserving execution status."""
     async with get_db() as db:
+        await _ensure_soft_delete_columns(db)
         await db.execute("BEGIN IMMEDIATE")
         try:
-            cursor = await db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+            cursor = await db.execute(
+                "SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL",
+                (job_id,),
+            )
             row = await cursor.fetchone()
             if row is None:
                 await db.execute("ROLLBACK")
@@ -1526,42 +1599,35 @@ async def delete_job(job_id: str) -> Optional[Job]:
 
             job = _row_to_job(row)
             child_cursor = await db.execute(
-                "SELECT 1 FROM jobs WHERE parent_job_id = ? LIMIT 1",
+                "SELECT 1 FROM jobs WHERE parent_job_id = ? AND deleted_at IS NULL LIMIT 1",
                 (job_id,),
             )
             has_descendants = await child_cursor.fetchone() is not None
+            if has_descendants:
+                await db.execute("ROLLBACK")
+                return None
 
-            if job.status == JobStatus.PENDING and not has_descendants:
-                await db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-                await db.commit()
-                job.status = JobStatus.CANCELLED
-                return job
-
-            if job.status != JobStatus.CANCELLED:
-                now = _now_iso()
-                await db.execute(
-                    """
-                    UPDATE jobs
-                    SET status = 'cancelled',
-                        completed_at = COALESCE(completed_at, ?),
-                        updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (now, now, job_id),
-                )
-                await db.execute(
-                    """
-                    UPDATE profiles
-                    SET current_job_id = NULL,
-                        worker_id = NULL
-                    WHERE current_job_id = ?
-                    """,
-                    (job_id,),
-                )
-                await db.commit()
-                return await get_job(job_id)
-
+            now = _now_iso()
+            await db.execute(
+                """
+                UPDATE jobs
+                SET deleted_at = ?,
+                    updated_at = ?
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (now, now, job_id),
+            )
+            await db.execute(
+                """
+                UPDATE profiles
+                SET current_job_id = NULL,
+                    worker_id = NULL
+                WHERE current_job_id = ?
+                """,
+                (job_id,),
+            )
             await db.commit()
+            job.deleted_at = datetime.fromisoformat(now)
             return job
         except Exception:
             await db.execute("ROLLBACK")

@@ -1,6 +1,7 @@
 """Job management endpoints."""
 
 import logging
+import sqlite3
 import uuid
 from typing import Optional
 from urllib.parse import quote
@@ -441,7 +442,15 @@ async def create_single_job(req: JobCreate):
     job = _build_job(req, profile=profile, chain_id=chain_id, job_level=job_level)
     if job.chain_id is None:
         job.chain_id = job.id
-    await create_job(job)
+    try:
+        await create_job(job)
+    except sqlite3.IntegrityError as exc:
+        if req.project_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Project {req.project_id} not found or deleted",
+            ) from exc
+        raise
     await broadcast_job_update(job)
     return job
 
@@ -497,7 +506,15 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
         prev_id = job.id
         level += 1
 
-    await create_chain_with_jobs(chain, jobs)
+    try:
+        await create_chain_with_jobs(chain, jobs)
+    except sqlite3.IntegrityError as exc:
+        if effective_project_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Project {effective_project_id} not found or deleted",
+            ) from exc
+        raise
 
     await broadcast_job_update(jobs[0])  # notify once for chain head
     return {"chain_id": chain.id, "jobs": jobs}
@@ -704,7 +721,9 @@ async def cancel_job(job_id: str):
     if job is None:
         raise HTTPException(404, f"Job {job_id} not found")
 
-    await delete_job(job_id)
+    deleted = await delete_job(job_id)
+    if deleted is None:
+        raise HTTPException(409, f"Job {job_id} has active child jobs")
     job.status = JobStatus.CANCELLED
     await broadcast_job_update(job)
     return {"deleted": job_id}

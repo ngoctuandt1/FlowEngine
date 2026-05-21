@@ -140,7 +140,7 @@ async def test_create_job_rejects_unknown_project_id_on_fresh_schema(db):
         await create_job(job)
 
 
-async def test_delete_project_nulls_linked_job_project_ids(db):
+async def test_delete_project_preserves_linked_job_project_ids(db):
     project = Project(name="Linked Project")
     await create_project(project)
 
@@ -154,7 +154,7 @@ async def test_delete_project_nulls_linked_job_project_ids(db):
     assert deleted is True
 
     updated = await get_job("f2-project-id-b")
-    assert updated.project_id is None
+    assert updated.project_id == project.id
 
 
 async def test_requeue_clears_job_and_profile_claim_metadata(db):
