@@ -49,7 +49,7 @@
               <p class="muted">Mint, copy, or revoke public share link.</p>
             </div>
           </div>
-          <div class="card" data-job-share-card data-job-id="${escapeHtml(jobId)}">
+          <div class="card" data-job-share-card data-job-id="${App.escapeHtml(jobId)}">
             <div class="form-row">
               <label>Job ID</label>
               <code>${escapeHtml(jobId)}</code>
@@ -115,4 +115,3 @@
 
   App.register(page);
 })();
-

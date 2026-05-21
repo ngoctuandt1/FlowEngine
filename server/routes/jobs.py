@@ -36,6 +36,7 @@ from server.db.job_store import (
     recover_stale_jobs,
     update_job,
 )
+from server.db.share_store import get_job_share
 from server.routes.ws import broadcast_job_update
 
 router = APIRouter(prefix="/api", tags=["jobs"])
@@ -671,7 +672,16 @@ async def get_single_job(job_id: str):
     job = await get_job(job_id)
     if job is None:
         raise HTTPException(404, f"Job {job_id} not found")
-    return job
+    body = job.model_dump(mode="json")
+    share = await get_job_share(job_id)
+    if share and share.share_token and share.share_url and share.revoked_at is None:
+        body.update(
+            share_token=share.share_token,
+            share_url=share.share_url,
+            shared_at=share.shared_at.isoformat() if share.shared_at else None,
+            revoked_at=None,
+        )
+    return body
 
 
 @router.get("/jobs/{job_id}/children")

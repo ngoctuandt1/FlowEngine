@@ -13,6 +13,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 logger = logging.getLogger(__name__)
 
 HTTPS_URL_RE = re.compile(r"https://[^\s\"'<>]+")
+FLOW_SHARE_HOSTS = frozenset({"labs.google"})
+FLOW_SHARE_PATH_RE = re.compile(r"^/fx/tools/flow/project/[^/]+/share/[^/]+/?$")
 SHARE_BUTTON_SELECTORS = (
     "button:has-text('Share')",
     "button:has(i:text-is('share'))",
@@ -57,7 +59,11 @@ def _extract_https_url(text: str | None) -> str | None:
     for match in HTTPS_URL_RE.finditer(text):
         candidate = match.group(0).rstrip(".,;)]")
         parsed = urlparse(candidate)
-        if parsed.scheme == "https" and parsed.netloc:
+        if (
+            parsed.scheme == "https"
+            and parsed.netloc.lower() in FLOW_SHARE_HOSTS
+            and FLOW_SHARE_PATH_RE.fullmatch(parsed.path)
+        ):
             return candidate
     return None
 
@@ -117,11 +123,16 @@ async def copy_flow_share_link(page, *, timeout_ms: int = 10_000) -> FlowShareLi
     logger.info("Flow share button clicked")
     modal = await _wait_for_share_modal(page, timeout_ms)
 
+    clipboard_before = await _clipboard_text(page)
+
     copy_selector = await _click_first_visible(page, COPY_LINK_SELECTORS, timeout_ms)
     if copy_selector is not None:
         logger.info("Flow share copy action clicked")
 
-    candidates: list[str | None] = [await _clipboard_text(page)]
+    clipboard_after = await _clipboard_text(page)
+    candidates: list[str | None] = []
+    if clipboard_after != clipboard_before:
+        candidates.append(clipboard_after)
     try:
         candidates.append(await modal.inner_text(timeout=min(timeout_ms, 2000)))
     except (PlaywrightTimeoutError, TypeError):
@@ -135,4 +146,4 @@ async def copy_flow_share_link(page, *, timeout_ms: int = 10_000) -> FlowShareLi
             logger.info("Flow share link captured")
             return FlowShareLink(url=share_url, token=_token_from_url(share_url))
 
-    raise FlowShareLinkNotFound("Flow share modal did not expose an HTTPS URL")
+    raise FlowShareLinkNotFound("Flow share modal did not expose an expected Flow share URL")
