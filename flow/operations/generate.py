@@ -308,6 +308,11 @@ async def text_to_video(
 
     page = client.page
     capture_ready = _install_t2v_capture_if_enabled(client)
+    if voice_asset_id and capture_ready:
+        logger.info(
+            "Skipping T2V reverse replay because voice attach has no captured request body support"
+        )
+        capture_ready = False
     if capture_ready:
         replay_result = await _try_t2v_replay_from_template(client, prompt)
         if replay_result is not None:

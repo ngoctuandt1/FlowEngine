@@ -31,7 +31,7 @@
   let lastResolvedParentId = '';
   const MAX_INGREDIENT_IMAGES = 10;
   const LEVEL_1_TYPES = new Set(['text-to-video', 'frames-to-video', 'ingredients-to-video', 'text-to-image']);
-  const VOICE_SUPPORTED_TYPES = new Set(['text-to-video', 'frames-to-video', 'ingredients-to-video']);
+  const VOICE_SUPPORTED_TYPES = new Set(['text-to-video']);
 
   // ---- helpers --------------------------------------------------------------
 

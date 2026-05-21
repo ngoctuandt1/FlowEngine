@@ -1,6 +1,7 @@
 """Asset catalog endpoints."""
 
 from datetime import UTC, datetime
+import sqlite3
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -69,7 +70,10 @@ async def delete_asset_endpoint(asset_id: str) -> dict[str, str]:
         raise HTTPException(404, f"Asset {asset_id} not found")
     if existing.source == "flow_preset":
         raise HTTPException(409, "Flow preset assets are read-only")
-    deleted = await delete_asset(asset_id)
+    try:
+        deleted = await delete_asset(asset_id)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, "Asset is referenced by jobs") from exc
     if not deleted:
         raise HTTPException(404, f"Asset {asset_id} not found")
     return {"deleted": asset_id}

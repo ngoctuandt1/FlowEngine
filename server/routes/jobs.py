@@ -37,6 +37,7 @@ from server.db.job_store import (
     recover_stale_jobs,
     update_job,
 )
+from server.db.asset_store import get_asset_type
 from server.db.share_store import get_job_share
 from server.routes.ws import broadcast_job_update
 
@@ -224,8 +225,17 @@ def _resolve_model(req: JobCreate) -> str:
 
 # -- Helpers -------------------------------------------------------------------
 
-def validate_job_create(req: JobCreate) -> None:
+async def validate_job_create(req: JobCreate) -> None:
     """Reserved for route-level job validation that Pydantic does not cover."""
+    if req.voice_asset_id is None:
+        return
+    if req.parent_job_id is not None:
+        raise HTTPException(422, "voice_asset_id is only supported for L1 video jobs")
+    asset_type = await get_asset_type(req.voice_asset_id)
+    if asset_type is None:
+        raise HTTPException(422, f"voice_asset_id not found: {req.voice_asset_id}")
+    if asset_type != "voice":
+        raise HTTPException(422, f"voice_asset_id must reference a voice asset: {req.voice_asset_id}")
 
 
 def _build_job(req: JobCreate, *, profile: Optional[str] = None,
@@ -438,7 +448,7 @@ async def create_single_job(req: JobCreate):
             detail=INV_A_PROFILE_REQUIRED_DETAIL,
         )
 
-    validate_job_create(req)
+    await validate_job_create(req)
     job = _build_job(req, profile=profile, chain_id=chain_id, job_level=job_level)
     if job.chain_id is None:
         job.chain_id = job.id
@@ -496,11 +506,11 @@ async def create_chain_endpoint(req: ChainCreate) -> ChainCreateResponse:  # POS
             )
 
     for step in req.jobs:
-        validate_job_create(step)
         step.parent_job_id = prev_id
         step.chain_id = chain.id
         step.profile = effective_profile
         step.project_id = effective_project_id
+        await validate_job_create(step)
         job = _build_job(step, profile=effective_profile, chain_id=chain.id, job_level=level)
         jobs.append(job)
         prev_id = job.id

@@ -92,3 +92,23 @@ async def test_dispatcher_passes_voice_asset_id_to_text_to_video(monkeypatch):
     )
 
     assert calls[0]["voice_asset_id"] == "achernar"
+
+
+@pytest.mark.asyncio
+async def test_text_to_video_skips_reverse_replay_when_voice_asset_set(monkeypatch):
+    monkeypatch.setattr(generate, "_install_t2v_capture_if_enabled", MagicMock(return_value=True))
+    replay = AsyncMock(return_value={"output_files": ["replayed.mp4"]})
+    monkeypatch.setattr(generate, "_try_t2v_replay_from_template", replay)
+
+    page = MagicMock()
+    page.goto = AsyncMock(side_effect=RuntimeError("ui path reached"))
+    client = SimpleNamespace(page=page, profile_name="profile-a")
+
+    with pytest.raises(RuntimeError, match="ui path reached"):
+        await generate.text_to_video(
+            client,
+            prompt="Say hello",
+            voice_asset_id="achernar",
+        )
+
+    replay.assert_not_awaited()

@@ -66,6 +66,12 @@ async def test_post_ingredients_to_video_round_trips_ingredient_paths(api_client
 
 
 async def test_post_l1_video_job_round_trips_voice_asset_id(api_client, temp_db_path):
+    asset_response = await api_client.post(
+        "/api/assets",
+        json={"id": "achernar", "type": "voice", "name": "Achernar"},
+    )
+    assert asset_response.status_code == 201
+
     response = await api_client.post(
         "/api/jobs",
         json={
@@ -92,6 +98,69 @@ async def test_post_l1_video_job_round_trips_voice_asset_id(api_client, temp_db_
     assert row == ("achernar",)
 
 
+async def test_post_voice_job_rejects_missing_asset(api_client):
+    response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "A narrated launch film",
+            "voice_asset_id": "missing-voice",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "voice_asset_id not found" in response.text
+
+
+async def test_post_voice_job_rejects_deleted_asset(api_client):
+    asset_response = await api_client.post(
+        "/api/assets",
+        json={"id": "deleted-voice", "type": "voice", "name": "Deleted Voice"},
+    )
+    assert asset_response.status_code == 201
+    delete_response = await api_client.delete("/api/assets/deleted-voice")
+    assert delete_response.status_code == 200
+
+    response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "A narrated launch film",
+            "voice_asset_id": "deleted-voice",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "voice_asset_id not found" in response.text
+
+
+async def test_post_voice_job_rejects_non_voice_asset_type(api_client, temp_db_path):
+    from server.db.asset_store import ensure_asset_schema
+
+    await ensure_asset_schema()
+    async with aiosqlite.connect(temp_db_path) as db:
+        await db.execute(
+            """
+            INSERT INTO assets (id, type, name, source, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("future-image", "image", "Future Image", "user", "2026-05-21T00:00:00+00:00"),
+        )
+        await db.commit()
+
+    response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "A narrated launch film",
+            "voice_asset_id": "future-image",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "must reference a voice asset" in response.text
+
+
 async def test_post_unsupported_job_rejects_voice_asset_id(api_client):
     response = await api_client.post(
         "/api/jobs",
@@ -104,6 +173,32 @@ async def test_post_unsupported_job_rejects_voice_asset_id(api_client):
 
     assert response.status_code == 422
     assert "voice_asset_id is only supported" in response.text
+
+
+async def test_frames_and_ingredients_reject_voice_asset_id(api_client):
+    frames_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "frames-to-video",
+            "prompt": "A narrated frame film",
+            "start_image_path": "uploads/start.png",
+            "voice_asset_id": "achernar",
+        },
+    )
+    ingredients_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "ingredients-to-video",
+            "prompt": "A narrated ingredient film",
+            "ingredient_image_paths": ["uploads/ref.png"],
+            "voice_asset_id": "achernar",
+        },
+    )
+
+    assert frames_response.status_code == 422
+    assert ingredients_response.status_code == 422
+    assert "voice_asset_id is only supported" in frames_response.text
+    assert "voice_asset_id is only supported" in ingredients_response.text
 
 
 async def test_post_job_with_missing_parent_returns_404(api_client):

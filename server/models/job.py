@@ -95,8 +95,6 @@ class JobStatus(str, Enum):
 
 VOICE_SUPPORTED_JOB_TYPES = frozenset({
     JobType.TEXT_TO_VIDEO,
-    JobType.FRAMES_TO_VIDEO,
-    JobType.INGREDIENTS_TO_VIDEO,
 })
 
 
@@ -163,7 +161,7 @@ class JobCreate(BaseModel):
         if self.voice_asset_id is not None and self.type not in VOICE_SUPPORTED_JOB_TYPES:
             supported = ", ".join(sorted(job_type.value for job_type in VOICE_SUPPORTED_JOB_TYPES))
             raise ValueError(
-                f"voice_asset_id is only supported for L1 video jobs: {supported}"
+                f"voice_asset_id is only supported for UI-attached video jobs: {supported}"
             )
 
         if self.type == JobType.FRAMES_TO_VIDEO:
@@ -285,7 +283,6 @@ class JobUpdate(BaseModel):
     profile: Optional[str] = None
     output_files: Optional[list[str]] = None
     generation_id: Optional[str] = None
-    voice_asset_id: str | None = None
     error: Optional[str] = None
     error_kind: str | None = None
     error_message: str | None = None

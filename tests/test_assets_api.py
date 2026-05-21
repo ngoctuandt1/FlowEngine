@@ -82,6 +82,57 @@ async def test_voice_asset_crud_and_read_only_presets(api_client):
     assert readonly_response.status_code == 409
 
 
+async def test_asset_create_rejects_forged_flow_preset_source(api_client):
+    response = await api_client.post(
+        "/api/assets",
+        json={
+            "type": "voice",
+            "name": "Forged Preset",
+            "source": "flow_preset",
+            "sample_url": "https://example.test/voice.wav",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "flow_preset assets can only be imported" in response.text
+
+
+async def test_asset_create_rejects_unsafe_sample_url(api_client):
+    response = await api_client.post(
+        "/api/assets",
+        json={
+            "type": "voice",
+            "name": "Unsafe Sample",
+            "sample_url": "javascript:alert(1)",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "sample_url must be https:// or /uploads/..." in response.text
+
+
+async def test_delete_referenced_voice_asset_is_blocked(api_client):
+    asset_response = await api_client.post(
+        "/api/assets",
+        json={"id": "narrator", "type": "voice", "name": "Narrator"},
+    )
+    assert asset_response.status_code == 201
+    job_response = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "A narrated launch film",
+            "voice_asset_id": "narrator",
+        },
+    )
+    assert job_response.status_code == 201
+
+    delete_response = await api_client.delete("/api/assets/narrator")
+
+    assert delete_response.status_code == 409
+    assert "referenced by jobs" in delete_response.text
+
+
 async def test_voice_import_accepts_discovery_capture_preview(api_client):
     capture = json.loads(Path("docs/discovery_extension_captures.jsonl").read_text().splitlines()[72])
 

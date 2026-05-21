@@ -120,6 +120,25 @@ async def get_asset(asset_id: str) -> Asset | None:
     return _row_to_asset(row) if row else None
 
 
+async def get_asset_type(asset_id: str) -> str | None:
+    await ensure_asset_schema()
+    async with get_db() as db:
+        cursor = await db.execute("SELECT type FROM assets WHERE id = ?", (asset_id,))
+        row = await cursor.fetchone()
+    return str(row[0]) if row else None
+
+
+async def asset_reference_count(asset_id: str) -> int:
+    await ensure_asset_schema()
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM jobs WHERE voice_asset_id = ?",
+            (asset_id,),
+        )
+        row = await cursor.fetchone()
+    return int(row[0] if row else 0)
+
+
 async def list_assets(asset_type: AssetType | None = None) -> list[Asset]:
     await ensure_asset_schema()
     if asset_type is None:
@@ -154,6 +173,8 @@ async def update_asset(asset_id: str, update: AssetUpdate) -> Asset | None:
 
 async def delete_asset(asset_id: str) -> bool:
     await ensure_asset_schema()
+    if await asset_reference_count(asset_id) > 0:
+        raise sqlite3.IntegrityError("asset is referenced by jobs.voice_asset_id")
     async with get_db() as db:
         cursor = await db.execute(
             "DELETE FROM assets WHERE id = ? AND source != 'flow_preset'",
