@@ -46,7 +46,7 @@ async def test_post_ingredients_to_video_round_trips_ingredient_paths(api_client
     payload = {
         "type": "ingredients-to-video",
         "prompt": "A cinematic cooking reel with fresh herbs and bright produce",
-        "model": "veo-3.1-fast-lp",
+        "model": "veo-3.1-fast",
         "aspect_ratio": "16:9",
         "ingredient_image_paths": ["uploads/a.png", "uploads/b.png"],
     }
@@ -239,6 +239,40 @@ async def test_worker_patch_ignores_project_id_reassignment(api_client):
     fetched = await api_client.get(f"/api/jobs/{job_id}")
     assert fetched.status_code == 200
     assert fetched.json()["project_id"] == project_id
+
+
+async def test_worker_patch_persists_structured_error_fields(api_client):
+    created = await api_client.post(
+        "/api/jobs",
+        json={
+            "type": "text-to-video",
+            "prompt": "Pinned error fields",
+        },
+    )
+    assert created.status_code == 201
+    job_id = created.json()["id"]
+
+    patch_response = await api_client.put(
+        f"/api/worker/jobs/{job_id}",
+        json={
+            "status": "failed",
+            "error": "paid tier required",
+            "error_kind": "paid_tier_required",
+            "error_message": "Flow paid plan required for L2 edit",
+        },
+    )
+
+    assert patch_response.status_code == 200
+    patched = patch_response.json()
+    assert patched["error"] == "paid tier required"
+    assert patched["error_kind"] == "paid_tier_required"
+    assert patched["error_message"] == "Flow paid plan required for L2 edit"
+
+    fetched = await api_client.get(f"/api/jobs/{job_id}")
+    assert fetched.status_code == 200
+    body = fetched.json()
+    assert body["error_kind"] == "paid_tier_required"
+    assert body["error_message"] == "Flow paid plan required for L2 edit"
 
 
 async def test_post_child_job_inherits_chain_id_from_pending_parent(api_client):
@@ -462,7 +496,7 @@ async def test_jobs_fts_backfill_covers_existing_chained_rows(temp_db_path):
                 edit_url TEXT,
                 project_id TEXT,
                 prompt TEXT,
-                model TEXT NOT NULL DEFAULT 'veo-3.1-fast-lp',
+                model TEXT NOT NULL DEFAULT 'veo-3.1-lite',
                 aspect_ratio TEXT NOT NULL DEFAULT '16:9',
                 bbox_json TEXT,
                 direction TEXT,
@@ -477,6 +511,8 @@ async def test_jobs_fts_backfill_covers_existing_chained_rows(temp_db_path):
                 claimed_at TEXT,
                 completed_at TEXT,
                 error TEXT,
+                error_kind TEXT,
+                error_message TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -578,7 +614,7 @@ async def test_list_jobs_q_fts_prefix_scale(api_client, temp_db_path):
             f"scale-profile-{index:04d}",
             f"https://labs.google/fx/tools/flow/projects/ScaleProject{index:04d}",
             "perf seed",
-            "veo-3.1-fast-lp",
+            "veo-3.1-fast",
             "16:9",
             created_at,
             created_at,

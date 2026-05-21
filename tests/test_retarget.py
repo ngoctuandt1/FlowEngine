@@ -46,7 +46,7 @@ async def test_post_retarget_happy_path_queues_frames_job(api_client, monkeypatc
             "new_prompt": "Turn this into a rainy cyberpunk street scene",
             "profile": "acct-a",
             "aspect_ratio": "9:16",
-            "model": "veo-3.1-fast-lp",
+            "model": "veo-3.1-fast",
             "frame_seconds": 2.5,
         },
     )
@@ -69,7 +69,7 @@ async def test_post_retarget_happy_path_queues_frames_job(api_client, monkeypatc
     assert job.prompt == "Turn this into a rainy cyberpunk street scene"
     assert job.profile == "acct-a"
     assert job.aspect_ratio == "9:16"
-    assert job.model == "veo-3.1-fast-lp"
+    assert job.model == "veo-3.1-fast"
     assert job.start_image_path == body["frame_path"]
 
 

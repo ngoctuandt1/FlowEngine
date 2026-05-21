@@ -195,6 +195,8 @@ async def _resync_cascade_cancelled_descendants(db, parent_job_id: str, now: str
         UPDATE jobs
         SET status = ?,
             error = NULL,
+            error_kind = NULL,
+            error_message = NULL,
             completed_at = NULL,
             output_files_json = NULL,
             worker_id = NULL,
@@ -284,6 +286,19 @@ async def create_job(
     project_id_column = "project_id, " if include_project_id else ""
     project_id_placeholder = "?, " if include_project_id else ""
     project_id_value = (job.project_id,) if include_project_id else ()
+    include_error_kind = "error_kind" in columns
+    include_error_message = "error_message" in columns
+    error_columns = ""
+    error_placeholders = ""
+    error_values: tuple[str | None, ...] = ()
+    if include_error_kind:
+        error_columns += "error_kind, "
+        error_placeholders += "?, "
+        error_values += (job.error_kind,)
+    if include_error_message:
+        error_columns += "error_message, "
+        error_placeholders += "?, "
+        error_values += (job.error_message,)
     await db.execute(
         f"""
         INSERT INTO jobs (
@@ -292,7 +307,7 @@ async def create_job(
             prompt, model, aspect_ratio, bbox_json, direction,
             start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
             output_files_json, generation_id,
-            worker_id, claimed_at, completed_at, error,
+            worker_id, claimed_at, completed_at, error, {error_columns}
             created_at, updated_at
         ) VALUES (
             ?, ?, ?, ?, ?, ?,
@@ -300,7 +315,7 @@ async def create_job(
             ?, ?, ?, ?, ?,
             ?, ?, ?, ?,
             ?, ?,
-            ?, ?, ?, ?,
+            ?, ?, ?, ?, {error_placeholders}
             ?, ?
         )
         """,
@@ -331,6 +346,7 @@ async def create_job(
             job.claimed_at.isoformat() if job.claimed_at else None,
             job.completed_at.isoformat() if job.completed_at else None,
             job.error,
+            *error_values,
             job.created_at.isoformat(),
             job.updated_at.isoformat(),
         ),
@@ -785,7 +801,7 @@ async def get_related_jobs(
                 prompt, model, aspect_ratio, bbox_json, direction,
                 start_image_path, end_image_path, ingredient_image_paths_json, ref_image_path,
                 output_files_json, generation_id,
-                worker_id, claimed_at, completed_at, error,
+                worker_id, claimed_at, completed_at, error, error_kind, error_message,
                 created_at, updated_at
             ) AS (
                 SELECT
@@ -796,6 +812,7 @@ async def get_related_jobs(
                     jobs.start_image_path, jobs.end_image_path, jobs.ingredient_image_paths_json,
                     jobs.ref_image_path, jobs.output_files_json, jobs.generation_id,
                     jobs.worker_id, jobs.claimed_at, jobs.completed_at, jobs.error,
+                    jobs.error_kind, jobs.error_message,
                     jobs.created_at, jobs.updated_at
                 FROM jobs
                 WHERE id = ?
@@ -812,6 +829,7 @@ async def get_related_jobs(
                     parent.ingredient_image_paths_json, parent.ref_image_path,
                     parent.output_files_json, parent.generation_id,
                     parent.worker_id, parent.claimed_at, parent.completed_at, parent.error,
+                    parent.error_kind, parent.error_message,
                     parent.created_at, parent.updated_at
                 FROM jobs AS parent
                 JOIN ancestors ON ancestors.parent_job_id = parent.id

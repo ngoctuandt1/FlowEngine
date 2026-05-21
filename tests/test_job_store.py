@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from server.db.database import get_db
-from server.db.job_store import create_job, get_job, update_job
+from server.db.job_store import create_job, get_job, list_jobs, update_job
 from server.db.profile_store import create_profile, get_profile
 from server.models.job import Job, JobStatus, JobType, JobUpdate
 from server.models.profile import Profile, ProfileStatus
@@ -63,6 +63,43 @@ async def test_completed_at_auto_set_on_failed(db):
     updated = await get_job("b5-b")
     assert updated.status == JobStatus.FAILED
     assert updated.completed_at is not None
+
+
+async def test_update_job_persists_structured_error_fields(db):
+    await create_job(_make_pending_job("unit-e-error-fields"))
+
+    await update_job(
+        "unit-e-error-fields",
+        JobUpdate(
+            status=JobStatus.FAILED,
+            error="premium required",
+            error_kind="paid_tier_required",
+            error_message="Flow paid plan required for L2 edit",
+        ),
+    )
+
+    updated = await get_job("unit-e-error-fields")
+    assert updated.error == "premium required"
+    assert updated.error_kind == "paid_tier_required"
+    assert updated.error_message == "Flow paid plan required for L2 edit"
+
+
+async def test_create_job_lists_structured_error_fields(db):
+    job = _make_pending_job("unit-e-create-error-fields")
+    job.status = JobStatus.FAILED
+    job.error = "credits exceeded"
+    job.error_kind = "credit_budget_exceeded"
+    job.error_message = "cost 12 exceeds budget 8"
+    await create_job(job)
+
+    fetched = await get_job(job.id)
+    assert fetched.error_kind == "credit_budget_exceeded"
+    assert fetched.error_message == "cost 12 exceeds budget 8"
+
+    listed = await list_jobs(status=JobStatus.FAILED)
+    listed_job = next(item for item in listed if item.id == job.id)
+    assert listed_job.error_kind == "credit_budget_exceeded"
+    assert listed_job.error_message == "cost 12 exceeds budget 8"
 
 
 async def test_completed_at_explicit_wins_over_auto_set(db):

@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 
     -- Operation params
     prompt          TEXT,
-    model           TEXT NOT NULL DEFAULT 'veo-3.1-fast-lp',
+    model           TEXT NOT NULL DEFAULT 'veo-3.1-lite',
     aspect_ratio    TEXT NOT NULL DEFAULT '16:9',
     bbox_json       TEXT,          -- JSON serialised BBox
     direction       TEXT,
@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     claimed_at      TEXT,
     completed_at    TEXT,
     error           TEXT,
+    error_kind      TEXT,
+    error_message   TEXT,
 
     -- Timestamps
     created_at      TEXT NOT NULL,
@@ -364,6 +366,8 @@ async def init_db() -> None:
             "ingredient_image_paths_json TEXT",
         )
         await _ensure_job_column(db, "ref_image_path", "ref_image_path TEXT")
+        await _ensure_job_column(db, "error_kind", "error_kind TEXT")
+        await _ensure_job_column(db, "error_message", "error_message TEXT")
         await _ensure_character_column(db, "description", "description TEXT")
         await _ensure_character_column(
             db,

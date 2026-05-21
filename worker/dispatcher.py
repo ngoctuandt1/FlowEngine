@@ -258,7 +258,7 @@ async def handle_text_to_video(job: dict) -> dict:
         result = await text_to_video(
             client,
             prompt=job.get("prompt", ""),
-            model=job.get("model", "veo-3.1-fast-lp"),
+            model=job.get("model", "veo-3.1-lite"),
             aspect_ratio=job.get("aspect_ratio", "16:9"),
             free_mode=True,
         )
@@ -291,7 +291,7 @@ async def handle_frames_to_video(job: dict) -> dict:
             prompt=job.get("prompt", ""),
             start_image_path=_resolve_upload_path(job.get("start_image_path")),
             end_image_path=_resolve_upload_path(job.get("end_image_path")),
-            model=job.get("model", "veo-3.1-fast-lp"),
+            model=job.get("model", "veo-3.1-lite"),
             aspect_ratio=job.get("aspect_ratio", "16:9"),
             free_mode=True,
         )
@@ -362,7 +362,7 @@ async def handle_ingredients_to_video(job: dict) -> dict:
             client,
             prompt=job.get("prompt", ""),
             ingredient_image_paths=ingredient_image_paths,
-            model=job.get("model", "veo-3.1-fast-lp"),
+            model=job.get("model", "veo-3.1-lite"),
             aspect_ratio=job.get("aspect_ratio", "16:9"),
             free_mode=True,
         )
@@ -376,7 +376,7 @@ async def handle_ingredients_to_video(job: dict) -> dict:
 
 
 async def handle_extend(job: dict) -> dict:
-    """Extend-video: navigate to edit URL, extend with prompt + LP model."""
+    """Extend-video: navigate to edit URL, extend with prompt + model."""
     from flow.operations.extend import extend_video
 
     profile = job.get("profile", "")
@@ -398,7 +398,7 @@ async def handle_extend(job: dict) -> dict:
             client,
             job=job,
             prompt=job.get("prompt", ""),
-            model=job.get("model", "veo-3.1-fast-lp"),
+            model=job.get("model", "veo-3.1-lite"),
             free_mode=True,
         )
 
