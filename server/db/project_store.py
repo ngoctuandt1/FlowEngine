@@ -26,12 +26,6 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-async def _jobs_has_project_id_column(db) -> bool:
-    cursor = await db.execute("PRAGMA table_info(jobs)")
-    rows = await cursor.fetchall()
-    return any(row[1] == "project_id" for row in rows)
-
-
 async def _ensure_column(db, *, table: str, name: str, ddl: str) -> None:
     cursor = await db.execute(f"PRAGMA table_info({table})")
     rows = await cursor.fetchall()
@@ -331,11 +325,6 @@ async def delete_project(project_id: str) -> bool:
     async with get_db() as db:
         await _ensure_soft_delete_columns(db)
         now = _now_iso()
-        if await _jobs_has_project_id_column(db):
-            await db.execute(
-                "UPDATE jobs SET project_id = NULL WHERE project_id = ?",
-                (project_id,),
-            )
         cursor = await db.execute(
             """
             UPDATE projects

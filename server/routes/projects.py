@@ -11,11 +11,8 @@ from server.db.project_store import (
     update_project,
 )
 from server.models.project import Project, ProjectCreate, ProjectDetail, ProjectSummary, ProjectUpdate
-from server.db.trash_store import install_job_store_soft_delete_patch
 from server.routes.trash import router as trash_router
 
-
-install_job_store_soft_delete_patch()
 
 router = APIRouter(tags=["projects"])
 router.include_router(trash_router)

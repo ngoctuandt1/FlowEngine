@@ -195,3 +195,74 @@ async def test_get_project_detail_includes_real_api_created_chain(api_client):
     assert body["chains"][0]["completed_jobs"] == 2
     assert body["chains"][0]["status"] == "completed"
     assert body["cover_thumb_url"] == "/downloads/detail-thumb-002.png"
+
+
+async def test_restore_project_preserves_existing_chain_and_cover(api_client):
+    created_project = await api_client.post(
+        "/api/projects",
+        json={"name": "Restore Project Chain"},
+    )
+    assert created_project.status_code == 201
+    project_id = created_project.json()["id"]
+
+    chain_response = await api_client.post(
+        "/api/chains",
+        json={
+            "profile": "project-restore-profile",
+            "jobs": [
+                {
+                    "type": "text-to-video",
+                    "prompt": "Restore project parent",
+                    "project_id": project_id,
+                },
+                {"type": "extend-video", "prompt": "Restore project child"},
+            ],
+        },
+    )
+    assert chain_response.status_code == 201
+    chain = chain_response.json()
+    first_job_id = chain["jobs"][0]["id"]
+    second_job_id = chain["jobs"][1]["id"]
+
+    assert (
+        await api_client.put(
+            f"/api/worker/jobs/{first_job_id}",
+            json={
+                "status": "completed",
+                "project_url": "https://flow.example/project/restore-001",
+                "media_id": "restore-media-001",
+                "output_files": ["downloads/restore-thumb-001.png"],
+                "profile": "project-restore-profile",
+            },
+        )
+    ).status_code == 200
+    assert (
+        await api_client.put(
+            f"/api/worker/jobs/{second_job_id}",
+            json={
+                "status": "completed",
+                "project_url": "https://flow.example/project/restore-001",
+                "media_id": "restore-media-002",
+                "output_files": ["downloads/restore-thumb-002.png"],
+                "profile": "project-restore-profile",
+            },
+        )
+    ).status_code == 200
+
+    assert (await api_client.delete(f"/api/projects/{project_id}")).status_code == 204
+    assert (await api_client.get(f"/api/projects/{project_id}")).status_code == 404
+    restore = await api_client.post(
+        "/api/trash/restore",
+        json={"project_ids": [project_id]},
+    )
+    assert restore.status_code == 200
+
+    detail = await api_client.get(f"/api/projects/{project_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["id"] == project_id
+    assert body["cover_thumb_url"] == "/downloads/restore-thumb-002.png"
+    assert len(body["chains"]) == 1
+    assert body["chains"][0]["id"] == chain["chain_id"]
+    assert body["chains"][0]["job_count"] == 2
+    assert body["chains"][0]["completed_jobs"] == 2

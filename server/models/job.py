@@ -249,6 +249,7 @@ class Job(BaseModel):
     # Timestamps
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    deleted_at: Optional[datetime] = None
 
     @property
     def computed_edit_url(self) -> Optional[str]:
