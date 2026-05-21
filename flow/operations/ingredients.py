@@ -33,9 +33,13 @@ from flow.operations.frames_to_video import (
 from flow.operations.generate import (
     _count_visible_cards,
     _dismiss_overlays,
+    _ensure_video_composer_mode,
+    _guard_l1_submit,
     _set_aspect_ratio,
     _set_output_count,
+    _select_video_composer_subtab,
     _type_prompt,
+    _verify_ingredients_upload_affordance,
     _wait_for_composer,
 )
 
@@ -216,12 +220,16 @@ async def ingredients_to_video(
     project_id = extract_project_id(project_url_full)
 
     await _wait_for_composer(page)
+    await _ensure_video_composer_mode(page)
+    await _set_output_count(page, 1)
     await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
+    await _ensure_video_composer_mode(page)
     await _set_output_count(page, 1)
     await _set_aspect_ratio(page, aspect_ratio)
     await _ensure_ingredients_mode(page)
     await _close_composer_menu(page)
     await _verify_ingredients_mode(page)
+    await _verify_ingredients_upload_affordance(page)
 
     for expected_count, image_path in enumerate(ingredient_image_paths, start=1):
         await _upload_ingredient_with_retry(page, image_path, expected_count)
@@ -229,6 +237,7 @@ async def ingredients_to_video(
     await _ensure_uploaded_ingredient_count(page, expected=len(ingredient_image_paths))
     await _type_prompt(page, prompt)
 
+    await _guard_l1_submit(page)
     before_cards = await _count_visible_cards(page)
     client.clear_captures()
     confirmed = await submit_with_confirmation(
@@ -280,9 +289,7 @@ async def ingredients_to_video(
 
 
 async def _ensure_ingredients_mode(page) -> None:
-    await _open_ingredients_composer_menu(page)
-    await _click_exact_tab(page, "Video")
-    await _click_exact_tab(page, "Ingredients")
+    await _select_video_composer_subtab(page, "Ingredients")
 
 
 async def _click_exact_tab(page, label: str) -> None:

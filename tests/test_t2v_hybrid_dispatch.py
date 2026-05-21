@@ -76,10 +76,12 @@ def _patch_ui_path(monkeypatch):
         "recover_from_flow_canvas_page": AsyncMock(),
         "_dismiss_overlays": AsyncMock(),
         "_wait_for_composer": AsyncMock(),
+        "_ensure_video_composer_mode": AsyncMock(),
         "select_model": AsyncMock(),
         "_set_aspect_ratio": AsyncMock(),
         "_set_output_count": AsyncMock(),
         "_type_prompt": AsyncMock(),
+        "_guard_l1_submit": AsyncMock(),
         "_count_visible_cards": AsyncMock(return_value=0),
         "submit_with_confirmation": AsyncMock(return_value=True),
         "wait_for_completion": AsyncMock(

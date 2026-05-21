@@ -28,6 +28,7 @@ def _make_locator(**async_results):
     loc = MagicMock()
     loc.first = loc
     loc.filter = MagicMock(return_value=loc)
+    loc.nth = MagicMock(return_value=loc)
     loc.click = AsyncMock(return_value=async_results.get("click"))
     loc.wait_for = AsyncMock(return_value=async_results.get("wait_for"))
     loc.inner_text = AsyncMock(return_value=async_results.get("inner_text", ""))
@@ -39,6 +40,15 @@ def _make_locator(**async_results):
 def _make_page(locator_router):
     page = MagicMock()
     page.locator = MagicMock(side_effect=locator_router)
+    page.evaluate = AsyncMock(return_value=[{
+        "index": 0,
+        "text": "Video crop_9_16 x1",
+        "iconText": ["crop_9_16"],
+        "visible": True,
+        "dataState": "",
+        "ariaExpanded": "",
+        "rect": {"top": 0, "left": 0, "width": 100, "height": 32},
+    }])
     page.wait_for_function = AsyncMock()
     page.mouse = MagicMock()
     page.mouse.click = AsyncMock()
@@ -101,6 +111,15 @@ async def test_set_output_count_skips_open_when_already_open():
         return fallback
 
     page = _make_page(route)
+    page.evaluate = AsyncMock(return_value=[{
+        "index": 0,
+        "text": "Video crop_9_16 x1",
+        "iconText": ["crop_9_16"],
+        "visible": True,
+        "dataState": "open",
+        "ariaExpanded": "true",
+        "rect": {"top": 0, "left": 0, "width": 100, "height": 32},
+    }])
     await _set_output_count(page, 1)
 
     # Only the trigger.click should fire — not the chip.click (panel was open)
