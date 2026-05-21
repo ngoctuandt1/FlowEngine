@@ -1,3 +1,12 @@
+import asyncio
+from contextlib import contextmanager
+import importlib
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+
 async def test_veo_account_create_update_delete_round_trip(api_client):
     create_response = await api_client.post(
         "/api/settings/veo-accounts",
@@ -124,3 +133,298 @@ async def test_ai_settings_post_alias_accepts_same_payload(api_client):
     assert body["gemini_api_key"].endswith("POST")
     assert body["gemini_model"] == "gemini-2-flash-preview"
     assert body["nano_api_key"].endswith("NANO")
+
+class _RecordingFlowSettingsClient:
+    def __init__(self, *, get_payload=None, update_exc=None, get_exc=None):
+        self.get_payload = get_payload or {}
+        self.update_exc = update_exc
+        self.get_exc = get_exc
+        self.updates = []
+        self.get_auth_headers = None
+
+    async def get_user_settings(self, auth_context):
+        self.get_auth_headers = dict(auth_context.headers)
+        if self.get_exc is not None:
+            raise self.get_exc
+        return self.get_payload
+
+    async def update_user_settings(self, payload, auth_context):
+        self.updates.append((payload, dict(auth_context.headers)))
+        if self.update_exc is not None:
+            raise self.update_exc
+        return {}
+
+
+async def _seed_flow_auth_account(api_client):
+    response = await api_client.post(
+        "/api/settings/veo-accounts",
+        json={
+            "name": "Flow Account",
+            "token": "flow-token-1234",
+            "cookie": "SID=flow-cookie-1234",
+            "enabled": True,
+        },
+    )
+    assert response.status_code == 201
+
+
+async def test_view_settings_post_default_body_forwards_false(api_client, monkeypatch):
+    import server.routes.settings as settings_route
+
+    await _seed_flow_auth_account(api_client)
+    flow_client = _RecordingFlowSettingsClient()
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.post("/api/settings", json={})
+
+    assert response.status_code == 200
+    assert response.json() == {"return_silent_videos": False}
+    assert flow_client.updates == [
+        (
+            {"return_silent_videos": False},
+            {
+                "authorization": "Bearer flow-token-1234",
+                "cookie": "SID=flow-cookie-1234",
+            },
+        )
+    ]
+
+
+async def test_view_settings_post_forwards_passthrough_payload_and_auth(
+    api_client,
+    monkeypatch,
+):
+    import server.routes.settings as settings_route
+
+    await _seed_flow_auth_account(api_client)
+    flow_client = _RecordingFlowSettingsClient()
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.post(
+        "/api/settings",
+        json={"return_silent_videos": True, "grid_density": "compact"},
+        headers={
+            "Authorization": "Bearer raw-secret-token",
+            "Cookie": "SID=raw-secret-cookie",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "return_silent_videos": True,
+        "grid_density": "compact",
+    }
+    assert flow_client.updates == [
+        (
+            {"return_silent_videos": True, "grid_density": "compact"},
+            {
+                "authorization": "Bearer flow-token-1234",
+                "cookie": "SID=flow-cookie-1234",
+            },
+        )
+    ]
+
+
+async def test_view_settings_post_passthrough_only_does_not_clobber_silent(
+    api_client,
+    monkeypatch,
+):
+    import server.routes.settings as settings_route
+
+    await _seed_flow_auth_account(api_client)
+    flow_client = _RecordingFlowSettingsClient()
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    first = await api_client.post("/api/settings", json={"return_silent_videos": True})
+    second = await api_client.post("/api/settings", json={"grid_density": "compact"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == {
+        "return_silent_videos": True,
+        "grid_density": "compact",
+    }
+    assert flow_client.updates[-1][0] == {"grid_density": "compact"}
+
+
+async def test_view_settings_get_merges_engine_defaults_with_flow_payload(
+    api_client,
+    monkeypatch,
+):
+    import server.routes.settings as settings_route
+
+    await _seed_flow_auth_account(api_client)
+    flow_client = _RecordingFlowSettingsClient(
+        get_payload={
+            "lastAcknowledgedChangeLogId": "change-1",
+            "completedOnboardingIds": ["AGENT"],
+        }
+    )
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.get(
+        "/api/settings",
+        headers={"Authorization": "Bearer raw-secret-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "return_silent_videos": False,
+        "lastAcknowledgedChangeLogId": "change-1",
+        "completedOnboardingIds": ["AGENT"],
+    }
+    assert flow_client.get_auth_headers == {
+        "authorization": "Bearer flow-token-1234",
+        "cookie": "SID=flow-cookie-1234",
+    }
+
+
+async def test_view_settings_post_timeout_returns_structured_504(
+    api_client,
+    monkeypatch,
+):
+    from flow.settings import FlowSettingsProxyTimeout
+    import server.routes.settings as settings_route
+
+    await _seed_flow_auth_account(api_client)
+    flow_client = _RecordingFlowSettingsClient(update_exc=FlowSettingsProxyTimeout())
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.post(
+        "/api/settings",
+        json={"return_silent_videos": True},
+        headers={"Authorization": "Bearer raw-secret-token"},
+    )
+
+    assert response.status_code == 504
+    assert response.json() == {
+        "detail": {
+            "error_kind": "flow_timeout",
+            "message": "Flow settings request timed out",
+        }
+    }
+    assert "raw-secret-token" not in response.text
+
+
+async def test_view_settings_post_flow_error_returns_structured_502(
+    api_client,
+    monkeypatch,
+):
+    from flow.settings import FlowSettingsProxyError
+    import server.routes.settings as settings_route
+
+    await _seed_flow_auth_account(api_client)
+    flow_client = _RecordingFlowSettingsClient(
+        update_exc=FlowSettingsProxyError(
+            "flow_error",
+            "Flow settings request failed",
+            401,
+        )
+    )
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.post(
+        "/api/settings",
+        json={"return_silent_videos": True},
+        headers={"Cookie": "SID=raw-secret-cookie"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": {
+            "error_kind": "flow_error",
+            "message": "Flow settings request failed",
+            "flow_status_code": 401,
+        }
+    }
+    assert "raw-secret-cookie" not in response.text
+
+
+async def test_view_settings_post_without_flow_auth_fails_before_persist(
+    api_client,
+    monkeypatch,
+):
+    import server.routes.settings as settings_route
+
+    flow_client = _RecordingFlowSettingsClient()
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    response = await api_client.post(
+        "/api/settings",
+        json={"return_silent_videos": True},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": {
+            "error_kind": "flow_auth_unavailable",
+            "message": "Flow auth context is unavailable",
+        }
+    }
+    assert flow_client.updates == []
+    assert (await api_client.get("/api/settings")).json() == {"return_silent_videos": False}
+
+
+@contextmanager
+def _auth_app(temp_db_path):
+    import server.app  # noqa: WPS433
+    import server.dashboard_auth  # noqa: WPS433
+
+    patch = pytest.MonkeyPatch()
+    patch.setenv("DASHBOARD_PASSWORD", "test")
+    patch.setenv("DASHBOARD_AUTH_SECRET", "test-secret")
+    patch.setenv("DATABASE_PATH", temp_db_path)
+    patch.setenv("FLOW_DOWNLOAD_DIR", str(Path(temp_db_path).parent / "downloads"))
+    patch.setenv("FLOW_UPLOAD_DIR", str(Path(temp_db_path).parent / "uploads"))
+
+    importlib.reload(server.dashboard_auth)
+    importlib.reload(server.app)
+    from server.db.database import init_db
+
+    asyncio.run(init_db())
+    try:
+        yield server.app.app
+    finally:
+        patch.undo()
+        importlib.reload(server.dashboard_auth)
+        importlib.reload(server.app)
+
+
+def test_view_settings_post_requires_same_origin_with_dashboard_auth(
+    temp_db_path,
+    monkeypatch,
+):
+    import server.routes.settings as settings_route
+
+    flow_client = _RecordingFlowSettingsClient()
+    monkeypatch.setattr(settings_route, "_flow_settings_client", flow_client)
+
+    with _auth_app(temp_db_path) as app:
+        with TestClient(app, base_url="http://testserver") as client:
+            login = client.post("/api/auth/login", json={"password": "test"})
+            assert login.status_code == 200
+            create = client.post(
+                "/api/settings/veo-accounts",
+                json={
+                    "name": "Flow Account",
+                    "token": "flow-token-1234",
+                    "cookie": "SID=flow-cookie-1234",
+                    "enabled": True,
+                },
+                headers={"Origin": "http://testserver"},
+            )
+            assert create.status_code == 201
+
+            missing_origin = client.post(
+                "/api/settings",
+                json={"return_silent_videos": True},
+            )
+            cross_origin = client.post(
+                "/api/settings",
+                json={"return_silent_videos": True},
+                headers={"Origin": "https://evil.example"},
+            )
+
+            assert missing_origin.status_code == 403
+            assert cross_origin.status_code == 403
+            assert flow_client.updates == []
