@@ -1022,3 +1022,69 @@ page.locator('generic:has-text("Create")')
 13. **History version counting**: Each operation adds 1 entry. Poll count to detect completion.
 14. **History entry format**: thumbnail + "Veo" label + prompt text. Active = white border.
 15. **Locale-independent selectors**: Use icon names (`keyboard_double_arrow_right`, `add_box`, `ink_eraser`, `videocam`) — same in both EN and VI.
+
+## Wave 5 selectors
+
+### Characters page
+```text
+# App page
+#characters-page
+#characters-new
+#characters-search
+[data-character-id]
+#characters-form
+#characters-delete
+
+# Upload / templates
+#character-upload-trigger
+#character-upload-input
+character image remove buttons: [data-remove-image-index]
+
+# Flow character composer
+route: /fx/tools/flow/project/{project_id}/characters
+new character: button:has-text("New character")
+prompt editor: div[role="textbox"][contenteditable="true"]
+model: Nano Banana 2
+submit: button/generic text "Create" or icon "arrow_forward"
+```
+
+### Trash page
+```text
+# App page
+frontend route: #trash
+restore all: button[data-action="restore-all"] / text "Restore All"
+delete all: button[data-action="delete-all"] / text "Delete All"
+trash rows: plain <tr> rows inside #trash-page table body; no row data attribute is emitted
+
+# Flow trash page
+route: /fx/tools/flow/project/{project_id}/trash
+page verify: text "Trash"
+restore all: button:has-text("Restore All")
+delete all: button:has-text("Delete All")
+```
+
+### Share modal
+```text
+# Engine job-share page
+card: [data-job-share-card]
+url input: [data-share-url]
+mint/copy primary: [data-share-mint]
+copy link: [data-share-copy]
+revoke: [data-share-revoke]
+status: [data-share-status]
+
+# Flow share modal
+share trigger: button:has(i:text-is("share")) or button:has-text("Share")
+modal: [role="dialog"]
+copy link button: button:has-text("Copy link") / button:has-text("Copy")
+include inputs switch: switch/checkbox near "Include inputs"
+```
+
+### AI-locator hook points
+```text
+FLOW_AI_LOCATOR_ENABLED=true gates all AI calls.
+flow/landing.py: marketing landing "Create with Flow" CTA.
+flow/model_selector.py: model chip opener and model dropdown item.
+flow/operations/generate.py: composer Video tab fallback.
+flow/edit_menu.py: edit-view kebab/options fallback for future Share/Trash actions.
+```
