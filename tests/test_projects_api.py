@@ -41,6 +41,53 @@ async def test_list_projects_after_create(api_client):
     assert body[0]["name"] == "Project X"
     assert body[0]["description"] == "Demo"
     assert body[0]["cover_thumb_url"] is None
+    assert body[0]["deleted_at"] is None
+
+
+async def test_delete_project_soft_deletes_and_hides_from_normal_views(api_client):
+    created = await api_client.post(
+        "/api/projects",
+        json={"name": "Deleted Project", "description": "Demo"},
+    )
+    assert created.status_code == 201
+    project_id = created.json()["id"]
+
+    delete_response = await api_client.delete(f"/api/projects/{project_id}")
+    assert delete_response.status_code == 204
+
+    list_response = await api_client.get("/api/projects")
+    assert list_response.status_code == 200
+    assert list_response.json() == []
+
+    detail_response = await api_client.get(f"/api/projects/{project_id}")
+    assert detail_response.status_code == 404
+
+    trash_response = await api_client.get("/api/trash")
+    assert trash_response.status_code == 200
+    assert trash_response.json()["items"] == [
+        {
+            "type": "project",
+            "job_id": None,
+            "project_id": project_id,
+            "name": "Deleted Project",
+            "prompt": None,
+            "deleted_at": trash_response.json()["items"][0]["deleted_at"],
+        }
+    ]
+
+
+async def test_update_project_does_not_modify_soft_deleted_project(api_client):
+    created = await api_client.post("/api/projects", json={"name": "Deleted Project"})
+    assert created.status_code == 201
+    project_id = created.json()["id"]
+    assert (await api_client.delete(f"/api/projects/{project_id}")).status_code == 204
+
+    update_response = await api_client.put(
+        f"/api/projects/{project_id}",
+        json={"name": "Should Not Update"},
+    )
+
+    assert update_response.status_code == 404
 
 
 async def test_project_cover_thumb_resolves_from_latest_job(api_client):
