@@ -1,0 +1,2188 @@
+{
+  "timestamp": "2026-05-21T14:15:48.846876+00:00",
+  "mode": "ingredients",
+  "profile": "s17524h173",
+  "image_path": "D:\\AI\\FlowEngine\\uploads\\livetest-ingredients\\vase.jpeg",
+  "nav": {
+    "url": "https://labs.google/fx/tools/flow/project/5d3e059b-6978-4883-816f-bc005f3b1b23",
+    "title": "Flow - May 21, 09:15 PM"
+  },
+  "target": {
+    "source": "ranked-add-button",
+    "x": 686,
+    "y": 888,
+    "w": 32,
+    "h": 32,
+    "text": "add_2 Create",
+    "tag": "BUTTON",
+    "role": "",
+    "score": 17.1
+  },
+  "click_result": {
+    "fileChooser": true,
+    "target": {
+      "source": "ranked-add-button",
+      "x": 686,
+      "y": 888,
+      "w": 32,
+      "h": 32,
+      "text": "add_2 Create",
+      "tag": "BUTTON",
+      "role": "",
+      "score": 17.1
+    },
+    "via": "picker-upload-media"
+  },
+  "before": {
+    "note": "before-click",
+    "url": "https://labs.google/fx/tools/flow/project/5d3e059b-6978-4883-816f-bc005f3b1b23",
+    "bodyText": "arrow_back\nGo Back\nmore_vert\nMore options\nsearch\nSearch\nfilter_list\nSort & Filter\nadd\nAdd Media\nhelp\nProduct Help\nsettings_2\nView Settings\nmore_vert\nMore\nULTRA\ndashboard\nAll Media\nAll Media\naccessibility_new\nCharacters\nCharacters\nmovie\nView scenes\nScenes\napps_spark_2\nTools\nTools\ndelete\nView Trash\nTrash\nleft_panel_close\nCollapse\nCollapse\nStart creating or drop media\n\nWhat do you want to create?\n﻿\n\n\nadd_2\nCreate\nAgent\nVideo · 8s\ncrop_16_9\n1x\narrow_forward\nCreate\n\nGoogle Flow can make mistakes, so double check it\n\nFlow",
+    "inputs": [
+      {
+        "tag": "INPUT",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "file",
+        "accept": "image/*",
+        "multiple": true,
+        "dataState": "",
+        "className": "sc-dcc7b7da-0 fhJvUC",
+        "text": "",
+        "visible": false,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      }
+    ],
+    "interesting": [
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-2eac5247-2 ewGlDn famhRe jUJxHE",
+        "text": "arrow_back Go Back",
+        "visible": true,
+        "rect": {
+          "x": 24,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-26aa1721-3 ewGlDn famhRe dUDRen",
+        "text": "more_vert More options",
+        "visible": true,
+        "rect": {
+          "x": 276,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-55822125-2 ewGlDn famhRe XtyjO",
+        "text": "search Search",
+        "visible": true,
+        "rect": {
+          "x": 731,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-2 fPutAP blvbdy sc-b8eb33e3-8 bWUKjc",
+        "text": "filter_list Sort & Filter",
+        "visible": true,
+        "rect": {
+          "x": 1158,
+          "y": 18,
+          "w": 42,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-240605d2-1 ewGlDn famhRe kimDit",
+        "text": "add Add Media",
+        "visible": true,
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-7e11f006-2 ewGlDn famhRe gBGwpL",
+        "text": "help Product Help",
+        "visible": true,
+        "rect": {
+          "x": 1657,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-a4925f7f-6 ewGlDn famhRe gdBgFb",
+        "text": "settings_2 View Settings",
+        "visible": true,
+        "rect": {
+          "x": 1701,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-362690a9-1 ewGlDn famhRe fHpFkO",
+        "text": "more_vert More",
+        "visible": true,
+        "rect": {
+          "x": 1745,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-70f5962-0 GXcuS",
+        "text": "ULTRA",
+        "visible": true,
+        "rect": {
+          "x": 1789,
+          "y": 14,
+          "w": 111,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 sc-c8f55314-0 ewGlDn lnCuH fqbaql kiwuwp",
+        "text": "dashboard All Media",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 80,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "accessibility_new Characters",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 133,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "movie View scenes",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 186,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "apps_spark_2 Tools",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 260,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "delete View Trash",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 768,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "left_panel_close Collapse",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 821,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "DIV",
+        "role": "textbox",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-a8ba1f43-0 djaQmW sc-439ac1d3-6 gmMGa",
+        "text": "What do you want to create?",
+        "visible": true,
+        "rect": {
+          "x": 670,
+          "y": 835,
+          "w": 566,
+          "h": 20
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-7bf23aea-0 ewGlDn famhRe bBIfoD",
+        "text": "add_2 Create",
+        "visible": true,
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-59223abb-3 dmZGYv",
+        "text": "Agent",
+        "visible": true,
+        "rect": {
+          "x": 707,
+          "y": 872,
+          "w": 67,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-93abd9dc-1 ldbhld",
+        "text": "Video · 8s crop_16_9 1x",
+        "visible": true,
+        "rect": {
+          "x": 1107,
+          "y": 871,
+          "w": 108,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-439ac1d3-5 ewGlDn famhRe iIhbxv",
+        "text": "arrow_forward Create",
+        "visible": true,
+        "rect": {
+          "x": 1220,
+          "y": 872,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "INPUT",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "file",
+        "accept": "image/*",
+        "multiple": true,
+        "dataState": "",
+        "className": "sc-dcc7b7da-0 fhJvUC",
+        "text": "",
+        "visible": false,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      }
+    ],
+    "textNodes": [
+      {
+        "tag": "DIV",
+        "text": "add Add Media help Product Help settings_2 View Settings more_vert More ULTRA",
+        "rect": {
+          "x": 1613,
+          "y": 14,
+          "w": 287,
+          "h": 48
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add Add Media help Product Help settings_2 View Settings more_vert More",
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 164,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "add Add Media",
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "I",
+        "text": "add",
+        "rect": {
+          "x": 1617,
+          "y": 26,
+          "w": 24,
+          "h": 24
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "Add Media",
+        "rect": {
+          "x": 1628,
+          "y": 38,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media accessibility_new Characters Characters movie View",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media accessibility_new Characters Characters movie View",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 228,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media",
+        "rect": {
+          "x": 16,
+          "y": 76,
+          "w": 212,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "dashboard All Media",
+        "rect": {
+          "x": 20,
+          "y": 80,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "All Media",
+        "rect": {
+          "x": 40,
+          "y": 100,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "All Media",
+        "rect": {
+          "x": 68,
+          "y": 90,
+          "w": 60,
+          "h": 20
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1684,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 821,
+          "y": 411,
+          "w": 279,
+          "h": 123
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 821,
+          "y": 506,
+          "w": 279,
+          "h": 28
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 0,
+          "y": 819,
+          "w": 1920,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 0,
+          "y": 819,
+          "w": 1920,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 660,
+          "y": 819,
+          "w": 600,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 660,
+          "y": 819,
+          "w": 600,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 660,
+          "y": 819,
+          "w": 600,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add_2 Create Agent Video · 8s crop_16_9 1x arrow_forward Create",
+        "rect": {
+          "x": 670,
+          "y": 871,
+          "w": 582,
+          "h": 34
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add_2 Create Agent",
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 104,
+          "h": 32
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add_2 Create Agent",
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 104,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "add_2 Create",
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "I",
+        "text": "add_2",
+        "rect": {
+          "x": 675,
+          "y": 877,
+          "w": 22,
+          "h": 22
+        }
+      }
+    ]
+  },
+  "after": {
+    "note": "after-click",
+    "url": "https://labs.google/fx/tools/flow/project/5d3e059b-6978-4883-816f-bc005f3b1b23",
+    "bodyText": "arrow_back\nGo Back\nmore_vert\nMore options\nsearch\nSearch\nfilter_list\nSort & Filter\nadd\nAdd Media\nhelp\nProduct Help\nsettings_2\nView Settings\nmore_vert\nMore\nULTRA\ndashboard\nAll Media\nAll Media\nimage\nView images\nImages\naccessibility_new\nCharacters\nCharacters\nmovie\nView scenes\nScenes\ndrive_folder_upload\nView uploaded media\nUploads\napps_spark_2\nTools\nTools\ndelete\nView Trash\nTrash\nleft_panel_close\nCollapse\nCollapse\nwarning\nFailed\ndelete_forever\nDelete\nimage\n28%\n\nWhat do you want to create?\n﻿\n\n\nadd_2\nCreate\nAgent\nVideo · 8s\ncrop_16_9\n1x\narrow_forward\nCreate\n\nGoogle Flow can make mistakes, so double check it\n\nMay 21, 09:15 PM\narrow_drop_down\ndashboard\nAll\nimage\nImages\nvideocam\nVideos\nvoice_selection\nVoices\naccessibility_new\nCharacters\nface\nAvatar\ndrive_folder_upload\nUploads\nupload\nUpload media\nsearch\nRecent\narrow_drop_down\nvase.jpeg\nImage\nAdd to Prompt\n\nFlow",
+    "inputs": [
+      {
+        "tag": "INPUT",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "file",
+        "accept": "image/*",
+        "multiple": true,
+        "dataState": "",
+        "className": "sc-dcc7b7da-0 fhJvUC",
+        "text": "",
+        "visible": false,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      }
+    ],
+    "interesting": [
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-2eac5247-2 ewGlDn famhRe jUJxHE",
+        "text": "arrow_back Go Back",
+        "visible": true,
+        "rect": {
+          "x": 24,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-26aa1721-3 ewGlDn famhRe dUDRen",
+        "text": "more_vert More options",
+        "visible": true,
+        "rect": {
+          "x": 276,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-55822125-2 ewGlDn famhRe XtyjO",
+        "text": "search Search",
+        "visible": true,
+        "rect": {
+          "x": 731,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-2 fPutAP blvbdy sc-b8eb33e3-8 bWUKjc",
+        "text": "filter_list Sort & Filter",
+        "visible": true,
+        "rect": {
+          "x": 1158,
+          "y": 18,
+          "w": 42,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-240605d2-1 ewGlDn famhRe kimDit",
+        "text": "add Add Media",
+        "visible": true,
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-7e11f006-2 ewGlDn famhRe gBGwpL",
+        "text": "help Product Help",
+        "visible": true,
+        "rect": {
+          "x": 1657,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-a4925f7f-6 ewGlDn famhRe gdBgFb",
+        "text": "settings_2 View Settings",
+        "visible": true,
+        "rect": {
+          "x": 1701,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-362690a9-1 ewGlDn famhRe fHpFkO",
+        "text": "more_vert More",
+        "visible": true,
+        "rect": {
+          "x": 1745,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-70f5962-0 GXcuS",
+        "text": "ULTRA",
+        "visible": true,
+        "rect": {
+          "x": 1789,
+          "y": 14,
+          "w": 111,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 sc-c8f55314-0 ewGlDn lnCuH fqbaql kiwuwp",
+        "text": "dashboard All Media",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 80,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "image View images",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 133,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "accessibility_new Characters",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 186,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "movie View scenes",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 238,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "drive_folder_upload View uploaded media",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 291,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "apps_spark_2 Tools",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 366,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "delete View Trash",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 768,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "left_panel_close Collapse",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 821,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "DIV",
+        "role": "button",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-61a617e9-0 huAXWT",
+        "text": "warning Failed delete_forever Delete",
+        "visible": true,
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 267,
+          "h": 400
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 iBbNYo sc-e7a64add-0 sc-e7a64add-2 fPutAP blvbdy",
+        "text": "delete_forever Delete",
+        "visible": true,
+        "rect": {
+          "x": 469,
+          "y": 436,
+          "w": 36,
+          "h": 34
+        }
+      },
+      {
+        "tag": "DIV",
+        "role": "textbox",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-a8ba1f43-0 djaQmW sc-439ac1d3-6 gmMGa",
+        "text": "What do you want to create?",
+        "visible": true,
+        "rect": {
+          "x": 670,
+          "y": 835,
+          "w": 566,
+          "h": 20
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "open",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-7bf23aea-0 ewGlDn lfKJkW bBIfoD",
+        "text": "add_2 Create",
+        "visible": true,
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-59223abb-3 dmZGYv",
+        "text": "Agent",
+        "visible": true,
+        "rect": {
+          "x": 707,
+          "y": 872,
+          "w": 67,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-93abd9dc-1 ldbhld",
+        "text": "Video · 8s crop_16_9 1x",
+        "visible": true,
+        "rect": {
+          "x": 1107,
+          "y": 871,
+          "w": 108,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-439ac1d3-5 ewGlDn famhRe iIhbxv",
+        "text": "arrow_forward Create",
+        "visible": true,
+        "rect": {
+          "x": 1220,
+          "y": 872,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "INPUT",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "file",
+        "accept": "image/*",
+        "multiple": true,
+        "dataState": "",
+        "className": "sc-dcc7b7da-0 fhJvUC",
+        "text": "",
+        "visible": false,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      },
+      {
+        "tag": "DIV",
+        "role": "dialog",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "open",
+        "className": "sc-ce4c5fd8-0 ezfFSv",
+        "text": "May 21, 09:15 PM arrow_drop_down dashboard All image Images videocam Videos voice_selection Voices accessibility_new Characters face Avatar drive_folder_upload ",
+        "visible": true,
+        "rect": {
+          "x": 570,
+          "y": 231,
+          "w": 780,
+          "h": 580
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-830c374b-3 juiPqd sc-d6583cc5-0 bPPSI ProjectDropdownSubTrigger",
+        "text": "May 21, 09:15 PM arrow_drop_down",
+        "visible": true,
+        "rect": {
+          "x": 582,
+          "y": 243,
+          "w": 120,
+          "h": 36
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "tab",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 cmRdcw hcaEyZ sc-559b4cd2-3 fAmGrD",
+        "text": "dashboard All",
+        "visible": true,
+        "rect": {
+          "x": 582,
+          "y": 287,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "tab",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-559b4cd2-3 kODzUa",
+        "text": "image Images",
+        "visible": true,
+        "rect": {
+          "x": 582,
+          "y": 323,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "tab",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-559b4cd2-3 kODzUa",
+        "text": "videocam Videos",
+        "visible": true,
+        "rect": {
+          "x": 582,
+          "y": 359,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "tab",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-559b4cd2-3 kODzUa",
+        "text": "voice_selection Voices",
+        "visible": true,
+        "rect": {
+          "x": 582,
+          "y": 395,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "tab",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-559b4cd2-3 kODzUa",
+        "text": "accessibility_new Characters",
+        "visible": true,
+        "rect": {
+          "x": 582,
+          "y": 431,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "tab",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-559b4cd2-3 kODzUa",
+        "text": "face Avatar",
+        "visible": true,
+        "rect": {
+          "x": 582,
+          "y": 467,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "tab",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-559b4cd2-3 kODzUa",
+        "text": "drive_folder_upload Uploads",
+        "visible": true,
+        "rect": {
+          "x": 582,
+          "y": 503,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-559b4cd2-4 hqrnuD",
+        "text": "upload Upload media",
+        "visible": true,
+        "rect": {
+          "x": 582,
+          "y": 765,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-2 fPutAP blvbdy sc-42b4281e-2 knfabq sc-6d9186a1-3 kDdkKQ SortDropdownSubTrigger",
+        "text": "Recent arrow_drop_down",
+        "visible": true,
+        "rect": {
+          "x": 1226,
+          "y": 243,
+          "w": 112,
+          "h": 36
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-3 fPutAP jHjHyn sc-d7495885-10 egRvLV",
+        "text": "Add to Prompt",
+        "visible": true,
+        "rect": {
+          "x": 962,
+          "y": 757,
+          "w": 368,
+          "h": 34
+        }
+      }
+    ],
+    "textNodes": [
+      {
+        "tag": "DIV",
+        "text": "add Add Media help Product Help settings_2 View Settings more_vert More ULTRA",
+        "rect": {
+          "x": 1613,
+          "y": 14,
+          "w": 287,
+          "h": 48
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add Add Media help Product Help settings_2 View Settings more_vert More",
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 164,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "add Add Media",
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "I",
+        "text": "add",
+        "rect": {
+          "x": 1617,
+          "y": 26,
+          "w": 24,
+          "h": 24
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "Add Media",
+        "rect": {
+          "x": 1628,
+          "y": 38,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media image View images Images accessibility_new Charact",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media image View images Images accessibility_new Charact",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 228,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media",
+        "rect": {
+          "x": 16,
+          "y": 76,
+          "w": 212,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "dashboard All Media",
+        "rect": {
+          "x": 20,
+          "y": 80,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "All Media",
+        "rect": {
+          "x": 40,
+          "y": 100,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "All Media",
+        "rect": {
+          "x": 68,
+          "y": 90,
+          "w": 60,
+          "h": 20
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "image View images Images",
+        "rect": {
+          "x": 16,
+          "y": 129,
+          "w": 212,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "image View images",
+        "rect": {
+          "x": 20,
+          "y": 133,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "I",
+        "text": "image",
+        "rect": {
+          "x": 28,
+          "y": 141,
+          "w": 24,
+          "h": 24
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "View images",
+        "rect": {
+          "x": 40,
+          "y": 152,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "Images",
+        "rect": {
+          "x": 68,
+          "y": 143,
+          "w": 48,
+          "h": 20
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "drive_folder_upload View uploaded media Uploads",
+        "rect": {
+          "x": 16,
+          "y": 287,
+          "w": 212,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "drive_folder_upload View uploaded media",
+        "rect": {
+          "x": 20,
+          "y": 291,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "I",
+        "text": "drive_folder_upload",
+        "rect": {
+          "x": 28,
+          "y": 299,
+          "w": 24,
+          "h": 24
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "View uploaded media",
+        "rect": {
+          "x": 40,
+          "y": 311,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "Uploads",
+        "rect": {
+          "x": 68,
+          "y": 301,
+          "w": 54,
+          "h": 20
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1684,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 228,
+          "y": 76,
+          "w": 1684,
+          "h": 416
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 1668,
+          "h": 416
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 1668,
+          "h": 400
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 267,
+          "h": 400
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 267,
+          "h": 400
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 267,
+          "h": 400
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 267,
+          "h": 400
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "warning Failed delete_forever Delete image 28%",
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 267,
+          "h": 400
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "image 28%",
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 267,
+          "h": 400
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "image 28%",
+        "rect": {
+          "x": 244,
+          "y": 76,
+          "w": 267,
+          "h": 400
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "image 28%",
+        "rect": {
+          "x": 256,
+          "y": 88,
+          "w": 243,
+          "h": 24
+        }
+      },
+      {
+        "tag": "I",
+        "text": "image",
+        "rect": {
+          "x": 256,
+          "y": 88,
+          "w": 24,
+          "h": 24
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 0,
+          "y": 819,
+          "w": 1920,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 0,
+          "y": 819,
+          "w": 1920,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 660,
+          "y": 819,
+          "w": 600,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 660,
+          "y": 819,
+          "w": 600,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "What do you want to create? add_2 Create Agent Video · 8s crop_16_9 1x arrow_for",
+        "rect": {
+          "x": 660,
+          "y": 819,
+          "w": 600,
+          "h": 94
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add_2 Create Agent Video · 8s crop_16_9 1x arrow_forward Create",
+        "rect": {
+          "x": 670,
+          "y": 871,
+          "w": 582,
+          "h": 34
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add_2 Create Agent",
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 104,
+          "h": 32
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add_2 Create Agent",
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 104,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "add_2 Create",
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "I",
+        "text": "add_2",
+        "rect": {
+          "x": 675,
+          "y": 877,
+          "w": 22,
+          "h": 22
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "May 21, 09:15 PM arrow_drop_down dashboard All image Images videocam Videos voic",
+        "rect": {
+          "x": 570,
+          "y": 231,
+          "w": 780,
+          "h": 580
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "May 21, 09:15 PM arrow_drop_down dashboard All image Images videocam Videos voic",
+        "rect": {
+          "x": 570,
+          "y": 231,
+          "w": 780,
+          "h": 580
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "May 21, 09:15 PM arrow_drop_down dashboard All image Images videocam Videos voic",
+        "rect": {
+          "x": 570,
+          "y": 231,
+          "w": 780,
+          "h": 580
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "May 21, 09:15 PM arrow_drop_down dashboard All image Images videocam Videos voic",
+        "rect": {
+          "x": 582,
+          "y": 243,
+          "w": 120,
+          "h": 556
+        }
+      },
+      {
+        "tag": "NAV",
+        "text": "dashboard All image Images videocam Videos voice_selection Voices accessibility_",
+        "rect": {
+          "x": 582,
+          "y": 287,
+          "w": 120,
+          "h": 478
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "image Images",
+        "rect": {
+          "x": 582,
+          "y": 323,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "I",
+        "text": "image",
+        "rect": {
+          "x": 594,
+          "y": 331,
+          "w": 18,
+          "h": 18
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "drive_folder_upload Uploads",
+        "rect": {
+          "x": 582,
+          "y": 503,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "I",
+        "text": "drive_folder_upload",
+        "rect": {
+          "x": 594,
+          "y": 511,
+          "w": 18,
+          "h": 18
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "upload Upload media",
+        "rect": {
+          "x": 582,
+          "y": 765,
+          "w": 120,
+          "h": 34
+        }
+      },
+      {
+        "tag": "I",
+        "text": "upload",
+        "rect": {
+          "x": 594,
+          "y": 772,
+          "w": 20,
+          "h": 20
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "search Recent arrow_drop_down vase.jpeg Image Add to Prompt",
+        "rect": {
+          "x": 708,
+          "y": 243,
+          "w": 630,
+          "h": 556
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image Add to Prompt",
+        "rect": {
+          "x": 708,
+          "y": 284,
+          "w": 630,
+          "h": 515
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image",
+        "rect": {
+          "x": 708,
+          "y": 284,
+          "w": 246,
+          "h": 515
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image",
+        "rect": {
+          "x": 708,
+          "y": 284,
+          "w": 246,
+          "h": 515
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image",
+        "rect": {
+          "x": 708,
+          "y": 284,
+          "w": 246,
+          "h": 515
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image",
+        "rect": {
+          "x": 708,
+          "y": 284,
+          "w": 246,
+          "h": 515
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image",
+        "rect": {
+          "x": 708,
+          "y": 284,
+          "w": 246,
+          "h": 515
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image",
+        "rect": {
+          "x": 708,
+          "y": 284,
+          "w": 246,
+          "h": 48
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image",
+        "rect": {
+          "x": 708,
+          "y": 284,
+          "w": 246,
+          "h": 48
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image",
+        "rect": {
+          "x": 708,
+          "y": 284,
+          "w": 246,
+          "h": 48
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "vase.jpeg Image",
+        "rect": {
+          "x": 764,
+          "y": 291,
+          "w": 174,
+          "h": 39
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Image",
+        "rect": {
+          "x": 764,
+          "y": 306,
+          "w": 33,
+          "h": 24
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Add to Prompt",
+        "rect": {
+          "x": 954,
+          "y": 284,
+          "w": 384,
+          "h": 515
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "Add to Prompt",
+        "rect": {
+          "x": 962,
+          "y": 757,
+          "w": 368,
+          "h": 34
+        }
+      }
+    ]
+  }
+}
