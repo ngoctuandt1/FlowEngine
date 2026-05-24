@@ -118,3 +118,38 @@ def test_detect_recaptcha_from_status_response_detects_redirect_url():
     )
 
     assert detect_recaptcha_from_status_response(response) is True
+
+
+def test_detect_recaptcha_from_status_response_detects_dict_payload_recaptcha_url():
+    payload = {
+        "media": [
+            {
+                "name": "gen-000000000001",
+                "error": {
+                    "message": (
+                        "blocked by "
+                        "https://www.google.com/recaptcha/enterprise/reload?k=site"
+                    ),
+                },
+            }
+        ]
+    }
+
+    assert detect_recaptcha_from_status_response(payload) is True
+
+
+def test_detect_recaptcha_from_status_response_ignores_clean_dict_payload():
+    payload = {
+        "media": [
+            {
+                "name": "gen-000000000001",
+                "mediaMetadata": {
+                    "mediaStatus": {
+                        "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_PENDING",
+                    }
+                },
+            }
+        ]
+    }
+
+    assert detect_recaptcha_from_status_response(payload) is False

@@ -47,6 +47,9 @@ _RECAPTCHA_URL_TOKENS = (
 
 def detect_recaptcha_from_status_response(response, response_text=None) -> bool:
     """Return True when a Flow status response indicates reCAPTCHA blocking."""
+    if isinstance(response, dict):
+        return _status_payload_has_recaptcha(response)
+
     response_url = _response_string(response, "url")
     location = _response_header(response, "location")
     if _contains_recaptcha_url_token(response_url) or _contains_recaptcha_url_token(location):
@@ -59,16 +62,18 @@ def detect_recaptcha_from_status_response(response, response_text=None) -> bool:
 
 
 def _response_status(response) -> int | None:
-    status = getattr(response, "status", None)
-    if callable(status):
+    for name in ("status", "status_code"):
+        status = getattr(response, name, None)
+        if callable(status):
+            try:
+                status = status()
+            except TypeError:
+                continue
         try:
-            status = status()
-        except TypeError:
-            return None
-    try:
-        return int(status)
-    except (TypeError, ValueError):
-        return None
+            return int(status)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _response_string(response, name: str) -> str:
@@ -99,6 +104,46 @@ def _response_header(response, name: str) -> str:
 def _contains_recaptcha_url_token(value: object) -> bool:
     text = str(value or "").lower().replace("\\/", "/")
     return any(token in text for token in _RECAPTCHA_URL_TOKENS)
+
+
+_STATUS_RECAPTCHA_TEXT_TOKENS = (
+    "recaptcha",
+    "captcha",
+    "unusual traffic",
+    "verify you are human",
+    "verify you're human",
+)
+_STATUS_RECAPTCHA_TEXT_KEYS = (
+    "status",
+    "error",
+    "message",
+    "reason",
+    "description",
+    "detail",
+)
+
+
+def _status_payload_has_recaptcha(node: Any, key_hint: str = "") -> bool:
+    if isinstance(node, str):
+        if _contains_recaptcha_url_token(node):
+            return True
+        if _is_status_recaptcha_text_key(key_hint):
+            text = node.lower().replace("\\/", "/")
+            return any(token in text for token in _STATUS_RECAPTCHA_TEXT_TOKENS)
+        return False
+    if isinstance(node, dict):
+        return any(
+            _status_payload_has_recaptcha(value, str(key))
+            for key, value in node.items()
+        )
+    if isinstance(node, (list, tuple)):
+        return any(_status_payload_has_recaptcha(value, key_hint) for value in node)
+    return False
+
+
+def _is_status_recaptcha_text_key(key: str) -> bool:
+    key_l = key.lower()
+    return any(token in key_l for token in _STATUS_RECAPTCHA_TEXT_KEYS)
 
 
 async def _page_has_recaptcha_block(page) -> bool:
