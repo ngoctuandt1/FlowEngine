@@ -413,9 +413,49 @@ async def _upload_ingredient(page, image_path: str) -> None:
         ) from last_error
 
     await _accept_ingredient_rights_notice(page)
+    # 2026-05 picker requires the uploaded asset to finish uploading
+    # AND auto-select before the bottom 'Add to Prompt' button is
+    # enabled. Click-when-disabled is a no-op. Poll for the enabled
+    # state before pressing it. ~20 s covers ing1.jpg (~5 s upload)
+    # plus a slow network margin.
+    await _wait_for_picker_commit_enabled(page, timeout_sec=20.0)
     await _commit_uploaded_tile_in_picker(page)
     await _click_add_to_prompt_if_present(page)
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.5)
+
+
+async def _wait_for_picker_commit_enabled(page, timeout_sec: float = 20.0) -> bool:
+    """Poll until the picker's 'Add to Prompt' button is enabled.
+
+    2026-05 picker (live-probed 2026-05-24): clicking 'Add to Prompt'
+    while it's still disabled (no asset selected / upload pending) is
+    a silent no-op, leaving the chip count at 0. Block until the
+    button reports ``disabled === false`` or the timeout expires.
+
+    Returns True if enabled state observed, False on timeout. Caller
+    proceeds regardless — fallback paths still try the click.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            enabled = await page.evaluate(
+                r"""() => {
+                    const dialog = document.querySelector('[role="dialog"]');
+                    if (!dialog) return false;
+                    const btns = [...dialog.querySelectorAll('button')];
+                    const cta = btns.find(b => /Add to Prompt/i.test(b.innerText || ''));
+                    if (!cta) return false;
+                    return !cta.disabled && cta.getAttribute('aria-disabled') !== 'true';
+                }"""
+            )
+            if enabled:
+                logger.info("Picker 'Add to Prompt' button enabled — upload settled")
+                return True
+        except Exception as exc:
+            logger.debug("Commit-enabled poll error: %s", exc)
+        await asyncio.sleep(0.5)
+    logger.warning("Picker 'Add to Prompt' button stayed disabled within %.1fs", timeout_sec)
+    return False
 
 
 async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 4.0) -> None:
