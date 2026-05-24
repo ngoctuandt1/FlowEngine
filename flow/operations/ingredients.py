@@ -413,8 +413,103 @@ async def _upload_ingredient(page, image_path: str) -> None:
         ) from last_error
 
     await _accept_ingredient_rights_notice(page)
+    await _commit_uploaded_tile_in_picker(page)
     await _click_add_to_prompt_if_present(page)
     await asyncio.sleep(0.3)
+
+
+async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 25.0) -> None:
+    """Click the just-uploaded tile inside the media picker.
+
+    2026-05 picker schema (live-probed 2026-05-24, docs/livetest-2026-05-24/
+    probe_findings.md): the dialog has no bottom Add/Confirm/Insert button.
+    The only commit affordance is clicking the uploaded asset's tile in
+    the picker grid; tile-click attaches the asset to the composer and
+    closes the picker.
+
+    Strategy:
+      1. Wait up to ~timeout for an image tile to appear inside the
+         picker dialog. We anchor on the grid container by looking for
+         ``[role='dialog']`` descendants that are clickable + contain an
+         ``<img>``; the earlier "No results found" state has no such
+         tile.
+      2. Click the first matching tile (newest uploads sort first).
+      3. If after the click the picker is still visible, also try a
+         primary "Add"-style button (some variants may add one once a
+         selection exists).
+
+    Best-effort: missing tile selector raises only when neither a tile
+    nor an Add button is found within the timeout. Callers wrap this in
+    the ingredient-count retry, so a transient miss still gets a 2nd
+    chance.
+    """
+    tile_selector = (
+        "[role='dialog'] [role='gridcell'] img, "
+        "[role='dialog'] [role='option'] img, "
+        "[role='dialog'] button:has(img):not(:has-text('Upload media')), "
+        "[role='dialog'] [role='button']:has(img):not(:has-text('Upload media'))"
+    )
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            tile = page.locator(tile_selector).first
+            if await tile.is_visible(timeout=500):
+                # The wrapper button is the clickable; img inside the
+                # tile may be the locator hit. Walk up to the nearest
+                # clickable ancestor before clicking.
+                try:
+                    clickable = tile.locator(
+                        "xpath=ancestor-or-self::*[self::button or @role='button' or @role='option' or @role='gridcell'][1]"
+                    ).first
+                    # Diagnostic: capture WHAT we're about to click so we
+                    # can tell tile-hit from icon-hit when chip count = 0.
+                    try:
+                        info = await clickable.evaluate(
+                            "el => ({tag: el.tagName, role: el.getAttribute('role'), "
+                            "text: (el.innerText||'').trim().slice(0,80), "
+                            "imgSrc: (el.querySelector('img')||{}).src||'', "
+                            "rect: el.getBoundingClientRect()})"
+                        )
+                        logger.info("Picker tile candidate: %s", info)
+                    except Exception:
+                        pass
+                    await clickable.click(timeout=3000)
+                except Exception:
+                    await tile.click(timeout=3000)
+                await asyncio.sleep(0.4)
+                logger.info("Clicked newly-uploaded tile to attach ingredient")
+                # Diagnostic: dump picker state + composer chip count
+                # immediately after click so next failure log shows
+                # whether the picker closed and whether a chip appeared.
+                try:
+                    after = await page.evaluate(
+                        "() => ({dialogOpen: !!document.querySelector('[role=\"dialog\"]'), "
+                        "dialogText: (document.querySelector('[role=\"dialog\"]')?.innerText||'').slice(0,300), "
+                        "imgCount: document.querySelectorAll('img').length})"
+                    )
+                    logger.info("Post-tile-click state: %s", after)
+                except Exception:
+                    pass
+                return
+        except Exception as exc:
+            logger.debug("Tile-search miss: %s", exc)
+        await asyncio.sleep(0.5)
+
+    logger.warning(
+        "No uploaded tile found inside picker within %.1fs", timeout_sec
+    )
+    # Diagnostic: dump picker DOM so next session has evidence to chase.
+    try:
+        dump = await page.evaluate(
+            "() => { const d = document.querySelector('[role=\"dialog\"]'); "
+            "if (!d) return {noDialog: true}; "
+            "const btns = [...d.querySelectorAll('button')].map(b => ({label: (b.innerText||'').slice(0,40), hidden: b.offsetParent===null, disabled: b.disabled})); "
+            "const imgs = [...d.querySelectorAll('img')].slice(0,10).map(i => ({src: (i.src||'').slice(0,80), w: i.naturalWidth, h: i.naturalHeight})); "
+            "return {dialogText: (d.innerText||'').slice(0,800), buttons: btns, images: imgs}; }"
+        )
+        logger.warning("Picker dump on tile-not-found: %s", dump)
+    except Exception:
+        pass
 
 
 async def _accept_ingredient_rights_notice(page) -> None:
@@ -440,24 +535,33 @@ async def _accept_ingredient_rights_notice(page) -> None:
 
 
 async def _click_add_to_prompt_if_present(page) -> None:
-    """Confirm picker selection via the 2026-05 'Add to Prompt' button.
+    """Click the picker's primary commit CTA if one is present after selection.
 
-    After upload completes the picker shows a primary CTA labelled
-    `Add to Prompt`. Clicking it commits the upload to the composer
-    chip list. If the picker auto-closes (some variants) the button is
-    absent and we proceed silently.
+    2026-05 picker (live-probed 2026-05-24) commits via tile-click and
+    has no bottom Add button by default. Older / future variants may
+    surface a primary CTA labelled "Add to Prompt", "Add", "Insert",
+    "Done", or "Use selected". Best-effort: missing button is a no-op.
     """
-    try:
-        add_button = page.locator(
-            "button:has-text('Add to Prompt'), "
-            "[role='button']:has-text('Add to Prompt')"
-        ).last
-        if await add_button.is_visible(timeout=4000):
-            await add_button.click(timeout=3000)
-            await asyncio.sleep(0.6)
-            logger.info("Clicked 'Add to Prompt' to attach ingredient")
-    except Exception as exc:
-        logger.debug("'Add to Prompt' not present after upload: %s", exc)
+    candidate_selectors = (
+        "[role='dialog'] button:has-text('Add to Prompt')",
+        "[role='dialog'] button:has-text('Add to prompt')",
+        "[role='dialog'] button:has-text('Use selected')",
+        "[role='dialog'] button:has-text('Insert')",
+        "[role='dialog'] button:has-text('Done')",
+        "button:has-text('Add to Prompt')",
+        "[role='button']:has-text('Add to Prompt')",
+    )
+    for selector in candidate_selectors:
+        try:
+            btn = page.locator(selector).last
+            if await btn.is_visible(timeout=600):
+                await btn.click(timeout=3000)
+                await asyncio.sleep(0.6)
+                logger.info("Clicked picker commit CTA via: %s", selector)
+                return
+        except Exception:
+            continue
+    logger.debug("No explicit picker commit CTA found after upload (likely auto-closed via tile-click)")
 
 
 async def _upload_ingredient_with_retry(page, image_path: str, expected_count: int) -> None:
