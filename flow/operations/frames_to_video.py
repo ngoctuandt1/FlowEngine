@@ -747,16 +747,56 @@ async def _wait_for_frame_upload_applied(page, label: str, timeout_sec: float = 
                             && rect.width > 0
                             && rect.height > 0;
                     };
-                    const frameRow = Array.from(document.querySelectorAll('body *')).find((el) => {
-                        if (!visible(el)) return false;
-                        const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-                        return text.includes('Swap first and last frames')
-                            && text.includes('Start')
-                            && text.includes('End');
-                    });
-                    const scope = frameRow || document.body;
-                    const media = Array.from(scope.querySelectorAll('img, video, canvas')).filter(visible);
-                    if (media.length > 0) return {ok: true, reason: 'media-in-frame-row', count: media.length};
+                    const normalize = (value) => (value || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\u0300-\u036f]/g, '')
+                        .replace(/\u0111/g, 'd')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                    const textOf = (el) => normalize(el.innerText || el.textContent || '');
+                    const requested = normalize(label);
+                    const targetTerms = requested.includes('end')
+                        ? ['end', 'last', 'final', 'cuoi', 'ket thuc']
+                        : requested.includes('start')
+                            ? ['start', 'first', 'dau', 'bat dau']
+                            : [requested];
+                    const oppositeTerms = requested.includes('end')
+                        ? ['start', 'first', 'dau', 'bat dau']
+                        : requested.includes('start')
+                            ? ['end', 'last', 'final', 'cuoi', 'ket thuc']
+                            : [];
+                    const includesAny = (text, terms) => terms.some((term) => term && text.includes(term));
+                    const labelCandidates = Array.from(document.querySelectorAll('body *'))
+                        .filter(visible)
+                        .map((el) => ({el, text: textOf(el)}))
+                        .filter(({text}) => text && includesAny(text, targetTerms) && !includesAny(text, oppositeTerms))
+                        .sort((a, b) => {
+                            const aRect = a.el.getBoundingClientRect();
+                            const bRect = b.el.getBoundingClientRect();
+                            const lengthDelta = a.text.length - b.text.length;
+                            if (lengthDelta !== 0) return lengthDelta;
+                            return (aRect.width * aRect.height) - (bRect.width * bRect.height);
+                        });
+                    let matchedTargetLabel = false;
+                    for (const {el: labelEl} of labelCandidates) {
+                        matchedTargetLabel = true;
+                        let current = labelEl;
+                        for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+                            const currentText = textOf(current);
+                            if (includesAny(currentText, oppositeTerms)) break;
+                            const thumbnails = Array.from(current.querySelectorAll('img')).filter(visible);
+                            if (thumbnails.length > 0) {
+                                return {
+                                    ok: true,
+                                    reason: 'target-slot-thumbnail',
+                                    count: thumbnails.length,
+                                    label: (labelEl.innerText || labelEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+                                };
+                            }
+                        }
+                    }
+                    if (matchedTargetLabel) return {ok: false, reason: 'target-slot-no-thumbnail'};
                     const noticeOpen = Array.from(document.querySelectorAll('[role="dialog"]'))
                         .some((el) => visible(el) && /notice/i.test(el.innerText || el.textContent || ''));
                     if (noticeOpen) return {ok: false, reason: 'notice-open'};
