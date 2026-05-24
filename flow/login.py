@@ -36,6 +36,20 @@ _LOGIN_PATTERNS = [
 # substring match cleanly separates the three landing states.
 _GMAIL_INBOX_URL_TOKEN = "mail.google.com/mail/u/"
 
+# Flow lives under `labs.google/fx/tools/flow` (with optional
+# `/project/<id>` or `/edit/<media_id>` subpaths). The marketing variant
+# also lives under this prefix even for signed-in sessions (memory
+# `feedback_flow_marketing_landing_bypass.md`), so URL-presence here is
+# only the "we reached Flow's origin" signal — not "the app mounted".
+_FLOW_APP_URL_TOKEN = "labs.google/fx"
+
+# Workspace renders `https://access.workspace.google.com/ServiceNotAllowed?application=<id>`
+# when a user is signed in but the org admin has disabled the requested
+# Google app (Gmail, Flow, …). The `application=` query param identifies
+# *which* service was blocked; we treat any such URL as a hard fail
+# because warm_profile cannot do anything about admin policy.
+_SERVICE_BLOCKED_URL_TOKEN = "access.workspace.google.com/servicenotallowed"
+
 LOGIN_TIMEOUT = 90
 
 # Path to profiles_ultra.txt for credentials
@@ -63,6 +77,32 @@ class NeedAutoLogin(RuntimeError):
 def is_login_page(url: str) -> bool:
     url_lower = url.lower()
     return any(pat in url_lower for pat in _LOGIN_PATTERNS)
+
+
+def is_flow_app_url(url: str) -> bool:
+    """True when the URL lives under Flow's origin (`labs.google/fx/...`).
+
+    Used as the positive "we reached Flow" signal for the Flow-entry warm
+    flow, paired with :func:`is_login_page` (sign-in redirect) and
+    :func:`is_service_blocked` (admin-disabled account) as the negative
+    signals. Note this does NOT distinguish the signed-in app dashboard
+    from the marketing landing variant — Google serves the marketing
+    page even to signed-in sessions in some A/B variants
+    (`feedback_flow_marketing_landing_bypass.md`). Cookies are persisted
+    regardless; the worker's own preflight resolves whether the app
+    actually mounts when a real job runs.
+    """
+    return _FLOW_APP_URL_TOKEN in url.lower()
+
+
+def is_service_blocked(url: str) -> bool:
+    """True when Workspace has redirected to `ServiceNotAllowed`.
+
+    Indicates the account is signed in to Google but the org admin has
+    disabled the requested service. Surfaces as a hard failure from
+    warm_profile because no client-side retry can fix admin policy.
+    """
+    return _SERVICE_BLOCKED_URL_TOKEN in url.lower()
 
 
 def is_gmail_inbox(url: str) -> bool:

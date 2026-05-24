@@ -1,4 +1,4 @@
-"""Open a profile in visible Chrome and auto-login to Google via Gmail.
+"""Open a profile in visible Chrome and auto-login to Google via Flow.
 
 Usage
 -----
@@ -6,30 +6,36 @@ Usage
 
 Opens a real Chrome window against
 ``${CHROME_USER_DATA_DIR:-chrome-profiles}/{profile}`` via a local CDP port,
-navigates to Gmail, and drives the Google sign-in flow via
-``flow.login.handle_login_redirect`` (credentials read from
-``profiles_ultra.txt``). Cookies + IndexedDB state persist to the profile
-directory; subsequent FlowEngine worker launches clone that profile and
-inherit the Google session.
+navigates to Flow (``labs.google/fx/tools/flow``), and drives the Google
+sign-in flow via ``flow.login.handle_login_redirect`` (credentials read
+from ``profiles_ultra.txt``). Cookies + IndexedDB state persist to the
+profile directory; subsequent FlowEngine worker launches clone that
+profile and inherit the Google session.
 
-The earlier auto-login revision that hard-coded
-``accounts.google.com/ServiceLogin?service=googlefx`` was rejected by the
-user (2026-04-20). ``mail.google.com`` is the approved entry URL — Gmail
-redirects anonymous sessions into the Google login flow, and
-``handle_login_redirect`` takes over once that redirect lands.
+Why Flow, not Gmail
+-------------------
+Earlier revisions used ``mail.google.com`` as the entry URL. That broke
+for Workspace accounts where the org admin had disabled Gmail but
+kept Flow enabled — warm exited "Already signed in" pointing at
+``access.workspace.google.com/ServiceNotAllowed?application=740348119625``
+(Gmail's blocked app ID), and the profile looked healthy even though
+it could never reach Gmail's inbox. The 2026-04-20 ``ServiceLogin``
+revision and the manual ``wait_for_event("close")`` revision are both
+still rejected (memory ``feedback_warm_profile_manual_gmail.md``); this
+revision swaps the entry URL to Flow so the warm signal matches what
+the worker actually needs (Flow access), not an unrelated proxy app.
 
-Landing is resolved via :func:`_resolve_gmail_landing`, which polls the
-page URL until it matches either an authenticated Gmail path
-(``mail.google.com/mail/u/<N>/...``) or a Google sign-in URL. If Gmail
-routes the anonymous session to ``workspace.google.com/.../gmail/``
-instead of straight to ``accounts.google.com`` (happens under some
-locales / residual cookies), the resolver clicks the marketing page's
-top-nav Sign-in anchor to bridge back into the sign-in flow. Any
-other landing raises :class:`TimeoutError` — the earlier "fixed
-2-second sleep + sign-in-URL check, else assume signed in" logic
-mis-labelled profiles whose initial URL was still on the Workspace
-marketing page, writing zero auth cookies while logging "Already
-signed in" (user-reported 2026-04-20).
+Landing is resolved via :func:`_resolve_flow_landing`, which polls the
+page URL until it matches one of three terminal states:
+
+* :func:`flow.login.is_flow_app_url` — URL is under ``labs.google/fx``,
+  cookies are persisted and warm exits 0. (The worker resolves whether
+  the app actually mounts vs. shows the marketing variant.)
+* :func:`flow.login.is_login_page` — Google sign-in redirect;
+  :func:`flow.login.handle_login_redirect` drives the auto-login flow.
+* :func:`flow.login.is_service_blocked` — Workspace ``ServiceNotAllowed``
+  redirect; raises :class:`FlowServiceDisabled` because no client-side
+  retry can fix admin policy.
 
 Recovery
 --------
@@ -53,7 +59,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from playwright.async_api import Browser, BrowserContext, Error, Page, async_playwright
 
-from flow.login import handle_login_redirect, is_gmail_inbox, is_login_page
+from flow.login import (
+    handle_login_redirect,
+    is_flow_app_url,
+    is_login_page,
+    is_service_blocked,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,29 +72,20 @@ logging.basicConfig(
 )
 log = logging.getLogger("warm_profile")
 
-WARM_URL = "https://mail.google.com"
+WARM_URL = "https://labs.google/fx/tools/flow"
 VIEWPORT = {"width": 1280, "height": 800}
 LAUNCH_ARGS = ["--no-first-run", "--no-default-browser-check"]
 LOGIN_TIMEOUT_SEC = 120
 COOKIE_FLUSH_SEC = 3
 CDP_CONNECT_TIMEOUT_SEC = 15
-# Gmail's server-side redirect from `mail.google.com/` to the inbox
-# (signed-in), accounts.google.com/v3/signin (anonymous → direct), or
-# workspace.google.com/…/gmail/ (anonymous → marketing, locale-dependent)
-# completes in a couple seconds on a warm connection. 30s is generous
+# Flow's anonymous redirect to accounts.google.com and the signed-in
+# landing on `labs.google/fx/tools/flow` (or `/project/<id>`) both
+# complete in a couple seconds on a warm connection. 30s is generous
 # enough for slow networks and short enough to fail loud on unexpected
-# landings.
-GMAIL_RESOLVE_TIMEOUT_SEC = 30
+# landings (DNS errors, captive portals, …).
+FLOW_RESOLVE_TIMEOUT_SEC = 30
 _POLL_INTERVAL_SEC = 0.5
-_WORKSPACE_GMAIL_TOKEN = "workspace.google.com"
-# The Workspace marketing page's top-nav "Sign in" anchor uniquely
-# points at AccountChooser/signinchooser; SignUp and business-signup
-# anchors on the same page do not match. Text-based fallback covers
-# a future href shift.
-_WORKSPACE_SIGNIN_SELECTORS = (
-    "a[href*='AccountChooser/signinchooser']",
-    "a[href*='accounts.google.com']:has-text('Sign in')",
-)
+
 CHROME_CANDIDATES = (
     lambda: os.environ.get("FLOW_WARM_CHROME_PATH"),
     lambda: os.environ.get("CHROME_PATH"),
@@ -99,68 +101,57 @@ CHROME_CANDIDATES = (
 )
 
 
-def _is_workspace_gmail_marketing(url: str) -> bool:
-    u = url.lower()
-    return _WORKSPACE_GMAIL_TOKEN in u and "gmail" in u
+class FlowServiceDisabled(RuntimeError):
+    """Raised when Workspace returns ServiceNotAllowed for Flow.
 
-
-async def _bridge_workspace_to_signin(page) -> bool:
-    """Navigate `page` to the Workspace Sign-in anchor's href.
-
-    The anchor opens in a new tab (``target="_blank"``), so a real click
-    leaves the original page parked on the Workspace marketing URL and
-    the resolver's URL poll never sees the sign-in landing. We read the
-    href off the same anchor and goto it in-place instead — the href
-    comes from Google's own marketing page, not hardcoded here.
+    The account is signed in to Google but the org admin has disabled
+    Flow (or all consumer labs apps). No client-side retry can fix
+    this — the profile must be retired or the admin must re-enable
+    access. Surfaces the offending URL so the caller can record the
+    application= query param for diagnostics.
     """
-    for sel in _WORKSPACE_SIGNIN_SELECTORS:
-        try:
-            link = page.locator(sel).first
-            if not await link.is_visible(timeout=1500):
-                continue
-            href = await link.get_attribute("href")
-            if not href:
-                continue
-            log.info("Bridging via %s → %s", sel, href[:80])
-            await page.goto(href, wait_until="domcontentloaded", timeout=15000)
-            return True
-        except Exception:
-            continue
-    return False
+
+    def __init__(self, profile_name: str, url: str):
+        self.profile_name = profile_name
+        self.url = url
+        super().__init__(
+            f"Flow service disabled for profile {profile_name!r}: {url}"
+        )
 
 
-async def _resolve_gmail_landing(page, timeout_sec: float) -> str:
-    """Wait for the Gmail goto to resolve to a known terminal URL.
+async def _resolve_flow_landing(page, timeout_sec: float) -> str:
+    """Wait for the Flow goto to resolve to a known terminal URL.
 
-    Returns ``"inbox"`` when the URL matches the authenticated Gmail
-    path (``mail.google.com/mail/u/<N>/...``) and ``"signin"`` when it
-    matches a Google sign-in URL. If the initial redirect lands on
-    ``workspace.google.com/.../gmail/`` (the Workspace marketing page
-    that anonymous sessions hit under some locales/cookie states), the
-    resolver clicks the top-nav Sign-in anchor once and keeps polling
-    — that click navigates to ``accounts.google.com/AccountChooser``,
-    which the next iteration detects as ``"signin"``.
+    Returns ``"flow"`` when the URL is under ``labs.google/fx`` (the
+    Flow app — whether the dashboard, a project, an editor, or the
+    marketing variant), and ``"signin"`` when it matches a Google
+    sign-in URL.
 
-    Raises :class:`TimeoutError` on any other landing — silently
-    treating an unknown URL as "signed in" is the 2026-04-20 regression
-    (warm succeeded on a profile with zero auth cookies because
-    ``mail.google.com/`` didn't match the sign-in patterns during the
-    2-second window).
+    Raises :class:`FlowServiceDisabled` when the URL is the Workspace
+    ``ServiceNotAllowed`` redirect — that state means the account is
+    signed in but admin-disabled for the requested service, and warm
+    cannot recover. Raises :class:`TimeoutError` on any other landing
+    so unknown URLs fail loud rather than silently succeed (the
+    2026-04-20 false-positive class; preserved from the Gmail-entry
+    revision).
     """
     deadline = asyncio.get_event_loop().time() + timeout_sec
-    bridged = False
     while asyncio.get_event_loop().time() < deadline:
         url = page.url
-        if is_gmail_inbox(url):
-            return "inbox"
+        # Order matters: ServiceNotAllowed and accounts.google.com both
+        # live under *.google.com and neither matches `labs.google/fx`,
+        # but check the service-blocked redirect first because it is
+        # the strongest signal — we want the dedicated exception even
+        # if a future Google change also flips `is_login_page`.
+        if is_service_blocked(url):
+            raise FlowServiceDisabled(profile_name="", url=url)
+        if is_flow_app_url(url):
+            return "flow"
         if is_login_page(url):
             return "signin"
-        if not bridged and _is_workspace_gmail_marketing(url):
-            log.info("Workspace marketing detected (%s); bridging to sign-in", url[:80])
-            bridged = await _bridge_workspace_to_signin(page)
         await asyncio.sleep(_POLL_INTERVAL_SEC)
     raise TimeoutError(
-        f"mail.google.com did not resolve to inbox or sign-in within "
+        f"{WARM_URL} did not resolve to a known landing within "
         f"{timeout_sec:.0f}s — last URL: {page.url}"
     )
 
@@ -257,15 +248,38 @@ async def warm(profile: str) -> int:
             browser, _ctx, page = await _connect_chrome_over_cdp(p, cdp_port)
             log.info("Connected to Chrome CDP on port %d", cdp_port)
 
-            state = await _resolve_gmail_landing(page, GMAIL_RESOLVE_TIMEOUT_SEC)
+            try:
+                state = await _resolve_flow_landing(page, FLOW_RESOLVE_TIMEOUT_SEC)
+            except FlowServiceDisabled as exc:
+                # Re-raise with the profile name attached — the resolver
+                # has no access to it.
+                raise FlowServiceDisabled(profile_name=profile, url=exc.url) from None
 
             if state == "signin":
                 log.info("Sign-in required — driving auto-login for %s", profile)
                 await handle_login_redirect(
                     page, timeout=LOGIN_TIMEOUT_SEC, profile_name=profile
                 )
+                # After auto-login Google bounces back through the
+                # original `continue=` target (Flow). Re-resolve once so
+                # a still-anonymous landing (login flow silently aborted)
+                # fails loud instead of exiting 0 with no cookies.
+                try:
+                    post_state = await _resolve_flow_landing(
+                        page, FLOW_RESOLVE_TIMEOUT_SEC
+                    )
+                except FlowServiceDisabled as exc:
+                    raise FlowServiceDisabled(
+                        profile_name=profile, url=exc.url
+                    ) from None
+                if post_state != "flow":
+                    raise RuntimeError(
+                        f"Auto-login completed but Flow did not load "
+                        f"(state={post_state}, url={page.url})"
+                    )
+                log.info("Auto-login succeeded — Flow reached at %s", page.url[:80])
             else:
-                log.info("Already signed in (inbox at %s)", page.url[:80])
+                log.info("Already signed in — Flow reached at %s", page.url[:80])
 
             await asyncio.sleep(COOKIE_FLUSH_SEC)
         finally:
@@ -281,4 +295,11 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("usage: python scripts/warm_profile.py <profile>", file=sys.stderr)
         sys.exit(2)
-    sys.exit(asyncio.run(warm(sys.argv[1])))
+    try:
+        sys.exit(asyncio.run(warm(sys.argv[1])))
+    except FlowServiceDisabled as exc:
+        log.error("%s", exc)
+        # Distinct exit code so callers (worker preflight, livetest) can
+        # branch on "profile is dead, do not retry" without parsing the
+        # log line.
+        sys.exit(3)
