@@ -26,6 +26,8 @@ of the rejected paths.
 
 from pathlib import Path
 
+import pytest
+
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "warm_profile.py"
 
 
@@ -131,6 +133,11 @@ def test_warm_profile_positively_confirms_flow_landing() -> None:
         "URL mis-labels anonymous sessions whose redirect has not yet "
         "completed."
     )
+    assert "is_flow_app_authenticated" in src, (
+        "warm_profile.py must require `is_flow_app_authenticated` before "
+        "declaring a labs.google/fx landing signed in. The anonymous Flow "
+        "marketing page shares that URL and has no auth cookies."
+    )
     assert "is_service_blocked" in src, (
         "warm_profile.py must check `is_service_blocked` so Workspace's "
         "ServiceNotAllowed redirect surfaces as a hard failure (the dead "
@@ -147,6 +154,99 @@ def test_warm_profile_raises_on_service_blocked() -> None:
         "Workspace returns ServiceNotAllowed — silently succeeding on a "
         "dead profile is the 2026-05-21 regression class."
     )
+
+
+@pytest.mark.asyncio
+async def test_resolve_flow_landing_clicks_cta_on_anonymous_marketing(
+    monkeypatch,
+) -> None:
+    """Anonymous Flow marketing URL must not be terminal signed-in state."""
+    from scripts import warm_profile
+
+    page = _FakeFlowLandingPage(
+        url="https://labs.google/fx/tools/flow",
+        cta_redirect_url="https://accounts.google.com/v3/signin/identifier",
+    )
+    monkeypatch.setattr(warm_profile, "FLOW_AUTH_POLL_TIMEOUT_SEC", 0)
+
+    state = await warm_profile._resolve_flow_landing(page, timeout_sec=1)
+
+    assert state == "signin"
+    assert page.clicked_selectors, "Flow CTA click must be attempted"
+
+
+@pytest.mark.asyncio
+async def test_resolve_flow_landing_times_out_without_auth_signal() -> None:
+    """Bare labs.google/fx marketing URL cannot resolve as already signed in."""
+    from scripts import warm_profile
+
+    page = _FakeFlowLandingPage(url="https://labs.google/fx/tools/flow")
+
+    with pytest.raises(
+        TimeoutError,
+        match="Flow landing did not resolve to signed-in/login/blocked",
+    ):
+        await warm_profile._resolve_flow_landing(page, timeout_sec=0)
+
+
+@pytest.mark.asyncio
+async def test_is_flow_app_authenticated_requires_explicit_signal() -> None:
+    """Auth helper accepts app shell signals, not marketing URL alone."""
+    from flow.login import is_flow_app_authenticated
+
+    marketing = _FakeFlowLandingPage(url="https://labs.google/fx/tools/flow")
+    project = _FakeFlowLandingPage(
+        url="https://labs.google/fx/tools/flow/project/project-id"
+    )
+    new_project_button = _FakeFlowLandingPage(
+        url="https://labs.google/fx/tools/flow",
+        visible_selectors={"button:has-text('+ New project')"},
+    )
+    account_menu = _FakeFlowLandingPage(
+        url="https://labs.google/fx/tools/flow",
+        visible_selectors={'nav [aria-label*="Google Account" i]'},
+    )
+
+    assert await is_flow_app_authenticated(marketing) is False
+    assert await is_flow_app_authenticated(project) is True
+    assert await is_flow_app_authenticated(new_project_button) is True
+    assert await is_flow_app_authenticated(account_menu) is True
+
+
+class _FakeFlowLandingPage:
+    def __init__(
+        self,
+        *,
+        url: str,
+        cta_redirect_url: str | None = None,
+        visible_selectors: set[str] | None = None,
+    ):
+        self.url = url
+        self.cta_redirect_url = cta_redirect_url
+        self.visible_selectors = visible_selectors or set()
+        self.clicked_selectors: list[str] = []
+
+    def locator(self, selector: str):
+        return _FakeLocator(self, selector)
+
+    async def wait_for_load_state(self, *_args, **_kwargs) -> None:
+        return None
+
+
+class _FakeLocator:
+    def __init__(self, page: _FakeFlowLandingPage, selector: str):
+        self.page = page
+        self.selector = selector
+        self.first = self
+
+    async def is_visible(self, **_kwargs) -> bool:
+        return self.selector in self.page.visible_selectors
+
+    async def click(self, **_kwargs) -> None:
+        if self.page.cta_redirect_url is None:
+            raise RuntimeError(f"selector not clickable: {self.selector}")
+        self.page.clicked_selectors.append(self.selector)
+        self.page.url = self.page.cta_redirect_url
 
 
 def _live_occurrence(src: str, token: str) -> bool:

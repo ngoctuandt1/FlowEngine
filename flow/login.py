@@ -42,6 +42,19 @@ _GMAIL_INBOX_URL_TOKEN = "mail.google.com/mail/u/"
 # `feedback_flow_marketing_landing_bypass.md`), so URL-presence here is
 # only the "we reached Flow's origin" signal — not "the app mounted".
 _FLOW_APP_URL_TOKEN = "labs.google/fx"
+_FLOW_AUTHENTICATED_URL_TOKENS = ("/project/", "/edit/")
+_FLOW_NEW_PROJECT_SELECTORS = (
+    "button:has-text('+ New project')",
+    "[role='button']:has-text('+ New project')",
+)
+_FLOW_ACCOUNT_MENU_SELECTORS = (
+    'nav [aria-label*="Google Account" i]',
+    'nav button[aria-haspopup="menu"][aria-label*="Account" i]',
+    'nav a[href*="SignOutOptions"]',
+    'header [aria-label*="Google Account" i]',
+    'header button[aria-haspopup="menu"][aria-label*="Account" i]',
+    'header a[href*="SignOutOptions"]',
+)
 
 # Workspace renders `https://access.workspace.google.com/ServiceNotAllowed?application=<id>`
 # when a user is signed in but the org admin has disabled the requested
@@ -93,6 +106,26 @@ def is_flow_app_url(url: str) -> bool:
     actually mounts when a real job runs.
     """
     return _FLOW_APP_URL_TOKEN in url.lower()
+
+
+async def is_flow_app_authenticated(page) -> bool:
+    """True when Flow shows a signed-in app signal, not marketing-only URL."""
+    url_lower = getattr(page, "url", "").lower()
+    if any(token in url_lower for token in _FLOW_AUTHENTICATED_URL_TOKENS):
+        return True
+
+    for selector in (*_FLOW_NEW_PROJECT_SELECTORS, *_FLOW_ACCOUNT_MENU_SELECTORS):
+        if await _is_locator_visible(page, selector):
+            return True
+    return False
+
+
+async def _is_locator_visible(page, selector: str) -> bool:
+    try:
+        return await page.locator(selector).first.is_visible(timeout=500)
+    except Exception as exc:
+        logger.debug("Flow auth selector not visible (%s): %s", selector, exc)
+        return False
 
 
 def is_service_blocked(url: str) -> bool:

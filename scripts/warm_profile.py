@@ -25,12 +25,11 @@ still rejected (memory ``feedback_warm_profile_manual_gmail.md``); this
 revision swaps the entry URL to Flow so the warm signal matches what
 the worker actually needs (Flow access), not an unrelated proxy app.
 
-Landing is resolved via :func:`_resolve_flow_landing`, which polls the
-page URL until it matches one of three terminal states:
+Landing is resolved via :func:`_resolve_flow_landing`, which polls until
+it matches one of three terminal states:
 
-* :func:`flow.login.is_flow_app_url` — URL is under ``labs.google/fx``,
-  cookies are persisted and warm exits 0. (The worker resolves whether
-  the app actually mounts vs. shows the marketing variant.)
+* :func:`flow.login.is_flow_app_authenticated` — Flow app shell is mounted
+  or a project/editor URL is reached; cookies are persisted and warm exits 0.
 * :func:`flow.login.is_login_page` — Google sign-in redirect;
   :func:`flow.login.handle_login_redirect` drives the auto-login flow.
 * :func:`flow.login.is_service_blocked` — Workspace ``ServiceNotAllowed``
@@ -61,6 +60,7 @@ from playwright.async_api import Browser, BrowserContext, Error, Page, async_pla
 
 from flow.login import (
     handle_login_redirect,
+    is_flow_app_authenticated,
     is_flow_app_url,
     is_login_page,
     is_service_blocked,
@@ -78,13 +78,27 @@ LAUNCH_ARGS = ["--no-first-run", "--no-default-browser-check"]
 LOGIN_TIMEOUT_SEC = 120
 COOKIE_FLUSH_SEC = 3
 CDP_CONNECT_TIMEOUT_SEC = 15
-# Flow's anonymous redirect to accounts.google.com and the signed-in
-# landing on `labs.google/fx/tools/flow` (or `/project/<id>`) both
-# complete in a couple seconds on a warm connection. 30s is generous
-# enough for slow networks and short enough to fail loud on unexpected
-# landings (DNS errors, captive portals, …).
-FLOW_RESOLVE_TIMEOUT_SEC = 30
+# Flow's anonymous redirect to accounts.google.com and the signed-in app
+# shell usually resolve quickly. Keep the full resolver at 120s so slow
+# auth redirects have room, but only treat `labs.google/fx` as ready after
+# explicit app-shell authentication signals.
+FLOW_RESOLVE_TIMEOUT_SEC = 120
+FLOW_AUTH_POLL_TIMEOUT_SEC = 30
 _POLL_INTERVAL_SEC = 0.5
+_FLOW_CTA_SELECTORS = (
+    "main button:has-text('Create with Flow')",
+    "main [role='button']:has-text('Create with Flow')",
+    "main a:has-text('Create with Flow'):not([href^='#'])",
+    "main button:has-text('Get started')",
+    "main [role='button']:has-text('Get started')",
+    "main a:has-text('Get started'):not([href^='#'])",
+    "button:has-text('Create with Flow')",
+    "[role='button']:has-text('Create with Flow')",
+    "a:has-text('Create with Flow'):not([href^='#'])",
+    "button:has-text('Get started')",
+    "[role='button']:has-text('Get started')",
+    "a:has-text('Get started'):not([href^='#'])",
+)
 
 CHROME_CANDIDATES = (
     lambda: os.environ.get("FLOW_WARM_CHROME_PATH"),
@@ -122,10 +136,11 @@ class FlowServiceDisabled(RuntimeError):
 async def _resolve_flow_landing(page, timeout_sec: float) -> str:
     """Wait for the Flow goto to resolve to a known terminal URL.
 
-    Returns ``"flow"`` when the URL is under ``labs.google/fx`` (the
-    Flow app — whether the dashboard, a project, an editor, or the
-    marketing variant), and ``"signin"`` when it matches a Google
-    sign-in URL.
+    Returns ``"flow"`` when Flow exposes an authenticated app signal, and
+    ``"signin"`` when it matches a Google sign-in URL. A bare
+    ``labs.google/fx`` URL is not terminal because the anonymous marketing
+    landing shares that URL; the resolver clicks the Flow CTA and loops
+    until sign-in, service-blocked, or app-authenticated state appears.
 
     Raises :class:`FlowServiceDisabled` when the URL is the Workspace
     ``ServiceNotAllowed`` redirect — that state means the account is
@@ -145,15 +160,50 @@ async def _resolve_flow_landing(page, timeout_sec: float) -> str:
         # if a future Google change also flips `is_login_page`.
         if is_service_blocked(url):
             raise FlowServiceDisabled(profile_name="", url=url)
-        if is_flow_app_url(url):
-            return "flow"
         if is_login_page(url):
             return "signin"
+        if await is_flow_app_authenticated(page):
+            return "flow"
+        if is_flow_app_url(url):
+            auth_poll_deadline = min(
+                asyncio.get_event_loop().time() + FLOW_AUTH_POLL_TIMEOUT_SEC,
+                deadline,
+            )
+            while asyncio.get_event_loop().time() < auth_poll_deadline:
+                url = page.url
+                if is_service_blocked(url):
+                    raise FlowServiceDisabled(profile_name="", url=url)
+                if is_login_page(url):
+                    return "signin"
+                if await is_flow_app_authenticated(page):
+                    return "flow"
+                if not is_flow_app_url(url):
+                    break
+                await asyncio.sleep(_POLL_INTERVAL_SEC)
+            if await _click_flow_cta(page):
+                continue
         await asyncio.sleep(_POLL_INTERVAL_SEC)
-    raise TimeoutError(
-        f"{WARM_URL} did not resolve to a known landing within "
-        f"{timeout_sec:.0f}s — last URL: {page.url}"
-    )
+    if is_service_blocked(page.url):
+        raise FlowServiceDisabled(profile_name="", url=page.url)
+    if is_login_page(page.url):
+        return "signin"
+    if await is_flow_app_authenticated(page):
+        return "flow"
+    raise TimeoutError("Flow landing did not resolve to signed-in/login/blocked")
+
+
+async def _click_flow_cta(page) -> bool:
+    for selector in _FLOW_CTA_SELECTORS:
+        try:
+            await page.locator(selector).first.click(timeout=1000)
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                pass
+            return True
+        except Exception as exc:
+            log.debug("Flow CTA selector not clickable (%s): %s", selector, exc)
+    return False
 
 
 def _find_chrome_executable() -> str:
