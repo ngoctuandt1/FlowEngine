@@ -460,23 +460,66 @@ async def _upgrade_cta_is_visible(page, *, timeout_ms: int = 500) -> bool:
 
 
 async def _assert_l2_available(page, op_name: str, profile: str | None) -> None:
-    """Raise only on Flow's explicit paid-tier L2 banner + Upgrade CTA."""
-    if not await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=500):
-        return
+    """Raise on either (a) Flow's explicit paid-tier L2 banner + Upgrade CTA,
+    or (b) the 2026-05 silent-hide variant where the entire L2 toolbar is
+    absent from the edit view.
 
-    await asyncio.sleep(0.25)
-    if not await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=250):
-        return
+    Live-probed 2026-05-24 on free-tier ``ngoctuandt20``: the edit view loads
+    a generated video with no paywall banner AND no Extend / Insert / Remove
+    / Camera affordances. Without this fallback path the per-op handlers
+    raise generic ``RuntimeError("Failed to find <X> button")`` and the job
+    record never gets the canonical ``error_kind=paid_tier_required``.
+    """
+    banner_visible = await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=500)
+    if banner_visible:
+        await asyncio.sleep(0.25)
+        if not await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=250):
+            banner_visible = False
 
-    if not await _upgrade_cta_is_visible(page, timeout_ms=500):
+    if banner_visible:
+        if not await _upgrade_cta_is_visible(page, timeout_ms=500):
+            logger.info(
+                "L2 paywall banner visible for op=%s profile=%s, but Upgrade CTA missing",
+                op_name,
+                profile or "",
+            )
+            return
+        raise L2PaywallError(operation=op_name, profile=profile)
+
+    # 2026-05 silent-hide fallback: if none of the canonical L2 op
+    # affordances are present anywhere on the edit view, treat the same
+    # as a paywall. The check is intentionally generous (button text OR
+    # icon ligature) so a future relabel keeps working as long as one
+    # signal survives.
+    try:
+        toolbar_visible = await page.evaluate(
+            r"""() => {
+                const tokens = ['Extend', 'Insert', 'Remove', 'Camera', 'arrow_outward', 'add_circle', 'cancel'];
+                const buttons = [...document.querySelectorAll('button, [role="button"]')];
+                for (const b of buttons) {
+                    if (!b.offsetParent && b.getBoundingClientRect().width === 0) continue;
+                    const text = (b.innerText || b.textContent || '').trim();
+                    for (const tok of tokens) {
+                        if (text.includes(tok)) return true;
+                    }
+                }
+                return false;
+            }"""
+        )
+    except Exception:
+        toolbar_visible = True  # cannot confirm hidden — fall through
+
+    if not toolbar_visible:
         logger.info(
-            "L2 paywall banner visible for op=%s profile=%s, but Upgrade CTA missing",
+            "L2 toolbar absent for op=%s profile=%s — treating as paid_tier_required (2026-05 silent-hide variant)",
             op_name,
             profile or "",
         )
-        return
-
-    raise L2PaywallError(operation=op_name, profile=profile)
+        raise L2PaywallError(
+            operation=op_name,
+            profile=profile,
+            message="L2 editing controls absent (free-tier silent gating)",
+        )
 
 
 def _op_name_from_button_texts(button_texts: list[str]) -> str:

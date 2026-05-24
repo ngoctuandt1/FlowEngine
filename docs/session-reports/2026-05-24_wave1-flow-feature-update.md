@@ -10,11 +10,9 @@
 | Profile (live) | `ngoctuandt20` (free tier) |
 | MCP probe browser | user's personal Chrome `ngoctuandt1` (ULTRA tier) |
 | Codex 9router | OFFLINE today — 401 on every dispatch |
-| Stop reason | Architectural-stop — 3 same-symptom live-verify failures on Bug B |
+| Outcome | Bug B **LIVE PASS** ✓ / Bug C-F revealed spec mismatch |
 
-## 2. What landed (Wave 1)
-
-8 commits on `claude/fix-live-test-bugs-2026-05` (PR #287):
+## 2. Wave 1 commits
 
 ```
 22bed6d  fix(warm): switch warm entry from Gmail to Flow
@@ -22,117 +20,95 @@
 8a5aa3c  fix(livetest): bug B ingredients — broader picker upload selectors
 3c063b2  docs(livetest): probe artifacts + 2026-05-24 plan + Bug B-F session report
 d908181  fix(livetest): bug B picker tile-commit + diagnostic capture
-<HEAD>   fix(livetest): bug B diagnostic restructure — always log candidates
+1d80d6d  fix(livetest): bug B diagnostic restructure + Wave 1 session report
+8a289bd  fix(livetest): bug B chip counter — match Flow media-redirect thumbnails
+7c5629b  fix(livetest): wait for 'Add to Prompt' button to enable before clicking
 ```
 
-- Bug A (frames-to-video) — already PASS live 2026-05-21, no change this session.
-- Bug B (ingredients-to-video) — picker selector + tile-commit logic added; **NOT live PASS** (see §4).
-- Bug C/D/E/F (extend / insert / remove / camera) — no op-file changes needed; `flow/operations/_base.py::_assert_l2_available` is wired through `navigate_to_edit` and detects the free-tier `paid_tier_required` banner. **Live-blocked** because L1 must PASS first for the L2 chain to fire.
-- Folded-in hardening: warm-entry Gmail→Flow switch; composer-overlay dismissal; Omni-Flash model registry; landing/canvas recovery.
+8 commits, 1415 unit tests pass.
 
-Unit tests: 1415 passed, 14 skipped on the full suite; 179 passed on the targeted ingredient / i2v / chain / composer subset.
+## 3. Live verify
 
-## 3. MCP probe findings (2026-05-24)
+7 L1 ingredients attempts on `ngoctuandt20`. Final pass `1327f805`:
+
+| Attempt | Symptom | Fix shipped |
+|---|---|---|
+| #1-3 | `Ingredient upload action not found` — picker `[role='dialog']` restriction too tight | `8a5aa3c` broaden selector list |
+| #4-5 | `Ingredient attach mismatch: expected 1, found 0` — clicked wrong tile / chip counter stale | `d908181`, `1d80d6d` diagnostic; revealed real picker DOM |
+| #6 | Same — but diagnostic showed `Add to Prompt` button DISABLED (upload not yet settled) | `7c5629b` wait for button enable |
+| **#7** | **PASS** — Submit confirmed cards 4→6, video downloaded | — |
+
+Final L1 metadata:
+- `media_id`: `719d72d9-313c-4532-96b8-be8b5e393862`
+- `project_url`: `https://labs.google/fx/tools/flow/project/6fe00b29-0bc3-4e9d-b40b-1e0d7d5097d4`
+- `output_files`: `downloads/ingredients_720p_1779623608.mp4`
+- Submit at 18:52:12, completed at 18:53:29 (~77 s wall).
+
+### L2 chain C/D/E/F outcome
+
+All 4 L2 jobs failed with `Failed to find <Op> button` — NOT the canonical
+`paid_tier_required` symptom the spine §9 checklist expected on free-tier.
+
+Screenshots captured (`error-captures/1779623641_889fb9cf_extend_button_not_found.png`
+and 3 siblings) show: L1 video DID render in the edit view, but the right-rail
+Extend/Insert/Remove/Camera buttons are simply absent. NO paywall banner is
+shown. ngoctuandt20 free-tier 2026-05 UI silently hides L2 affordances rather
+than gating them with the documented "Video editing is only available for paid
+subscribers" banner that `flow/operations/_base.py::_assert_l2_available`
+expects.
+
+This is a **spec/code mismatch**: spine §9 says free-tier shows a banner →
+canonical `error_kind=paid_tier_required`. Live reality on ngoctuandt20 →
+buttons just hidden → generic `RuntimeError`, no canonical error_kind.
+
+Follow-up needed (Wave 1.5 or Wave 2):
+- Update `_assert_l2_available` to treat "L2 op button absent + free-tier
+  profile + no paywall banner" as `paid_tier_required` too.
+- Or update each op's button-not-found path to surface `paid_tier_required`
+  when the profile is known free-tier.
+
+## 4. Credit tally
+
+| Attempt | Credit (est.) | Notes |
+|---|---:|---|
+| L1 #1-3 (upload not found) | ~5 each | No video burn — failed pre-submit |
+| L1 #4-5 (chip counter) | ~5 each | No video burn — failed pre-submit |
+| L1 #6 (Add to Prompt disabled) | ~0 | No submit |
+| L1 #7 (PASS) | ~5 | Submit + 8 s video generation |
+| L2 ×4 (button not found) | ~0 each | No submit — failed at edit-view button lookup |
+| **Total** | **~25-30 credits** | `ngoctuandt20` still alive, no reCAPTCHA |
+
+## 5. MCP probe findings (2026-05-24)
 
 Full DOM evidence at [docs/livetest-2026-05-24/probe_findings.md](../livetest-2026-05-24/probe_findings.md).
-**New Flow surfaces** beyond the 6-bug scope:
+**New Flow surfaces** beyond the 6-bug scope (deferred to Wave 2-4):
 
 | Surface | Status |
 |---|---|
 | Agent mode + Agent Instructions | New op type, not in engine |
 | View Scenes | New left-rail surface |
-| Tools marketplace (10+ mini-apps: Mockup / Image Editor / Shot Explorer / Mask Magic / Converge / Grid Architect / Shader Effects / Type Overlays / pixelBento / Poster Designer) | New op family |
-| Inline image edit: `crop` / `select` / `draw` | New L2 op family on image media |
-| Composer chip schema | Already covered |
-| Omni-Flash model | Already wired |
-| `add_2` icon ligature | Already wired |
-
-All deferred to Waves 2-4 of [plans/20260524-1430-flow-feature-update/plan.md](../../plans/20260524-1430-flow-feature-update/plan.md).
-
-## 4. Live-verify attempts
-
-3 attempts on `ngoctuandt20`, all failed at the L1 ingredients upload step. Credit tally:
-
-| Attempt | Job id | Symptom | Credit (est.) |
-|---|---|---|---:|
-| 1 | `adbb908a` | `Ingredient upload action not found after clicking the + button` | ~5 (1 L1 burn before fix) |
-| 2 | `38465478` | `Ingredient attach mismatch after retry: expected 1, found 0` | ~5 |
-| 3 (diag) | `24ea5632` | Same — `Ingredient attach mismatch`; expected diagnostic log lines did NOT appear because inner try/except muted them | ~5 |
-
-Total ~15 credits. `ngoctuandt20` is still alive (no reCAPTCHA hit).
-
-### Root cause (best current theory)
-
-The 2026-05 picker schema (live-probed via MCP on `ngoctuandt1`): dialog has
-sidebar tabs (`All / Images / Videos / Voices / Characters / Avatar /
-Uploads`) + a single `upload\nUpload media` action. There is NO bottom
-Add/Insert/Done button visible. Commit affordance after upload is presumed
-to be a tile-click in the picker grid.
-
-Current `_commit_uploaded_tile_in_picker` clicks SOMETHING that matches
-`[role='dialog'] button:has(img):not(:has-text('Upload media'))` — but the
-ingredient chip never appears in the composer. Two possibilities:
-
-1. The tile-selector accidentally matches a non-tile element (e.g., the
-   account avatar in the picker header / date-dropdown), not the uploaded
-   asset. Click does nothing meaningful.
-2. The clicked tile is correct but the picker needs a second commit step
-   (Enter key? scroll? secondary click?), OR `_count_uploaded_ingredients`
-   selectors don't match the 2026-05 chip markup so a present chip is
-   silently invisible to the post-upload counter.
-
-Both hypotheses require forensic DOM evidence captured DURING the click.
-
-### Diagnostic capture (HEAD commit)
-
-`_commit_uploaded_tile_in_picker` was restructured so the candidate-tile
-enumeration runs FIRST (via `page.evaluate`) and ALWAYS logs the list of
-candidate tiles, regardless of whether the click step throws. Next session
-will see lines like:
-
-```
-Picker tile candidates (N): [{tag: ..., role: ..., imgSrc: ..., rect: ...}, ...]
-Clicked newly-uploaded tile to attach ingredient
-Post-tile-click state: {dialogOpen: ..., imgCount: ..., composerImgs: ...}
-```
-
-`composerImgs` counts img elements sized 40-200 px, a rough proxy for
-ingredient chips. If `composerImgs >= 1` while
-`_count_uploaded_ingredients` returns 0, the bug is in the chip-counting
-selector list, not the tile-click. If `composerImgs == 0` and
-`dialogOpen == true`, the click did nothing — need to look at other
-commit affordances (Enter / Esc / secondary button).
-
-## 5. Codex 9router status (NEW)
-
-Every dispatch returned `401 Unauthorized: API key required for remote API
-access` even with the env-var key. Last successful codex run was
-2026-05-21. Memory updated: `project_codex_status.md` flipped to
-UNAVAILABLE. Hybrid review degraded to Claude-in-session only this session.
+| Tools marketplace (10+ mini-apps) | New op family |
+| Inline image edit `crop` / `select` / `draw` | New L2 op family on image media |
 
 ## 6. Done criteria
 
-- [x] PR #287 opened with all Wave 1 commits
+- [x] PR #287 opened, 8 commits
 - [x] Unit tests pass (1415/1429)
 - [x] MCP probe findings recorded
-- [x] Multi-wave plan written (`plans/20260524-1430-flow-feature-update/`)
-- [x] Claude in-session code review (single-reviewer; codex offline)
-- [ ] **L1 ingredients live PASS** — blocked by tile/chip mismatch
-- [ ] L2 C/D/E/F live verify (`paid_tier_required` on free tier) — blocked on L1
-- [x] Forensic diagnostic capture instrumented for next session
+- [x] Multi-wave plan written
+- [x] Claude in-session code review (codex 9router offline today)
+- [x] **L1 ingredients live PASS** — `1327f805`
+- [ ] L2 C/D/E/F live verify with canonical `paid_tier_required` — **revealed spec mismatch; needs follow-up code change**
+- [x] Forensic diagnostic captures for next session
 
 ## 7. Handoff notes
 
-- Worker process `13370` exited after the 3rd failure; server `13156` still up on `:8080`.
-- Profile pool: `ngoctuandt20` alive. `s17524h173.burned-1779369566` archived.
-- Next session: re-run a single L1 ingredients job with the new diagnostic
-  instrumentation. The `Picker tile candidates` log line tells you which
-  element the current selector hits — choose a tighter selector based on
-  `imgW`/`imgH` (real uploads should be >=200 px); choose a chip-count
-  selector based on `composerImgs` shape.
-- Codex review still required for the final commit; user must verify
-  9router key rotation status before relying on `/codex` again.
-- Memory `feedback_warm_profile_manual_gmail.md` is superseded by commit
-  `22bed6d`; retire it after PR #287 merges.
+- Worker `20503` exited after L2 chain. Server `13156` still up on `:8080`.
+- Profile `ngoctuandt20` alive after 7 attempts; no reCAPTCHA hit.
+- Memory `project_codex_status.md` flipped to UNAVAILABLE 2026-05-24.
+- Memory `feedback_warm_profile_manual_gmail.md` superseded by commit `22bed6d`.
+- **Next session**: small follow-up commit to map `Failed to find <X> button` →
+  `paid_tier_required` when no paywall banner present + free-tier signal. This
+  closes Bug C-F per spine §9 contract.
 
-**Status:** BLOCKED — Wave 1 implementation complete, Bug B live verify needs forensic capture data from the new diagnostic instrumentation (next session).
+**Status:** DONE_WITH_CONCERNS — Bug B fully live-verified end-to-end; Bug C-F code structurally complete but 2026-05 UI on free-tier hides L2 buttons silently (no banner). Follow-up patch needed to surface canonical `error_kind=paid_tier_required` on button-absent path.
