@@ -17,6 +17,7 @@ the global "latest" value.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import logging
 import time
 from typing import Any
@@ -32,8 +33,17 @@ from flow.media_id import looks_like_media_id, normalize_media_id
 from flow.model_selector import DEFAULT_MODEL, select_model
 from flow.navigation import extract_project_id, flow_url
 from flow.operations._l1_status_poll import poll_status_via_api
+try:
+    from flow.operations._l1_status_poll import (
+        detect_recaptcha_from_status_response as _detect_status_recaptcha,
+    )
+except ImportError:  # pragma: no cover - present once U3 lands
+    _detect_status_recaptcha = None
+try:
+    from flow.wait import RecaptchaError
+except ImportError:  # pragma: no cover
+    from flow.recaptcha import RecaptchaError
 from flow.recaptcha import (
-    RecaptchaError,
     detect_recaptcha,
     detect_recaptcha_in_network,
     first_recaptcha_call,
@@ -709,6 +719,123 @@ L1_HARD_TIMEOUT_SEC = 900     # 15 min
 L1_NO_SIGNAL_SEC = 300        # 5 min idle
 
 
+async def _raise_network_recaptcha_if_present(client, *, best_effort: bool) -> None:
+    try:
+        network_kind = await detect_recaptcha_in_network(client)
+    except Exception as exc:
+        if best_effort:
+            logger.debug("L1 batch network reCAPTCHA probe failed: %s", exc)
+            return
+        raise
+    if not network_kind:
+        return
+    call = first_recaptcha_call(client) or {}
+    err = RecaptchaError(kind=network_kind, url=str(call.get("url") or ""))
+    cap = await capture_failure_nonblocking(client, f"recaptcha_{network_kind}")
+    if cap:
+        setattr(err, "capture_path", cap)
+    raise err
+
+
+def _coerce_status_recaptcha_detection(detection: Any) -> RecaptchaError | None:
+    if not detection:
+        return None
+    if isinstance(detection, RecaptchaError):
+        return detection
+    if isinstance(detection, str):
+        return RecaptchaError(kind=detection, url="")
+    if isinstance(detection, dict):
+        kind = str(
+            detection.get("kind")
+            or detection.get("type")
+            or "status_api_recaptcha"
+        )
+        return RecaptchaError(kind=kind, url=str(detection.get("url") or ""))
+    return RecaptchaError(kind="status_api_recaptcha", url="")
+
+
+def _raise_status_recaptcha_if_present(poll_result: Any) -> None:
+    if not isinstance(poll_result, dict):
+        return
+    for slot in poll_result.values():
+        if not isinstance(slot, dict):
+            continue
+        candidates = (slot.get("raw"), slot)
+        if _detect_status_recaptcha is not None:
+            for candidate in candidates:
+                try:
+                    detection = _detect_status_recaptcha(candidate)
+                except TypeError:
+                    logger.debug("status reCAPTCHA detector signature mismatch")
+                    break
+                except Exception as exc:
+                    logger.debug("status reCAPTCHA detector failed: %s", exc)
+                    break
+                err = _coerce_status_recaptcha_detection(detection)
+                if err is not None:
+                    raise err
+        elif any(_status_payload_has_recaptcha(candidate) for candidate in candidates):
+            raise RecaptchaError(kind="status_api_recaptcha", url="")
+        error_text = str(slot.get("error") or "").lower()
+        if "recaptcha" in error_text or "captcha" in error_text:
+            raise RecaptchaError(kind="status_api_recaptcha", url="")
+
+
+def _status_payload_has_recaptcha(node: Any) -> bool:
+    if isinstance(node, str):
+        text = node.lower()
+        return any(
+            token in text
+            for token in (
+                "recaptcha",
+                "captcha",
+                "unusual traffic",
+                "verify you are human",
+                "verify you're human",
+            )
+        )
+    if isinstance(node, dict):
+        return any(_status_payload_has_recaptcha(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_status_payload_has_recaptcha(value) for value in node)
+    return False
+
+
+async def _poll_status_via_api_with_recaptcha_probe(
+    client,
+    *,
+    gen_ids: list[str],
+    project_id: str,
+    hard_timeout_sec: float,
+) -> dict[str, dict[str, Any]]:
+    poll_task = asyncio.create_task(
+        poll_status_via_api(
+            client,
+            gen_ids=gen_ids,
+            project_id=project_id,
+            hard_timeout_sec=hard_timeout_sec,
+        )
+    )
+    last_probe = 0.0
+    try:
+        while True:
+            done, _pending = await asyncio.wait({poll_task}, timeout=1.0)
+            if done:
+                poll_result = await poll_task
+                _raise_status_recaptcha_if_present(poll_result)
+                return poll_result
+            now = time.monotonic()
+            if now - last_probe >= 10:
+                last_probe = now
+                await _raise_network_recaptcha_if_present(client, best_effort=True)
+    except RecaptchaError:
+        if not poll_task.done():
+            poll_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await poll_task
+        raise
+
+
 async def wait_for_all_l1_gens(
     client,
     submits: list[dict],
@@ -739,12 +866,19 @@ async def wait_for_all_l1_gens(
     if n == 0:
         return []
 
-    status_api_results = await _wait_for_all_l1_gens_via_status_api(
-        client,
-        submits,
-        hard_timeout=hard_timeout,
-    )
+    try:
+        status_api_results = await _wait_for_all_l1_gens_via_status_api(
+            client,
+            submits,
+            hard_timeout=hard_timeout,
+        )
+    except RecaptchaError:
+        raise
     if status_api_results is not None:
+        if status_api_results and all(
+            result.get("status") == "completed" for result in status_api_results
+        ):
+            await _raise_network_recaptcha_if_present(client, best_effort=True)
         return status_api_results
 
     earliest_submit_ts = min(s["submit_ts"] for s in submits)
@@ -765,14 +899,7 @@ async def wait_for_all_l1_gens(
             return _all_failed(submits, err)
 
         # reCAPTCHA via network → propagate.
-        network_kind = await detect_recaptcha_in_network(client)
-        if network_kind:
-            call = first_recaptcha_call(client) or {}
-            err = RecaptchaError(kind=network_kind, url=str(call.get("url") or ""))
-            cap = await capture_failure_nonblocking(client, f"recaptcha_{network_kind}")
-            if cap:
-                setattr(err, "capture_path", cap)
-            raise err
+        await _raise_network_recaptcha_if_present(client, best_effort=False)
 
         # New media events post-submit (excluding parent).
         mids = _collect_media_ids_after(
@@ -859,7 +986,7 @@ async def _wait_for_all_l1_gens_via_status_api(
         len(media_ids),
         project_id,
     )
-    poll_result = await poll_status_via_api(
+    poll_result = await _poll_status_via_api_with_recaptcha_probe(
         client,
         gen_ids=media_ids,
         project_id=project_id,
@@ -963,14 +1090,7 @@ async def wait_for_l1_gen(
 
         # Network-level reCAPTCHA detection (raises RecaptchaError → caller
         # marks the profile burned and the entire batch fails).
-        network_kind = await detect_recaptcha_in_network(client)
-        if network_kind:
-            call = first_recaptcha_call(client) or {}
-            err = RecaptchaError(kind=network_kind, url=str(call.get("url") or ""))
-            cap = await capture_failure_nonblocking(client, f"recaptcha_{network_kind}")
-            if cap:
-                setattr(err, "capture_path", cap)
-            raise err
+        await _raise_network_recaptcha_if_present(client, best_effort=False)
 
         # Inspect operations/ calls filtered to OUR gen_id.
         api = _scan_api_for_gen(client, gen_id)
