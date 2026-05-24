@@ -13,6 +13,7 @@ Live-probed 2026-04-20 on the current Flow UI:
 import asyncio
 import logging
 import os
+from pathlib import Path
 
 from flow.download import download_video
 from flow.landing import dismiss_flow_marketing_landing, recover_from_flow_canvas_page
@@ -78,6 +79,14 @@ INGREDIENT_PLUS_SELECTOR = (
     # one). `has-text` matches substring, so the negation excludes homepage tile.
     "button:has(i:text-is('add_2')):has-text('Create'):not(:has-text('New project')):not([title*='Add Media'])"
 )
+
+
+def _picker_root_selector() -> str:
+    return (
+        '[role="dialog"], '
+        '[aria-modal="true"], '
+        '[data-radix-popper-content-wrapper]'
+    )
 
 
 def _reverse_i2v_enabled() -> bool:
@@ -419,7 +428,7 @@ async def _upload_ingredient(page, image_path: str) -> None:
     # state before pressing it. ~20 s covers ing1.jpg (~5 s upload)
     # plus a slow network margin.
     await _wait_for_picker_commit_enabled(page, timeout_sec=20.0)
-    await _commit_uploaded_tile_in_picker(page)
+    await _commit_uploaded_tile_in_picker(page, image_path)
     await _click_add_to_prompt_if_present(page)
     await asyncio.sleep(0.5)
 
@@ -435,18 +444,19 @@ async def _wait_for_picker_commit_enabled(page, timeout_sec: float = 20.0) -> bo
     Returns True if enabled state observed, False on timeout. Caller
     proceeds regardless — fallback paths still try the click.
     """
+    root_selector = _picker_root_selector()
     deadline = asyncio.get_event_loop().time() + timeout_sec
     while asyncio.get_event_loop().time() < deadline:
         try:
             enabled = await page.evaluate(
-                r"""() => {
-                    const dialog = document.querySelector('[role="dialog"]');
-                    if (!dialog) return false;
-                    const btns = [...dialog.querySelectorAll('button')];
-                    const cta = btns.find(b => /Add to Prompt/i.test(b.innerText || ''));
+                r"""(rootSelector) => {
+                    const roots = [...document.querySelectorAll(rootSelector)];
+                    const cta = roots.flatMap(root => [...root.querySelectorAll('button')])
+                        .find(b => /Add to Prompt/i.test(b.innerText || ''));
                     if (!cta) return false;
                     return !cta.disabled && cta.getAttribute('aria-disabled') !== 'true';
-                }"""
+                }""",
+                root_selector,
             )
             if enabled:
                 logger.info("Picker 'Add to Prompt' button enabled — upload settled")
@@ -458,7 +468,9 @@ async def _wait_for_picker_commit_enabled(page, timeout_sec: float = 20.0) -> bo
     return False
 
 
-async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 4.0) -> None:
+async def _commit_uploaded_tile_in_picker(
+    page, image_path: str | None = None, timeout_sec: float = 4.0
+) -> None:
     """Click the just-uploaded tile inside the media picker.
 
     2026-05 picker schema (live-probed 2026-05-24, docs/livetest-2026-05-24/
@@ -468,12 +480,10 @@ async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 4.0) -> Non
     closes the picker.
 
     Strategy:
-      1. Wait up to ~timeout for an image tile to appear inside the
-         picker dialog. We anchor on the grid container by looking for
-         ``[role='dialog']`` descendants that are clickable + contain an
-         ``<img>``; the earlier "No results found" state has no such
-         tile.
-      2. Click the first matching tile (newest uploads sort first).
+      1. Wait up to ~timeout for an image tile to appear inside a picker
+         root; some Radix variants are poppers without ``role='dialog'``.
+      2. Click the tile matching the uploaded filename, or the selected
+         tile if the picker has already auto-selected one.
       3. If after the click the picker is still visible, also try a
          primary "Add"-style button (some variants may add one once a
          selection exists).
@@ -483,12 +493,18 @@ async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 4.0) -> Non
     the ingredient-count retry, so a transient miss still gets a 2nd
     chance.
     """
-    tile_selector = (
-        "[role='dialog'] [role='gridcell'] img, "
-        "[role='dialog'] [role='option'] img, "
-        "[role='dialog'] button:has(img):not(:has-text('Upload media')), "
-        "[role='dialog'] [role='button']:has(img):not(:has-text('Upload media'))"
+    root_selector = _picker_root_selector()
+    tile_selector = ", ".join(
+        f"{root} {tile}"
+        for root in root_selector.split(", ")
+        for tile in (
+            "[role='gridcell'] img",
+            "[role='option'] img",
+            "button:has(img)",
+            "[role='button']:has(img)",
+        )
     )
+    target_filename = Path(image_path).name.lower() if image_path else ""
     deadline = asyncio.get_event_loop().time() + timeout_sec
     while asyncio.get_event_loop().time() < deadline:
         # Diagnostic-first: enumerate candidate tiles via page.evaluate
@@ -498,28 +514,58 @@ async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 4.0) -> Non
         # failures silently muted the candidate log on every retry.
         try:
             candidates = await page.evaluate(
-                r"""(selector) => {
+                r"""(({selector, filename}) => {
                     const out = [];
-                    for (const el of document.querySelectorAll(selector)) {
+                    const matchesFilename = (target, img) => {
+                        if (!filename) return false;
+                        const fields = [
+                            target.innerText || '',
+                            target.getAttribute('aria-label') || '',
+                            target.getAttribute('title') || '',
+                            img?.getAttribute('alt') || '',
+                            img?.getAttribute('aria-label') || '',
+                            img?.getAttribute('title') || '',
+                            img?.currentSrc || '',
+                            img?.src || '',
+                        ];
+                        return fields.some(value => {
+                            try {
+                                return decodeURIComponent(value).toLowerCase().includes(filename);
+                            } catch (_) {
+                                return String(value).toLowerCase().includes(filename);
+                            }
+                        });
+                    };
+                    for (const [index, el] of [...document.querySelectorAll(selector)].entries()) {
                         const target = el.closest('button, [role="button"], [role="option"], [role="gridcell"]') || el;
+                        if (/Upload media/i.test(target.innerText || '')) continue;
                         const rect = target.getBoundingClientRect();
                         if (rect.width < 30 || rect.height < 30) continue;
-                        const img = target.querySelector('img');
-                        out.push({
+                        const img = target.matches('img') ? target : target.querySelector('img');
+                        const selected =
+                            target.matches('[data-state="selected"], [aria-selected="true"]') ||
+                            !!target.closest('[data-state="selected"], [aria-selected="true"]');
+                        const candidate = {
+                            index,
                             tag: target.tagName,
                             role: target.getAttribute('role') || '',
                             text: (target.innerText || '').trim().slice(0, 80),
+                            imgAlt: img ? (img.getAttribute('alt') || '').slice(0, 120) : '',
                             imgSrc: img ? (img.src || '').slice(0, 120) : '',
                             imgW: img ? img.naturalWidth : 0,
                             imgH: img ? img.naturalHeight : 0,
+                            selected,
+                            filenameMatch: matchesFilename(target, img),
                             rect: {x: Math.round(rect.x), y: Math.round(rect.y),
                                    w: Math.round(rect.width), h: Math.round(rect.height)},
-                        });
-                        if (out.length >= 6) break;
+                        };
+                        if (candidate.filenameMatch || candidate.selected || out.length < 6) {
+                            out.push(candidate);
+                        }
                     }
                     return out;
-                }""",
-                tile_selector,
+                })""",
+                {"selector": tile_selector, "filename": target_filename},
             )
         except Exception as exc:
             candidates = []
@@ -527,17 +573,35 @@ async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 4.0) -> Non
 
         if candidates:
             logger.info("Picker tile candidates (%d): %s", len(candidates), candidates)
+            tile_candidate = next(
+                (candidate for candidate in candidates if candidate.get("filenameMatch")), None
+            ) or next(
+                (candidate for candidate in candidates if candidate.get("selected")), None
+            )
+            if tile_candidate is None:
+                logger.info(
+                    "Picker has tiles but none match filename=%r or selected state yet",
+                    target_filename,
+                )
+                await asyncio.sleep(0.5)
+                continue
             try:
-                tile = page.locator(tile_selector).first
+                tile = page.locator(tile_selector).nth(tile_candidate["index"])
                 await tile.click(timeout=3000, force=True)
                 await asyncio.sleep(0.5)
-                logger.info("Clicked newly-uploaded tile to attach ingredient")
+                logger.info(
+                    "Clicked uploaded tile to attach ingredient (filenameMatch=%s selected=%s)",
+                    tile_candidate.get("filenameMatch"),
+                    tile_candidate.get("selected"),
+                )
                 try:
                     after = await page.evaluate(
-                        "() => ({dialogOpen: !!document.querySelector('[role=\"dialog\"]'), "
-                        "dialogText: (document.querySelector('[role=\"dialog\"]')?.innerText||'').slice(0,400), "
+                        "(rootSelector) => { const root = document.querySelector(rootSelector); "
+                        "return {pickerOpen: !!root, "
+                        "pickerText: (root?.innerText||'').slice(0,400), "
                         "imgCount: document.querySelectorAll('img').length, "
-                        "composerImgs: [...document.querySelectorAll('img')].filter(i => { const r = i.getBoundingClientRect(); return r.width >= 40 && r.width <= 200; }).length})"
+                        "composerImgs: [...document.querySelectorAll('img')].filter(i => { const r = i.getBoundingClientRect(); return r.width >= 40 && r.width <= 200; }).length}; }",
+                        root_selector,
                     )
                     logger.info("Post-tile-click state: %s", after)
                 except Exception as exc:
@@ -553,11 +617,12 @@ async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 4.0) -> Non
     # Diagnostic: dump picker DOM so next session has evidence to chase.
     try:
         dump = await page.evaluate(
-            "() => { const d = document.querySelector('[role=\"dialog\"]'); "
-            "if (!d) return {noDialog: true}; "
-            "const btns = [...d.querySelectorAll('button')].map(b => ({label: (b.innerText||'').slice(0,40), hidden: b.offsetParent===null, disabled: b.disabled})); "
-            "const imgs = [...d.querySelectorAll('img')].slice(0,10).map(i => ({src: (i.src||'').slice(0,80), w: i.naturalWidth, h: i.naturalHeight})); "
-            "return {dialogText: (d.innerText||'').slice(0,800), buttons: btns, images: imgs}; }"
+            "(rootSelector) => { const root = document.querySelector(rootSelector); "
+            "if (!root) return {noPickerRoot: true}; "
+            "const btns = [...root.querySelectorAll('button')].map(b => ({label: (b.innerText||'').slice(0,40), hidden: b.offsetParent===null, disabled: b.disabled})); "
+            "const imgs = [...root.querySelectorAll('img')].slice(0,10).map(i => ({alt: (i.getAttribute('alt')||'').slice(0,80), src: (i.src||'').slice(0,80), w: i.naturalWidth, h: i.naturalHeight})); "
+            "return {pickerText: (root.innerText||'').slice(0,800), buttons: btns, images: imgs}; }",
+            root_selector,
         )
         logger.warning("Picker dump on tile-not-found: %s", dump)
     except Exception:
