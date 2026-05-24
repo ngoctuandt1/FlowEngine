@@ -62,6 +62,70 @@ else:
 
 logger = logging.getLogger(__name__)
 
+
+def _select_picker_tile_candidate(
+    candidates: list[dict],
+) -> tuple[dict | None, str]:
+    """Pick the safest media-picker tile candidate.
+
+    Flow may keep older uploads with the same basename in the picker. Prefer
+    the tile the picker already marked selected, then the newest tile when the
+    picker exposes stable creation metadata or explicit sort state, and only
+    then fall back to the first basename match.
+    """
+    selected_filename = next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate.get("selected") and candidate.get("filenameMatch")
+        ),
+        None,
+    )
+    if selected_filename is not None:
+        return selected_filename, "selected_filename"
+
+    selected = next(
+        (candidate for candidate in candidates if candidate.get("selected")), None
+    )
+    if selected is not None:
+        return selected, "selected"
+
+    created_candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate.get("createdSortKey"), (int, float))
+    ]
+    if created_candidates:
+        return max(
+            created_candidates,
+            key=lambda candidate: (
+                candidate["createdSortKey"],
+                candidate.get("index", -1),
+            ),
+        ), "newest_created"
+
+    stable_sort_candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate.get("stableSortOrderKey"), (int, float))
+    ]
+    if stable_sort_candidates:
+        return max(
+            stable_sort_candidates,
+            key=lambda candidate: (
+                candidate["stableSortOrderKey"],
+                candidate.get("index", -1),
+            ),
+        ), "newest_stable_sort"
+
+    filename = next(
+        (candidate for candidate in candidates if candidate.get("filenameMatch")), None
+    )
+    if filename is not None:
+        return filename, "filename"
+
+    return None, "none"
+
 # 2026-05 Flow UI: the per-ingredient `+` button is rendered as
 # `<button><i>add_2</i><span>Create</span></button>` (32×32, icon
 # ligature `add_2`, NOT the legacy `add` icon). The sibling `add\nAdd
@@ -482,8 +546,9 @@ async def _commit_uploaded_tile_in_picker(
     Strategy:
       1. Wait up to ~timeout for an image tile to appear inside a picker
          root; some Radix variants are poppers without ``role='dialog'``.
-      2. Click the tile matching the uploaded filename, or the selected
-         tile if the picker has already auto-selected one.
+      2. Prefer selected+filename, selected-only, newest stable-created/sort
+         tile, then first filename match. This avoids older same-basename
+         uploads stealing selection from the just-uploaded tile.
       3. If after the click the picker is still visible, also try a
          primary "Add"-style button (some variants may add one once a
          selection exists).
@@ -516,6 +581,39 @@ async def _commit_uploaded_tile_in_picker(
             candidates = await page.evaluate(
                 r"""(({selector, filename}) => {
                     const out = [];
+                    const firstAttribute = (elements, names) => {
+                        for (const element of elements) {
+                            if (!element) continue;
+                            for (const name of names) {
+                                const value = element.getAttribute(name);
+                                if (value) return value;
+                            }
+                        }
+                        return '';
+                    };
+                    const parseCreated = (value) => {
+                        if (!value) return null;
+                        const numeric = Number(value);
+                        if (Number.isFinite(numeric)) return numeric;
+                        const parsed = Date.parse(value);
+                        return Number.isFinite(parsed) ? parsed : null;
+                    };
+                    const stableSortState = (root) => {
+                        const sortNode = root?.querySelector?.(
+                            '[aria-sort], [data-sort], [data-sort-by], [data-sort-order]'
+                        );
+                        const fields = [root, sortNode].flatMap(element => [
+                            element?.getAttribute?.('aria-sort') || '',
+                            element?.getAttribute?.('data-sort') || '',
+                            element?.getAttribute?.('data-sort-by') || '',
+                            element?.getAttribute?.('data-sort-order') || '',
+                        ]).join(' ').toLowerCase();
+                        const createdish = /created|upload|date|time|newest|recent|oldest/.test(fields);
+                        if (!createdish) return '';
+                        if (/desc|newest|recent/.test(fields)) return 'desc';
+                        if (/asc|oldest/.test(fields)) return 'asc';
+                        return '';
+                    };
                     const matchesFilename = (target, img) => {
                         if (!filename) return false;
                         const fields = [
@@ -545,6 +643,16 @@ async def _commit_uploaded_tile_in_picker(
                         const selected =
                             target.matches('[data-state="selected"], [aria-selected="true"]') ||
                             !!target.closest('[data-state="selected"], [aria-selected="true"]');
+                        const root = target.closest('[role="dialog"], [aria-modal="true"], [data-radix-popper-content-wrapper]');
+                        const createdValue = firstAttribute(
+                            [target, img, target.closest('[data-created], [data-created-at], [data-uploaded-at], [data-timestamp]')],
+                            ['data-created', 'data-created-at', 'data-uploaded-at', 'data-timestamp']
+                        );
+                        const createdSortKey = parseCreated(createdValue);
+                        const sortState = stableSortState(root);
+                        const stableSortOrderKey = sortState === 'desc'
+                            ? Number.MAX_SAFE_INTEGER - index
+                            : (sortState === 'asc' ? index : null);
                         const candidate = {
                             index,
                             tag: target.tagName,
@@ -556,10 +664,19 @@ async def _commit_uploaded_tile_in_picker(
                             imgH: img ? img.naturalHeight : 0,
                             selected,
                             filenameMatch: matchesFilename(target, img),
+                            created: createdValue,
+                            createdSortKey,
+                            stableSortOrderKey,
                             rect: {x: Math.round(rect.x), y: Math.round(rect.y),
                                    w: Math.round(rect.width), h: Math.round(rect.height)},
                         };
-                        if (candidate.filenameMatch || candidate.selected || out.length < 6) {
+                        if (
+                            candidate.filenameMatch ||
+                            candidate.selected ||
+                            candidate.createdSortKey !== null ||
+                            candidate.stableSortOrderKey !== null ||
+                            out.length < 6
+                        ) {
                             out.push(candidate);
                         }
                     }
@@ -573,14 +690,10 @@ async def _commit_uploaded_tile_in_picker(
 
         if candidates:
             logger.info("Picker tile candidates (%d): %s", len(candidates), candidates)
-            tile_candidate = next(
-                (candidate for candidate in candidates if candidate.get("filenameMatch")), None
-            ) or next(
-                (candidate for candidate in candidates if candidate.get("selected")), None
-            )
+            tile_candidate, selection_reason = _select_picker_tile_candidate(candidates)
             if tile_candidate is None:
                 logger.info(
-                    "Picker has tiles but none match filename=%r or selected state yet",
+                    "Picker has tiles but no selected, created-sort, or filename=%r candidate yet",
                     target_filename,
                 )
                 await asyncio.sleep(0.5)
@@ -590,9 +703,12 @@ async def _commit_uploaded_tile_in_picker(
                 await tile.click(timeout=3000, force=True)
                 await asyncio.sleep(0.5)
                 logger.info(
-                    "Clicked uploaded tile to attach ingredient (filenameMatch=%s selected=%s)",
+                    "Clicked uploaded tile to attach ingredient (reason=%s filenameMatch=%s selected=%s created=%s stableSortOrderKey=%s)",
+                    selection_reason,
                     tile_candidate.get("filenameMatch"),
                     tile_candidate.get("selected"),
+                    tile_candidate.get("created"),
+                    tile_candidate.get("stableSortOrderKey"),
                 )
                 try:
                     after = await page.evaluate(
