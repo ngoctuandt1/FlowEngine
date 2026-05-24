@@ -200,7 +200,15 @@ async def test_is_flow_app_authenticated_requires_explicit_signal() -> None:
     )
     new_project_button = _FakeFlowLandingPage(
         url="https://labs.google/fx/tools/flow",
-        visible_selectors={"button:has-text('+ New project')"},
+        visible_selectors={"button:has-text('New project')"},
+    )
+    vi_new_project_button = _FakeFlowLandingPage(
+        url="https://labs.google/fx/tools/flow",
+        visible_selectors={"button:has-text('Dự án mới')"},
+    )
+    icon_only_new_project_button = _FakeFlowLandingPage(
+        url="https://labs.google/fx/tools/flow",
+        visible_selectors={"button:has(i:has-text('add_2'))"},
     )
     account_menu = _FakeFlowLandingPage(
         url="https://labs.google/fx/tools/flow",
@@ -210,6 +218,8 @@ async def test_is_flow_app_authenticated_requires_explicit_signal() -> None:
     assert await is_flow_app_authenticated(marketing) is False
     assert await is_flow_app_authenticated(project) is True
     assert await is_flow_app_authenticated(new_project_button) is True
+    assert await is_flow_app_authenticated(vi_new_project_button) is True
+    assert await is_flow_app_authenticated(icon_only_new_project_button) is True
     assert await is_flow_app_authenticated(account_menu) is True
 
 

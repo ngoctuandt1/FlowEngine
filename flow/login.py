@@ -43,9 +43,18 @@ _GMAIL_INBOX_URL_TOKEN = "mail.google.com/mail/u/"
 # only the "we reached Flow's origin" signal — not "the app mounted".
 _FLOW_APP_URL_TOKEN = "labs.google/fx"
 _FLOW_AUTHENTICATED_URL_TOKENS = ("/project/", "/edit/")
+_FLOW_NEW_PROJECT_LABELS = ("New project", "Dự án mới", "Tạo dự án")
+_FLOW_NEW_PROJECT_ICON_SELECTORS = (
+    "button:has(i.google-symbols):has-text('add_2')",
+    "button:has(i:has-text('add_2'))",
+)
 _FLOW_NEW_PROJECT_SELECTORS = (
-    "button:has-text('+ New project')",
-    "[role='button']:has-text('+ New project')",
+    *_FLOW_NEW_PROJECT_ICON_SELECTORS,
+    *(
+        f"{target}:has-text('{label}')"
+        for label in _FLOW_NEW_PROJECT_LABELS
+        for target in ("button", "[role='button']")
+    ),
 )
 _FLOW_ACCOUNT_MENU_SELECTORS = (
     'nav [aria-label*="Google Account" i]',
