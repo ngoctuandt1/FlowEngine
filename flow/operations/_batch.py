@@ -49,9 +49,15 @@ from flow.operations._l2_batch import (
     submit_remove,
     wait_for_all_l2_gens,
 )
+from flow.model_selector import DEFAULT_MODEL, _is_paid_model
 from flow.recaptcha import RecaptchaError
 
 logger = logging.getLogger(__name__)
+
+
+def _model_and_free_mode(job: dict) -> tuple[str, bool]:
+    model = job.get("model") or DEFAULT_MODEL
+    return model, not _is_paid_model(model)
 
 
 async def batch_dispatch_l1_same_project(
@@ -82,8 +88,10 @@ async def batch_dispatch_l1_same_project(
     project_url = ""
     for idx, job in enumerate(l1_jobs):
         try:
+            model, free_mode = _model_and_free_mode(job)
             sub = await submit_generate_l1(
                 client, job, project_already_open=(idx > 0),
+                model=model, free_mode=free_mode,
             )
         except RecaptchaError:
             raise
@@ -494,9 +502,11 @@ async def _dispatch_l2_submit(client, job: dict, parent_synth: dict, *,
     # Each submit_X re-clicks its mode button idempotently.
     panel_open = False
     if op == "extend-video":
+        model, free_mode = _model_and_free_mode(job)
         return await submit_extend(
             client, parent_synth, prompt=job.get("prompt") or "",
             panel_already_open=panel_open,
+            model=model, free_mode=free_mode,
         )
     if op == "camera-move":
         direction = job.get("direction") or "Dolly in"

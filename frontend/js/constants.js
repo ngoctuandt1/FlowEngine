@@ -21,9 +21,10 @@ const CONST = (() => {
     { id: 'camera-move', label: 'Camera', icon: 'videocam_off', shortLabel: 'Camera' },
   ];
 
-  // Veo 3.1 family exposed by Flow's model dropdown.
+  // Video models exposed by Flow's model dropdown.
   // Default matches flow/model_selector.py DEFAULT_MODEL.
   const MODELS = [
+    { value: 'omni-flash', label: 'Gemini Omni Flash' },
     { value: 'veo-3.1-lite', label: 'Veo 3.1 - Lite' },
     { value: 'veo-3.1-fast', label: 'Veo 3.1 - Fast' },
     { value: 'veo-3.1-quality', label: 'Veo 3.1 - Quality' },

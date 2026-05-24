@@ -1,0 +1,1499 @@
+{
+  "timestamp": "2026-05-21T13:03:49.646582+00:00",
+  "mode": "frames",
+  "profile": "s17524h173",
+  "image_path": "D:\\AI\\FlowEngine\\uploads\\livetest-frames\\vase.jpeg",
+  "nav": {
+    "url": "https://labs.google/fx/tools/flow/project/586f6257-a49b-4539-8d71-473a61e4aac4",
+    "title": "Flow - May 21, 08:03 PM"
+  },
+  "target": {
+    "x": 703,
+    "y": 798,
+    "w": 50,
+    "h": 50,
+    "text": "Start",
+    "tag": "DIV",
+    "role": "",
+    "source": "ancestor-slot"
+  },
+  "click_result": {
+    "fileChooser": true,
+    "target": {
+      "x": 703,
+      "y": 798,
+      "w": 50,
+      "h": 50,
+      "text": "Start",
+      "tag": "DIV",
+      "role": "",
+      "source": "ancestor-slot"
+    },
+    "via": "picker-upload-media"
+  },
+  "before": {
+    "note": "before-click",
+    "url": "https://labs.google/fx/tools/flow/project/586f6257-a49b-4539-8d71-473a61e4aac4",
+    "bodyText": "arrow_back\nGo Back\nmore_vert\nMore options\nsearch\nSearch\nfilter_list\nSort & Filter\nadd\nAdd Media\nhelp\nProduct Help\nsettings_2\nView Settings\nmore_vert\nMore\nULTRA\ndashboard\nAll Media\nAll Media\naccessibility_new\nCharacters\nCharacters\nmovie\nView scenes\nScenes\napps_spark_2\nTools\nTools\ndelete\nView Trash\nTrash\nleft_panel_close\nCollapse\nCollapse\nStart creating or drop media\nStart\nswap_horiz\nSwap first and last frames\nEnd\n\nWhat do you want to create?\n﻿\n\n\nAgent\nVideo · 8s\ncrop_16_9\n1x\narrow_forward\nCreate\n\nGoogle Flow can make mistakes, so double check it\n\nFlow",
+    "inputs": [
+      {
+        "tag": "INPUT",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "file",
+        "accept": "image/*",
+        "multiple": true,
+        "dataState": "",
+        "className": "sc-dcc7b7da-0 fhJvUC",
+        "text": "",
+        "visible": false,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      }
+    ],
+    "interesting": [
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-2eac5247-2 ewGlDn famhRe jUJxHE",
+        "text": "arrow_back Go Back",
+        "visible": true,
+        "rect": {
+          "x": 24,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-26aa1721-3 ewGlDn famhRe dUDRen",
+        "text": "more_vert More options",
+        "visible": true,
+        "rect": {
+          "x": 276,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-55822125-2 ewGlDn famhRe XtyjO",
+        "text": "search Search",
+        "visible": true,
+        "rect": {
+          "x": 731,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-2 fPutAP blvbdy sc-b8eb33e3-8 bWUKjc",
+        "text": "filter_list Sort & Filter",
+        "visible": true,
+        "rect": {
+          "x": 1158,
+          "y": 18,
+          "w": 42,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-240605d2-1 ewGlDn famhRe kimDit",
+        "text": "add Add Media",
+        "visible": true,
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-7e11f006-2 ewGlDn famhRe gBGwpL",
+        "text": "help Product Help",
+        "visible": true,
+        "rect": {
+          "x": 1657,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-a4925f7f-6 ewGlDn famhRe gdBgFb",
+        "text": "settings_2 View Settings",
+        "visible": true,
+        "rect": {
+          "x": 1701,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-362690a9-1 ewGlDn famhRe fHpFkO",
+        "text": "more_vert More",
+        "visible": true,
+        "rect": {
+          "x": 1745,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-70f5962-0 GXcuS",
+        "text": "ULTRA",
+        "visible": true,
+        "rect": {
+          "x": 1789,
+          "y": 14,
+          "w": 111,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 sc-c8f55314-0 ewGlDn lnCuH fqbaql kiwuwp",
+        "text": "dashboard All Media",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 80,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "accessibility_new Characters",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 133,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "movie View scenes",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 186,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "apps_spark_2 Tools",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 260,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "delete View Trash",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 768,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "left_panel_close Collapse",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 821,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-c4e440ed-1 ewGlDn famhRe lpaoHU",
+        "text": "swap_horiz Swap first and last frames",
+        "visible": true,
+        "rect": {
+          "x": 732,
+          "y": 782,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "DIV",
+        "role": "textbox",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-a8ba1f43-0 djaQmW sc-439ac1d3-6 gmMGa",
+        "text": "What do you want to create?",
+        "visible": true,
+        "rect": {
+          "x": 670,
+          "y": 835,
+          "w": 566,
+          "h": 20
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-59223abb-3 dmZGYv",
+        "text": "Agent",
+        "visible": true,
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 67,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-93abd9dc-1 ldbhld",
+        "text": "Video · 8s crop_16_9 1x",
+        "visible": true,
+        "rect": {
+          "x": 1107,
+          "y": 871,
+          "w": 108,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-439ac1d3-5 ewGlDn famhRe iIhbxv",
+        "text": "arrow_forward Create",
+        "visible": true,
+        "rect": {
+          "x": 1220,
+          "y": 872,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "INPUT",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "file",
+        "accept": "image/*",
+        "multiple": true,
+        "dataState": "",
+        "className": "sc-dcc7b7da-0 fhJvUC",
+        "text": "",
+        "visible": false,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      }
+    ],
+    "textNodes": [
+      {
+        "tag": "DIV",
+        "text": "add Add Media help Product Help settings_2 View Settings more_vert More ULTRA",
+        "rect": {
+          "x": 1613,
+          "y": 14,
+          "w": 287,
+          "h": 48
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add Add Media help Product Help settings_2 View Settings more_vert More",
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 164,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "add Add Media",
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "I",
+        "text": "add",
+        "rect": {
+          "x": 1617,
+          "y": 26,
+          "w": 24,
+          "h": 24
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "Add Media",
+        "rect": {
+          "x": 1628,
+          "y": 38,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media accessibility_new Characters Characters movie View",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media accessibility_new Characters Characters movie View",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 228,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media",
+        "rect": {
+          "x": 16,
+          "y": 76,
+          "w": 212,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "dashboard All Media",
+        "rect": {
+          "x": 20,
+          "y": 80,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "All Media",
+        "rect": {
+          "x": 40,
+          "y": 100,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "All Media",
+        "rect": {
+          "x": 68,
+          "y": 90,
+          "w": 60,
+          "h": 20
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1684,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 821,
+          "y": 411,
+          "w": 279,
+          "h": 123
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 821,
+          "y": 506,
+          "w": 279,
+          "h": 28
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 0,
+          "y": 761,
+          "w": 1920,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 0,
+          "y": 761,
+          "w": 1920,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 660,
+          "y": 761,
+          "w": 600,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 660,
+          "y": 761,
+          "w": 600,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 660,
+          "y": 761,
+          "w": 600,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End",
+        "rect": {
+          "x": 670,
+          "y": 773,
+          "w": 582,
+          "h": 54
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start",
+        "rect": {
+          "x": 678,
+          "y": 773,
+          "w": 50,
+          "h": 50
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "swap_horiz Swap first and last frames",
+        "rect": {
+          "x": 732,
+          "y": 782,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "Swap first and last frames",
+        "rect": {
+          "x": 748,
+          "y": 798,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "End",
+        "rect": {
+          "x": 768,
+          "y": 773,
+          "w": 50,
+          "h": 50
+        }
+      }
+    ]
+  },
+  "after": {
+    "note": "after-click",
+    "url": "https://labs.google/fx/tools/flow/project/586f6257-a49b-4539-8d71-473a61e4aac4",
+    "bodyText": "arrow_back\nGo Back\nmore_vert\nMore options\nsearch\nSearch\nfilter_list\nSort & Filter\nadd\nAdd Media\nhelp\nProduct Help\nsettings_2\nView Settings\nmore_vert\nMore\nULTRA\ndashboard\nAll Media\nAll Media\naccessibility_new\nCharacters\nCharacters\nmovie\nView scenes\nScenes\napps_spark_2\nTools\nTools\ndelete\nView Trash\nTrash\nleft_panel_close\nCollapse\nCollapse\nStart creating or drop media\nStart\nswap_horiz\nSwap first and last frames\nEnd\n\nWhat do you want to create?\n﻿\n\n\nAgent\nVideo · 8s\ncrop_16_9\n1x\narrow_forward\nCreate\n\nGoogle Flow can make mistakes, so double check it\n\nFlow\n\nNotice\n\nThis dialog is a notice to the user about the rights of others and creating videos responsibly.\n\nMake sure you have the necessary rights to any images or files that you upload, including images of minors. Don’t generate content that infringes on others’ rights, including content that deceives, harasses, or harms. When using Flow, you must comply with Google’s Prohibited Use Policy.\n\nCancel\nI agree",
+    "inputs": [
+      {
+        "tag": "INPUT",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "file",
+        "accept": "image/*",
+        "multiple": true,
+        "dataState": "",
+        "className": "sc-dcc7b7da-0 fhJvUC",
+        "text": "",
+        "visible": false,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      }
+    ],
+    "interesting": [
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-2eac5247-2 ewGlDn famhRe jUJxHE",
+        "text": "arrow_back Go Back",
+        "visible": true,
+        "rect": {
+          "x": 24,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-26aa1721-3 ewGlDn famhRe dUDRen",
+        "text": "more_vert More options",
+        "visible": true,
+        "rect": {
+          "x": 276,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-55822125-2 ewGlDn famhRe XtyjO",
+        "text": "search Search",
+        "visible": true,
+        "rect": {
+          "x": 731,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-2 fPutAP blvbdy sc-b8eb33e3-8 bWUKjc",
+        "text": "filter_list Sort & Filter",
+        "visible": true,
+        "rect": {
+          "x": 1158,
+          "y": 18,
+          "w": 42,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-240605d2-1 ewGlDn famhRe kimDit",
+        "text": "add Add Media",
+        "visible": true,
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-7e11f006-2 ewGlDn famhRe gBGwpL",
+        "text": "help Product Help",
+        "visible": true,
+        "rect": {
+          "x": 1657,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-a4925f7f-6 ewGlDn famhRe gdBgFb",
+        "text": "settings_2 View Settings",
+        "visible": true,
+        "rect": {
+          "x": 1701,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-362690a9-1 ewGlDn famhRe fHpFkO",
+        "text": "more_vert More",
+        "visible": true,
+        "rect": {
+          "x": 1745,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-70f5962-0 GXcuS",
+        "text": "ULTRA",
+        "visible": true,
+        "rect": {
+          "x": 1789,
+          "y": 14,
+          "w": 111,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 sc-c8f55314-0 ewGlDn lnCuH fqbaql kiwuwp",
+        "text": "dashboard All Media",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 80,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "accessibility_new Characters",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 133,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "movie View scenes",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 186,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "apps_spark_2 Tools",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 260,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "delete View Trash",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 768,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-5 sc-3ce961f7-0 ewGlDn hGbzYr fqbaql",
+        "text": "left_panel_close Collapse",
+        "visible": true,
+        "rect": {
+          "x": 20,
+          "y": 821,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-c4e440ed-1 ewGlDn famhRe lpaoHU",
+        "text": "swap_horiz Swap first and last frames",
+        "visible": true,
+        "rect": {
+          "x": 732,
+          "y": 782,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "DIV",
+        "role": "textbox",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-a8ba1f43-0 djaQmW sc-439ac1d3-6 gmMGa",
+        "text": "What do you want to create?",
+        "visible": true,
+        "rect": {
+          "x": 670,
+          "y": 835,
+          "w": 566,
+          "h": 20
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-59223abb-3 dmZGYv",
+        "text": "Agent",
+        "visible": true,
+        "rect": {
+          "x": 670,
+          "y": 872,
+          "w": 67,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "closed",
+        "className": "sc-16c4830a-1 dnFqQq sc-e7a64add-0 sc-e7a64add-1 fPutAP jmLZrS sc-93abd9dc-1 ldbhld",
+        "text": "Video · 8s crop_16_9 1x",
+        "visible": true,
+        "rect": {
+          "x": 1107,
+          "y": 871,
+          "w": 108,
+          "h": 34
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-e8425ea6-0 hOBPaw sc-d3791a4f-0 sc-d3791a4f-4 sc-439ac1d3-5 ewGlDn famhRe iIhbxv",
+        "text": "arrow_forward Create",
+        "visible": true,
+        "rect": {
+          "x": 1220,
+          "y": 872,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "INPUT",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "file",
+        "accept": "image/*",
+        "multiple": true,
+        "dataState": "",
+        "className": "sc-dcc7b7da-0 fhJvUC",
+        "text": "",
+        "visible": false,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 0
+        }
+      },
+      {
+        "tag": "DIV",
+        "role": "dialog",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "open",
+        "className": "sc-acfa270d-1 iOanGH",
+        "text": "Notice This dialog is a notice to the user about the rights of others and creating videos responsibly. Make sure you have the necessary rights to any images or ",
+        "visible": true,
+        "rect": {
+          "x": 700,
+          "y": 313,
+          "w": 520,
+          "h": 304
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "button",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-acfa270d-7 kyxclg",
+        "text": "Cancel",
+        "visible": true,
+        "rect": {
+          "x": 732,
+          "y": 561,
+          "w": 50,
+          "h": 24
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "role": "",
+        "ariaLabel": "",
+        "title": "",
+        "type": "",
+        "accept": "",
+        "multiple": false,
+        "dataState": "",
+        "className": "sc-acfa270d-6 jrNWUl",
+        "text": "I agree",
+        "visible": true,
+        "rect": {
+          "x": 1138,
+          "y": 561,
+          "w": 50,
+          "h": 24
+        }
+      }
+    ],
+    "textNodes": [
+      {
+        "tag": "DIV",
+        "text": "add Add Media help Product Help settings_2 View Settings more_vert More ULTRA",
+        "rect": {
+          "x": 1613,
+          "y": 14,
+          "w": 287,
+          "h": 48
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "add Add Media help Product Help settings_2 View Settings more_vert More",
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 164,
+          "h": 32
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "add Add Media",
+        "rect": {
+          "x": 1613,
+          "y": 22,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "I",
+        "text": "add",
+        "rect": {
+          "x": 1617,
+          "y": 26,
+          "w": 24,
+          "h": 24
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "Add Media",
+        "rect": {
+          "x": 1628,
+          "y": 38,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media accessibility_new Characters Characters movie View",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1920,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media accessibility_new Characters Characters movie View",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 228,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "dashboard All Media All Media",
+        "rect": {
+          "x": 16,
+          "y": 76,
+          "w": 212,
+          "h": 48
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "dashboard All Media",
+        "rect": {
+          "x": 20,
+          "y": 80,
+          "w": 40,
+          "h": 40
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "All Media",
+        "rect": {
+          "x": 40,
+          "y": 100,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "All Media",
+        "rect": {
+          "x": 68,
+          "y": 90,
+          "w": 60,
+          "h": 20
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1692,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 228,
+          "y": 0,
+          "w": 1684,
+          "h": 945
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 821,
+          "y": 411,
+          "w": 279,
+          "h": 123
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start creating or drop media",
+        "rect": {
+          "x": 821,
+          "y": 506,
+          "w": 279,
+          "h": 28
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 0,
+          "y": 761,
+          "w": 1920,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 0,
+          "y": 761,
+          "w": 1920,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 660,
+          "y": 761,
+          "w": 600,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 660,
+          "y": 761,
+          "w": 600,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End What do you want to create? Agen",
+        "rect": {
+          "x": 660,
+          "y": 761,
+          "w": 600,
+          "h": 152
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start swap_horiz Swap first and last frames End",
+        "rect": {
+          "x": 670,
+          "y": 773,
+          "w": 582,
+          "h": 54
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "Start",
+        "rect": {
+          "x": 678,
+          "y": 773,
+          "w": 50,
+          "h": 50
+        }
+      },
+      {
+        "tag": "BUTTON",
+        "text": "swap_horiz Swap first and last frames",
+        "rect": {
+          "x": 732,
+          "y": 782,
+          "w": 32,
+          "h": 32
+        }
+      },
+      {
+        "tag": "SPAN",
+        "text": "Swap first and last frames",
+        "rect": {
+          "x": 748,
+          "y": 798,
+          "w": 1,
+          "h": 1
+        }
+      },
+      {
+        "tag": "DIV",
+        "text": "End",
+        "rect": {
+          "x": 768,
+          "y": 773,
+          "w": 50,
+          "h": 50
+        }
+      },
+      {
+        "tag": "P",
+        "text": "Make sure you have the necessary rights to any images or files that you upload, ",
+        "rect": {
+          "x": 732,
+          "y": 409,
+          "w": 456,
+          "h": 120
+        }
+      }
+    ]
+  }
+}

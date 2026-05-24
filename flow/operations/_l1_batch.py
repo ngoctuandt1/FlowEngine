@@ -17,6 +17,7 @@ the global "latest" value.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import logging
 import time
 from typing import Any
@@ -31,8 +32,18 @@ from flow.login import handle_login_redirect, is_login_page
 from flow.media_id import looks_like_media_id, normalize_media_id
 from flow.model_selector import DEFAULT_MODEL, select_model
 from flow.navigation import extract_project_id, flow_url
+from flow.operations._l1_status_poll import poll_status_via_api
+try:
+    from flow.operations._l1_status_poll import (
+        detect_recaptcha_from_status_response as _detect_status_recaptcha,
+    )
+except ImportError:  # pragma: no cover - present once U3 lands
+    _detect_status_recaptcha = None
+try:
+    from flow.wait import RecaptchaError
+except ImportError:  # pragma: no cover
+    from flow.recaptcha import RecaptchaError
 from flow.recaptcha import (
-    RecaptchaError,
     detect_recaptcha,
     detect_recaptcha_in_network,
     first_recaptcha_call,
@@ -251,7 +262,7 @@ async def submit_generate_l1(
         )
         raise RuntimeError(msg)
 
-    # --- Capture THIS submit's gen_id from its own window slice. ---
+    # --- Capture THIS submit's backend handles from its own window slice. ---
     # `submit_with_confirmation` may return on a UI signal (cards count
     # increased) BEFORE the operations/ POST response lands in
     # `client._calls`. Poll briefly so the per-submit window contains the
@@ -259,11 +270,12 @@ async def submit_generate_l1(
     # 30s — inflate-batch rewrites the body to N requests, and Flow's
     # response time scales with N. Round 11 PASS measured 15s for N=3;
     # leave headroom for N≤5 or slow-day fluctuations.
-    gen_id = await _await_gen_id_in_window(
+    submit_meta = await _await_submit_metadata_in_window(
         client, calls_before,
         batch_resp_before=batch_resp_before,
         timeout_sec=30.0,
     )
+    gen_id = submit_meta.get("gen_id", "")
     if not gen_id:
         # Look at the side-channel responses for a 403/429 on the
         # submit URL. Flow returns those when reCAPTCHA throttles or
@@ -284,19 +296,29 @@ async def submit_generate_l1(
             raise err
         msg = await message_with_failure_capture(
             client, "batch_no_gen_id_captured",
-            "Submit confirmed but no gen_id appeared in operations/ network calls "
+            "Submit confirmed but no generation handle appeared in batch "
+            "submit network calls "
             "within 30s",
         )
         raise RuntimeError(msg)
+
+    response_project_id = submit_meta.get("project_id", "")
+    if not project_id and response_project_id:
+        project_id = response_project_id
 
     proj_url = f"{flow_url(locale)}/project/{project_id}" if project_id else project_url_full
 
     return {
         "gen_id": gen_id,
+        "workflow_id": submit_meta.get("workflow_id", ""),
+        "media_id": submit_meta.get("media_id", ""),
+        "batch_id": submit_meta.get("batch_id", ""),
+        "workflow_step_id": submit_meta.get("workflow_step_id", ""),
         "project_url": proj_url,
         "project_id": project_id,
         "locale": locale,
         "calls_before": calls_before,
+        "batch_resp_before": batch_resp_before,
         "submit_ts": submit_ts,
         "prompt": prompt,
     }
@@ -313,7 +335,7 @@ def _detect_block_in_window(client, batch_resp_before: int) -> int:
     responses = getattr(client, "_batch_responses", None) or []
     for entry in responses[batch_resp_before:]:
         url_l = (entry.get("url") or "").lower()
-        if "batchasyncgenerate" not in url_l:
+        if not _is_batch_submit_url(url_l):
             continue
         status = entry.get("status") or 0
         if status in (403, 429):
@@ -344,29 +366,77 @@ async def _await_gen_id_in_window(
 
     Bounded by ``timeout_sec``.
     """
+    meta = await _await_submit_metadata_in_window(
+        client,
+        calls_before,
+        batch_resp_before=batch_resp_before,
+        timeout_sec=timeout_sec,
+        poll_sec=poll_sec,
+    )
+    return meta.get("gen_id", "")
+
+
+async def _await_submit_metadata_in_window(
+    client,
+    calls_before: int,
+    *,
+    batch_resp_before: int = 0,
+    timeout_sec: float = 15.0,
+    poll_sec: float = 0.3,
+) -> dict[str, str]:
+    """Poll until this submit's backend handles land.
+
+    Current Flow submit responses no longer include ``operations/<id>``.
+    The canonical output id is ``media[0].name``; the workflow id in
+    ``workflows[0].name`` is retained as our generation handle for result
+    metadata. Legacy operation-name responses still map to ``gen_id``.
+    """
     deadline = asyncio.get_event_loop().time() + timeout_sec
     while True:
-        gen = _capture_gen_id_from_window(
+        meta = _capture_submit_metadata_from_window(
             client, calls_before, batch_resp_before=batch_resp_before,
         )
-        if gen:
-            return gen
+        if meta.get("gen_id"):
+            return meta
         if asyncio.get_event_loop().time() >= deadline:
-            return ""
+            return {}
         await asyncio.sleep(poll_sec)
 
 
-_BATCH_GEN_URL_HINTS = (
+_BATCH_SUBMIT_URL_HINTS = (
     "operations/",
     "v1/video:batchasyncgeneratevideotext",
+    "v1/video:batchasyncgeneratevideo",
+    "v1/video:batchasyncgenerateimage",
     "v1/video:batchasyncgenerate",
     "v1/video:asyncgenerate",
+    "batchasyncgeneratevideo",
+    "batchasyncgenerateimage",
     ":generatevideo",
-    "v1/video:batchcheckasync",       # status polling
+    ":generateimage",
+)
+
+_BATCH_CHECK_URL_HINTS = (
+    "v1/video:batchcheckasync",
     "v1/video:batchcheckasyncvideo",
-    "v1/media:batchasync",            # download URL fetch (variant)
+    "batchcheckasyncvideogenerationstatus",
+    "batchcheckasyncimagegenerationstatus",
     ":batchcheckasync",
 )
+
+_BATCH_CAPTURE_URL_HINTS = (
+    *_BATCH_SUBMIT_URL_HINTS,
+    *_BATCH_CHECK_URL_HINTS,
+    "v1/media:batchasync",            # download URL fetch (variant)
+)
+
+
+def _is_batch_submit_url(url: str) -> bool:
+    return any(hint in url for hint in _BATCH_SUBMIT_URL_HINTS)
+
+
+def _is_batch_capture_url(url: str) -> bool:
+    return any(hint in url for hint in _BATCH_CAPTURE_URL_HINTS)
 
 
 def _capture_gen_id_from_window(
@@ -380,35 +450,114 @@ def _capture_gen_id_from_window(
     Inspects two sources in order:
 
       1. ``client._batch_responses[batch_resp_before:]`` — set up by
-         :func:`install_batch_response_capture`. This is the authoritative
-         clock for batch isolation: each new submit advances the buffer
-         length, even when ``client._calls`` doesn't (because legacy
-         flow.client only fetches body for ``operations/`` URLs).
+         :func:`install_batch_response_capture`. When a URL is present, only
+         submit/generate URLs are eligible here; status/check responses for
+         sibling jobs can land in the same window and must not supply this
+         submit's metadata.
       2. ``client._calls[calls_before:]`` — useful when Flow falls back
          to the old ``operations/`` endpoint.
 
-    Returns the first non-empty operation name found, or ``""``.
+    Returns the first non-empty generation handle found, or ``""``.
     """
+    return _capture_submit_metadata_from_window(
+        client,
+        calls_before,
+        batch_resp_before=batch_resp_before,
+    ).get("gen_id", "")
+
+
+def _capture_submit_metadata_from_window(
+    client,
+    calls_before: int,
+    *,
+    batch_resp_before: int = 0,
+) -> dict[str, str]:
+    """Find this submit's media/workflow ids inside its own window slice."""
     batch_responses = getattr(client, "_batch_responses", None) or []
     for entry in batch_responses[batch_resp_before:]:
+        url = (entry.get("url", "") or "").lower()
+        if url and not _is_batch_submit_url(url):
+            continue
         body = entry.get("body")
         if not isinstance(body, dict):
             continue
-        name = _extract_op_name(body)
-        if name:
-            return name
+        meta = _extract_submit_metadata(body)
+        if meta.get("gen_id"):
+            return meta
 
     calls = getattr(client, "_calls", [])
     for entry in calls[calls_before:]:
         url = (entry.get("url", "") or "").lower()
-        if not any(hint in url for hint in _BATCH_GEN_URL_HINTS):
+        if not _is_batch_submit_url(url):
             continue
         body = entry.get("body")
         if isinstance(body, dict):
-            name = _extract_op_name(body)
-            if name:
-                return name
-    return ""
+            meta = _extract_submit_metadata(body)
+            if meta.get("gen_id"):
+                return meta
+    return {}
+
+
+def _extract_submit_metadata(body: dict) -> dict[str, str]:
+    """Extract current/legacy L1 submit handles from Flow response JSON."""
+    metadata: dict[str, str] = {
+        "gen_id": "",
+        "workflow_id": "",
+        "media_id": "",
+        "project_id": "",
+        "batch_id": "",
+        "workflow_step_id": "",
+    }
+
+    media = body.get("media")
+    if isinstance(media, list) and media:
+        first_media = media[0]
+        if isinstance(first_media, dict):
+            media_id = first_media.get("name") or first_media.get("mediaId") or ""
+            if media_id:
+                metadata["media_id"] = str(media_id)
+            project_id = first_media.get("projectId") or ""
+            if project_id:
+                metadata["project_id"] = str(project_id)
+            workflow_id = first_media.get("workflowId") or ""
+            if workflow_id:
+                metadata["workflow_id"] = str(workflow_id)
+            workflow_step_id = first_media.get("workflowStepId") or ""
+            if workflow_step_id:
+                metadata["workflow_step_id"] = str(workflow_step_id)
+            media_meta = first_media.get("mediaMetadata") or {}
+            if isinstance(media_meta, dict):
+                batch_id = media_meta.get("batchId") or ""
+                if batch_id:
+                    metadata["batch_id"] = str(batch_id)
+
+    workflows = body.get("workflows")
+    if isinstance(workflows, list) and workflows:
+        first_workflow = workflows[0]
+        if isinstance(first_workflow, dict):
+            workflow_id = first_workflow.get("name") or ""
+            if workflow_id:
+                metadata["workflow_id"] = str(workflow_id)
+            workflow_meta = first_workflow.get("metadata") or {}
+            if isinstance(workflow_meta, dict):
+                for source_key, dest_key in (
+                    ("primaryMediaId", "media_id"),
+                    ("projectId", "project_id"),
+                    ("batchId", "batch_id"),
+                ):
+                    value = workflow_meta.get(source_key) or ""
+                    if value and not metadata[dest_key]:
+                        metadata[dest_key] = str(value)
+
+    legacy_name = _extract_op_name(body)
+    metadata["gen_id"] = (
+        metadata["workflow_id"]
+        or metadata["media_id"]
+        or legacy_name
+    )
+    if legacy_name and not metadata["workflow_id"]:
+        metadata["workflow_id"] = legacy_name
+    return metadata
 
 
 def _extract_op_name(body: dict) -> str:
@@ -485,7 +634,7 @@ def install_batch_response_capture(client) -> None:
             url_l = (request.url or "").lower()
         except Exception:
             return
-        if not any(hint in url_l for hint in _BATCH_GEN_URL_HINTS):
+        if not _is_batch_capture_url(url_l):
             return
         try:
             body = request.post_data
@@ -516,7 +665,7 @@ def install_batch_response_capture(client) -> None:
             url_l = (response.url or "").lower()
         except Exception:
             return
-        if not any(hint in url_l for hint in _BATCH_GEN_URL_HINTS):
+        if not _is_batch_capture_url(url_l):
             return
         try:
             status = response.status
@@ -596,6 +745,123 @@ L1_HARD_TIMEOUT_SEC = 900     # 15 min
 L1_NO_SIGNAL_SEC = 300        # 5 min idle
 
 
+async def _raise_network_recaptcha_if_present(client, *, best_effort: bool) -> None:
+    try:
+        network_kind = await detect_recaptcha_in_network(client)
+    except Exception as exc:
+        if best_effort:
+            logger.debug("L1 batch network reCAPTCHA probe failed: %s", exc)
+            return
+        raise
+    if not network_kind:
+        return
+    call = first_recaptcha_call(client) or {}
+    err = RecaptchaError(kind=network_kind, url=str(call.get("url") or ""))
+    cap = await capture_failure_nonblocking(client, f"recaptcha_{network_kind}")
+    if cap:
+        setattr(err, "capture_path", cap)
+    raise err
+
+
+def _coerce_status_recaptcha_detection(detection: Any) -> RecaptchaError | None:
+    if not detection:
+        return None
+    if isinstance(detection, RecaptchaError):
+        return detection
+    if isinstance(detection, str):
+        return RecaptchaError(kind=detection, url="")
+    if isinstance(detection, dict):
+        kind = str(
+            detection.get("kind")
+            or detection.get("type")
+            or "status_api_recaptcha"
+        )
+        return RecaptchaError(kind=kind, url=str(detection.get("url") or ""))
+    return RecaptchaError(kind="status_api_recaptcha", url="")
+
+
+def _raise_status_recaptcha_if_present(poll_result: Any) -> None:
+    if not isinstance(poll_result, dict):
+        return
+    for slot in poll_result.values():
+        if not isinstance(slot, dict):
+            continue
+        candidates = (slot.get("raw"), slot)
+        if _detect_status_recaptcha is not None:
+            for candidate in candidates:
+                try:
+                    detection = _detect_status_recaptcha(candidate)
+                except TypeError:
+                    logger.debug("status reCAPTCHA detector signature mismatch")
+                    break
+                except Exception as exc:
+                    logger.debug("status reCAPTCHA detector failed: %s", exc)
+                    break
+                err = _coerce_status_recaptcha_detection(detection)
+                if err is not None:
+                    raise err
+        elif any(_status_payload_has_recaptcha(candidate) for candidate in candidates):
+            raise RecaptchaError(kind="status_api_recaptcha", url="")
+        error_text = str(slot.get("error") or "").lower()
+        if "recaptcha" in error_text or "captcha" in error_text:
+            raise RecaptchaError(kind="status_api_recaptcha", url="")
+
+
+def _status_payload_has_recaptcha(node: Any) -> bool:
+    if isinstance(node, str):
+        text = node.lower()
+        return any(
+            token in text
+            for token in (
+                "recaptcha",
+                "captcha",
+                "unusual traffic",
+                "verify you are human",
+                "verify you're human",
+            )
+        )
+    if isinstance(node, dict):
+        return any(_status_payload_has_recaptcha(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_status_payload_has_recaptcha(value) for value in node)
+    return False
+
+
+async def _poll_status_via_api_with_recaptcha_probe(
+    client,
+    *,
+    gen_ids: list[str],
+    project_id: str,
+    hard_timeout_sec: float,
+) -> dict[str, dict[str, Any]]:
+    poll_task = asyncio.create_task(
+        poll_status_via_api(
+            client,
+            gen_ids=gen_ids,
+            project_id=project_id,
+            hard_timeout_sec=hard_timeout_sec,
+        )
+    )
+    last_probe = 0.0
+    try:
+        while True:
+            done, _pending = await asyncio.wait({poll_task}, timeout=1.0)
+            if done:
+                poll_result = await poll_task
+                _raise_status_recaptcha_if_present(poll_result)
+                return poll_result
+            now = time.monotonic()
+            if now - last_probe >= 10:
+                last_probe = now
+                await _raise_network_recaptcha_if_present(client, best_effort=True)
+    except RecaptchaError:
+        if not poll_task.done():
+            poll_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await poll_task
+        raise
+
+
 async def wait_for_all_l1_gens(
     client,
     submits: list[dict],
@@ -604,15 +870,12 @@ async def wait_for_all_l1_gens(
     hard_timeout: int = L1_HARD_TIMEOUT_SEC,
     no_signal_timeout: int = L1_NO_SIGNAL_SEC,
 ) -> list[dict]:
-    """Collective wait for N concurrent L1 gens, then assign in submit order.
+    """Collective wait for N concurrent L1 gens, then return submit order.
 
-    Flow's modern submit endpoint (``v1/video:batchAsyncGenerateVideoText``)
-    does not emit per-operation polling responses that
-    :mod:`flow.client._on_response` records — so we cannot filter
-    completion signals by ``gen_id``. Instead we wait for **N distinct
-    new media_ids** to appear post-submit and assign them in submission
-    order (FIFO assumption: for L1 t2v on the same project, Flow
-    processes submits sequentially in the order they were clicked).
+    Current Flow submit responses expose ``media[0].name`` as the canonical
+    media id and ``workflows[0].name`` as the workflow handle. Completion is
+    read by polling ``video:batchCheckAsyncVideoGenerationStatus`` with those
+    media ids. Older operation/media-event fallback remains for legacy builds.
 
     Returns one result dict per submit, in submission order::
 
@@ -628,6 +891,22 @@ async def wait_for_all_l1_gens(
     n = len(submits)
     if n == 0:
         return []
+
+    try:
+        status_api_results = await _wait_for_all_l1_gens_via_status_api(
+            client,
+            submits,
+            hard_timeout=hard_timeout,
+        )
+    except RecaptchaError:
+        raise
+    if status_api_results is not None:
+        if status_api_results and all(
+            result.get("status") == "completed" for result in status_api_results
+        ):
+            await _raise_network_recaptcha_if_present(client, best_effort=True)
+        return status_api_results
+
     earliest_submit_ts = min(s["submit_ts"] for s in submits)
 
     start = time.monotonic()
@@ -646,14 +925,7 @@ async def wait_for_all_l1_gens(
             return _all_failed(submits, err)
 
         # reCAPTCHA via network → propagate.
-        network_kind = await detect_recaptcha_in_network(client)
-        if network_kind:
-            call = first_recaptcha_call(client) or {}
-            err = RecaptchaError(kind=network_kind, url=str(call.get("url") or ""))
-            cap = await capture_failure_nonblocking(client, f"recaptcha_{network_kind}")
-            if cap:
-                setattr(err, "capture_path", cap)
-            raise err
+        await _raise_network_recaptcha_if_present(client, best_effort=False)
 
         # New media events post-submit (excluding parent).
         mids = _collect_media_ids_after(
@@ -719,6 +991,72 @@ async def wait_for_all_l1_gens(
         await asyncio.sleep(0.6)
 
 
+async def _wait_for_all_l1_gens_via_status_api(
+    client,
+    submits: list[dict],
+    *,
+    hard_timeout: int,
+) -> list[dict] | None:
+    """Poll Flow status API by canonical media ids, preserving input order."""
+    media_ids = [str(s.get("media_id") or "") for s in submits]
+    if not media_ids or any(not mid for mid in media_ids):
+        return None
+
+    project_ids = [str(s.get("project_id") or "") for s in submits]
+    project_id = next((pid for pid in project_ids if pid), "")
+    if not project_id:
+        return None
+
+    logger.info(
+        "L1 batch status API wait: polling %d media handles in project=%s",
+        len(media_ids),
+        project_id,
+    )
+    poll_result = await _poll_status_via_api_with_recaptcha_probe(
+        client,
+        gen_ids=media_ids,
+        project_id=project_id,
+        hard_timeout_sec=float(hard_timeout),
+    )
+
+    results: list[dict] = []
+    for media_id in media_ids:
+        slot = poll_result.get(media_id) if isinstance(poll_result, dict) else None
+        if not isinstance(slot, dict):
+            results.append({
+                "status": "failed",
+                "media_id": None,
+                "media_ids": [],
+                "error": f"status API returned no slot for media_id={media_id}",
+            })
+            continue
+
+        status = slot.get("status")
+        if status == "completed":
+            resolved_media_id = str(slot.get("media_id") or media_id)
+            results.append({
+                "status": "completed",
+                "media_id": resolved_media_id,
+                "media_ids": [resolved_media_id],
+                "error": None,
+            })
+        elif status == "failed":
+            results.append({
+                "status": "failed",
+                "media_id": None,
+                "media_ids": [],
+                "error": str(slot.get("error") or "status API failed"),
+            })
+        else:
+            results.append({
+                "status": "failed",
+                "media_id": None,
+                "media_ids": [],
+                "error": f"status API did not complete (status={status})",
+            })
+    return results
+
+
 def _all_failed(submits: list[dict], err: str) -> list[dict]:
     return [
         {"status": "failed", "media_id": None, "media_ids": [], "error": err}
@@ -778,14 +1116,7 @@ async def wait_for_l1_gen(
 
         # Network-level reCAPTCHA detection (raises RecaptchaError → caller
         # marks the profile burned and the entire batch fails).
-        network_kind = await detect_recaptcha_in_network(client)
-        if network_kind:
-            call = first_recaptcha_call(client) or {}
-            err = RecaptchaError(kind=network_kind, url=str(call.get("url") or ""))
-            cap = await capture_failure_nonblocking(client, f"recaptcha_{network_kind}")
-            if cap:
-                setattr(err, "capture_path", cap)
-            raise err
+        await _raise_network_recaptcha_if_present(client, best_effort=False)
 
         # Inspect operations/ calls filtered to OUR gen_id.
         api = _scan_api_for_gen(client, gen_id)

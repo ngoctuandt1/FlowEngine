@@ -6,6 +6,7 @@ import pytest
 
 from flow.landing import (
     _LANDING_CTA_AI_CACHE_KEY,
+    dismiss_pointer_intercepting_overlays,
     _find_landing_cta,
     recover_from_flow_canvas_page,
     is_flow_canvas_page,
@@ -283,3 +284,60 @@ async def test_recover_from_flow_canvas_dismisses_marketing_after_homepage(monke
 
     assert recovered is True
     dismiss_mock.assert_awaited_once()
+
+
+async def test_dismiss_pointer_intercepting_overlay_uses_click_outside():
+    overlay_info = {
+        "tag": "DIV",
+        "className": "sc-d23b167b-0 cQzZMm",
+        "text": "Generating will use 25 credits",
+        "pointerEvents": "auto",
+    }
+    page = MagicMock()
+    page.evaluate = AsyncMock(side_effect=[overlay_info, None])
+    page.mouse = MagicMock()
+    page.mouse.click = AsyncMock()
+    page.keyboard = MagicMock()
+    page.keyboard.press = AsyncMock()
+    logger = MagicMock()
+
+    assert await dismiss_pointer_intercepting_overlays(page, logger) is True
+
+    page.mouse.click.assert_awaited_once_with(10, 10)
+    page.keyboard.press.assert_not_awaited()
+    logger.info.assert_called_once()
+
+
+async def test_dismiss_pointer_intercepting_overlay_falls_back_to_escape():
+    overlay_info = {
+        "tag": "DIV",
+        "className": "sc-d23b167b-0 cQzZMm",
+        "text": "Generating will use 25 credits",
+        "pointerEvents": "auto",
+    }
+    page = MagicMock()
+    page.evaluate = AsyncMock(side_effect=[overlay_info, overlay_info, None])
+    page.mouse = MagicMock()
+    page.mouse.click = AsyncMock()
+    page.keyboard = MagicMock()
+    page.keyboard.press = AsyncMock()
+    logger = MagicMock()
+
+    assert await dismiss_pointer_intercepting_overlays(page, logger) is True
+
+    page.mouse.click.assert_awaited_once_with(10, 10)
+    page.keyboard.press.assert_awaited_once_with("Escape")
+
+
+async def test_dismiss_pointer_intercepting_overlay_noops_when_clear():
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=None)
+    page.mouse = MagicMock()
+    page.mouse.click = AsyncMock()
+    page.keyboard = MagicMock()
+    page.keyboard.press = AsyncMock()
+    logger = MagicMock()
+
+    assert await dismiss_pointer_intercepting_overlays(page, logger) is False
+    page.mouse.click.assert_not_awaited()
+    page.keyboard.press.assert_not_awaited()

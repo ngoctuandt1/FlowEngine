@@ -13,8 +13,10 @@ Live-probed 2026-04-20 on the current Flow UI:
 import asyncio
 import logging
 import os
+from pathlib import Path
 
 from flow.download import download_video
+from flow.landing import dismiss_flow_marketing_landing, recover_from_flow_canvas_page
 from flow.login import handle_login_redirect, is_login_page
 from flow.model_selector import DEFAULT_MODEL, select_model
 from flow.navigation import extract_project_id, flow_url
@@ -23,6 +25,7 @@ from flow.wait import wait_for_completion
 from flow.operations._base import resolve_final_media_id
 from flow.operations.frames_to_video import (
     COMPOSER_MENU_SELECTORS,
+    NEW_PROJECT_SELECTORS,
     _click_new_project,
     _close_composer_menu,
     _extract_replay_media_ids,
@@ -59,7 +62,95 @@ else:
 
 logger = logging.getLogger(__name__)
 
-INGREDIENT_PLUS_SELECTOR = "button:not([title*='Add Media']):has(i:text-is('add'))"
+
+def _select_picker_tile_candidate(
+    candidates: list[dict],
+) -> tuple[dict | None, str]:
+    """Pick the safest media-picker tile candidate.
+
+    Flow may keep older uploads with the same basename in the picker. Prefer
+    the tile the picker already marked selected, then the newest tile when the
+    picker exposes stable creation metadata or explicit sort state, and only
+    then fall back to the first basename match.
+    """
+    selected_filename = next(
+        (
+            candidate
+            for candidate in candidates
+            if candidate.get("selected") and candidate.get("filenameMatch")
+        ),
+        None,
+    )
+    if selected_filename is not None:
+        return selected_filename, "selected_filename"
+
+    selected = next(
+        (candidate for candidate in candidates if candidate.get("selected")), None
+    )
+    if selected is not None:
+        return selected, "selected"
+
+    created_candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate.get("createdSortKey"), (int, float))
+    ]
+    if created_candidates:
+        return max(
+            created_candidates,
+            key=lambda candidate: (
+                candidate["createdSortKey"],
+                candidate.get("index", -1),
+            ),
+        ), "newest_created"
+
+    stable_sort_candidates = [
+        candidate
+        for candidate in candidates
+        if isinstance(candidate.get("stableSortOrderKey"), (int, float))
+    ]
+    if stable_sort_candidates:
+        return max(
+            stable_sort_candidates,
+            key=lambda candidate: (
+                candidate["stableSortOrderKey"],
+                candidate.get("index", -1),
+            ),
+        ), "newest_stable_sort"
+
+    filename = next(
+        (candidate for candidate in candidates if candidate.get("filenameMatch")), None
+    )
+    if filename is not None:
+        return filename, "filename"
+
+    return None, "none"
+
+# 2026-05 Flow UI: the per-ingredient `+` button is rendered as
+# `<button><i>add_2</i><span>Create</span></button>` (32×32, icon
+# ligature `add_2`, NOT the legacy `add` icon). The sibling `add\nAdd
+# Clip` button is a 28×28 timeline-add control and must be excluded —
+# clicking it opens the wrong dialog. We anchor on the exact icon
+# ligature `add_2` and accept the new label `Create`. Live-probed
+# 2026-05-21 — see docs/livetest-2026-05-21/l1_ingredients_upload_probe.json.
+INGREDIENT_PLUS_SELECTOR = (
+    # Composer ingredient trigger: `<button><i>add_2</i><span>Create</span></button>`
+    # at the bottom-left of the prompt composer (32×32 icon button). Live-probed
+    # 2026-05-21 — see docs/livetest-2026-05-21/l1_ingredients_upload_probe.json.
+    # We anchor on `add_2` icon AND require the button to contain the literal
+    # "Create" text WITHOUT "New project" (the homepage `+ New project` button
+    # also has icon `add_2`; if both are momentarily in the DOM we click the wrong
+    # one). `has-text` matches substring, so the negation excludes homepage tile.
+    "button:has(i:text-is('add_2')):has-text('Create'):not(:has-text('New project')):not([title*='Add Media'])"
+)
+
+
+def _picker_root_selector() -> str:
+    return (
+        '[role="dialog"], '
+        '[aria-modal="true"], '
+        '[data-radix-popper-content-wrapper]'
+    )
 
 
 def _reverse_i2v_enabled() -> bool:
@@ -186,6 +277,32 @@ async def ingredients_to_video(
     if "/vi/" in current:
         locale = "vi"
 
+    # 2026-05-21 hardening: Flow sometimes serves the marketing landing
+    # ("Create with Flow" CTA) even for logged-in sessions — same surface
+    # `text_to_video` already handles (see flow/operations/generate.py:444).
+    # Without dismissing it, `_click_new_project` immediately fails because
+    # the "+ New project" button isn't in the marketing DOM. Live-burned
+    # by Bug B ingredients on s17524h173 right after a profile re-warm.
+    async def _new_project_ready() -> bool:
+        for selector in NEW_PROJECT_SELECTORS:
+            try:
+                if await page.locator(selector).first.is_visible(timeout=500):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    if not await _new_project_ready():
+        try:
+            await dismiss_flow_marketing_landing(page, logger, _new_project_ready)
+        except Exception as exc:
+            logger.warning("ingredients: marketing-landing dismissal failed: %s", exc)
+        if not await _new_project_ready():
+            try:
+                await recover_from_flow_canvas_page(page, logger, homepage)
+            except Exception as exc:
+                logger.warning("ingredients: canvas recovery failed: %s", exc)
+
     await _dismiss_overlays(page)
     await _click_new_project(page)
 
@@ -302,17 +419,382 @@ async def _click_exact_tab(page, label: str) -> None:
 
 
 async def _upload_ingredient(page, image_path: str) -> None:
+    """Upload a single ingredient image via the 2026-05 media picker.
+
+    Flow's UI no longer exposes a direct file <input>; clicking the
+    `add_2 Create` button opens a media picker dialog. The picker has
+    an `Upload media` action that finally surfaces a file chooser.
+    After upload the picker may show a "Notice" rights confirmation
+    and an `Add to Prompt` button — both must be handled before the
+    chip appears in the composer. Live-probed via
+    `scripts/probe_l1_composer_uploads.py ingredients`; evidence at
+    docs/livetest-2026-05-21/l1_ingredients_upload_probe.json.
+    """
     plus_button = await _locate_ingredient_plus_button(page)
     await plus_button.click(timeout=3000)
-    upload_item = page.locator("[role='menuitem']:text-is('Upload image')").first
-    if not await upload_item.is_visible(timeout=3000):
-        raise RuntimeError("Ingredient upload action not found after clicking the + button")
 
-    async with page.expect_file_chooser() as chooser_info:
-        await upload_item.click(timeout=3000)
-    chooser = await chooser_info.value
-    await chooser.set_files(image_path)
-    await asyncio.sleep(0.15)
+    # Best-effort: the 2026-05 picker has sidebar tabs (All / Images /
+    # Videos / Voices / Characters / Avatar / Uploads). The Upload-media
+    # action is visible from any tab in current variants, but switching
+    # to Uploads first matches the documented happy path. Failure is
+    # silently ignored — the upload-button search below covers both
+    # states.
+    try:
+        uploads_tab = page.locator(
+            "[role='dialog'] [role='tab']:has-text('Uploads'), "
+            "[role='dialog'] button:has-text('Uploads'), "
+            "[role='tablist'] [role='tab']:has-text('Uploads')"
+        ).last
+        if await uploads_tab.is_visible(timeout=2000):
+            await uploads_tab.click(timeout=2000)
+            await asyncio.sleep(0.4)
+    except Exception as exc:
+        logger.debug("Uploads tab not visible or already active: %s", exc)
+
+    # Mirror frames_to_video.py:_click_picker_upload_media — iterate
+    # broader selector list, do NOT restrict to [role='dialog'] (some
+    # picker variants render Upload media inside a Radix popover that
+    # isn't tagged role=dialog). Wait inside the iteration so the
+    # picker has time to paint.
+    upload_selectors = [
+        "button:has(i:text-is('upload')):has-text('Upload media')",
+        "button:has-text('Upload media')",
+        "[role='button']:has-text('Upload media')",
+        "[role='menuitem']:has-text('Upload media')",
+        "[role='menuitem']:text-is('Upload image')",
+        "button:has(i:text-is('upload'))",
+    ]
+    last_error: Exception | None = None
+    for attempt, selector in enumerate(upload_selectors):
+        button = page.locator(selector).last
+        try:
+            if not await button.is_visible(timeout=3000 if attempt == 0 else 1000):
+                continue
+            async with page.expect_file_chooser(timeout=8000) as chooser_info:
+                await button.click(timeout=3000)
+            chooser = await chooser_info.value
+            await chooser.set_files(image_path)
+            await asyncio.sleep(0.5)
+            logger.info("Ingredient upload used selector: %s", selector)
+            break
+        except Exception as exc:
+            last_error = exc
+            continue
+    else:
+        raise RuntimeError(
+            "Ingredient upload action not found after clicking the + button"
+        ) from last_error
+
+    await _accept_ingredient_rights_notice(page)
+    # 2026-05 picker requires the uploaded asset to finish uploading
+    # AND auto-select before the bottom 'Add to Prompt' button is
+    # enabled. Click-when-disabled is a no-op. Poll for the enabled
+    # state before pressing it. ~20 s covers ing1.jpg (~5 s upload)
+    # plus a slow network margin.
+    await _wait_for_picker_commit_enabled(page, timeout_sec=20.0)
+    await _commit_uploaded_tile_in_picker(page, image_path)
+    await _click_add_to_prompt_if_present(page)
+    await asyncio.sleep(0.5)
+
+
+async def _wait_for_picker_commit_enabled(page, timeout_sec: float = 20.0) -> bool:
+    """Poll until the picker's 'Add to Prompt' button is enabled.
+
+    2026-05 picker (live-probed 2026-05-24): clicking 'Add to Prompt'
+    while it's still disabled (no asset selected / upload pending) is
+    a silent no-op, leaving the chip count at 0. Block until the
+    button reports ``disabled === false`` or the timeout expires.
+
+    Returns True if enabled state observed, False on timeout. Caller
+    proceeds regardless — fallback paths still try the click.
+    """
+    root_selector = _picker_root_selector()
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            enabled = await page.evaluate(
+                r"""(rootSelector) => {
+                    const roots = [...document.querySelectorAll(rootSelector)];
+                    const cta = roots.flatMap(root => [...root.querySelectorAll('button')])
+                        .find(b => /Add to Prompt/i.test(b.innerText || ''));
+                    if (!cta) return false;
+                    return !cta.disabled && cta.getAttribute('aria-disabled') !== 'true';
+                }""",
+                root_selector,
+            )
+            if enabled:
+                logger.info("Picker 'Add to Prompt' button enabled — upload settled")
+                return True
+        except Exception as exc:
+            logger.debug("Commit-enabled poll error: %s", exc)
+        await asyncio.sleep(0.5)
+    logger.warning("Picker 'Add to Prompt' button stayed disabled within %.1fs", timeout_sec)
+    return False
+
+
+async def _commit_uploaded_tile_in_picker(
+    page, image_path: str | None = None, timeout_sec: float = 4.0
+) -> None:
+    """Click the just-uploaded tile inside the media picker.
+
+    2026-05 picker schema (live-probed 2026-05-24, docs/livetest-2026-05-24/
+    probe_findings.md): the dialog has no bottom Add/Confirm/Insert button.
+    The only commit affordance is clicking the uploaded asset's tile in
+    the picker grid; tile-click attaches the asset to the composer and
+    closes the picker.
+
+    Strategy:
+      1. Wait up to ~timeout for an image tile to appear inside a picker
+         root; some Radix variants are poppers without ``role='dialog'``.
+      2. Prefer selected+filename, selected-only, newest stable-created/sort
+         tile, then first filename match. This avoids older same-basename
+         uploads stealing selection from the just-uploaded tile.
+      3. If after the click the picker is still visible, also try a
+         primary "Add"-style button (some variants may add one once a
+         selection exists).
+
+    Best-effort: missing tile selector raises only when neither a tile
+    nor an Add button is found within the timeout. Callers wrap this in
+    the ingredient-count retry, so a transient miss still gets a 2nd
+    chance.
+    """
+    root_selector = _picker_root_selector()
+    tile_selector = ", ".join(
+        f"{root} {tile}"
+        for root in root_selector.split(", ")
+        for tile in (
+            "[role='gridcell'] img",
+            "[role='option'] img",
+            "button:has(img)",
+            "[role='button']:has(img)",
+        )
+    )
+    target_filename = Path(image_path).name.lower() if image_path else ""
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    while asyncio.get_event_loop().time() < deadline:
+        # Diagnostic-first: enumerate candidate tiles via page.evaluate
+        # so we ALWAYS know what's actually in the picker, even when
+        # the click step throws. The previous try/except wrapped both
+        # the selector resolution and the click; locator-evaluate
+        # failures silently muted the candidate log on every retry.
+        try:
+            candidates = await page.evaluate(
+                r"""(({selector, filename}) => {
+                    const out = [];
+                    const firstAttribute = (elements, names) => {
+                        for (const element of elements) {
+                            if (!element) continue;
+                            for (const name of names) {
+                                const value = element.getAttribute(name);
+                                if (value) return value;
+                            }
+                        }
+                        return '';
+                    };
+                    const parseCreated = (value) => {
+                        if (!value) return null;
+                        const numeric = Number(value);
+                        if (Number.isFinite(numeric)) return numeric;
+                        const parsed = Date.parse(value);
+                        return Number.isFinite(parsed) ? parsed : null;
+                    };
+                    const stableSortState = (root) => {
+                        const sortNode = root?.querySelector?.(
+                            '[aria-sort], [data-sort], [data-sort-by], [data-sort-order]'
+                        );
+                        const fields = [root, sortNode].flatMap(element => [
+                            element?.getAttribute?.('aria-sort') || '',
+                            element?.getAttribute?.('data-sort') || '',
+                            element?.getAttribute?.('data-sort-by') || '',
+                            element?.getAttribute?.('data-sort-order') || '',
+                        ]).join(' ').toLowerCase();
+                        const createdish = /created|upload|date|time|newest|recent|oldest/.test(fields);
+                        if (!createdish) return '';
+                        if (/desc|newest|recent/.test(fields)) return 'desc';
+                        if (/asc|oldest/.test(fields)) return 'asc';
+                        return '';
+                    };
+                    const matchesFilename = (target, img) => {
+                        if (!filename) return false;
+                        const fields = [
+                            target.innerText || '',
+                            target.getAttribute('aria-label') || '',
+                            target.getAttribute('title') || '',
+                            img?.getAttribute('alt') || '',
+                            img?.getAttribute('aria-label') || '',
+                            img?.getAttribute('title') || '',
+                            img?.currentSrc || '',
+                            img?.src || '',
+                        ];
+                        return fields.some(value => {
+                            try {
+                                return decodeURIComponent(value).toLowerCase().includes(filename);
+                            } catch (_) {
+                                return String(value).toLowerCase().includes(filename);
+                            }
+                        });
+                    };
+                    for (const [index, el] of [...document.querySelectorAll(selector)].entries()) {
+                        const target = el.closest('button, [role="button"], [role="option"], [role="gridcell"]') || el;
+                        if (/Upload media/i.test(target.innerText || '')) continue;
+                        const rect = target.getBoundingClientRect();
+                        if (rect.width < 30 || rect.height < 30) continue;
+                        const img = target.matches('img') ? target : target.querySelector('img');
+                        const selected =
+                            target.matches('[data-state="selected"], [aria-selected="true"]') ||
+                            !!target.closest('[data-state="selected"], [aria-selected="true"]');
+                        const root = target.closest('[role="dialog"], [aria-modal="true"], [data-radix-popper-content-wrapper]');
+                        const createdValue = firstAttribute(
+                            [target, img, target.closest('[data-created], [data-created-at], [data-uploaded-at], [data-timestamp]')],
+                            ['data-created', 'data-created-at', 'data-uploaded-at', 'data-timestamp']
+                        );
+                        const createdSortKey = parseCreated(createdValue);
+                        const sortState = stableSortState(root);
+                        const stableSortOrderKey = sortState === 'desc'
+                            ? Number.MAX_SAFE_INTEGER - index
+                            : (sortState === 'asc' ? index : null);
+                        const candidate = {
+                            index,
+                            tag: target.tagName,
+                            role: target.getAttribute('role') || '',
+                            text: (target.innerText || '').trim().slice(0, 80),
+                            imgAlt: img ? (img.getAttribute('alt') || '').slice(0, 120) : '',
+                            imgSrc: img ? (img.src || '').slice(0, 120) : '',
+                            imgW: img ? img.naturalWidth : 0,
+                            imgH: img ? img.naturalHeight : 0,
+                            selected,
+                            filenameMatch: matchesFilename(target, img),
+                            created: createdValue,
+                            createdSortKey,
+                            stableSortOrderKey,
+                            rect: {x: Math.round(rect.x), y: Math.round(rect.y),
+                                   w: Math.round(rect.width), h: Math.round(rect.height)},
+                        };
+                        if (
+                            candidate.filenameMatch ||
+                            candidate.selected ||
+                            candidate.createdSortKey !== null ||
+                            candidate.stableSortOrderKey !== null ||
+                            out.length < 6
+                        ) {
+                            out.push(candidate);
+                        }
+                    }
+                    return out;
+                })""",
+                {"selector": tile_selector, "filename": target_filename},
+            )
+        except Exception as exc:
+            candidates = []
+            logger.debug("Tile candidate enumeration failed: %s", exc)
+
+        if candidates:
+            logger.info("Picker tile candidates (%d): %s", len(candidates), candidates)
+            tile_candidate, selection_reason = _select_picker_tile_candidate(candidates)
+            if tile_candidate is None:
+                logger.info(
+                    "Picker has tiles but no selected, created-sort, or filename=%r candidate yet",
+                    target_filename,
+                )
+                await asyncio.sleep(0.5)
+                continue
+            try:
+                tile = page.locator(tile_selector).nth(tile_candidate["index"])
+                await tile.click(timeout=3000, force=True)
+                await asyncio.sleep(0.5)
+                logger.info(
+                    "Clicked uploaded tile to attach ingredient (reason=%s filenameMatch=%s selected=%s created=%s stableSortOrderKey=%s)",
+                    selection_reason,
+                    tile_candidate.get("filenameMatch"),
+                    tile_candidate.get("selected"),
+                    tile_candidate.get("created"),
+                    tile_candidate.get("stableSortOrderKey"),
+                )
+                try:
+                    after = await page.evaluate(
+                        "(rootSelector) => { const root = document.querySelector(rootSelector); "
+                        "return {pickerOpen: !!root, "
+                        "pickerText: (root?.innerText||'').slice(0,400), "
+                        "imgCount: document.querySelectorAll('img').length, "
+                        "composerImgs: [...document.querySelectorAll('img')].filter(i => { const r = i.getBoundingClientRect(); return r.width >= 40 && r.width <= 200; }).length}; }",
+                        root_selector,
+                    )
+                    logger.info("Post-tile-click state: %s", after)
+                except Exception as exc:
+                    logger.debug("Post-click dump failed: %s", exc)
+                return
+            except Exception as exc:
+                logger.warning("Tile click failed despite visible candidate: %s", exc)
+        await asyncio.sleep(0.5)
+
+    logger.warning(
+        "No uploaded tile found inside picker within %.1fs", timeout_sec
+    )
+    # Diagnostic: dump picker DOM so next session has evidence to chase.
+    try:
+        dump = await page.evaluate(
+            "(rootSelector) => { const root = document.querySelector(rootSelector); "
+            "if (!root) return {noPickerRoot: true}; "
+            "const btns = [...root.querySelectorAll('button')].map(b => ({label: (b.innerText||'').slice(0,40), hidden: b.offsetParent===null, disabled: b.disabled})); "
+            "const imgs = [...root.querySelectorAll('img')].slice(0,10).map(i => ({alt: (i.getAttribute('alt')||'').slice(0,80), src: (i.src||'').slice(0,80), w: i.naturalWidth, h: i.naturalHeight})); "
+            "return {pickerText: (root.innerText||'').slice(0,800), buttons: btns, images: imgs}; }",
+            root_selector,
+        )
+        logger.warning("Picker dump on tile-not-found: %s", dump)
+    except Exception:
+        pass
+
+
+async def _accept_ingredient_rights_notice(page) -> None:
+    """Accept the 2026-05 'I have the rights' notice dialog if present.
+
+    First media upload per session opens a Workspace rights-confirmation
+    dialog. The button is labelled "I agree" (and may appear as
+    [role='button']). Best-effort: missing dialog is a no-op.
+    """
+    try:
+        dialog = page.locator("[role='dialog']:has-text('Notice')").last
+        if not await dialog.is_visible(timeout=2000):
+            return
+        agree = dialog.locator(
+            "button:has-text('I agree'), [role='button']:has-text('I agree')"
+        ).last
+        if await agree.is_visible(timeout=1500):
+            await agree.click(timeout=3000)
+            await asyncio.sleep(1.0)
+            logger.info("Accepted ingredient upload rights notice")
+    except Exception as exc:
+        logger.debug("Ingredient rights notice not accepted or absent: %s", exc)
+
+
+async def _click_add_to_prompt_if_present(page) -> None:
+    """Click the picker's primary commit CTA if one is present after selection.
+
+    2026-05 picker (live-probed 2026-05-24) commits via tile-click and
+    has no bottom Add button by default. Older / future variants may
+    surface a primary CTA labelled "Add to Prompt", "Add", "Insert",
+    "Done", or "Use selected". Best-effort: missing button is a no-op.
+    """
+    candidate_selectors = (
+        "[role='dialog'] button:has-text('Add to Prompt')",
+        "[role='dialog'] button:has-text('Add to prompt')",
+        "[role='dialog'] button:has-text('Use selected')",
+        "[role='dialog'] button:has-text('Insert')",
+        "[role='dialog'] button:has-text('Done')",
+        "button:has-text('Add to Prompt')",
+        "[role='button']:has-text('Add to Prompt')",
+    )
+    for selector in candidate_selectors:
+        try:
+            btn = page.locator(selector).last
+            if await btn.is_visible(timeout=600):
+                await btn.click(timeout=3000)
+                await asyncio.sleep(0.6)
+                logger.info("Clicked picker commit CTA via: %s", selector)
+                return
+        except Exception:
+            continue
+    logger.debug("No explicit picker commit CTA found after upload (likely auto-closed via tile-click)")
 
 
 async def _upload_ingredient_with_retry(page, image_path: str, expected_count: int) -> None:
@@ -379,10 +861,29 @@ async def _wait_for_uploaded_ingredient_count(page, expected: int, timeout_sec: 
     if visible_count >= expected:
         return visible_count
 
+    # 2026-05 schema: composer chips are Flow media-redirect thumbnail
+    # imgs (40-260 px) NOT carrying any "ingredient" attribute. Poll
+    # the same JS predicate used by _count_uploaded_ingredients so the
+    # wait condition matches what the assertion will see.
+    poll_predicate = (
+        r"(expected) => {"
+        r"const isThumb = (img) => {"
+        r"  if (img.closest('[role=\"dialog\"], nav, [role=\"navigation\"]')) return false;"
+        r"  const rect = img.getBoundingClientRect();"
+        r"  if (rect.width < 40 || rect.width > 260) return false;"
+        r"  if (rect.height < 40 || rect.height > 260) return false;"
+        r"  const src = img.src || '';"
+        r"  return src.includes('mediaUrlRedirect') || src.includes('media.getMediaUrl')"
+        r"      || src.startsWith('blob:') || src.startsWith('data:');"
+        r"};"
+        r"return Array.from(document.querySelectorAll('img')).filter(isThumb).length >= expected;"
+        r"}"
+    )
     try:
         await page.wait_for_function(
-            f"() => document.querySelectorAll('[data-testid*=\"ingredient\"], .ingredient-item, [aria-label*=\"ingredient\"]').length >= {expected}",
-            timeout=min(int(timeout_sec * 1000), 10000),
+            poll_predicate,
+            arg=expected,
+            timeout=min(int(timeout_sec * 1000), 15000),
         )
     except Exception:
         await asyncio.sleep(2)  # fallback
@@ -405,23 +906,44 @@ async def _verify_ingredients_mode(page, timeout_sec: float = 5.0) -> None:
 
 
 async def _count_uploaded_ingredients(page) -> int:
+    """Count ingredient chips currently attached to the composer.
+
+    2026-05 schema (live-probed 2026-05-24): the picker emits Flow
+    `media.getMediaUrlRedirect?name=<asset-uuid>` thumbnail imgs that
+    land in the composer after the "Add to Prompt" click. Legacy
+    `[data-testid*="ingredient"]` / `.ingredient-item` selectors are
+    not present in 2026-05 markup.
+
+    Strategy:
+      1. Prefer the legacy attribute selectors if Flow ever re-adds
+         them (safe no-op when absent).
+      2. Otherwise count visible imgs whose ``src`` references the
+         Flow media-redirect endpoint AND that are sized 40-260 px in
+         their layout box (composer thumbnails). Exclude imgs inside
+         ``[role='dialog']`` (open picker) and inside ``nav`` /
+         ``[role='navigation']`` (sidebar avatars).
+    """
     return await page.evaluate(
-        """() => {
-            const selectors = [
+        r"""() => {
+            const legacy = [
                 '[data-testid*="ingredient"]',
                 '[aria-label*="ingredient" i]',
                 '.ingredient-item',
-                '[data-upload-area] img',
-                '[class*="ingredient" i] img',
             ];
-            for (const sel of selectors) {
-                const count = document.querySelectorAll(sel).length;
-                if (count > 0) return count;
+            for (const sel of legacy) {
+                const c = document.querySelectorAll(sel).length;
+                if (c > 0) return c;
             }
-            return Array.from(document.querySelectorAll('img')).filter((img) => {
+            const isComposerThumb = (img) => {
+                if (img.closest('[role="dialog"], nav, [role="navigation"]')) return false;
                 const rect = img.getBoundingClientRect();
-                const r = img.closest('[role="region"], [class*="composer"], [class*="upload"]');
-                return rect.width >= 40 && rect.width <= 200 && rect.height >= 40 && r != null;
-            }).length;
+                if (rect.width < 40 || rect.width > 260) return false;
+                if (rect.height < 40 || rect.height > 260) return false;
+                const src = img.src || '';
+                if (src.includes('mediaUrlRedirect') || src.includes('media.getMediaUrl')) return true;
+                if (src.startsWith('blob:') || src.startsWith('data:')) return true;
+                return false;
+            };
+            return Array.from(document.querySelectorAll('img')).filter(isComposerThumb).length;
         }"""
     )

@@ -36,6 +36,150 @@ logger = logging.getLogger(__name__)
 _STATUS_URL = (
     "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus"
 )
+_RECAPTCHA_URL_TOKENS = (
+    "google.com/recaptcha",
+    "recaptcha.net/recaptcha",
+    "gstatic.com/recaptcha",
+    "/recaptcha/api2/",
+    "/recaptcha/enterprise/",
+)
+
+
+def detect_recaptcha_from_status_response(response, response_text=None) -> bool:
+    """Return True when a Flow status response indicates reCAPTCHA blocking."""
+    if isinstance(response, dict):
+        return _status_payload_has_recaptcha(response)
+
+    response_url = _response_string(response, "url")
+    location = _response_header(response, "location")
+    if _contains_recaptcha_url_token(response_url) or _contains_recaptcha_url_token(location):
+        return True
+
+    if _response_status(response) not in (403, 429):
+        return False
+
+    return _contains_recaptcha_url_token(response_text or "")
+
+
+def _response_status(response) -> int | None:
+    for name in ("status", "status_code"):
+        status = getattr(response, name, None)
+        if callable(status):
+            try:
+                status = status()
+            except TypeError:
+                continue
+        try:
+            return int(status)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _response_string(response, name: str) -> str:
+    value = getattr(response, name, "")
+    if callable(value):
+        try:
+            value = value()
+        except TypeError:
+            return ""
+    return str(value or "")
+
+
+def _response_header(response, name: str) -> str:
+    headers = getattr(response, "headers", None)
+    if callable(headers):
+        try:
+            headers = headers()
+        except TypeError:
+            return ""
+    if not isinstance(headers, dict):
+        return ""
+    for key, value in headers.items():
+        if str(key).lower() == name.lower():
+            return str(value or "")
+    return ""
+
+
+def _contains_recaptcha_url_token(value: object) -> bool:
+    text = str(value or "").lower().replace("\\/", "/")
+    return any(token in text for token in _RECAPTCHA_URL_TOKENS)
+
+
+_STATUS_RECAPTCHA_TEXT_TOKENS = (
+    "recaptcha",
+    "captcha",
+    "unusual traffic",
+    "verify you are human",
+    "verify you're human",
+)
+_STATUS_RECAPTCHA_TEXT_KEYS = (
+    "status",
+    "error",
+    "message",
+    "reason",
+    "description",
+    "detail",
+)
+
+
+def _status_payload_has_recaptcha(node: Any, key_hint: str = "") -> bool:
+    if isinstance(node, str):
+        if _contains_recaptcha_url_token(node):
+            return True
+        if _is_status_recaptcha_text_key(key_hint):
+            text = node.lower().replace("\\/", "/")
+            return any(token in text for token in _STATUS_RECAPTCHA_TEXT_TOKENS)
+        return False
+    if isinstance(node, dict):
+        return any(
+            _status_payload_has_recaptcha(value, str(key))
+            for key, value in node.items()
+        )
+    if isinstance(node, (list, tuple)):
+        return any(_status_payload_has_recaptcha(value, key_hint) for value in node)
+    return False
+
+
+def _is_status_recaptcha_text_key(key: str) -> bool:
+    key_l = key.lower()
+    return any(token in key_l for token in _STATUS_RECAPTCHA_TEXT_KEYS)
+
+
+async def _page_has_recaptcha_block(page) -> bool:
+    if page is None:
+        return False
+    try:
+        from flow import recaptcha as recaptcha_module
+
+        probe = getattr(recaptcha_module, "is_recaptcha_blocked", None)
+        if probe is None:
+            probe = getattr(recaptcha_module, "detect_recaptcha", None)
+        if probe is None:
+            return False
+        result = probe(page)
+        if hasattr(result, "__await__"):
+            result = await result
+        return bool(result)
+    except Exception as exc:
+        logger.debug("status poll: reCAPTCHA page probe failed: %s", exc)
+        return False
+
+
+def _recaptcha_error(message: str, url: str | None = None) -> Exception:
+    from flow import wait as flow_wait
+
+    try:
+        return flow_wait.RecaptchaError(
+            kind="v3_invisible_or_block",
+            message=message,
+        )
+    except TypeError:
+        error = flow_wait.RecaptchaError(message)
+        error.args = (message,)
+        setattr(error, "kind", "v3_invisible_or_block")
+        setattr(error, "url", url)
+        return error
 
 
 def _adapt_flow_template(template: dict, pending: list[str]) -> dict:
@@ -272,6 +416,12 @@ async def poll_status_via_api(
         if not pending:
             break
 
+        if await _page_has_recaptcha_block(page):
+            raise _recaptcha_error(
+                "reCAPTCHA detected during status poll page probe",
+                getattr(page, "url", None),
+            )
+
         # Re-harvest each iteration — Flow UI starts polling a few
         # seconds after submit, so the template may not exist on our
         # first try but appear on a later one.
@@ -311,6 +461,11 @@ async def poll_status_via_api(
         if status_code != 200:
             txt = await resp.text()
             logger.warning("status poll: HTTP %d body=%s", status_code, txt[:200])
+            if detect_recaptcha_from_status_response(resp, txt):
+                raise _recaptcha_error(
+                    f"reCAPTCHA blocked Flow status poll (HTTP {status_code})",
+                    _response_string(resp, "url") or _response_header(resp, "location"),
+                )
             # If body shape is wrong, try the next shape next iteration.
             if status_code == 400 and request_shape is not None:
                 logger.info("status poll: rotating request shape")
@@ -324,6 +479,12 @@ async def poll_status_via_api(
             logger.warning("status poll: response not JSON")
             await asyncio.sleep(poll_interval_sec)
             continue
+
+        if _status_payload_has_recaptcha(data):
+            raise _recaptcha_error(
+                "reCAPTCHA blocked Flow status poll (HTTP 200 JSON payload)",
+                _response_string(resp, "url") or _response_header(resp, "location"),
+            )
 
         _ingest_response(data, out)
         n_done = sum(

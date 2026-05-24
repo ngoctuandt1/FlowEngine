@@ -95,6 +95,12 @@ _NEW_PROJECT_ROLE_NAMES: tuple[str, ...] = (
     "New project", "Dự án mới", "Tạo dự án",
 )
 
+_DEFAULT_COMPOSER_TARGET_SELECTOR = (
+    '[data-slate-editor="true"], '
+    '[role="textbox"][aria-multiline="true"], '
+    '[contenteditable="true"]'
+)
+
 
 def is_flow_landing_url(url: str) -> bool:
     current = (url or "").lower()
@@ -128,6 +134,106 @@ def is_flow_canvas_page(url: str, page_text: str) -> bool:
 
     normalized_text = " ".join((page_text or "").lower().split())
     return any(signal in normalized_text for signal in _FLOW_CANVAS_TEXT_SIGNALS)
+
+
+async def _composer_blocker_info(page, target_selector: str) -> dict | None:
+    try:
+        return await page.evaluate(
+            r"""(selector) => {
+                const target = document.querySelector(selector);
+                if (!target) return null;
+
+                const targetRect = target.getBoundingClientRect();
+                if (targetRect.width <= 0 || targetRect.height <= 0) return null;
+
+                const x = targetRect.left + targetRect.width / 2;
+                const y = targetRect.top + targetRect.height / 2;
+                const blocker = document.elementFromPoint(x, y);
+                if (!blocker || blocker === target || target.contains(blocker)) {
+                    return null;
+                }
+
+                const style = getComputedStyle(blocker);
+                const rect = blocker.getBoundingClientRect();
+                if (style.display === 'none'
+                    || style.visibility === 'hidden'
+                    || style.pointerEvents === 'none'
+                    || Number.parseFloat(style.opacity || '1') <= 0
+                    || rect.width <= 0
+                    || rect.height <= 0) {
+                    return null;
+                }
+
+                const className = String(blocker.className || '');
+                const zIndex = Number.parseInt(style.zIndex, 10);
+                const looksLikeFlowOverlay = blocker.tagName === 'DIV'
+                    && /(^|\s)sc-[a-z0-9-]+/.test(className);
+                const looksLikePopup = blocker.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [aria-modal="true"], [data-radix-popper-content-wrapper]');
+                const highZ = Number.isFinite(zIndex) && zIndex >= 100;
+                if (!looksLikeFlowOverlay && !looksLikePopup && !highZ) {
+                    return null;
+                }
+
+                return {
+                    tag: blocker.tagName,
+                    role: blocker.getAttribute('role') || '',
+                    className: className.slice(0, 160),
+                    text: (blocker.innerText || blocker.textContent || '').trim().slice(0, 160),
+                    pointerEvents: style.pointerEvents,
+                    zIndex: style.zIndex,
+                    rect: {
+                        x: Math.round(rect.x),
+                        y: Math.round(rect.y),
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height),
+                    },
+                };
+            }""",
+            target_selector,
+        )
+    except Exception:
+        return None
+
+
+async def dismiss_pointer_intercepting_overlays(
+    page,
+    logger,
+    *,
+    target_selector: str = _DEFAULT_COMPOSER_TARGET_SELECTOR,
+    attempts: int = 2,
+) -> bool:
+    """Dismiss visible Flow popups that block the composer textbox."""
+    dismissed = False
+    for attempt in range(max(1, attempts)):
+        blocker = await _composer_blocker_info(page, target_selector)
+        if not blocker:
+            return dismissed
+
+        logger.info(
+            "Composer target blocked by overlay attempt=%d blocker=%s",
+            attempt + 1,
+            blocker,
+        )
+
+        try:
+            await page.mouse.click(10, 10)
+            await asyncio.sleep(0.2)
+            dismissed = True
+            if not await _composer_blocker_info(page, target_selector):
+                return True
+        except Exception as exc:
+            logger.debug("Composer overlay click-outside failed: %s", exc)
+
+        try:
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.2)
+            dismissed = True
+            if not await _composer_blocker_info(page, target_selector):
+                return True
+        except Exception as exc:
+            logger.debug("Composer overlay Escape failed: %s", exc)
+
+    return dismissed
 
 
 def _is_flow_auth_url(url: str) -> bool:

@@ -15,7 +15,7 @@ MODEL_REGISTRY = {
     "omni-flash": {"display_label": "Omni Flash", "tier": "paid"},
     "veo-3.1-lite": {"display_label": "Veo 3.1 - Lite", "tier": "free"},
     "veo-3.1-fast": {"display_label": "Veo 3.1 - Fast", "tier": "free"},
-    "veo-3.1-quality": {"display_label": "Veo 3.1 - Quality", "tier": "free"},
+    "veo-3.1-quality": {"display_label": "Veo 3.1 - Quality", "tier": "paid"},
 }
 
 # Backwards-compatible input aliases for stored jobs and older callers.
@@ -23,6 +23,18 @@ MODEL_ALIASES = {
     "veo-3.1-lite-lp": "veo-3.1-lite",
     "veo-3.1-fast-lp": "veo-3.1-fast",
 }
+
+_PAID_VIDEO_MODEL_KEYS = frozenset({
+    "omni-flash",
+    "veo-3.1-quality",
+})
+
+
+def _is_paid_model(model_key: str) -> bool:
+    """Return whether a canonical or alias video model consumes paid tier."""
+    cleaned = (model_key or "").strip()
+    canonical = MODEL_ALIASES.get(cleaned, cleaned)
+    return canonical in _PAID_VIDEO_MODEL_KEYS
 
 # Legacy UI labels tolerated while rollout completes. Canonical labels are
 # always searched first, so LP labels are fallback-only.
@@ -78,6 +90,7 @@ _MODEL_ITEM_SELECTORS = (
     "menuitem, [role='menuitem'], [role='option'], "
     "button, [role='button'], [role='listbox'] button"
 )
+_MODEL_VISIBILITY_TIMEOUT_MS = 3000
 
 
 def _normalize_model_text(text: str) -> str:
@@ -134,7 +147,9 @@ def canonicalize_video_model_key(model: str | None, *, free_mode: bool = True) -
         )
         return DEFAULT_MODEL
 
-    if free_mode and MODEL_REGISTRY[canonical]["tier"] == "paid":
+    if _is_paid_model(canonical):
+        if not free_mode:
+            return canonical
         logger.warning(
             "Paid video model '%s' cannot be selected in free_mode; falling back to %s",
             canonical,
@@ -209,7 +224,12 @@ def _extract_model_label(raw_text: str) -> str | None:
         if not cleaned:
             continue
         normalized = _normalize_model_text(cleaned)
-        if normalized.startswith("veo") or normalized.startswith("imagen") or normalized.startswith("nano"):
+        if (
+            normalized.startswith("veo")
+            or normalized.startswith("omni")
+            or normalized.startswith("imagen")
+            or normalized.startswith("nano")
+        ):
             return cleaned
     return None
 
@@ -228,28 +248,171 @@ def _build_free_model_failure_message(
     )
 
 
-async def _collect_visible_model_labels(page) -> list[str]:
+async def _collect_model_item_entries(
+    page,
+    *,
+    visibility_timeout_ms: int = _MODEL_VISIBILITY_TIMEOUT_MS,
+) -> list[dict[str, object]]:
     try:
         items = page.locator(_MODEL_ITEM_SELECTORS)
         count = await items.count()
     except Exception:
         return []
 
-    labels: list[str] = []
+    entries: list[dict[str, object]] = []
     for index in range(count):
         try:
             item = items.nth(index)
-            if not await item.is_visible(timeout=0):
-                continue
+            visible = await item.is_visible(timeout=0)
             text = (await item.inner_text()).strip()
         except Exception:
             continue
 
-        label = _extract_model_label(text)
-        if label:
+        entries.append(
+            {
+                "locator": item,
+                "text": re.sub(r"\s+", " ", text).strip(),
+                "visible": bool(visible),
+                "label": _extract_model_label(text),
+            }
+        )
+
+    return entries
+
+
+async def _wait_for_model_items_to_paint(
+    page,
+    *,
+    timeout_ms: int = _MODEL_VISIBILITY_TIMEOUT_MS,
+) -> None:
+    try:
+        await page.wait_for_function(
+            """(selector) => {
+                const modelLike = /veo|omni|flash|lite|fast|quality|imagen|nano/i;
+                for (const el of document.querySelectorAll(selector)) {
+                    const text = (el.innerText || el.textContent || '').trim();
+                    if (!modelLike.test(text)) continue;
+                    const style = getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    if (style.display !== 'none'
+                        && style.visibility !== 'hidden'
+                        && Number.parseFloat(style.opacity || '1') > 0
+                        && rect.width > 0
+                        && rect.height > 0) {
+                        return true;
+                    }
+                }
+                return false;
+            }""",
+            _MODEL_ITEM_SELECTORS,
+            timeout=timeout_ms,
+        )
+    except Exception:
+        logger.debug("No visible model-like menu item painted within %dms", timeout_ms)
+
+
+async def _collect_visible_model_labels(page) -> list[str]:
+    entries = await _collect_model_item_entries(page)
+    labels: list[str] = []
+    for entry in entries:
+        label = entry.get("label")
+        if entry.get("visible") and isinstance(label, str):
             labels.append(label)
 
     return _dedupe_texts(labels)
+
+
+def _model_item_diagnostics(entries: list[dict[str, object]]) -> list[dict[str, object]]:
+    diagnostics: list[dict[str, object]] = []
+    for entry in entries[:80]:
+        text = entry.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        diagnostics.append(
+            {
+                "text": text[:120],
+                "visible": bool(entry.get("visible")),
+                "label": entry.get("label"),
+            }
+        )
+    return diagnostics
+
+
+async def _pick_free_model_from_all_menu_items(
+    page,
+    base_name: str,
+    free_model_candidates: list[tuple[str, re.Pattern[str]]],
+    profile: str | None = None,
+):
+    entries = await _collect_model_item_entries(page)
+    diagnostics = _model_item_diagnostics(entries)
+    if diagnostics:
+        logger.info("Model menu items found: %s", diagnostics)
+
+    visible_entries = [
+        entry
+        for entry in entries
+        if entry.get("visible") and isinstance(entry.get("text"), str) and entry.get("text")
+    ]
+    if not visible_entries:
+        return None, []
+
+    visible_texts = [entry["text"] for entry in visible_entries if isinstance(entry.get("text"), str)]
+    normalized_base = _normalize_model_text(base_name)
+    normalized_family = _normalize_model_family(base_name)
+
+    for candidate_text, _candidate_pattern in free_model_candidates:
+        normalized_candidate = _normalize_model_text(candidate_text)
+        matches = []
+        for entry in visible_entries:
+            text = entry["text"]
+            if not isinstance(text, str):
+                continue
+            normalized_text = _normalize_model_text(text)
+            if normalized_candidate:
+                if normalized_candidate not in normalized_text:
+                    continue
+            elif normalized_base and normalized_base not in normalized_text:
+                continue
+            matches.append((entry, text, normalized_text))
+
+        exact_matches = [
+            match for match in matches if normalized_base and normalized_base in match[2]
+        ]
+        if exact_matches:
+            chosen = sorted(
+                exact_matches,
+                key=lambda match: _rank_model_choice((match[0]["locator"], match[1])),
+            )[0]
+            return (chosen[0]["locator"], chosen[1]), visible_texts
+
+        family_matches = [
+            match for match in matches if normalized_family and normalized_family in match[2]
+        ]
+        if len(family_matches) == 1:
+            chosen = family_matches[0]
+            return (chosen[0]["locator"], chosen[1]), visible_texts
+
+        non_lp_family_matches = [
+            match for match in family_matches if "Lower Priority" not in match[1]
+        ]
+        if len(non_lp_family_matches) == 1:
+            chosen = non_lp_family_matches[0]
+            return (chosen[0]["locator"], chosen[1]), visible_texts
+
+        if len(family_matches) > 1 or len(matches) > 1:
+            _raise_ambiguous_free_model_error(
+                base_name,
+                candidate_text,
+                visible_texts,
+                profile=profile,
+            )
+
+        if len(matches) == 1:
+            chosen = matches[0]
+            return (chosen[0]["locator"], chosen[1]), visible_texts
+
+    return None, visible_texts
 
 
 def _raise_ambiguous_free_model_error(
@@ -502,6 +665,7 @@ async def select_model(
             dropdown_opened = await _open_model_dropdown(page)
     else:
         dropdown_opened = await _open_model_dropdown(page)
+    await _wait_for_model_items_to_paint(page)
 
     # Step 3: Find and click the target model
     free_model_candidate_found = False
@@ -542,6 +706,44 @@ async def select_model(
 
                     await selected_item.click(timeout=3000, force=True)
                     logger.info("Selected free model: %s", selected_text.strip()[:80])
+                    await asyncio.sleep(0.5)
+                    try:
+                        ok = await _verify_credits(page)
+                    finally:
+                        await _close_model_panel_with_timeout(page, dropdown_opened)
+                    if not ok:
+                        raise RuntimeError(
+                            _build_free_model_failure_message(
+                                "Free model selection exceeded configured credit budget - aborting to avoid unintended paid generation",
+                                visible_models=last_visible_model_labels,
+                                profile=profile,
+                            )
+                        )
+                    return True
+
+                fallback_selection, fallback_visible_texts = await _pick_free_model_from_all_menu_items(
+                    page,
+                    base_name,
+                    free_model_candidates,
+                    profile=profile,
+                )
+                if fallback_visible_texts:
+                    last_visible_model_labels = _dedupe_texts(
+                        label
+                        for label in (
+                            _extract_model_label(text) or text
+                            for text in fallback_visible_texts
+                        )
+                        if label
+                    )
+                if fallback_selection is not None:
+                    selected_item, selected_text = fallback_selection
+                    free_model_candidate_found = True
+                    await selected_item.click(timeout=3000, force=True)
+                    logger.info(
+                        "Selected free model from all menu items: %s",
+                        selected_text.strip()[:80],
+                    )
                     await asyncio.sleep(0.5)
                     try:
                         ok = await _verify_credits(page)
@@ -780,7 +982,10 @@ async def _open_model_dropdown(page) -> bool:
     """
     from flow.ai_locator import ai_locate
 
-    # Playwright: find button with "Veo" text + "arrow_drop_down" (the model name button)
+    # Playwright: find the paid/free video model button + ``arrow_drop_down``.
+    # Paid ULTRA profiles can default to ``Omni Flash``; older logic only
+    # accepted ``^Veo`` and never opened the nested model list, so the free
+    # selector saw the combined settings panel but no visible Veo choices.
     # First pass: prefer non-LP button (standard model name).
     # Second pass: accept LP button too (account remembered LP selection).
     #
@@ -792,21 +997,21 @@ async def _open_model_dropdown(page) -> bool:
     # happened to include "Veo" (e.g. a video-library label reflecting
     # a previously-selected model in an unrelated panel).
     try:
-        veo_btns = page.locator(
+        model_btns = page.locator(
             "button[aria-haspopup='menu']:has(i:text-is('arrow_drop_down'))"
-        ).filter(has_text=re.compile(r"^Veo", re.IGNORECASE))
-        count = await veo_btns.count()
+        ).filter(has_text=re.compile(r"^(Veo|Omni)", re.IGNORECASE))
+        count = await model_btns.count()
 
-        # First pass: non-LP Veo button
+        # First pass: non-LP/non-legacy model button.
         for i in range(count):
-            btn = veo_btns.nth(i)
+            btn = model_btns.nth(i)
             try:
                 txt = await btn.inner_text()
                 if "Lower Priority" in txt:
                     continue
                 if "arrow_drop_down" in txt or await _has_dropdown_arrow(btn):
                     await btn.click(timeout=3000)
-                    logger.info("Opened model dropdown via Veo button: %s", txt.strip()[:60])
+                    logger.info("Opened model dropdown via model button: %s", txt.strip()[:60])
                     await asyncio.sleep(1.0)
                     return True
             except Exception:
@@ -814,7 +1019,7 @@ async def _open_model_dropdown(page) -> bool:
 
         # Second pass: LP Veo button (account remembered LP from previous project)
         for i in range(count):
-            btn = veo_btns.nth(i)
+            btn = model_btns.nth(i)
             try:
                 txt = await btn.inner_text()
                 if "Lower Priority" in txt and ("arrow_drop_down" in txt or await _has_dropdown_arrow(btn)):
@@ -825,16 +1030,17 @@ async def _open_model_dropdown(page) -> bool:
             except Exception:
                 continue
     except Exception as e:
-        logger.debug("Veo button search failed: %s", e)
+        logger.debug("Model button search failed: %s", e)
 
-    # JS fallback: find button with "Veo" + arrow_drop_down, accept LP too
+    # JS fallback: find button with paid/free model name + arrow_drop_down.
     try:
         clicked = await page.evaluate("""() => {
             const btns = document.querySelectorAll('button, [role="button"]');
             for (const btn of btns) {
                 const text = (btn.innerText || '').trim();
                 const lower = text.toLowerCase();
-                if (lower.includes('veo') && lower.includes('arrow_drop_down')) {
+                if ((lower.includes('veo') || lower.includes('omni'))
+                    && lower.includes('arrow_drop_down')) {
                     const rect = btn.getBoundingClientRect();
                     if (rect.width > 100 && rect.height > 20) {
                         btn.click();

@@ -47,6 +47,47 @@ class _NoButtonPage(_PaywallPage):
         return _VisibleLocator(False)
 
 
+class _EditorMountedLocator:
+    first = None
+
+    def __init__(self, mounted: bool):
+        self.mounted = mounted
+        self.first = self
+
+    async def wait_for(self, state=None, timeout=None):
+        if not self.mounted:
+            raise TimeoutError("editor not mounted")
+
+
+class _L2ToolbarPage(_PaywallPage):
+    def __init__(self, *, url: str, mounted: bool, visible_tokens: set[str]):
+        super().__init__(banner=False, upgrade=False)
+        self.url = url
+        self.mounted = mounted
+        self.visible_tokens = visible_tokens
+        self.searched_selectors: list[str] = []
+
+    def locator(self, selector):
+        if selector == "video, button:has-text('Hide history'), button:has-text('Ẩn lịch sử')":
+            return _EditorMountedLocator(self.mounted)
+        self.searched_selectors.append(selector)
+        return _VisibleLocator(any(token in selector for token in self.visible_tokens))
+
+
+class _NavigatingL2ToolbarPage(_L2ToolbarPage):
+    def __init__(self):
+        super().__init__(
+            url="https://labs.google/fx/tools/flow/project/proj/edit/media",
+            mounted=True,
+            visible_tokens=set(),
+        )
+
+    def locator(self, selector):
+        if selector != "video, button:has-text('Hide history'), button:has-text('áº¨n lá»‹ch sá»­')":
+            self.url = "https://labs.google/fx/tools/flow/project/proj"
+        return super().locator(selector)
+
+
 class _ProfileManagerStub:
     def __init__(self):
         self.busy: list[tuple[str, str]] = []
@@ -128,6 +169,85 @@ async def test_missing_legacy_buttons_do_not_count_as_paywall():
 
     clicked = await _base.click_action_button(page, ["Camera"])
     assert clicked is False
+
+
+async def test_l2_silent_hide_paid_english_toolbar_does_not_raise():
+    page = _L2ToolbarPage(
+        url="https://labs.google/fx/tools/flow/project/proj/edit/media",
+        mounted=True,
+        visible_tokens={"Extend"},
+    )
+
+    await _base._assert_l2_available(page, "extend-video", "paid-profile")
+
+    searched = "\n".join(page.searched_selectors)
+    assert "Extend" in searched
+    assert {"Mở rộng", "Chèn", "Xoá", "Máy quay"}.issubset(_base._L2_TOOLBAR_TOKENS)
+    assert {"keyboard_double_arrow_right", "add_box", "ink_eraser", "videocam"}.issubset(
+        _base._L2_TOOLBAR_TOKENS
+    )
+    assert "arrow_outward" not in _base._L2_TOOLBAR_TOKENS
+    assert "add_circle" not in _base._L2_TOOLBAR_TOKENS
+    assert "cancel" not in _base._L2_TOOLBAR_TOKENS
+
+
+async def test_l2_silent_hide_paid_vi_toolbar_does_not_raise():
+    page = _L2ToolbarPage(
+        url="https://labs.google/fx/tools/flow/project/proj/edit/media",
+        mounted=True,
+        visible_tokens={"Máy quay"},
+    )
+
+    await _base._assert_l2_available(page, "camera-move", "paid-profile")
+
+
+async def test_l2_silent_hide_paid_icon_only_toolbar_does_not_raise():
+    page = _L2ToolbarPage(
+        url="https://labs.google/fx/tools/flow/project/proj/edit/media",
+        mounted=True,
+        visible_tokens={"ink_eraser"},
+    )
+
+    await _base._assert_l2_available(page, "remove-object", "paid-profile")
+
+
+async def test_l2_silent_hide_free_edit_url_without_tokens_raises(monkeypatch):
+    monkeypatch.setattr(_base, "_L2_SILENT_HIDE_PAINT_WAIT_MS", 1)
+    page = _L2ToolbarPage(
+        url="https://labs.google/fx/tools/flow/project/proj/edit/media",
+        mounted=True,
+        visible_tokens=set(),
+    )
+
+    with pytest.raises(L2PaywallError) as exc_info:
+        await _base._assert_l2_available(page, "insert-object", "free-profile")
+
+    assert exc_info.value.error_kind == "paid_tier_required"
+    assert str(exc_info.value) == "L2 editing controls absent (free-tier silent gating)"
+
+
+async def test_l2_silent_hide_project_navigation_before_raise_does_not_raise(monkeypatch):
+    monkeypatch.setattr(_base, "_L2_SILENT_HIDE_PAINT_WAIT_MS", 1)
+    page = _NavigatingL2ToolbarPage()
+
+    result = await _base._assert_l2_available(page, "extend-video", "free-profile")
+
+    assert result is None
+    assert "/edit/" not in page.url
+    assert page.searched_selectors
+
+
+async def test_l2_silent_hide_non_edit_url_does_not_raise(monkeypatch):
+    monkeypatch.setattr(_base, "_L2_SILENT_HIDE_PAINT_WAIT_MS", 1)
+    page = _L2ToolbarPage(
+        url="https://labs.google/fx/tools/flow/project/proj",
+        mounted=True,
+        visible_tokens=set(),
+    )
+
+    await _base._assert_l2_available(page, "insert-object", "free-profile")
+
+    assert page.searched_selectors == []
 
 
 async def test_dispatch_job_paywall_failure_is_canonical_and_not_retried(monkeypatch):

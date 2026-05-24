@@ -74,6 +74,28 @@ class LeafLockoutError(RuntimeError):
 
 
 L2_PAYWALL_BANNER_TEXT = "Video editing is only available for paid subscribers"
+_L2_SILENT_HIDE_EDITOR_MOUNT_TIMEOUT_MS = 1000
+_L2_SILENT_HIDE_PAINT_WAIT_MS = 4000
+_L2_TOOLBAR_TOKENS = (
+    "Extend",
+    "Insert",
+    "Remove",
+    "Camera",
+    "Mở rộng",
+    "Chèn",
+    "Xoá",
+    "Máy quay",
+    "keyboard_double_arrow_right",
+    "add_box",
+    "ink_eraser",
+    "videocam",
+)
+_L2_SILENT_HIDE_OPERATIONS = {
+    "extend-video",
+    "insert-object",
+    "remove-object",
+    "camera-move",
+}
 
 
 class L2PaywallError(RuntimeError):
@@ -460,23 +482,96 @@ async def _upgrade_cta_is_visible(page, *, timeout_ms: int = 500) -> bool:
 
 
 async def _assert_l2_available(page, op_name: str, profile: str | None) -> None:
-    """Raise only on Flow's explicit paid-tier L2 banner + Upgrade CTA."""
-    if not await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=500):
+    """Raise on either (a) Flow's explicit paid-tier L2 banner + Upgrade CTA,
+    or (b) the 2026-05 silent-hide variant where the entire L2 toolbar is
+    absent from the edit view.
+
+    Live-probed 2026-05-24 on free-tier ``ngoctuandt20``: the edit view loads
+    a generated video with no paywall banner AND no Extend / Insert / Remove
+    / Camera affordances. Without this fallback path the per-op handlers
+    raise generic ``RuntimeError("Failed to find <X> button")`` and the job
+    record never gets the canonical ``error_kind=paid_tier_required``.
+    """
+    banner_visible = await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=500)
+    if banner_visible:
+        await asyncio.sleep(0.25)
+        if not await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=250):
+            banner_visible = False
+
+    if banner_visible:
+        if not await _upgrade_cta_is_visible(page, timeout_ms=500):
+            logger.info(
+                "L2 paywall banner visible for op=%s profile=%s, but Upgrade CTA missing",
+                op_name,
+                profile or "",
+            )
+            return
+        raise L2PaywallError(operation=op_name, profile=profile)
+
+    if op_name not in _L2_SILENT_HIDE_OPERATIONS:
         return
 
-    await asyncio.sleep(0.25)
-    if not await _text_is_visible(page, L2_PAYWALL_BANNER_TEXT, timeout_ms=250):
+    current_url = str(getattr(page, "url", "") or "")
+    if "/edit/" not in current_url:
         return
 
-    if not await _upgrade_cta_is_visible(page, timeout_ms=500):
+    if not await _editor_mounted(
+        page, timeout_ms=_L2_SILENT_HIDE_EDITOR_MOUNT_TIMEOUT_MS
+    ):
+        return
+
+    toolbar_visible = await _l2_toolbar_visible_after_paint(
+        page, timeout_ms=_L2_SILENT_HIDE_PAINT_WAIT_MS
+    )
+
+    if not toolbar_visible:
+        current_url = str(getattr(page, "url", "") or "")
+        if "/edit/" not in current_url:
+            return
         logger.info(
-            "L2 paywall banner visible for op=%s profile=%s, but Upgrade CTA missing",
+            "L2 toolbar absent for op=%s profile=%s — treating as paid_tier_required (2026-05 silent-hide variant)",
             op_name,
             profile or "",
         )
-        return
+        raise L2PaywallError(
+            operation=op_name,
+            profile=profile,
+            message="L2 editing controls absent (free-tier silent gating)",
+        )
 
-    raise L2PaywallError(operation=op_name, profile=profile)
+
+async def _l2_toolbar_visible_after_paint(page, *, timeout_ms: int) -> bool:
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+    while True:
+        for token in _L2_TOOLBAR_TOKENS:
+            if await _l2_toolbar_token_visible(page, token, timeout_ms=100):
+                return True
+
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(0.25, remaining))
+
+
+async def _l2_toolbar_token_visible(page, token: str, *, timeout_ms: int) -> bool:
+    locator = getattr(page, "locator", None)
+    if not callable(locator):
+        return True
+    selectors = (
+        f"button[title='{token}']",
+        f"button[aria-label='{token}']",
+        f"button:has-text('{token}')",
+        f"[role='button']:has-text('{token}')",
+        f"button:has(i:text-is('{token}'))",
+        f"[role='button']:has(i:text-is('{token}'))",
+    )
+    for selector in selectors:
+        try:
+            if await _locator_is_visible(locator(selector), timeout_ms=timeout_ms):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _op_name_from_button_texts(button_texts: list[str]) -> str:

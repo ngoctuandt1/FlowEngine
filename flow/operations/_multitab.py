@@ -42,10 +42,16 @@ import logging
 import time
 from typing import Any
 
+from flow.model_selector import DEFAULT_MODEL, _is_paid_model
 from flow.operations._base import CreditBudgetExceeded, L2PaywallError
 from flow.recaptcha import RecaptchaError
 
 logger = logging.getLogger(__name__)
+
+
+def _model_and_free_mode(job: dict) -> tuple[str, bool]:
+    model = job.get("model") or DEFAULT_MODEL
+    return model, not _is_paid_model(model)
 
 
 class _TabClient:
@@ -300,11 +306,12 @@ async def dispatch_op_in_new_tab(
         # and returns a result dict on success or raises on failure.
         if op_type == "extend-video":
             from flow.operations.extend import extend_video
+            model, free_mode = _model_and_free_mode(job)
             result = await extend_video(
                 proxy, op_job,
                 prompt=job.get("prompt", ""),
-                model=job.get("model", "veo-3.1-lite"),
-                free_mode=True,
+                model=model,
+                free_mode=free_mode,
             )
         elif op_type == "camera-move":
             from flow.operations.camera import camera_move
@@ -605,11 +612,12 @@ async def _run_one_op_on_open_tab(
 
     if op_type == "extend-video":
         from flow.operations.extend import extend_video
+        model, free_mode = _model_and_free_mode(job_spec)
         result = await extend_video(
             proxy, op_job,
             prompt=job_spec.get("prompt", ""),
-            model=job_spec.get("model", "veo-3.1-lite"),
-            free_mode=True,
+            model=model,
+            free_mode=free_mode,
         )
     elif op_type == "camera-move":
         from flow.operations.camera import camera_move

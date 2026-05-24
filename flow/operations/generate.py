@@ -9,7 +9,11 @@ from pathlib import Path
 from flow.navigation import flow_url, extract_project_id
 from flow.characters import validate_character_tags
 from flow.login import is_login_page, handle_login_redirect
-from flow.landing import dismiss_flow_marketing_landing, recover_from_flow_canvas_page
+from flow.landing import (
+    dismiss_flow_marketing_landing,
+    dismiss_pointer_intercepting_overlays,
+    recover_from_flow_canvas_page,
+)
 from flow.model_selector import canonicalize_video_model_key, select_model, DEFAULT_MODEL
 from flow.selector_chain import click_first_visible
 from flow.submit import submit_with_confirmation
@@ -617,6 +621,7 @@ async def text_to_video(
     # The Slate.js editor can take a few seconds to initialize after page load
     logger.info("Waiting for project editor to fully render...")
     await _wait_for_composer(page)
+    await dismiss_pointer_intercepting_overlays(page, logger)
 
     # === Step 3: Select model ===
     canonical_model = canonicalize_video_model_key(model, free_mode=free_mode)
@@ -649,6 +654,7 @@ async def text_to_video(
 
     # === Step 5: Type prompt ===
     logger.info(f"Step 5: Type prompt ({len(prompt)} chars)")
+    await dismiss_pointer_intercepting_overlays(page, logger)
     await _type_prompt(page, prompt)
 
     if voice_asset_id:
