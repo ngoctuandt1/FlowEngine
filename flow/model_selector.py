@@ -15,7 +15,7 @@ MODEL_REGISTRY = {
     "omni-flash": {"display_label": "Omni Flash", "tier": "paid"},
     "veo-3.1-lite": {"display_label": "Veo 3.1 - Lite", "tier": "free"},
     "veo-3.1-fast": {"display_label": "Veo 3.1 - Fast", "tier": "free"},
-    "veo-3.1-quality": {"display_label": "Veo 3.1 - Quality", "tier": "free"},
+    "veo-3.1-quality": {"display_label": "Veo 3.1 - Quality", "tier": "paid"},
 }
 
 # Backwards-compatible input aliases for stored jobs and older callers.
@@ -23,6 +23,18 @@ MODEL_ALIASES = {
     "veo-3.1-lite-lp": "veo-3.1-lite",
     "veo-3.1-fast-lp": "veo-3.1-fast",
 }
+
+_PAID_VIDEO_MODEL_KEYS = frozenset({
+    "omni-flash",
+    "veo-3.1-quality",
+})
+
+
+def _is_paid_model(model_key: str) -> bool:
+    """Return whether a canonical or alias video model consumes paid tier."""
+    cleaned = (model_key or "").strip()
+    canonical = MODEL_ALIASES.get(cleaned, cleaned)
+    return canonical in _PAID_VIDEO_MODEL_KEYS
 
 # Legacy UI labels tolerated while rollout completes. Canonical labels are
 # always searched first, so LP labels are fallback-only.
@@ -135,7 +147,9 @@ def canonicalize_video_model_key(model: str | None, *, free_mode: bool = True) -
         )
         return DEFAULT_MODEL
 
-    if free_mode and MODEL_REGISTRY[canonical]["tier"] == "paid":
+    if _is_paid_model(canonical):
+        if not free_mode:
+            return canonical
         logger.warning(
             "Paid video model '%s' cannot be selected in free_mode; falling back to %s",
             canonical,

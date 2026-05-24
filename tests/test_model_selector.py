@@ -450,6 +450,10 @@ def test_unit_a_primary_video_registry_and_aliases(caplog):
         "veo-3.1-quality",
     }
     assert model_selector_mod.MODEL_REGISTRY["omni-flash"]["tier"] == "paid"
+    assert model_selector_mod.MODEL_REGISTRY["veo-3.1-quality"]["tier"] == "paid"
+    assert model_selector_mod._is_paid_model("omni-flash") is True
+    assert model_selector_mod._is_paid_model("veo-3.1-quality") is True
+    assert model_selector_mod._is_paid_model(model_selector_mod.DEFAULT_MODEL) is False
     assert all("Lower Priority" not in label for label in model_selector_mod.MODEL_MAP.values())
     assert model_selector_mod.MODEL_ALIASES == {
         "veo-3.1-lite-lp": "veo-3.1-lite",
@@ -471,6 +475,16 @@ def test_unit_a_paid_model_never_selected_for_free_profiles(caplog):
 
     assert canonical == "veo-3.1-lite"
     assert "Paid video model 'omni-flash' cannot be selected in free_mode" in caplog.text
+
+
+def test_unit_a_paid_omni_flash_preserved_for_paid_profiles(caplog):
+    with caplog.at_level(logging.WARNING, logger="flow.model_selector"):
+        canonical = model_selector_mod.canonicalize_video_model_key(
+            "omni-flash", free_mode=False
+        )
+
+    assert canonical == "omni-flash"
+    assert "Paid video model 'omni-flash' cannot be selected in free_mode" not in caplog.text
 
 
 async def test_open_model_dropdown_accepts_paid_omni_flash_current_button(monkeypatch):

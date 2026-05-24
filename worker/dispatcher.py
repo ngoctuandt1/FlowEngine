@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Coroutine
 
+from flow.model_selector import _is_paid_model
 from flow.operations._base import CreditBudgetExceeded, L2PaywallError, LeafLockoutError
 from flow.recaptcha import RecaptchaError
 from flow.retry import with_retry
@@ -262,14 +263,15 @@ async def handle_text_to_video(job: dict) -> dict:
     if voice_asset_id:
         character_kwargs["voice_asset_id"] = voice_asset_id
 
+    model = job.get("model", "veo-3.1-lite")
     async with _client_lease(profile) as client:
         client._job_id = job["id"]
         result = await text_to_video(
             client,
             prompt=job.get("prompt", ""),
-            model=job.get("model", "veo-3.1-lite"),
+            model=model,
             aspect_ratio=job.get("aspect_ratio", "16:9"),
-            free_mode=True,
+            free_mode=not _is_paid_model(model),
             **character_kwargs,
         )
 
@@ -294,6 +296,7 @@ async def handle_frames_to_video(job: dict) -> dict:
         profile,
     )
 
+    model = job.get("model", "veo-3.1-lite")
     async with _client_lease(profile) as client:
         client._job_id = job["id"]
         result = await frames_to_video(
@@ -301,9 +304,9 @@ async def handle_frames_to_video(job: dict) -> dict:
             prompt=job.get("prompt", ""),
             start_image_path=_resolve_upload_path(job.get("start_image_path")),
             end_image_path=_resolve_upload_path(job.get("end_image_path")),
-            model=job.get("model", "veo-3.1-lite"),
+            model=model,
             aspect_ratio=job.get("aspect_ratio", "16:9"),
-            free_mode=True,
+            free_mode=not _is_paid_model(model),
         )
 
     logger.info(
@@ -366,15 +369,16 @@ async def handle_ingredients_to_video(job: dict) -> dict:
         profile,
     )
 
+    model = job.get("model", "veo-3.1-lite")
     async with _client_lease(profile) as client:
         client._job_id = job["id"]
         result = await ingredients_to_video(
             client,
             prompt=job.get("prompt", ""),
             ingredient_image_paths=ingredient_image_paths,
-            model=job.get("model", "veo-3.1-lite"),
+            model=model,
             aspect_ratio=job.get("aspect_ratio", "16:9"),
-            free_mode=True,
+            free_mode=not _is_paid_model(model),
         )
 
     logger.info(
@@ -400,6 +404,7 @@ async def handle_extend(job: dict) -> dict:
 
     from flow.client import lease_client_for_target
 
+    model = job.get("model", "veo-3.1-lite")
     async with lease_client_for_target(
         _client_lease, profile, job.get("edit_url") or job.get("project_url")
     ) as client:
@@ -408,8 +413,8 @@ async def handle_extend(job: dict) -> dict:
             client,
             job=job,
             prompt=job.get("prompt", ""),
-            model=job.get("model", "veo-3.1-lite"),
-            free_mode=True,
+            model=model,
+            free_mode=not _is_paid_model(model),
         )
 
     logger.info("extend-video DONE | files=%d media_id=%s",

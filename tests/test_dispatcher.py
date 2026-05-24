@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
 from unittest.mock import AsyncMock
@@ -107,6 +108,40 @@ async def test_dispatch_ingredients_to_video_routes_to_handler(monkeypatch):
     assert result["profile"] == "profile-c"
     assert profile_mgr.busy == [("profile-c", "job-3")]
     assert profile_mgr.available == ["profile-c"]
+
+
+async def test_omni_flash_text_to_video_dispatches_paid_mode(monkeypatch):
+    from flow.operations import generate
+    from worker import dispatcher
+
+    captured = {}
+
+    async def fake_text_to_video(client, **kwargs):
+        captured.update(kwargs)
+        return {"output_files": ["out.mp4"], "media_id": "mid"}
+
+    class _ClientStub:
+        pass
+
+    @asynccontextmanager
+    async def fake_client_lease(profile):
+        yield _ClientStub()
+
+    monkeypatch.setattr(generate, "text_to_video", fake_text_to_video)
+    monkeypatch.setattr(dispatcher, "_client_lease", fake_client_lease)
+
+    result = await dispatcher.handle_text_to_video({
+        "id": "job-omni",
+        "type": "text-to-video",
+        "profile": "profile-paid",
+        "prompt": "make omni video",
+        "model": "omni-flash",
+        "aspect_ratio": "16:9",
+    })
+
+    assert result["media_id"] == "mid"
+    assert captured["model"] == "omni-flash"
+    assert captured["free_mode"] is False
 
 
 # Upload-path resolver security contract tests live in
