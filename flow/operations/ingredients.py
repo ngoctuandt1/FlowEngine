@@ -451,48 +451,60 @@ async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 25.0) -> No
     )
     deadline = asyncio.get_event_loop().time() + timeout_sec
     while asyncio.get_event_loop().time() < deadline:
+        # Diagnostic-first: enumerate candidate tiles via page.evaluate
+        # so we ALWAYS know what's actually in the picker, even when
+        # the click step throws. The previous try/except wrapped both
+        # the selector resolution and the click; locator-evaluate
+        # failures silently muted the candidate log on every retry.
         try:
-            tile = page.locator(tile_selector).first
-            if await tile.is_visible(timeout=500):
-                # The wrapper button is the clickable; img inside the
-                # tile may be the locator hit. Walk up to the nearest
-                # clickable ancestor before clicking.
-                try:
-                    clickable = tile.locator(
-                        "xpath=ancestor-or-self::*[self::button or @role='button' or @role='option' or @role='gridcell'][1]"
-                    ).first
-                    # Diagnostic: capture WHAT we're about to click so we
-                    # can tell tile-hit from icon-hit when chip count = 0.
-                    try:
-                        info = await clickable.evaluate(
-                            "el => ({tag: el.tagName, role: el.getAttribute('role'), "
-                            "text: (el.innerText||'').trim().slice(0,80), "
-                            "imgSrc: (el.querySelector('img')||{}).src||'', "
-                            "rect: el.getBoundingClientRect()})"
-                        )
-                        logger.info("Picker tile candidate: %s", info)
-                    except Exception:
-                        pass
-                    await clickable.click(timeout=3000)
-                except Exception:
-                    await tile.click(timeout=3000)
-                await asyncio.sleep(0.4)
+            candidates = await page.evaluate(
+                r"""(selector) => {
+                    const out = [];
+                    for (const el of document.querySelectorAll(selector)) {
+                        const target = el.closest('button, [role="button"], [role="option"], [role="gridcell"]') || el;
+                        const rect = target.getBoundingClientRect();
+                        if (rect.width < 30 || rect.height < 30) continue;
+                        const img = target.querySelector('img');
+                        out.push({
+                            tag: target.tagName,
+                            role: target.getAttribute('role') || '',
+                            text: (target.innerText || '').trim().slice(0, 80),
+                            imgSrc: img ? (img.src || '').slice(0, 120) : '',
+                            imgW: img ? img.naturalWidth : 0,
+                            imgH: img ? img.naturalHeight : 0,
+                            rect: {x: Math.round(rect.x), y: Math.round(rect.y),
+                                   w: Math.round(rect.width), h: Math.round(rect.height)},
+                        });
+                        if (out.length >= 6) break;
+                    }
+                    return out;
+                }""",
+                tile_selector,
+            )
+        except Exception as exc:
+            candidates = []
+            logger.debug("Tile candidate enumeration failed: %s", exc)
+
+        if candidates:
+            logger.info("Picker tile candidates (%d): %s", len(candidates), candidates)
+            try:
+                tile = page.locator(tile_selector).first
+                await tile.click(timeout=3000, force=True)
+                await asyncio.sleep(0.5)
                 logger.info("Clicked newly-uploaded tile to attach ingredient")
-                # Diagnostic: dump picker state + composer chip count
-                # immediately after click so next failure log shows
-                # whether the picker closed and whether a chip appeared.
                 try:
                     after = await page.evaluate(
                         "() => ({dialogOpen: !!document.querySelector('[role=\"dialog\"]'), "
-                        "dialogText: (document.querySelector('[role=\"dialog\"]')?.innerText||'').slice(0,300), "
-                        "imgCount: document.querySelectorAll('img').length})"
+                        "dialogText: (document.querySelector('[role=\"dialog\"]')?.innerText||'').slice(0,400), "
+                        "imgCount: document.querySelectorAll('img').length, "
+                        "composerImgs: [...document.querySelectorAll('img')].filter(i => { const r = i.getBoundingClientRect(); return r.width >= 40 && r.width <= 200; }).length})"
                     )
                     logger.info("Post-tile-click state: %s", after)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Post-click dump failed: %s", exc)
                 return
-        except Exception as exc:
-            logger.debug("Tile-search miss: %s", exc)
+            except Exception as exc:
+                logger.warning("Tile click failed despite visible candidate: %s", exc)
         await asyncio.sleep(0.5)
 
     logger.warning(
