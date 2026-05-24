@@ -360,39 +360,57 @@ async def _upload_ingredient(page, image_path: str) -> None:
     plus_button = await _locate_ingredient_plus_button(page)
     await plus_button.click(timeout=3000)
 
-    # Wait for picker dialog (Radix role="dialog") to mount + render its
-    # tabs. The picker has sidebar nav (All / Images / Videos / Voices /
-    # Characters / Avatar / Uploads). Switch to the Uploads tab first so
-    # the `upload Upload media` action button renders; without the tab
-    # click, the All-Media tab shows project clips and no upload CTA.
+    # Best-effort: the 2026-05 picker has sidebar tabs (All / Images /
+    # Videos / Voices / Characters / Avatar / Uploads). The Upload-media
+    # action is visible from any tab in current variants, but switching
+    # to Uploads first matches the documented happy path. Failure is
+    # silently ignored — the upload-button search below covers both
+    # states.
     try:
         uploads_tab = page.locator(
+            "[role='dialog'] [role='tab']:has-text('Uploads'), "
             "[role='dialog'] button:has-text('Uploads'), "
-            "[role='dialog'] [role='tab']:has-text('Uploads')"
+            "[role='tablist'] [role='tab']:has-text('Uploads')"
         ).last
-        if await uploads_tab.is_visible(timeout=3000):
+        if await uploads_tab.is_visible(timeout=2000):
             await uploads_tab.click(timeout=2000)
             await asyncio.sleep(0.4)
     except Exception as exc:
         logger.debug("Uploads tab not visible or already active: %s", exc)
 
-    upload_button = page.locator(
-        "[role='dialog'] button:has(i:text-is('upload')):has-text('Upload media'), "
-        "[role='dialog'] button:has-text('Upload media'), "
-        "button:has-text('Upload media'), "
-        "[role='menuitem']:has-text('Upload media'), "
-        "[role='menuitem']:text-is('Upload image')"
-    ).last
-    if not await upload_button.is_visible(timeout=6000):
+    # Mirror frames_to_video.py:_click_picker_upload_media — iterate
+    # broader selector list, do NOT restrict to [role='dialog'] (some
+    # picker variants render Upload media inside a Radix popover that
+    # isn't tagged role=dialog). Wait inside the iteration so the
+    # picker has time to paint.
+    upload_selectors = [
+        "button:has(i:text-is('upload')):has-text('Upload media')",
+        "button:has-text('Upload media')",
+        "[role='button']:has-text('Upload media')",
+        "[role='menuitem']:has-text('Upload media')",
+        "[role='menuitem']:text-is('Upload image')",
+        "button:has(i:text-is('upload'))",
+    ]
+    last_error: Exception | None = None
+    for attempt, selector in enumerate(upload_selectors):
+        button = page.locator(selector).last
+        try:
+            if not await button.is_visible(timeout=3000 if attempt == 0 else 1000):
+                continue
+            async with page.expect_file_chooser(timeout=8000) as chooser_info:
+                await button.click(timeout=3000)
+            chooser = await chooser_info.value
+            await chooser.set_files(image_path)
+            await asyncio.sleep(0.5)
+            logger.info("Ingredient upload used selector: %s", selector)
+            break
+        except Exception as exc:
+            last_error = exc
+            continue
+    else:
         raise RuntimeError(
             "Ingredient upload action not found after clicking the + button"
-        )
-
-    async with page.expect_file_chooser(timeout=8000) as chooser_info:
-        await upload_button.click(timeout=3000)
-    chooser = await chooser_info.value
-    await chooser.set_files(image_path)
-    await asyncio.sleep(0.5)
+        ) from last_error
 
     await _accept_ingredient_rights_notice(page)
     await _click_add_to_prompt_if_present(page)
