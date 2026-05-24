@@ -473,6 +473,32 @@ def test_unit_a_paid_model_never_selected_for_free_profiles(caplog):
     assert "Paid video model 'omni-flash' cannot be selected in free_mode" in caplog.text
 
 
+async def test_open_model_dropdown_accepts_paid_omni_flash_current_button(monkeypatch):
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    omni_button = MagicMock()
+    omni_button.inner_text = AsyncMock(return_value="Omni Flash\narrow_drop_down")
+    omni_button.click = AsyncMock()
+
+    model_buttons = MagicMock()
+    model_buttons.count = AsyncMock(return_value=1)
+    model_buttons.nth = MagicMock(return_value=omni_button)
+
+    base_locator = MagicMock()
+    base_locator.filter = MagicMock(return_value=model_buttons)
+
+    page = MagicMock()
+    page.locator = MagicMock(return_value=base_locator)
+    page.evaluate = AsyncMock(return_value=False)
+
+    assert await model_selector_mod._open_model_dropdown(page) is True
+
+    base_locator.filter.assert_called_once()
+    has_text = base_locator.filter.call_args.kwargs["has_text"]
+    assert has_text.search("Omni Flash\narrow_drop_down")
+    omni_button.click.assert_awaited_once_with(timeout=3000)
+
+
 async def test_credit_verification_accepts_cost_at_budget(monkeypatch):
     monkeypatch.setenv("FLOW_MAX_CREDITS_PER_JOB", "10")
     page = MagicMock()

@@ -327,6 +327,25 @@ async def test_select_model_uses_js_fallback_and_prefers_canonical_before_lp(
     _selector_stubs["verify_credits"].assert_awaited_once_with(page)
 
 
+async def test_select_model_falls_back_to_all_menu_items_when_text_filter_misses(
+    _selector_stubs, caplog
+):
+    page = _make_select_model_page(
+        ["Omni Flash", "Veo 3.1 - Lite", "Veo 3.1 - Fast"],
+        js_option_texts=[],
+        force_playwright_miss=True,
+    )
+
+    with caplog.at_level(logging.INFO, logger="flow.model_selector"):
+        result = await select_model(page, model="veo-3.1-fast")
+
+    assert result is True
+    assert page._clicked_texts == ["Veo 3.1 - Fast"]
+    assert "Model menu items found" in caplog.text
+    _selector_stubs["open_dropdown"].assert_awaited_once()
+    _selector_stubs["verify_credits"].assert_awaited_once_with(page)
+
+
 async def test_select_model_uses_js_fallback_and_accepts_legacy_lp(
     _selector_stubs, caplog
 ):
