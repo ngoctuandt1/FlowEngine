@@ -418,7 +418,7 @@ async def _upload_ingredient(page, image_path: str) -> None:
     await asyncio.sleep(0.3)
 
 
-async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 25.0) -> None:
+async def _commit_uploaded_tile_in_picker(page, timeout_sec: float = 4.0) -> None:
     """Click the just-uploaded tile inside the media picker.
 
     2026-05 picker schema (live-probed 2026-05-24, docs/livetest-2026-05-24/
@@ -640,10 +640,29 @@ async def _wait_for_uploaded_ingredient_count(page, expected: int, timeout_sec: 
     if visible_count >= expected:
         return visible_count
 
+    # 2026-05 schema: composer chips are Flow media-redirect thumbnail
+    # imgs (40-260 px) NOT carrying any "ingredient" attribute. Poll
+    # the same JS predicate used by _count_uploaded_ingredients so the
+    # wait condition matches what the assertion will see.
+    poll_predicate = (
+        r"(expected) => {"
+        r"const isThumb = (img) => {"
+        r"  if (img.closest('[role=\"dialog\"], nav, [role=\"navigation\"]')) return false;"
+        r"  const rect = img.getBoundingClientRect();"
+        r"  if (rect.width < 40 || rect.width > 260) return false;"
+        r"  if (rect.height < 40 || rect.height > 260) return false;"
+        r"  const src = img.src || '';"
+        r"  return src.includes('mediaUrlRedirect') || src.includes('media.getMediaUrl')"
+        r"      || src.startsWith('blob:') || src.startsWith('data:');"
+        r"};"
+        r"return Array.from(document.querySelectorAll('img')).filter(isThumb).length >= expected;"
+        r"}"
+    )
     try:
         await page.wait_for_function(
-            f"() => document.querySelectorAll('[data-testid*=\"ingredient\"], .ingredient-item, [aria-label*=\"ingredient\"]').length >= {expected}",
-            timeout=min(int(timeout_sec * 1000), 10000),
+            poll_predicate,
+            arg=expected,
+            timeout=min(int(timeout_sec * 1000), 15000),
         )
     except Exception:
         await asyncio.sleep(2)  # fallback
@@ -666,23 +685,44 @@ async def _verify_ingredients_mode(page, timeout_sec: float = 5.0) -> None:
 
 
 async def _count_uploaded_ingredients(page) -> int:
+    """Count ingredient chips currently attached to the composer.
+
+    2026-05 schema (live-probed 2026-05-24): the picker emits Flow
+    `media.getMediaUrlRedirect?name=<asset-uuid>` thumbnail imgs that
+    land in the composer after the "Add to Prompt" click. Legacy
+    `[data-testid*="ingredient"]` / `.ingredient-item` selectors are
+    not present in 2026-05 markup.
+
+    Strategy:
+      1. Prefer the legacy attribute selectors if Flow ever re-adds
+         them (safe no-op when absent).
+      2. Otherwise count visible imgs whose ``src`` references the
+         Flow media-redirect endpoint AND that are sized 40-260 px in
+         their layout box (composer thumbnails). Exclude imgs inside
+         ``[role='dialog']`` (open picker) and inside ``nav`` /
+         ``[role='navigation']`` (sidebar avatars).
+    """
     return await page.evaluate(
-        """() => {
-            const selectors = [
+        r"""() => {
+            const legacy = [
                 '[data-testid*="ingredient"]',
                 '[aria-label*="ingredient" i]',
                 '.ingredient-item',
-                '[data-upload-area] img',
-                '[class*="ingredient" i] img',
             ];
-            for (const sel of selectors) {
-                const count = document.querySelectorAll(sel).length;
-                if (count > 0) return count;
+            for (const sel of legacy) {
+                const c = document.querySelectorAll(sel).length;
+                if (c > 0) return c;
             }
-            return Array.from(document.querySelectorAll('img')).filter((img) => {
+            const isComposerThumb = (img) => {
+                if (img.closest('[role="dialog"], nav, [role="navigation"]')) return false;
                 const rect = img.getBoundingClientRect();
-                const r = img.closest('[role="region"], [class*="composer"], [class*="upload"]');
-                return rect.width >= 40 && rect.width <= 200 && rect.height >= 40 && r != null;
-            }).length;
+                if (rect.width < 40 || rect.width > 260) return false;
+                if (rect.height < 40 || rect.height > 260) return false;
+                const src = img.src || '';
+                if (src.includes('mediaUrlRedirect') || src.includes('media.getMediaUrl')) return true;
+                if (src.startsWith('blob:') || src.startsWith('data:')) return true;
+                return false;
+            };
+            return Array.from(document.querySelectorAll('img')).filter(isComposerThumb).length;
         }"""
     )
