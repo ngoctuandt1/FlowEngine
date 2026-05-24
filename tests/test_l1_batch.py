@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import flow.operations._batch as batch_mod
+import flow.operations._l1_batch as l1_batch_mod
 import flow.operations._multitab as multitab_mod
 from flow.model_selector import DEFAULT_MODEL
 
@@ -32,6 +33,36 @@ def _l2_job(job_id: str, **extra: Any) -> dict:
         "parent_job_id": "parent-l1",
         **extra,
     }
+
+
+def _submit_body(workflow_id: str, media_id: str) -> dict[str, Any]:
+    return {
+        "media": [{"name": media_id, "workflowId": workflow_id}],
+        "workflows": [{"name": workflow_id}],
+    }
+
+
+def test_capture_submit_metadata_ignores_sibling_status_response():
+    client = type("FakeClient", (), {})()
+    client._batch_responses = [
+        {
+            "url": "https://example.test/v1/video:batchCheckAsyncVideoGenerationStatus",
+            "body": _submit_body("workflow-A", "media-A"),
+        },
+        {
+            "url": "https://example.test/v1/video:batchAsyncGenerateVideoText",
+            "body": _submit_body("workflow-B", "media-B"),
+        },
+    ]
+    client._calls = []
+
+    meta = l1_batch_mod._capture_submit_metadata_from_window(
+        client, calls_before=0, batch_resp_before=0,
+    )
+
+    assert meta["workflow_id"] == "workflow-B"
+    assert meta["media_id"] == "media-B"
+    assert meta["gen_id"] == "workflow-B"
 
 
 async def test_l1_batch_passes_paid_and_default_free_modes(monkeypatch):

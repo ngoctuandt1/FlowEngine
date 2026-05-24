@@ -335,7 +335,7 @@ def _detect_block_in_window(client, batch_resp_before: int) -> int:
     responses = getattr(client, "_batch_responses", None) or []
     for entry in responses[batch_resp_before:]:
         url_l = (entry.get("url") or "").lower()
-        if "batchasyncgenerate" not in url_l:
+        if not _is_batch_submit_url(url_l):
             continue
         status = entry.get("status") or 0
         if status in (403, 429):
@@ -403,17 +403,40 @@ async def _await_submit_metadata_in_window(
         await asyncio.sleep(poll_sec)
 
 
-_BATCH_GEN_URL_HINTS = (
+_BATCH_SUBMIT_URL_HINTS = (
     "operations/",
     "v1/video:batchasyncgeneratevideotext",
+    "v1/video:batchasyncgeneratevideo",
+    "v1/video:batchasyncgenerateimage",
     "v1/video:batchasyncgenerate",
     "v1/video:asyncgenerate",
+    "batchasyncgeneratevideo",
+    "batchasyncgenerateimage",
     ":generatevideo",
-    "v1/video:batchcheckasync",       # status polling
+    ":generateimage",
+)
+
+_BATCH_CHECK_URL_HINTS = (
+    "v1/video:batchcheckasync",
     "v1/video:batchcheckasyncvideo",
-    "v1/media:batchasync",            # download URL fetch (variant)
+    "batchcheckasyncvideogenerationstatus",
+    "batchcheckasyncimagegenerationstatus",
     ":batchcheckasync",
 )
+
+_BATCH_CAPTURE_URL_HINTS = (
+    *_BATCH_SUBMIT_URL_HINTS,
+    *_BATCH_CHECK_URL_HINTS,
+    "v1/media:batchasync",            # download URL fetch (variant)
+)
+
+
+def _is_batch_submit_url(url: str) -> bool:
+    return any(hint in url for hint in _BATCH_SUBMIT_URL_HINTS)
+
+
+def _is_batch_capture_url(url: str) -> bool:
+    return any(hint in url for hint in _BATCH_CAPTURE_URL_HINTS)
 
 
 def _capture_gen_id_from_window(
@@ -427,10 +450,10 @@ def _capture_gen_id_from_window(
     Inspects two sources in order:
 
       1. ``client._batch_responses[batch_resp_before:]`` — set up by
-         :func:`install_batch_response_capture`. This is the authoritative
-         clock for batch isolation: each new submit advances the buffer
-         length, even when ``client._calls`` doesn't (because legacy
-         flow.client only fetches body for ``operations/`` URLs).
+         :func:`install_batch_response_capture`. When a URL is present, only
+         submit/generate URLs are eligible here; status/check responses for
+         sibling jobs can land in the same window and must not supply this
+         submit's metadata.
       2. ``client._calls[calls_before:]`` — useful when Flow falls back
          to the old ``operations/`` endpoint.
 
@@ -452,6 +475,9 @@ def _capture_submit_metadata_from_window(
     """Find this submit's media/workflow ids inside its own window slice."""
     batch_responses = getattr(client, "_batch_responses", None) or []
     for entry in batch_responses[batch_resp_before:]:
+        url = (entry.get("url", "") or "").lower()
+        if url and not _is_batch_submit_url(url):
+            continue
         body = entry.get("body")
         if not isinstance(body, dict):
             continue
@@ -462,7 +488,7 @@ def _capture_submit_metadata_from_window(
     calls = getattr(client, "_calls", [])
     for entry in calls[calls_before:]:
         url = (entry.get("url", "") or "").lower()
-        if not any(hint in url for hint in _BATCH_GEN_URL_HINTS):
+        if not _is_batch_submit_url(url):
             continue
         body = entry.get("body")
         if isinstance(body, dict):
@@ -608,7 +634,7 @@ def install_batch_response_capture(client) -> None:
             url_l = (request.url or "").lower()
         except Exception:
             return
-        if not any(hint in url_l for hint in _BATCH_GEN_URL_HINTS):
+        if not _is_batch_capture_url(url_l):
             return
         try:
             body = request.post_data
@@ -639,7 +665,7 @@ def install_batch_response_capture(client) -> None:
             url_l = (response.url or "").lower()
         except Exception:
             return
-        if not any(hint in url_l for hint in _BATCH_GEN_URL_HINTS):
+        if not _is_batch_capture_url(url_l):
             return
         try:
             status = response.status
