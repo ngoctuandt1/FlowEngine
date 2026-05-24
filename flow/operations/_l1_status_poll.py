@@ -480,6 +480,12 @@ async def poll_status_via_api(
             await asyncio.sleep(poll_interval_sec)
             continue
 
+        if _status_payload_has_recaptcha(data):
+            raise _recaptcha_error(
+                "reCAPTCHA blocked Flow status poll (HTTP 200 JSON payload)",
+                _response_string(resp, "url") or _response_header(resp, "location"),
+            )
+
         _ingest_response(data, out)
         n_done = sum(
             1 for v in out.values()

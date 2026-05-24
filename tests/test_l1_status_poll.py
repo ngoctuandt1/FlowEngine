@@ -82,6 +82,34 @@ async def test_poll_status_raises_recaptcha_error_on_403_recaptcha_body():
 
 
 @pytest.mark.asyncio
+async def test_poll_status_raises_recaptcha_error_on_200_recaptcha_json_payload():
+    client = _client(
+        FakeStatusResponse(
+            200,
+            data={
+                "error": {
+                    "message": (
+                        "blocked by "
+                        "https://www.google.com/recaptcha/enterprise/reload?k=site"
+                    ),
+                },
+            },
+        )
+    )
+
+    with pytest.raises(RecaptchaError) as exc_info:
+        await poll_status_via_api(
+            client,
+            gen_ids=["gen-000000000001"],
+            poll_interval_sec=0,
+            hard_timeout_sec=1,
+        )
+
+    assert exc_info.value.kind == "v3_invisible_or_block"
+    assert "HTTP 200 JSON payload" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_poll_status_200_does_not_raise_recaptcha_error():
     response = FakeStatusResponse(
         200,
