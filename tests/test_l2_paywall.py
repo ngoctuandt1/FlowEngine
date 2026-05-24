@@ -74,6 +74,20 @@ class _L2ToolbarPage(_PaywallPage):
         return _VisibleLocator(any(token in selector for token in self.visible_tokens))
 
 
+class _NavigatingL2ToolbarPage(_L2ToolbarPage):
+    def __init__(self):
+        super().__init__(
+            url="https://labs.google/fx/tools/flow/project/proj/edit/media",
+            mounted=True,
+            visible_tokens=set(),
+        )
+
+    def locator(self, selector):
+        if selector != "video, button:has-text('Hide history'), button:has-text('áº¨n lá»‹ch sá»­')":
+            self.url = "https://labs.google/fx/tools/flow/project/proj"
+        return super().locator(selector)
+
+
 class _ProfileManagerStub:
     def __init__(self):
         self.busy: list[tuple[str, str]] = []
@@ -210,6 +224,17 @@ async def test_l2_silent_hide_free_edit_url_without_tokens_raises(monkeypatch):
 
     assert exc_info.value.error_kind == "paid_tier_required"
     assert str(exc_info.value) == "L2 editing controls absent (free-tier silent gating)"
+
+
+async def test_l2_silent_hide_project_navigation_before_raise_does_not_raise(monkeypatch):
+    monkeypatch.setattr(_base, "_L2_SILENT_HIDE_PAINT_WAIT_MS", 1)
+    page = _NavigatingL2ToolbarPage()
+
+    result = await _base._assert_l2_available(page, "extend-video", "free-profile")
+
+    assert result is None
+    assert "/edit/" not in page.url
+    assert page.searched_selectors
 
 
 async def test_l2_silent_hide_non_edit_url_does_not_raise(monkeypatch):

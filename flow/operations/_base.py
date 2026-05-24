@@ -525,6 +525,9 @@ async def _assert_l2_available(page, op_name: str, profile: str | None) -> None:
     )
 
     if not toolbar_visible:
+        current_url = str(getattr(page, "url", "") or "")
+        if "/edit/" not in current_url:
+            return
         logger.info(
             "L2 toolbar absent for op=%s profile=%s — treating as paid_tier_required (2026-05 silent-hide variant)",
             op_name,
