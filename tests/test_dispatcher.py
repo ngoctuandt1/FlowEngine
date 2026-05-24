@@ -25,7 +25,7 @@ class _ProjectLockStub:
         self.acquired.append((project_url, job_id))
         return True
 
-    def release(self, project_url):
+    def release(self, project_url, job_id=None):
         self.released.append(project_url)
 
 
@@ -143,6 +143,62 @@ async def test_omni_flash_text_to_video_dispatches_paid_mode(monkeypatch):
     assert captured["model"] == "omni-flash"
     assert captured["free_mode"] is False
 
+async def test_batch_multitab_preserves_model_for_extend_jobs(monkeypatch):
+    from worker import dispatcher
+    import flow.operations._multitab as multitab_mod
+
+    captured = {}
+
+    async def fake_batch_dispatch_ops_multitab(client, op_jobs):
+        captured["op_jobs"] = op_jobs
+        return [
+            {"job_id": job["id"], "status": "completed", "media_id": f"mid-{job['id']}"}
+            for job in op_jobs
+        ]
+
+    class _ClientStub:
+        pass
+
+    @asynccontextmanager
+    async def fake_client_lease(profile):
+        yield _ClientStub()
+
+    monkeypatch.setattr(
+        multitab_mod, "batch_dispatch_ops_multitab", fake_batch_dispatch_ops_multitab,
+    )
+    monkeypatch.setattr(dispatcher, "_client_lease", fake_client_lease)
+
+    jobs = [
+        {
+            "id": "batch-paid",
+            "type": "extend-video",
+            "profile": "profile-paid",
+            "job_level": 2,
+            "project_url": "https://labs.google/fx/tools/flow/project/p-paid",
+            "parent_edit_url": "https://labs.google/fx/tools/flow/project/p-paid/edit/parent-mid",
+            "parent_media_id": "parent-mid",
+            "prompt": "extend paid",
+            "model": "omni-flash",
+        },
+        {
+            "id": "batch-default",
+            "type": "extend-video",
+            "profile": "profile-paid",
+            "job_level": 2,
+            "project_url": "https://labs.google/fx/tools/flow/project/p-paid",
+            "parent_edit_url": "https://labs.google/fx/tools/flow/project/p-paid/edit/parent-mid-2",
+            "parent_media_id": "parent-mid-2",
+            "prompt": "extend default",
+        },
+    ]
+
+    result = await dispatcher.dispatch_batch_multitab(
+        jobs, _ProfileManagerStub(), _ProjectLockStub(),
+    )
+
+    assert [r["job_id"] for r in result] == ["batch-paid", "batch-default"]
+    assert captured["op_jobs"][0]["model"] == "omni-flash"
+    assert captured["op_jobs"][1].get("model") is None
 
 # Upload-path resolver security contract tests live in
 # `tests/test_upload_resolution.py` (shipped separately via the

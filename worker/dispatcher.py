@@ -1312,6 +1312,7 @@ async def dispatch_batch_multitab(
                         j.get("parent_project_url") or j.get("project_url") or ""
                     ),
                     "prompt": j.get("prompt"),
+                    "model": j.get("model"),
                     "direction": j.get("direction"),
                     "bbox": j.get("bbox"),
                 }
