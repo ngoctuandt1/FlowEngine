@@ -74,6 +74,28 @@ class LeafLockoutError(RuntimeError):
 
 
 L2_PAYWALL_BANNER_TEXT = "Video editing is only available for paid subscribers"
+_L2_SILENT_HIDE_EDITOR_MOUNT_TIMEOUT_MS = 1000
+_L2_SILENT_HIDE_PAINT_WAIT_MS = 4000
+_L2_TOOLBAR_TOKENS = (
+    "Extend",
+    "Insert",
+    "Remove",
+    "Camera",
+    "Mở rộng",
+    "Chèn",
+    "Xoá",
+    "Máy quay",
+    "keyboard_double_arrow_right",
+    "add_box",
+    "ink_eraser",
+    "videocam",
+)
+_L2_SILENT_HIDE_OPERATIONS = {
+    "extend-video",
+    "insert-object",
+    "remove-object",
+    "camera-move",
+}
 
 
 class L2PaywallError(RuntimeError):
@@ -486,28 +508,21 @@ async def _assert_l2_available(page, op_name: str, profile: str | None) -> None:
             return
         raise L2PaywallError(operation=op_name, profile=profile)
 
-    # 2026-05 silent-hide fallback: if none of the canonical L2 op
-    # affordances are present anywhere on the edit view, treat the same
-    # as a paywall. The check is intentionally generous (button text OR
-    # icon ligature) so a future relabel keeps working as long as one
-    # signal survives.
-    try:
-        toolbar_visible = await page.evaluate(
-            r"""() => {
-                const tokens = ['Extend', 'Insert', 'Remove', 'Camera', 'arrow_outward', 'add_circle', 'cancel'];
-                const buttons = [...document.querySelectorAll('button, [role="button"]')];
-                for (const b of buttons) {
-                    if (!b.offsetParent && b.getBoundingClientRect().width === 0) continue;
-                    const text = (b.innerText || b.textContent || '').trim();
-                    for (const tok of tokens) {
-                        if (text.includes(tok)) return true;
-                    }
-                }
-                return false;
-            }"""
-        )
-    except Exception:
-        toolbar_visible = True  # cannot confirm hidden — fall through
+    if op_name not in _L2_SILENT_HIDE_OPERATIONS:
+        return
+
+    current_url = str(getattr(page, "url", "") or "")
+    if "/edit/" not in current_url:
+        return
+
+    if not await _editor_mounted(
+        page, timeout_ms=_L2_SILENT_HIDE_EDITOR_MOUNT_TIMEOUT_MS
+    ):
+        return
+
+    toolbar_visible = await _l2_toolbar_visible_after_paint(
+        page, timeout_ms=_L2_SILENT_HIDE_PAINT_WAIT_MS
+    )
 
     if not toolbar_visible:
         logger.info(
@@ -520,6 +535,40 @@ async def _assert_l2_available(page, op_name: str, profile: str | None) -> None:
             profile=profile,
             message="L2 editing controls absent (free-tier silent gating)",
         )
+
+
+async def _l2_toolbar_visible_after_paint(page, *, timeout_ms: int) -> bool:
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+    while True:
+        for token in _L2_TOOLBAR_TOKENS:
+            if await _l2_toolbar_token_visible(page, token, timeout_ms=100):
+                return True
+
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(0.25, remaining))
+
+
+async def _l2_toolbar_token_visible(page, token: str, *, timeout_ms: int) -> bool:
+    locator = getattr(page, "locator", None)
+    if not callable(locator):
+        return True
+    selectors = (
+        f"button[title='{token}']",
+        f"button[aria-label='{token}']",
+        f"button:has-text('{token}')",
+        f"[role='button']:has-text('{token}')",
+        f"button:has(i:text-is('{token}'))",
+        f"[role='button']:has(i:text-is('{token}'))",
+    )
+    for selector in selectors:
+        try:
+            if await _locator_is_visible(locator(selector), timeout_ms=timeout_ms):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _op_name_from_button_texts(button_texts: list[str]) -> str:
