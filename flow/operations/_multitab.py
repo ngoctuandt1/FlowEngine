@@ -630,10 +630,13 @@ async def _run_one_op_on_open_tab(
         )
     elif op_type == "insert-object":
         from flow.operations.insert import insert_object
+        model, free_mode = _model_and_free_mode(job_spec)
         result = await insert_object(
             proxy, op_job,
             prompt=job_spec.get("prompt", ""),
             bbox=job_spec.get("bbox") or {},
+            model=model,
+            free_mode=free_mode,
         )
     elif op_type == "remove-object":
         from flow.operations.remove import remove_object
@@ -705,12 +708,12 @@ def _media_id_from_submit_response(
       insert  → batchAsyncGenerateVideoObjectInsertion   (MCP probe, 2026-05-05)
       remove  → batchAsyncGenerateVideoObjectRemoval     (MCP probe, 2026-05-05)
     """
-    url_hint = {
-        "extend-video": "extend",
-        "camera-move": "reshoot",
-        "insert-object": "insert",
-        "remove-object": "remove",
-    }.get(op_type, "")
+    url_hints = {
+        "extend-video": ["extend"],
+        "camera-move": ["reshoot"],
+        "insert-object": ["insert"],
+        "remove-object": ["remove", "removal"],
+    }.get(op_type, [])
     responses = getattr(proxy, "_batch_responses", None) or []
     for entry in reversed(responses):
         url_l = (entry.get("url") or "").lower()
@@ -718,7 +721,7 @@ def _media_id_from_submit_response(
             continue
         if "batchcheckasync" in url_l or "upsample" in url_l:
             continue
-        if url_hint and url_hint not in url_l:
+        if url_hints and not any(token.lower() in url_l for token in url_hints):
             continue
         body = entry.get("body")
         if not isinstance(body, dict):
