@@ -65,21 +65,52 @@ class _FakeClient:
             }
         )
 
+    def push_submit_gen(self, gen_name: str):
+        self._batch_responses.append(
+            {
+                "url": "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoText",
+                "body": {"operations": [{"operation": {"name": gen_name}}]},
+                "status": 200,
+            }
+        )
+
     def push_media(self, mid: str, ts: float):
         self._media_id_events.append({"mid": mid, "ts": ts, "source": "test"})
 
 
-def test_capture_gen_id_only_sees_window_slice():
-    """gen_id capture must only look at calls AFTER calls_before."""
+def test_capture_gen_id_rejects_progress_operations_body():
+    """Progress/poll operations bodies must not masquerade as submit metadata."""
     c = _FakeClient()
     c.push_op("operations/SUBMIT_A_id_111", progress=5)
     calls_before = len(c._calls)  # 1
     c.push_op("operations/SUBMIT_B_id_222", progress=5)
 
     gen = _capture_gen_id_from_window(c, calls_before, batch_resp_before=0)
-    assert gen == "operations/SUBMIT_B_id_222", (
-        "must pick up the post-window operation, not the prior one"
-    )
+    assert gen == ""
+
+
+def test_capture_gen_id_skips_progress_a_then_captures_submit_b():
+    """INV-3: sibling A progress cannot poison B's submit metadata."""
+    c = _FakeClient()
+    c._batch_responses = [
+        {
+            "url": "https://labs.google/fx/api/v1/operations/SUBMIT_A_id_111",
+            "body": {"name": "operations/SUBMIT_A_id_111", "progressPercentage": 5},
+            "status": 200,
+        },
+        {
+            "url": "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoText",
+            "body": {
+                "operations": [
+                    {"operation": {"name": "operations/SUBMIT_B_id_222"}}
+                ]
+            },
+            "status": 200,
+        },
+    ]
+
+    gen = _capture_gen_id_from_window(c, calls_before=0, batch_resp_before=0)
+    assert gen == "operations/SUBMIT_B_id_222"
 
 
 def test_capture_gen_id_returns_empty_when_no_window_op():
@@ -101,12 +132,8 @@ def test_capture_gen_id_uses_batch_resp_buffer_clock():
     is the correct disambiguator.
     """
     c = _FakeClient()
-    c._batch_responses = [
-        # submit 1's response
-        {"body": {"operations": [{"operation": {"name": "GEN_AAA"}}]}},
-        # submit 2's response (different gen_id)
-        {"body": {"operations": [{"operation": {"name": "GEN_BBB"}}]}},
-    ]
+    c.push_submit_gen("GEN_AAA")
+    c.push_submit_gen("GEN_BBB")
     # Submit 1's window: starts at index 0 → sees GEN_AAA first.
     assert _capture_gen_id_from_window(c, 0, batch_resp_before=0) == "GEN_AAA"
     # Submit 2's window: starts at index 1 → must see GEN_BBB, not GEN_AAA.
@@ -223,8 +250,8 @@ def test_three_isolated_submits_do_not_cross_contaminate():
     """End-to-end isolation simulation across 3 successive submits.
 
     Models the actual capture pattern used by `submit_generate_l1`:
-    snapshot calls_before, push the operations/ network event, capture
-    gen_id from THIS submit's window only.
+    snapshot calls_before, push the submit response, capture gen_id from
+    THIS submit's window only. Progress operations/ responses are noise.
     """
     c = _FakeClient()
 
@@ -235,8 +262,8 @@ def test_three_isolated_submits_do_not_cross_contaminate():
         before = len(c._calls)
         batch_before = len(c._batch_responses)
         ts = time.time()
-        # simulate Flow emitting the operations/ POST response after submit
-        c.push_op(f"operations/{tag}_id", progress=2)
+        # simulate Flow emitting the submit response after submit
+        c.push_submit_gen(f"operations/{tag}_id")
         submit_ts.append(ts)
         gen = _capture_gen_id_from_window(c, before, batch_resp_before=batch_before)
         captured.append(gen)

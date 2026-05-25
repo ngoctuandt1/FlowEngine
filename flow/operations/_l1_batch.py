@@ -404,24 +404,24 @@ async def _await_submit_metadata_in_window(
 
 
 _BATCH_SUBMIT_URL_HINTS = (
-    "operations/",
-    "v1/video:batchasyncgeneratevideotext",
-    "v1/video:batchasyncgeneratevideo",
-    "v1/video:batchasyncgenerateimage",
-    "v1/video:batchasyncgenerate",
-    "v1/video:asyncgenerate",
+    "batchasyncgeneratevideotext",
+    "batchasyncgeneratevideostartimage",
+    "batchasyncgeneratevideofromframes",
+    "batchasyncgeneratevideofromingredients",
+    "batchasyncgeneratevideoreferenceimages",
+    "batchasyncgeneratevideoextendvideo",
+    "batchasyncgeneratevideoreshootvideo",
+    "batchasyncgeneratevideoobjectinsertion",
+    "batchasyncgeneratevideoobjectremoval",
+    "batchasyncgeneratevideoeditvideo",
     "batchasyncgeneratevideo",
     "batchasyncgenerateimage",
-    ":generatevideo",
-    ":generateimage",
 )
 
 _BATCH_CHECK_URL_HINTS = (
-    "v1/video:batchcheckasync",
-    "v1/video:batchcheckasyncvideo",
+    "operations/",
     "batchcheckasyncvideogenerationstatus",
     "batchcheckasyncimagegenerationstatus",
-    ":batchcheckasync",
 )
 
 _BATCH_CAPTURE_URL_HINTS = (
@@ -431,8 +431,30 @@ _BATCH_CAPTURE_URL_HINTS = (
 )
 
 
+def _batch_rpc_endpoint(url: str) -> str:
+    path = (url or "").lower().split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    tail = path.rsplit("/", 1)[-1]
+    if ":" not in tail:
+        return ""
+    return tail.rsplit(":", 1)[-1]
+
+
+def _matches_batch_rpc(url: str, hints: tuple[str, ...]) -> bool:
+    endpoint = _batch_rpc_endpoint(url)
+    return bool(endpoint) and endpoint in hints
+
+
+def _is_batch_check_url(url: str) -> bool:
+    return "operations/" in url or _matches_batch_rpc(
+        url,
+        tuple(hint for hint in _BATCH_CHECK_URL_HINTS if hint != "operations/"),
+    )
+
+
 def _is_batch_submit_url(url: str) -> bool:
-    return any(hint in url for hint in _BATCH_SUBMIT_URL_HINTS)
+    return not _is_batch_check_url(url) and _matches_batch_rpc(
+        url, _BATCH_SUBMIT_URL_HINTS,
+    )
 
 
 def _is_batch_capture_url(url: str) -> bool:
@@ -481,7 +503,7 @@ def _capture_submit_metadata_from_window(
         body = entry.get("body")
         if not isinstance(body, dict):
             continue
-        meta = _extract_submit_metadata(body)
+        meta = _extract_submit_metadata(body, url=url)
         if meta.get("gen_id"):
             return meta
 
@@ -492,15 +514,14 @@ def _capture_submit_metadata_from_window(
             continue
         body = entry.get("body")
         if isinstance(body, dict):
-            meta = _extract_submit_metadata(body)
+            meta = _extract_submit_metadata(body, url=url)
             if meta.get("gen_id"):
                 return meta
     return {}
 
 
-def _extract_submit_metadata(body: dict) -> dict[str, str]:
-    """Extract current/legacy L1 submit handles from Flow response JSON."""
-    metadata: dict[str, str] = {
+def _empty_submit_metadata() -> dict[str, str]:
+    return {
         "gen_id": "",
         "workflow_id": "",
         "media_id": "",
@@ -508,6 +529,26 @@ def _extract_submit_metadata(body: dict) -> dict[str, str]:
         "batch_id": "",
         "workflow_step_id": "",
     }
+
+
+def _looks_like_status_progress_body(body: dict) -> bool:
+    direct = body.get("name") or body.get("operationName") or ""
+    if not isinstance(direct, str) or not direct.startswith("operations/"):
+        return False
+    if body.get("media") or body.get("workflows") or body.get("operations"):
+        return False
+    return True
+
+
+def _extract_submit_metadata(body: dict, *, url: str = "") -> dict[str, str]:
+    """Extract current/legacy L1 submit handles from Flow response JSON."""
+    metadata = _empty_submit_metadata()
+
+    url_l = (url or "").lower()
+    if url_l and _is_batch_check_url(url_l):
+        return metadata
+    if _looks_like_status_progress_body(body):
+        return metadata
 
     media = body.get("media")
     if isinstance(media, list) and media:
