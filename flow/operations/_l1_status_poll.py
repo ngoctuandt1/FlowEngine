@@ -121,21 +121,31 @@ _STATUS_RECAPTCHA_TEXT_KEYS = (
     "description",
     "detail",
 )
+_STATUS_RECAPTCHA_SIGNAL_KEY_TOKENS = (
+    "recaptcharequired",
+    "captcharequired",
+    "recaptcha",
+    "captcha",
+)
 
 
 def _status_payload_has_recaptcha(node: Any, key_hint: str = "") -> bool:
     if isinstance(node, str):
-        if _contains_recaptcha_url_token(node):
+        text = node.lower().replace("\\/", "/")
+        if _contains_recaptcha_url_token(text):
             return True
         if _is_status_recaptcha_text_key(key_hint):
-            text = node.lower().replace("\\/", "/")
             return any(token in text for token in _STATUS_RECAPTCHA_TEXT_TOKENS)
-        return False
+        return any(token in text for token in _STATUS_RECAPTCHA_TEXT_TOKENS)
     if isinstance(node, dict):
-        return any(
-            _status_payload_has_recaptcha(value, str(key))
-            for key, value in node.items()
-        )
+        for key, value in node.items():
+            if _is_status_recaptcha_signal_key(str(key)) and _status_payload_value_is_truthy(
+                value
+            ):
+                return True
+            if _status_payload_has_recaptcha(value, str(key)):
+                return True
+        return False
     if isinstance(node, (list, tuple)):
         return any(_status_payload_has_recaptcha(value, key_hint) for value in node)
     return False
@@ -144,6 +154,23 @@ def _status_payload_has_recaptcha(node: Any, key_hint: str = "") -> bool:
 def _is_status_recaptcha_text_key(key: str) -> bool:
     key_l = key.lower()
     return any(token in key_l for token in _STATUS_RECAPTCHA_TEXT_KEYS)
+
+
+def _is_status_recaptcha_signal_key(key: str) -> bool:
+    key_l = key.lower()
+    return any(token in key_l for token in _STATUS_RECAPTCHA_SIGNAL_KEY_TOKENS)
+
+
+def _status_payload_value_is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value > 0
+    if isinstance(value, str):
+        return bool(value)
+    if isinstance(value, (dict, list, tuple)):
+        return bool(value)
+    return bool(value)
 
 
 async def _page_has_recaptcha_block(page) -> bool:

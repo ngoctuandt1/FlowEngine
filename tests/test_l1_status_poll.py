@@ -166,6 +166,23 @@ def test_detect_recaptcha_from_status_response_detects_dict_payload_recaptcha_ur
     assert detect_recaptcha_from_status_response(payload) is True
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"recaptcha": True}, True),
+        ({"captchaRequired": True}, True),
+        ({"status": {"captchaRequired": True}}, True),
+        ({"recaptcha": False}, False),
+        ({"some_field": "blocked by recaptcha"}, True),
+    ],
+)
+def test_detect_recaptcha_from_status_response_detects_captcha_payload_shapes(
+    payload,
+    expected,
+):
+    assert detect_recaptcha_from_status_response(payload) is expected
+
+
 def test_detect_recaptcha_from_status_response_ignores_clean_dict_payload():
     payload = {
         "media": [
