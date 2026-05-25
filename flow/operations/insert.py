@@ -353,6 +353,8 @@ async def insert_object(
             job,
             prompt=prompt,
             bbox=bbox,
+            model=model,
+            free_mode=free_mode,
             project_id=project_id,
             locale=locale,
         ),
@@ -438,6 +440,8 @@ async def _run_insert_reverse_api(
     *,
     prompt: str,
     bbox: dict,
+    model: str | None,
+    free_mode: bool,
     project_id: str,
     locale: str,
 ) -> dict:
@@ -449,6 +453,8 @@ async def _run_insert_reverse_api(
         parent_media_id=job["media_id"],
         prompt=prompt,
         bbox=bbox,
+        model=model,
+        free_mode=free_mode,
     )
     replay_media_ids = _extract_replay_media_ids(replay_result)
     if not replay_media_ids:

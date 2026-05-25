@@ -1,11 +1,28 @@
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import flow.operations.insert as insert_mod
+import flow.operations.insert_api as insert_api
 from flow.operations._base import L2ReverseApiPostAcceptError
 
 BBOX = {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}
+INSERT_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoObjectInsertion"
+
+
+class _FakeAPIResponse:
+    def __init__(self, status, body=None, text=""):
+        self.status = status
+        self.status_code = status
+        self._body = body or {}
+        self._text = text
+
+    async def json(self):
+        return self._body
+
+    async def text(self):
+        return self._text
 
 
 def _client():
@@ -175,6 +192,8 @@ async def test_env_on_template_replays_job_prompt_bbox_and_status_download(monke
         parent_media_id="parent-mid",
         prompt="add red kite",
         bbox=BBOX,
+        model=None,
+        free_mode=True,
     )
     mocks["click_action_button"].assert_not_awaited()
     mocks["draw_bbox_on_video"].assert_not_awaited()
@@ -190,6 +209,74 @@ async def test_env_on_template_replays_job_prompt_bbox_and_status_download(monke
     out_path = dl_call.kwargs.get("out_path")
     assert isinstance(out_path, str) and out_path.endswith(".mp4")
     assert str(tmp_path) in out_path
+
+
+async def test_env_on_template_replays_paid_model_override_in_payload(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("FLOW_INSERT_VIA_REVERSE", "1")
+    client = _client()
+    client.download_dir = str(tmp_path)
+    _patch_common(monkeypatch, tmp_path=tmp_path)
+    client.page.context.request.post = AsyncMock(
+        return_value=_FakeAPIResponse(200, {"media": [{"name": "api-mid"}]})
+    )
+    client._insert_request_template = {
+        "url": INSERT_URL,
+        "headers": {
+            "authorization": "Bearer tok",
+            "content-type": "text/plain;charset=UTF-8",
+        },
+        "post_data": json.dumps(
+            {
+                "clientContext": {
+                    "projectId": "project-id",
+                    "recaptchaContext": {"token": "stale-token"},
+                },
+                "mediaGenerationContext": {"batchId": "old-batch"},
+                "requests": [
+                    {
+                        "videoModelKey": "veo-3.1-lite",
+                        "videoObjectInsertionInput": {
+                            "sourceMedia": {"name": "parent-mid"},
+                            "textInput": {
+                                "structuredPrompt": {
+                                    "parts": [{"text": "old prompt"}]
+                                }
+                            },
+                            "bbox": {"x": 0.01, "y": 0.02, "w": 0.03, "h": 0.04},
+                        },
+                    }
+                ],
+            }
+        ),
+    }
+
+    async def _mint(_page, *, caller):
+        assert caller == "replay_insert_via_api"
+        return "fresh-token"
+
+    monkeypatch.setattr(insert_api, "_mint_recaptcha_token", _mint)
+    monkeypatch.setattr(insert_mod, "install_insert_request_capture", MagicMock())
+    monkeypatch.setattr(
+        insert_mod,
+        "_finalize_insert_replay_result",
+        AsyncMock(return_value={"media_id": "api-mid"}),
+    )
+
+    await insert_mod.insert_object(
+        client,
+        {"media_id": "parent-mid", "edit_url": "edit-url", "job_level": 2},
+        prompt="add kite",
+        bbox=BBOX,
+        model="omni-flash",
+        free_mode=False,
+    )
+
+    payload = json.loads(client.page.context.request.post.await_args.kwargs["data"])
+    request = payload["requests"][0]
+    assert request["videoModelKey"] == "omni-flash"
+    assert request["videoObjectInsertionInput"]["sourceMedia"]["name"] == "parent-mid"
 
 
 async def test_env_on_replay_runtime_error_falls_back_to_ui(monkeypatch):

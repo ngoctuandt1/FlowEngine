@@ -14,6 +14,7 @@ from flow.operations._l2_api_common import (
     set_bbox_field,
     set_string_field,
 )
+from flow.model_selector import canonicalize_video_model_key
 
 _INSERT_TEMPLATE_ATTR = "_insert_request_template"
 _INSERT_LISTENER_ATTR = "_insert_request_capture_listener"
@@ -79,6 +80,7 @@ _BBOX_FIELD_CANDIDATES: tuple[PathCandidate, ...] = (
     ("selection", "bbox"),
 )
 _PROMPT_FALLBACK_KEYS = ("prompt", "text", "description")
+_MODEL_FIELD_KEYS = ("videoModelKey", "video_model_key", "modelKey", "modelName", "model")
 
 
 def install_insert_request_capture(client) -> None:
@@ -101,15 +103,23 @@ async def replay_insert_via_api(
     parent_media_id: str,
     prompt: str,
     bbox: dict[str, Any],
+    *,
+    model: str | None = None,
+    free_mode: bool = True,
 ) -> str:
-    """Replay captured insert-object POST with parent media, prompt, and bbox."""
+    """Replay captured insert-object POST with parent media, prompt, bbox, and model."""
+    model_key = (
+        canonicalize_video_model_key(model, free_mode=free_mode)
+        if model is not None
+        else None
+    )
     return await replay_l2_via_api(
         client,
         template=get_insert_request_template(client),
         parent_media_id=parent_media_id,
         parent_field_candidates=_PARENT_FIELD_CANDIDATES,
         apply_operation_fields=lambda request, body: _set_insert_fields(
-            request, prompt, bbox
+            request, prompt, bbox, model_key=model_key
         ),
         caller="replay_insert_via_api",
         mint_recaptcha_token=_mint_recaptcha_token,
@@ -121,7 +131,7 @@ def clear_insert_capture(client) -> None:
 
 
 def _set_insert_fields(
-    request: dict[str, Any], prompt: str, bbox: dict[str, Any]
+    request: dict[str, Any], prompt: str, bbox: dict[str, Any], *, model_key: str | None = None
 ) -> dict[str, str]:
     prompt_path = set_string_field(
         request,
@@ -137,4 +147,36 @@ def _set_insert_fields(
         field_candidates=_BBOX_FIELD_CANDIDATES,
         caller="replay_insert_via_api",
     )
-    return {"prompt": prompt_path, "bbox": bbox_path}
+    changed_paths = {"prompt": prompt_path, "bbox": bbox_path}
+    if model_key is not None:
+        changed_paths["model"] = _set_insert_model_key(request, model_key)
+    return changed_paths
+
+
+def _set_insert_model_key(request: dict[str, Any], model_key: str) -> str:
+    paths = _set_model_key_fields(request, model_key)
+    if not paths:
+        raise RuntimeError(
+            "replay_insert_via_api: video model key field not found in captured template"
+        )
+    if len(paths) == 1:
+        return paths[0]
+    return f"[{len(paths)} locations]: {', '.join(paths)}"
+
+
+def _set_model_key_fields(
+    target: Any, model_key: str, path: str = "requests[0]"
+) -> list[str]:
+    paths: list[str] = []
+    if isinstance(target, dict):
+        for key in _MODEL_FIELD_KEYS:
+            value = target.get(key)
+            if isinstance(value, str):
+                target[key] = model_key
+                paths.append(f"{path}.{key}")
+        for key, child in target.items():
+            paths.extend(_set_model_key_fields(child, model_key, f"{path}.{key}"))
+    elif isinstance(target, list):
+        for index, item in enumerate(target):
+            paths.extend(_set_model_key_fields(item, model_key, f"{path}[{index}]"))
+    return paths
