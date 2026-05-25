@@ -486,27 +486,23 @@ async def _upload_ingredient(page, image_path: str) -> None:
         ) from last_error
 
     await _accept_ingredient_rights_notice(page)
-    # 2026-05 picker requires the uploaded asset to finish uploading
-    # AND auto-select before the bottom 'Add to Prompt' button is
-    # enabled. Click-when-disabled is a no-op. Poll for the enabled
-    # state before pressing it. ~20 s covers ing1.jpg (~5 s upload)
-    # plus a slow network margin.
-    await _wait_for_picker_commit_enabled(page, timeout_sec=20.0)
+    # Tile-click is the canonical 2026-05 picker commit. Keep a short,
+    # best-effort wait for variants that surface a bottom CTA.
+    await _wait_for_picker_commit_enabled(page)
     await _commit_uploaded_tile_in_picker(page, image_path)
     await _click_add_to_prompt_if_present(page)
     await asyncio.sleep(0.5)
 
 
-async def _wait_for_picker_commit_enabled(page, timeout_sec: float = 20.0) -> bool:
+async def _wait_for_picker_commit_enabled(page, timeout_sec: float = 4.0) -> bool:
     """Poll until the picker's 'Add to Prompt' button is enabled.
 
-    2026-05 picker (live-probed 2026-05-24): clicking 'Add to Prompt'
-    while it's still disabled (no asset selected / upload pending) is
-    a silent no-op, leaving the chip count at 0. Block until the
-    button reports ``disabled === false`` or the timeout expires.
+    Tile-click is the canonical commit on 2026-05 picker; this wait is a
+    forward-compat hook for variants that surface a bottom Add CTA. Block
+    until that CTA reports ``disabled === false`` or the timeout expires.
 
-    Returns True if enabled state observed, False on timeout. Caller
-    proceeds regardless — fallback paths still try the click.
+    Returns True if enabled state observed, False on timeout. Caller proceeds
+    regardless because tile-click handles the normal 2026-05 path.
     """
     root_selector = _picker_root_selector()
     deadline = asyncio.get_event_loop().time() + timeout_sec
@@ -528,7 +524,7 @@ async def _wait_for_picker_commit_enabled(page, timeout_sec: float = 20.0) -> bo
         except Exception as exc:
             logger.debug("Commit-enabled poll error: %s", exc)
         await asyncio.sleep(0.5)
-    logger.warning("Picker 'Add to Prompt' button stayed disabled within %.1fs", timeout_sec)
+    logger.debug("Picker 'Add to Prompt' button unavailable within %.1fs", timeout_sec)
     return False
 
 
