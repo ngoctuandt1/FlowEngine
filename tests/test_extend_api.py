@@ -234,6 +234,23 @@ async def test_replay_extend_via_api_rewrites_body_and_sets_recaptcha(caplog):
 
 
 @pytest.mark.asyncio
+async def test_replay_extend_via_api_default_model_none_preserves_template_model():
+    body = _template_body()
+    body["requests"][0]["videoModelKey"] = "veo-3.1-lite"
+    client = _client_with_template()
+    client._extend_request_template["post_data"] = json.dumps(body)
+    client.page.context.request.post.return_value = FakeAPIResponse(
+        200,
+        {"operations": [{"operation": {"name": "projects/proj1/media/new-media"}}]},
+    )
+
+    await replay_extend_via_api(client, "media/new-parent", "new prompt")
+
+    payload = json.loads(client.page.context.request.post.await_args.kwargs["data"])
+    assert payload["requests"][0]["videoModelKey"] == "veo-3.1-lite"
+
+
+@pytest.mark.asyncio
 async def test_replay_extend_via_api_raises_on_4xx_with_body_snippet():
     client = _client_with_template()
     client.page.context.request.post.return_value = FakeAPIResponse(403, text="forbidden body")

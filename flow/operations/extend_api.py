@@ -9,6 +9,8 @@ import re
 import uuid
 from typing import Any
 
+from flow.model_selector import canonicalize_video_model_key
+
 try:  # pragma: no cover - exercised when image_api exists on sibling branches.
     from flow.operations.image_api import _mint_recaptcha_token
 except ModuleNotFoundError:  # pragma: no cover - local fallback for master-only branch.
@@ -68,6 +70,7 @@ _PROMPT_FIELD_CANDIDATES: tuple[tuple[str | int, ...], ...] = (
     ("textInput", "text"),
     ("prompt",),
 )
+_MODEL_FIELD_KEYS = ("videoModelKey", "video_model_key", "modelKey", "modelName", "model")
 _MEDIA_ID_RE = re.compile(r"(?:^|/)media/([^/?#\s\"]+)", re.IGNORECASE)
 _BARE_MEDIA_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -131,8 +134,15 @@ def get_extend_request_template(client) -> dict | None:
     return template if isinstance(template, dict) else None
 
 
-async def replay_extend_via_api(client, parent_media_id: str, prompt: str) -> str:
-    """Replay latest captured extend POST with new parent media + prompt."""
+async def replay_extend_via_api(
+    client,
+    parent_media_id: str,
+    prompt: str,
+    *,
+    model: str | None = None,
+    free_mode: bool = True,
+) -> str:
+    """Replay latest captured extend POST with new parent media, prompt, and model."""
     template = get_extend_request_template(client)
     if template is None:
         raise RuntimeError("replay_extend_via_api: no captured template")
@@ -154,6 +164,10 @@ async def replay_extend_via_api(client, parent_media_id: str, prompt: str) -> st
     prompt_path = _set_prompt_text(request, prompt)
     logger.info("replay_extend_via_api: rewrote parent media at %s", parent_path)
     logger.info("replay_extend_via_api: rewrote prompt at %s", prompt_path)
+    if model is not None:
+        model_key = canonicalize_video_model_key(model, free_mode=free_mode)
+        model_path = _set_extend_model_key(request, model_key)
+        logger.info("replay_extend_via_api: rewrote model at %s", model_path)
 
     media_context = body.get("mediaGenerationContext")
     if not isinstance(media_context, dict):
@@ -310,6 +324,35 @@ def _set_prompt_text(request: dict[str, Any], prompt: str) -> str:
         return "requests[0].structuredPrompt.parts[0].text"
 
     raise RuntimeError("replay_extend_via_api: prompt field not found in captured template")
+
+
+def _set_extend_model_key(request: dict[str, Any], model_key: str) -> str:
+    paths = _set_model_key_fields(request, model_key)
+    if not paths:
+        raise RuntimeError(
+            "replay_extend_via_api: video model key field not found in captured template"
+        )
+    if len(paths) == 1:
+        return paths[0]
+    return f"[{len(paths)} locations]: {', '.join(paths)}"
+
+
+def _set_model_key_fields(
+    target: Any, model_key: str, path: str = "requests[0]"
+) -> list[str]:
+    paths: list[str] = []
+    if isinstance(target, dict):
+        for key in _MODEL_FIELD_KEYS:
+            value = target.get(key)
+            if isinstance(value, str):
+                target[key] = model_key
+                paths.append(f"{path}.{key}")
+        for key, child in target.items():
+            paths.extend(_set_model_key_fields(child, model_key, f"{path}.{key}"))
+    elif isinstance(target, list):
+        for index, item in enumerate(target):
+            paths.extend(_set_model_key_fields(item, model_key, f"{path}[{index}]"))
+    return paths
 
 
 def _set_existing_path(target: dict[str, Any], path: tuple[str | int, ...], value: str) -> bool:

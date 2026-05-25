@@ -1,9 +1,28 @@
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import flow.operations.extend as extend_mod
+import flow.operations.extend_api as extend_api
 from flow.operations._base import L2ReverseApiPostAcceptError
+
+
+EXTEND_URL = "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoExtendVideo"
+
+
+class _FakeAPIResponse:
+    def __init__(self, status, body=None, text=""):
+        self.status = status
+        self.status_code = status
+        self._body = body or {}
+        self._text = text
+
+    async def json(self):
+        return self._body
+
+    async def text(self):
+        return self._text
 
 
 def _client():
@@ -153,6 +172,8 @@ async def test_env_on_template_replays_and_finalizes_via_status_api(
         client,
         parent_media_id="parent-mid",
         prompt="next",
+        model="veo-3.1-lite",
+        free_mode=True,
     )
     mocks["_verify_extend_panel"].assert_not_awaited()
     mocks["submit_with_confirmation"].assert_not_awaited()
@@ -175,6 +196,70 @@ async def test_env_on_template_replays_and_finalizes_via_status_api(
     assert str(tmp_path) in out_path
 
     create_task.assert_not_called()
+
+
+async def test_env_on_template_replays_paid_model_override_in_payload(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("FLOW_EXTEND_VIA_REVERSE", "1")
+    client = _client()
+    client.download_dir = str(tmp_path)
+    _patch_common(monkeypatch, tmp_path=tmp_path)
+    client.page.context.request.post = AsyncMock(
+        return_value=_FakeAPIResponse(200, {"media": [{"name": "api-mid"}]})
+    )
+    client._extend_request_template = {
+        "url": EXTEND_URL,
+        "headers": {
+            "authorization": "Bearer tok",
+            "content-type": "text/plain;charset=UTF-8",
+        },
+        "post_data": json.dumps(
+            {
+                "clientContext": {
+                    "projectId": "project-id",
+                    "recaptchaContext": {"token": "stale-token"},
+                },
+                "mediaGenerationContext": {"batchId": "old-batch"},
+                "requests": [
+                    {
+                        "videoModelKey": "veo-3.1-lite",
+                        "videoExtendInput": {"sourceMedia": {"name": "parent-mid"}},
+                        "textInput": {
+                            "structuredPrompt": {
+                                "parts": [{"text": "old prompt"}]
+                            }
+                        },
+                    }
+                ],
+            }
+        ),
+    }
+
+    async def _mint(_page, *, caller):
+        assert caller == "replay_extend_via_api"
+        return "fresh-token"
+
+    monkeypatch.setattr(extend_api, "_mint_recaptcha_token", _mint)
+    monkeypatch.setattr(extend_mod, "install_extend_request_capture", MagicMock())
+    monkeypatch.setattr(
+        extend_mod,
+        "_finalize_replay_result",
+        AsyncMock(return_value={"media_id": "api-mid"}),
+    )
+
+    await extend_mod.extend_video(
+        client,
+        {"media_id": "parent-mid", "edit_url": "edit-url", "job_level": 2},
+        prompt="next",
+        model="omni-flash",
+        free_mode=False,
+    )
+
+    payload = json.loads(client.page.context.request.post.await_args.kwargs["data"])
+    request = payload["requests"][0]
+    assert request["videoModelKey"] == "omni-flash"
+    assert request["videoExtendInput"]["sourceMedia"]["name"] == "parent-mid"
 
 
 async def test_env_on_replay_runtime_error_falls_back_to_ui(monkeypatch):

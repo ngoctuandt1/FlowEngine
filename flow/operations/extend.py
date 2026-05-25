@@ -377,6 +377,8 @@ async def extend_video(
             client,
             job,
             prompt=prompt,
+            model=model,
+            free_mode=free_mode,
             project_id=project_id,
             locale=locale,
         ),
@@ -526,6 +528,8 @@ async def _run_extend_reverse_api(
     job: dict,
     *,
     prompt: str,
+    model: str | None,
+    free_mode: bool,
     project_id: str,
     locale: str,
 ) -> dict:
@@ -536,6 +540,8 @@ async def _run_extend_reverse_api(
         client,
         parent_media_id=job["media_id"],
         prompt=prompt,
+        model=model,
+        free_mode=free_mode,
     )
     replay_media_ids = _extract_replay_media_ids(replay_result)
     if not replay_media_ids:
