@@ -61,11 +61,53 @@ def _client(response: FakeStatusResponse):
 
 
 @pytest.mark.asyncio
-async def test_poll_status_raises_recaptcha_error_on_403_recaptcha_body():
+async def test_poll_status_raises_recaptcha_error_on_403_json_recaptcha_body():
     client = _client(
         FakeStatusResponse(
             403,
-            text="blocked by https://www.google.com/recaptcha/enterprise/reload?k=site",
+            text='{"captchaRequired": true}',
+        )
+    )
+
+    with pytest.raises(RecaptchaError) as exc_info:
+        await poll_status_via_api(
+            client,
+            gen_ids=["gen-000000000001"],
+            poll_interval_sec=0,
+            hard_timeout_sec=1,
+        )
+
+    assert exc_info.value.kind == "v3_invisible_or_block"
+    assert "status poll" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_poll_status_raises_recaptcha_error_on_429_json_list_body():
+    client = _client(
+        FakeStatusResponse(
+            429,
+            text='[{"recaptcha": true}]',
+        )
+    )
+
+    with pytest.raises(RecaptchaError) as exc_info:
+        await poll_status_via_api(
+            client,
+            gen_ids=["gen-000000000001"],
+            poll_interval_sec=0,
+            hard_timeout_sec=1,
+        )
+
+    assert exc_info.value.kind == "v3_invisible_or_block"
+    assert "status poll" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_poll_status_raises_recaptcha_error_on_403_plain_text_body():
+    client = _client(
+        FakeStatusResponse(
+            403,
+            text="blocked by recaptcha",
         )
     )
 

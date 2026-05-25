@@ -47,7 +47,7 @@ _RECAPTCHA_URL_TOKENS = (
 
 def detect_recaptcha_from_status_response(response, response_text=None) -> bool:
     """Return True when a Flow status response indicates reCAPTCHA blocking."""
-    if isinstance(response, dict):
+    if isinstance(response, (dict, list, tuple)):
         return _status_payload_has_recaptcha(response)
 
     response_url = _response_string(response, "url")
@@ -58,7 +58,26 @@ def detect_recaptcha_from_status_response(response, response_text=None) -> bool:
     if _response_status(response) not in (403, 429):
         return False
 
-    return _contains_recaptcha_url_token(response_text or "")
+    return _status_response_text_has_recaptcha(response_text)
+
+
+def _status_response_text_has_recaptcha(response_text: object) -> bool:
+    if response_text is None:
+        return False
+    try:
+        payload = json.loads(response_text)
+    except (json.JSONDecodeError, TypeError):
+        return _status_plain_text_has_recaptcha(response_text)
+    if _status_payload_has_recaptcha(payload):
+        return True
+    return _contains_recaptcha_url_token(response_text)
+
+
+def _status_plain_text_has_recaptcha(value: object) -> bool:
+    text = str(value or "").lower().replace("\\/", "/")
+    return _contains_recaptcha_url_token(text) or any(
+        token in text for token in _STATUS_RECAPTCHA_TEXT_TOKENS
+    )
 
 
 def _response_status(response) -> int | None:
