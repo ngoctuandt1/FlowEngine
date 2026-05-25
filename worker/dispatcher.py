@@ -437,6 +437,7 @@ async def handle_insert(job: dict) -> dict:
 
     from flow.client import lease_client_for_target
 
+    model = job.get("model", "veo-3.1-lite")
     async with lease_client_for_target(
         _client_lease, profile, job.get("edit_url") or job.get("project_url")
     ) as client:
@@ -446,6 +447,8 @@ async def handle_insert(job: dict) -> dict:
             job=job,
             prompt=job.get("prompt", ""),
             bbox=job.get("bbox"),
+            model=model,
+            free_mode=not _is_paid_model(model),
         )
 
     logger.info("insert-object DONE | files=%d media_id=%s",

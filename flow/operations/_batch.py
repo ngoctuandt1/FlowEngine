@@ -515,9 +515,43 @@ async def _dispatch_l2_submit(client, job: dict, parent_synth: dict, *,
             panel_already_open=panel_open,
         )
     if op == "insert-object":
+        model, free_mode = _model_and_free_mode(job)
+        import inspect
+
+        try:
+            submit_insert_signature = inspect.signature(submit_insert)
+        except (TypeError, ValueError):
+            submit_insert_accepts_model = True
+        else:
+            submit_insert_accepts_model = (
+                "model" in submit_insert_signature.parameters
+                or any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    for parameter in submit_insert_signature.parameters.values()
+                )
+            )
+        if submit_insert_accepts_model:
+            return await submit_insert(
+                client, parent_synth, prompt=job.get("prompt") or "",
+                bbox=job.get("bbox"), panel_already_open=panel_open,
+                model=model, free_mode=free_mode,
+            )
+
+        from flow.model_selector import select_model
+        from flow.operations._l2_batch import _click_insert_mode, _ensure_on_edit
+
+        await _ensure_on_edit(client, parent_synth)
+        if not panel_open:
+            await _click_insert_mode(client)
+        await select_model(
+            client.page,
+            model=model,
+            free_mode=free_mode,
+            profile=client.profile_name,
+        )
         return await submit_insert(
             client, parent_synth, prompt=job.get("prompt") or "",
-            bbox=job.get("bbox"), panel_already_open=panel_open,
+            bbox=job.get("bbox"), panel_already_open=True,
         )
     if op == "remove-object":
         return await submit_remove(

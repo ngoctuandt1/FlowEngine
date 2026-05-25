@@ -143,6 +143,76 @@ async def test_omni_flash_text_to_video_dispatches_paid_mode(monkeypatch):
     assert captured["model"] == "omni-flash"
     assert captured["free_mode"] is False
 
+
+async def test_omni_flash_insert_dispatches_paid_mode(monkeypatch):
+    from flow.operations import insert
+    from worker import dispatcher
+
+    captured = {}
+
+    async def fake_insert_object(client, **kwargs):
+        captured.update(kwargs)
+        return {"output_files": ["out.mp4"], "media_id": "mid"}
+
+    class _ClientStub:
+        pass
+
+    @asynccontextmanager
+    async def fake_client_lease(profile):
+        yield _ClientStub()
+
+    monkeypatch.setattr(insert, "insert_object", fake_insert_object)
+    monkeypatch.setattr(dispatcher, "_client_lease", fake_client_lease)
+
+    result = await dispatcher.handle_insert({
+        "id": "job-insert-omni",
+        "type": "insert-object",
+        "profile": "profile-paid",
+        "prompt": "add neon helmet",
+        "bbox": {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4},
+        "model": "omni-flash",
+        "edit_url": "https://labs.google/fx/tools/flow/project/p/edit/parent-mid",
+    })
+
+    assert result["media_id"] == "mid"
+    assert captured["model"] == "omni-flash"
+    assert captured["free_mode"] is False
+
+
+async def test_insert_dispatches_default_lite_free_mode(monkeypatch):
+    from flow.operations import insert
+    from worker import dispatcher
+
+    captured = {}
+
+    async def fake_insert_object(client, **kwargs):
+        captured.update(kwargs)
+        return {"output_files": ["out.mp4"], "media_id": "mid"}
+
+    class _ClientStub:
+        pass
+
+    @asynccontextmanager
+    async def fake_client_lease(profile):
+        yield _ClientStub()
+
+    monkeypatch.setattr(insert, "insert_object", fake_insert_object)
+    monkeypatch.setattr(dispatcher, "_client_lease", fake_client_lease)
+
+    result = await dispatcher.handle_insert({
+        "id": "job-insert-default",
+        "type": "insert-object",
+        "profile": "profile-free",
+        "prompt": "add small sign",
+        "bbox": {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4},
+        "edit_url": "https://labs.google/fx/tools/flow/project/p/edit/parent-mid",
+    })
+
+    assert result["media_id"] == "mid"
+    assert captured["model"] == "veo-3.1-lite"
+    assert captured["free_mode"] is True
+
+
 async def test_batch_multitab_preserves_model_for_extend_jobs(monkeypatch):
     from worker import dispatcher
     import flow.operations._multitab as multitab_mod

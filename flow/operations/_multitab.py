@@ -321,10 +321,13 @@ async def dispatch_op_in_new_tab(
             )
         elif op_type == "insert-object":
             from flow.operations.insert import insert_object
+            model, free_mode = _model_and_free_mode(job)
             result = await insert_object(
                 proxy, op_job,
                 prompt=job.get("prompt", ""),
                 bbox=job.get("bbox") or {},
+                model=model,
+                free_mode=free_mode,
             )
         elif op_type == "remove-object":
             from flow.operations.remove import remove_object

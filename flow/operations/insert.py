@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from flow.failure_capture import message_with_failure_capture
+from flow.model_selector import select_model
 from flow.navigation import edit_url as build_edit_url, project_url as build_project_url
 from flow.submit import submit_with_confirmation
 from flow.operations._base import (
@@ -282,6 +283,9 @@ async def insert_object(
     job: dict,
     prompt: str = "",
     bbox: dict | None = None,
+    *,
+    model: str | None = None,
+    free_mode: bool = True,
 ) -> dict:
     """Execute insert-object operation.
 
@@ -299,6 +303,8 @@ async def insert_object(
         job: Job dict with edit_url/project_url/media_id
         prompt: Object description
         bbox: {x, y, w, h} normalized 0-1 (optional)
+        model: Optional Flow video model key to select before submit
+        free_mode: Use only free/Lite model choices when selecting model
 
     Returns: Result dict
     """
@@ -392,6 +398,10 @@ async def insert_object(
     # Step 5: Type prompt (optional)
     if prompt:
         await _type_insert_prompt(page, prompt)
+
+    # Step 5.5: Select model when caller explicitly wires one through.
+    if model is not None:
+        await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
 
     # Step 6: Submit
     before_cards = await count_visible_cards(page)
