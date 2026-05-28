@@ -9,6 +9,7 @@ from pathlib import Path
 from flow.navigation import flow_url, extract_project_id
 from flow.characters import validate_character_tags
 from flow.login import is_login_page, handle_login_redirect
+from flow.agent import disable_agent_mode_if_active
 from flow.landing import (
     dismiss_flow_marketing_landing,
     dismiss_pointer_intercepting_overlays,
@@ -616,6 +617,21 @@ async def text_to_video(
         # Try to extract from any URL pattern
         logger.warning("No project_id from URL: %s", project_url_full[:100])
     logger.info(f"New project created: {project_url_full}")
+
+    # Flow auto-starts Agent mode on new projects if the account has agent
+    # settings enabled. The Agent UI hides the standard Video/Image/Frames
+    # composer mode selector. Disable it before waiting for the composer so
+    # _ensure_video_composer_mode sees the normal chip layout.
+    if project_id:
+        try:
+            await disable_agent_mode_if_active(
+                page,
+                profile_name=client.profile_name,
+                target_url=project_url_full,
+                log=logger,
+            )
+        except Exception as _agent_exc:
+            logger.warning("generate: agent disable non-fatal: %s", _agent_exc)
 
     # Wait for project editor (Slate composer) to fully render
     # The Slate.js editor can take a few seconds to initialize after page load
