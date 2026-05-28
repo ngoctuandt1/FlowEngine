@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -304,6 +305,23 @@ async def disable_agent_mode_if_active(
                     AGENT_DISABLED,
                 )
                 if 200 <= api_result["status"] < 300:
+                    # PATCH toggles the default but doesn't remove existing sessions.
+                    # Delete sessions so the next page load shows no agent overlay.
+                    # Failures are non-fatal — we still proceed to _refresh_project_view.
+                    try:
+                        deleted = await _delete_agent_sessions(
+                            page, resolved_project_id, token, active_logger
+                        )
+                    except Exception as _del_exc:
+                        active_logger.info(
+                            "Agent session delete skipped (non-fatal): %s", _del_exc
+                        )
+                        deleted = 0
+                    active_logger.info(
+                        "Agent API disable: PATCH 200 OK, deleted %d session(s) for %s",
+                        deleted,
+                        resolved_project_id[:20],
+                    )
                     await _refresh_project_view(page, target_url or page.url)
                     if await _agent_confirmed_off(page, project_id=resolved_project_id):
                         result = AgentDisableResult(
@@ -318,7 +336,7 @@ async def disable_agent_mode_if_active(
                                 target_url or page.url,
                                 AGENT_METHOD_API,
                             ),
-                            message="Agent disabled via reverseAPI",
+                            message=f"Agent disabled via reverseAPI + session delete ({deleted} session(s))",
                             api_status=api_result["status"],
                         )
                         _log_agent_mutation(active_logger, result)
@@ -543,6 +561,18 @@ async def _composer_visible_once(
             return False
 
     try:
+        # On /edit/ pages the L2 action toolbar (Extend/Insert/Remove/Camera) is
+        # the indicator that the normal editor is active (agent mode off). Check
+        # this first so we don't block on the text-composer check below, which is
+        # only present on /project/ pages.
+        current_url = str(getattr(page, "url", "") or "")
+        if "/edit/" in current_url:
+            edit_action_visible = await page.locator(
+                "button, [role='button']"
+            ).filter(has_text=_EDIT_ACTION_BUTTON_RE).first.is_visible(timeout=500)
+            if edit_action_visible:
+                return True
+
         text_input_visible = False
         for selector in _COMPOSER_TEXTBOX_SELECTORS:
             locator = page.locator(selector).first
@@ -619,6 +649,119 @@ async def _patch_agent_state(
             "updateMask": AGENT_UPDATE_MASK,
         },
     )
+
+
+async def _delete_agent_sessions(
+    page: Any,
+    project_id: str,
+    bearer_token: str,
+    log: logging.Logger,
+) -> int:
+    """List and DELETE all flowCreationAgent sessions for the project.
+
+    The agentInfo toggle-state PATCH (200 OK) does not prevent existing sessions
+    from being loaded on subsequent navigations. Deleting the sessions removes
+    the agent overlay entirely so the edit page loads without the agent UI.
+
+    Returns count of successfully deleted sessions (0 on any list/parse error).
+    """
+    list_result = await page.evaluate(
+        """async ({ projectId, bearerToken }) => {
+            const url = `https://aisandbox-pa.googleapis.com/v1/flowCreationAgent/sessions?projectId=${projectId}`;
+            try {
+                const resp = await fetch(url, { headers: { Authorization: bearerToken } });
+                const text = await resp.text();
+                return { status: resp.status, text };
+            } catch (err) {
+                return { status: 0, text: String(err) };
+            }
+        }""",
+        {"projectId": project_id, "bearerToken": bearer_token},
+    )
+
+    if not isinstance(list_result, dict) or list_result.get("status") != 200:
+        log.info(
+            "_delete_agent_sessions: list returned status=%s",
+            list_result.get("status") if isinstance(list_result, dict) else "?",
+        )
+        return 0
+
+    try:
+        data = json.loads(list_result["text"])
+    except Exception as exc:
+        log.info("_delete_agent_sessions: JSON parse failed: %s", exc)
+        return 0
+
+    # Response may use "sessions" or other keys — collect all dicts with a name/id
+    sessions_raw = data.get("sessions") or data.get("agentSessions") or []
+    if not isinstance(sessions_raw, list):
+        sessions_raw = []
+
+    session_ids: list[str] = []
+    for entry in sessions_raw:
+        if not isinstance(entry, dict):
+            continue
+        # "name" field is like "projects/{pid}/agentSessions/{sid}" or just the ID
+        name = entry.get("name") or ""
+        sid = name.split("/")[-1] if "/" in name else name
+        if not sid:
+            sid = entry.get("sessionId") or entry.get("id") or ""
+        if sid:
+            session_ids.append(str(sid))
+
+    if not session_ids:
+        log.info(
+            "_delete_agent_sessions: no sessions found for project %s", project_id[:20]
+        )
+        return 0
+
+    log.info(
+        "_delete_agent_sessions: deleting %d session(s) for project %s",
+        len(session_ids),
+        project_id[:20],
+    )
+
+    deleted = 0
+    for sid in session_ids:
+        try:
+            del_result = await page.evaluate(
+                """async ({ sessionId, bearerToken }) => {
+                    const url = `https://aisandbox-pa.googleapis.com/v1/flowCreationAgent/sessions/${sessionId}`;
+                    try {
+                        const resp = await fetch(url, {
+                            method: 'DELETE',
+                            headers: { Authorization: bearerToken },
+                        });
+                        const text = await resp.text();
+                        return { status: resp.status, ok: resp.ok, text };
+                    } catch (err) {
+                        return { status: 0, ok: false, text: String(err) };
+                    }
+                }""",
+                {"sessionId": sid, "bearerToken": bearer_token},
+            )
+            status = del_result.get("status") if isinstance(del_result, dict) else 0
+            if status and 200 <= status < 300:
+                deleted += 1
+                log.info(
+                    "_delete_agent_sessions: deleted session %s (status=%d)",
+                    sid[:20],
+                    status,
+                )
+            else:
+                log.info(
+                    "_delete_agent_sessions: DELETE session %s returned status=%d",
+                    sid[:20],
+                    status,
+                )
+        except Exception as exc:
+            log.info(
+                "_delete_agent_sessions: DELETE session %s failed: %s",
+                sid[:20],
+                exc,
+            )
+
+    return deleted
 
 
 async def _refresh_project_view(page: Any, target_url: str | None) -> None:
