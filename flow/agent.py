@@ -322,6 +322,9 @@ async def disable_agent_mode_if_active(
                         deleted,
                         resolved_project_id[:20],
                     )
+                    # Block session re-creation BEFORE reload so JS can't
+                    # create a new session during the /edit/ page load.
+                    await _install_agent_session_blocker(page)
                     await _refresh_project_view(page, target_url or page.url)
                     if await _agent_confirmed_off(page, project_id=resolved_project_id):
                         result = AgentDisableResult(
@@ -762,6 +765,38 @@ async def _delete_agent_sessions(
             )
 
     return deleted
+
+
+async def _install_agent_session_blocker(page: Any) -> None:
+    """Intercept flowCreationAgent/sessions to prevent JS from re-creating agent sessions.
+
+    After deleting existing sessions the browser JS will try to POST a new one
+    on the next /edit/ navigation.  This route handler short-circuits that loop:
+    GET returns an empty list (no sessions → agent mode not applied), POST/PATCH
+    return 200 without reaching the server, DELETE passes through so our own
+    cleanup calls still work.
+
+    Registered routes persist across page.goto() calls on the same page object,
+    so one install covers all subsequent navigations on this FlowClient page.
+    """
+    async def _handler(route, request):
+        if request.method == "DELETE":
+            await route.continue_()
+        elif request.method == "GET":
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"sessions": []}',
+            )
+        else:
+            await route.fulfill(status=200, content_type="application/json", body='{}')
+
+    try:
+        route_fn = getattr(page, "route", None)
+        if callable(route_fn):
+            await route_fn("**/flowCreationAgent/sessions**", _handler)
+    except Exception as exc:
+        logger.info("_install_agent_session_blocker: route install failed (non-fatal): %s", exc)
 
 
 async def _refresh_project_view(page: Any, target_url: str | None) -> None:
