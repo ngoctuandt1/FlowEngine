@@ -767,6 +767,21 @@ async def _delete_agent_sessions(
     return deleted
 
 
+async def install_agent_session_blocker(page: Any) -> None:
+    """Public entry-point: install the flowCreationAgent session route blocker.
+
+    Call this BEFORE page.goto() on any /edit/ URL so the Playwright route
+    handler is registered before JS fires its initial GET sessions request.
+    Registered routes persist across page.goto() calls on the same page object,
+    so one install covers all subsequent navigations on this FlowClient page.
+    """
+    logger.warning(
+        "install_agent_session_blocker: installing route blocker on page %s",
+        getattr(page, "url", "<unknown>")[:80],
+    )
+    await _install_agent_session_blocker(page)
+
+
 async def _install_agent_session_blocker(page: Any) -> None:
     """Intercept flowCreationAgent/sessions to prevent JS from re-creating agent sessions.
 
@@ -783,20 +798,30 @@ async def _install_agent_session_blocker(page: Any) -> None:
         if request.method == "DELETE":
             await route.continue_()
         elif request.method == "GET":
+            logger.warning(
+                "_agent_session_blocker: intercepted GET sessions (returning empty list) url=%s",
+                request.url[:100],
+            )
             await route.fulfill(
                 status=200,
                 content_type="application/json",
                 body='{"sessions": []}',
             )
         else:
+            logger.warning(
+                "_agent_session_blocker: intercepted %s sessions (returning {}) url=%s",
+                request.method,
+                request.url[:100],
+            )
             await route.fulfill(status=200, content_type="application/json", body='{}')
 
     try:
         route_fn = getattr(page, "route", None)
         if callable(route_fn):
             await route_fn("**/flowCreationAgent/sessions**", _handler)
+            logger.warning("_install_agent_session_blocker: route handler registered OK")
     except Exception as exc:
-        logger.info("_install_agent_session_blocker: route install failed (non-fatal): %s", exc)
+        logger.warning("_install_agent_session_blocker: route install failed (non-fatal): %s", exc)
 
 
 async def _refresh_project_view(page: Any, target_url: str | None) -> None:

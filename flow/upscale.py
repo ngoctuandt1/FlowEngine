@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Awaitable, Callable, Literal
 
+from flow.agent import install_agent_session_blocker
 from flow.landing import recover_from_flow_landing
 
 logger = logging.getLogger(__name__)
@@ -179,7 +180,7 @@ async def _open_edit_download_menu(page, wait_sec: int = 10) -> bool:
         return False
     await asyncio.sleep(0.5)
     try:
-        await page.wait_for_selector('[role="menuitem"]', timeout=5000)
+        await page.wait_for_selector('[role="menuitem"]', timeout=10000)
         return True
     except Exception as exc:
         logger.warning("[UPSCALE] Download menu did not open: %s", exc)
@@ -408,6 +409,10 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
     except Exception:
         logger.warning("[UPSCALE] No tile with data-tile-id^=fe_id_ on project view")
         return
+
+    # Block agent session creation before tile navigation so the /edit/ view
+    # loads with the normal toolbar (including the Download button accessible).
+    await install_agent_session_blocker(page)
 
     logger.info("[UPSCALE] Clicking tile for SPA nav to /edit/ view")
     try:

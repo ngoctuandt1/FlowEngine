@@ -17,7 +17,11 @@ from flow.navigation import (
     find_latest_tile_slug,
     flow_url,
 )
-from flow.agent import disable_agent_mode_if_active, install_agent_auth_probe
+from flow.agent import (
+    disable_agent_mode_if_active,
+    install_agent_auth_probe,
+    install_agent_session_blocker,
+)
 from flow.landing import recover_from_flow_landing
 from flow.login import is_login_page, handle_login_redirect
 from flow.submit import submit_with_confirmation
@@ -638,6 +642,12 @@ async def navigate_to_edit(
     # Install auth probe BEFORE navigation so it captures agent session Bearer
     # tokens during page load (add_init_script runs before page scripts).
     await install_agent_auth_probe(page)
+    # Install the session blocker BEFORE page.goto so the Playwright route
+    # handler is registered before JS fires its initial GET sessions request.
+    # This prevents Flow from loading an agent session on the edit page, keeping
+    # the L2 toolbar (Extend/Insert/Remove/Camera) visible immediately on load.
+    # The route handler persists across navigations on the same page object.
+    await install_agent_session_blocker(page)
     await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(3)
 
