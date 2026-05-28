@@ -17,7 +17,7 @@ from flow.navigation import (
     find_latest_tile_slug,
     flow_url,
 )
-from flow.agent import disable_agent_mode_if_active
+from flow.agent import disable_agent_mode_if_active, install_agent_auth_probe
 from flow.landing import recover_from_flow_landing
 from flow.login import is_login_page, handle_login_redirect
 from flow.submit import submit_with_confirmation
@@ -627,6 +627,9 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     # falls through to tile-click on the project grid.
     target_url = edit_url_val
     logger.info("Navigating to edit URL: %s", target_url[:100])
+    # Install auth probe BEFORE navigation so it captures agent session Bearer
+    # tokens during page load (add_init_script runs before page scripts).
+    await install_agent_auth_probe(page)
     await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(3)
 

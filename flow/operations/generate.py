@@ -9,7 +9,7 @@ from pathlib import Path
 from flow.navigation import flow_url, extract_project_id
 from flow.characters import validate_character_tags
 from flow.login import is_login_page, handle_login_redirect
-from flow.agent import disable_agent_mode_if_active
+from flow.agent import disable_agent_mode_if_active, install_agent_auth_probe
 from flow.landing import (
     dismiss_flow_marketing_landing,
     dismiss_pointer_intercepting_overlays,
@@ -328,6 +328,9 @@ async def text_to_video(
     # === Step 1: Navigate to Flow homepage ===
     logger.info("Step 1: Navigate to Flow homepage")
     homepage = flow_url(locale)
+    # Install auth probe before first navigation so Bearer tokens are captured
+    # on the project page load (triggered by New Project click).
+    await install_agent_auth_probe(page)
     await page.goto(homepage, wait_until="domcontentloaded", timeout=30000)
     try:
         await page.wait_for_selector(
