@@ -718,11 +718,13 @@ async def navigate_to_edit(
             await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(5)
             await _recover_editor_landing(page, target_url)
-            await _assert_l2_available(page, op_name, profile_name)
+            if not skip_toolbar_check:
+                await _assert_l2_available(page, op_name, profile_name)
 
     # Verify we're in edit mode for the right media
     current = page.url
-    await _assert_l2_available(page, op_name, profile_name)
+    if not skip_toolbar_check:
+        await _assert_l2_available(page, op_name, profile_name)
     if "/edit/" not in current:
         # B29 (2026-04-19): when an L1 /edit/{media_id} points at a media
         # that's been consumed by a sibling extend, the SPA strips `/edit/`
@@ -942,7 +944,8 @@ async def navigate_to_edit(
         if media_id:
             await _activate_clip_tile(page, media_id)
 
-    await _assert_l2_available(page, op_name, profile_name)
+    if not skip_toolbar_check:
+        await _assert_l2_available(page, op_name, profile_name)
 
     locale = detect_locale(page.url)
     project_id = extract_project_id(page.url) or ""
