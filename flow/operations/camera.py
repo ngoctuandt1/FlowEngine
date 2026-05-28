@@ -489,8 +489,10 @@ async def camera_move(
     if reverse_enabled:
         _install_camera_capture_if_enabled(client)
 
-    # Step 1: Navigate
-    edit_url_val, project_id, locale = await navigate_to_edit(client, job)
+    # Step 1: Navigate (skip toolbar check for revapi — DOM buttons not needed)
+    edit_url_val, project_id, locale = await navigate_to_edit(
+        client, job, skip_toolbar_check=reverse_enabled
+    )
 
     # Step 2: Wait for video
     await wait_for_video_loaded(page)

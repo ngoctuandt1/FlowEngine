@@ -588,10 +588,18 @@ def _op_name_from_button_texts(button_texts: list[str]) -> str:
     return "level-2 operation"
 
 
-async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
+async def navigate_to_edit(
+    client,
+    job: dict,
+    *,
+    skip_toolbar_check: bool = False,
+) -> tuple[str, str, str]:
     """Navigate to the video edit page.
 
     Uses edit_url if available, otherwise constructs from project_url + media_id.
+
+    skip_toolbar_check: set True for reverse-API callers that don't need the
+    DOM toolbar (Extend/Insert/Remove/Camera buttons) to be visible.
 
     Returns (edit_url, project_id, locale).
     """
@@ -679,7 +687,8 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
             _agent_exc,
         )
 
-    await _assert_l2_available(page, op_name, profile_name)
+    if not skip_toolbar_check:
+        await _assert_l2_available(page, op_name, profile_name)
 
     if "/project/" not in current and "/edit/" not in current:
         # Landed on Flow homepage instead of project page
