@@ -273,10 +273,13 @@ async def disable_agent_mode_if_active(
         _log_agent_result(active_logger, result)
         return result
 
-    if previous_state == "missing" and await _normal_composer_visible(
+    _on_edit_page = "/edit/" in str(target_url or getattr(page, "url", "") or "")
+    if previous_state == "missing" and not _on_edit_page and await _normal_composer_visible(
         page,
         project_id=resolved_project_id,
     ):
+        # On a project page (not /edit/) with no Agent button and normal composer
+        # visible → agent mode is genuinely off.
         result = AgentDisableResult(
             status="unavailable",
             profile=profile_name,
@@ -286,6 +289,8 @@ async def disable_agent_mode_if_active(
         )
         _log_agent_result(active_logger, result)
         return result
+    # On /edit/ pages: agent mode can be active (hiding L2 toolbar) without showing
+    # an Agent toggle button. Always try the reverse API path in this case.
 
     api_error: str | None = None
     if effective_reverse_api:
