@@ -768,18 +768,63 @@ async def _delete_agent_sessions(
 
 
 async def install_agent_session_blocker(page: Any) -> None:
-    """Public entry-point: install the flowCreationAgent session route blocker.
+    """Public entry-point: install agent-mode route blockers before /edit/ navigation.
 
-    Call this BEFORE page.goto() on any /edit/ URL so the Playwright route
-    handler is registered before JS fires its initial GET sessions request.
-    Registered routes persist across page.goto() calls on the same page object,
-    so one install covers all subsequent navigations on this FlowClient page.
+    Installs two Playwright route intercepts:
+    1. GET /v1/projects/*/agentInfo → returns agentToggleState=DISABLED so Flow JS
+       renders the normal L2 editor instead of the agent overlay.
+    2. GET/POST /flowCreationAgent/sessions → returns empty sessions so no agent
+       conversation is loaded or created.
+
+    Call this BEFORE page.goto() on any /edit/ URL. Route handlers persist across
+    page.goto() calls on the same page object so one install covers all subsequent
+    navigations on this FlowClient page.
     """
     logger.warning(
-        "install_agent_session_blocker: installing route blocker on page %s",
+        "install_agent_session_blocker: installing route blockers on page %s",
         getattr(page, "url", "<unknown>")[:80],
     )
+    await _install_agent_info_blocker(page)
     await _install_agent_session_blocker(page)
+
+
+_AGENT_INFO_DISABLED_RESPONSE = json.dumps(
+    {"agentToggleState": AGENT_DISABLED}
+)
+
+
+async def _install_agent_info_blocker(page: Any) -> None:
+    """Intercept GET /v1/projects/*/agentInfo to return agentToggleState=DISABLED.
+
+    Flow's SPA fetches agentInfo on every /edit/ page load to determine whether
+    to show the agent overlay or the normal L2 editor.  By intercepting the GET
+    and returning DISABLED, the SPA always renders the L2 toolbar (Extend/Insert/
+    Remove/Camera) regardless of the server-side toggle state.
+
+    PATCH requests are passed through so our own _patch_agent_state calls still
+    update the server state.  DELETE and other methods are also passed through.
+    """
+    async def _handler(route, request):
+        if request.method == "GET":
+            logger.warning(
+                "_agent_info_blocker: intercepted GET agentInfo → returning DISABLED url=%s",
+                request.url[:100],
+            )
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_AGENT_INFO_DISABLED_RESPONSE,
+            )
+        else:
+            await route.continue_()
+
+    try:
+        route_fn = getattr(page, "route", None)
+        if callable(route_fn):
+            await route_fn("**/agentInfo**", _handler)
+            logger.warning("_install_agent_info_blocker: route handler registered OK")
+    except Exception as exc:
+        logger.warning("_install_agent_info_blocker: route install failed (non-fatal): %s", exc)
 
 
 async def _install_agent_session_blocker(page: Any) -> None:
