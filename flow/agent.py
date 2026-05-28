@@ -794,17 +794,17 @@ _AGENT_INFO_DISABLED_RESPONSE = json.dumps(
 
 
 async def _install_agent_info_blocker(page: Any) -> None:
-    """Intercept GET /v1/projects/*/agentInfo to return agentToggleState=DISABLED.
+    """Intercept aisandbox-pa.googleapis.com requests to suppress agent mode.
 
-    Flow's SPA fetches agentInfo on every /edit/ page load to determine whether
-    to show the agent overlay or the normal L2 editor.  By intercepting the GET
-    and returning DISABLED, the SPA always renders the L2 toolbar (Extend/Insert/
-    Remove/Camera) regardless of the server-side toggle state.
+    Two intercepts:
+    1. GET **/agentInfo** → returns agentToggleState=DISABLED
+    2. GET/POST **/aisandbox-pa.googleapis.com/** diagnostic log (pass-through)
+       so we can see all API URLs Flow calls during page load.
 
     PATCH requests are passed through so our own _patch_agent_state calls still
-    update the server state.  DELETE and other methods are also passed through.
+    update the server state.
     """
-    async def _handler(route, request):
+    async def _agentinfo_handler(route, request):
         if request.method == "GET":
             logger.warning(
                 "_agent_info_blocker: intercepted GET agentInfo → returning DISABLED url=%s",
@@ -818,11 +818,21 @@ async def _install_agent_info_blocker(page: Any) -> None:
         else:
             await route.continue_()
 
+    async def _diagnostic_handler(route, request):
+        logger.warning(
+            "_aisandbox_diag: %s %s",
+            request.method,
+            request.url[:120],
+        )
+        await route.continue_()
+
     try:
         route_fn = getattr(page, "route", None)
         if callable(route_fn):
-            await route_fn("**/agentInfo**", _handler)
-            logger.warning("_install_agent_info_blocker: route handler registered OK")
+            await route_fn("**/agentInfo**", _agentinfo_handler)
+            logger.warning("_install_agent_info_blocker: agentInfo route handler registered OK")
+            await route_fn("**/aisandbox-pa.googleapis.com/**", _diagnostic_handler)
+            logger.warning("_install_agent_info_blocker: aisandbox diagnostic handler registered OK")
     except Exception as exc:
         logger.warning("_install_agent_info_blocker: route install failed (non-fatal): %s", exc)
 
