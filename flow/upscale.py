@@ -177,8 +177,9 @@ async def _open_edit_download_menu(page, wait_sec: int = 10) -> bool:
     """Open the /edit/ download menu and verify menu items are visible."""
     if not await _click_edit_download_button(page, wait_sec=wait_sec):
         return False
+    await asyncio.sleep(0.5)
     try:
-        await page.wait_for_selector('[role="menuitem"]', timeout=3000)
+        await page.wait_for_selector('[role="menuitem"]', timeout=5000)
         return True
     except Exception as exc:
         logger.warning("[UPSCALE] Download menu did not open: %s", exc)

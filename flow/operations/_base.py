@@ -17,6 +17,7 @@ from flow.navigation import (
     find_latest_tile_slug,
     flow_url,
 )
+from flow.agent import disable_agent_mode_if_active
 from flow.landing import recover_from_flow_landing
 from flow.login import is_login_page, handle_login_redirect
 from flow.submit import submit_with_confirmation
@@ -75,7 +76,7 @@ class LeafLockoutError(RuntimeError):
 
 L2_PAYWALL_BANNER_TEXT = "Video editing is only available for paid subscribers"
 _L2_SILENT_HIDE_EDITOR_MOUNT_TIMEOUT_MS = 1000
-_L2_SILENT_HIDE_PAINT_WAIT_MS = 4000
+_L2_SILENT_HIDE_PAINT_WAIT_MS = 8000
 _L2_TOOLBAR_TOKENS = (
     "Extend",
     "Insert",
@@ -653,6 +654,27 @@ async def navigate_to_edit(client, job: dict) -> tuple[str, str, str]:
     current = page.url
     op_name = job.get("type") or "level-2 operation"
     profile_name = job.get("profile") or getattr(client, "profile_name", "") or ""
+
+    # Flow auto-starts an Agent session on every project/edit navigate (2026-05
+    # rollout). The Agent UI replaces the standard L2 toolbar (Extend/Insert/
+    # Remove/Camera) and renders agent sessions as [data-tile-id] nodes that
+    # don't match video media_ids. Disable agent mode before any toolbar or
+    # tile check so the normal editor view is guaranteed.
+    try:
+        await disable_agent_mode_if_active(
+            page,
+            profile_name=profile_name,
+            target_url=target_url,
+            log=logger,
+        )
+        # Re-capture URL after potential agent-disable refresh.
+        current = page.url
+    except Exception as _agent_exc:
+        logger.warning(
+            "navigate_to_edit: agent disable non-fatal for %s: %s",
+            profile_name,
+            _agent_exc,
+        )
 
     await _assert_l2_available(page, op_name, profile_name)
 
