@@ -25,6 +25,8 @@ from flow.operations._base import (
     l2_reverse_api_enabled,
     l2_reverse_api_template_has_auth,
     run_l2_reverse_api_first,
+    agent_edit_ui_present,
+    submit_via_agent_edit_ui,
 )
 from flow.operations._l1_status_poll import (
     poll_status_via_api,
@@ -383,6 +385,39 @@ async def insert_object(
             pass
 
     if not clicked:
+        # 2026-05: traditional toolbar replaced by "Describe your edit(s)" UI.
+        # Fall back to agent text-command path if that interface is present.
+        # bbox converted to a rough positional description for the AI.
+        if await agent_edit_ui_present(page, timeout_ms=2000):
+            _bbox = bbox or {}
+            _cx = _bbox.get("x", 0) + _bbox.get("w", 0) / 2
+            _cy = _bbox.get("y", 0) + _bbox.get("h", 0) / 2
+            if _bbox:
+                _region = (
+                    "top-left" if _cx < 0.4 and _cy < 0.4 else
+                    "top-right" if _cx >= 0.6 and _cy < 0.4 else
+                    "bottom-left" if _cx < 0.4 and _cy >= 0.6 else
+                    "bottom-right" if _cx >= 0.6 and _cy >= 0.6 else
+                    "center"
+                )
+                region_phrase = f"at the {_region} of the frame"
+            else:
+                region_phrase = "in the video"
+            _desc = prompt or "object"
+            insert_cmd = f"Insert {_desc} {region_phrase}"
+            logger.info(
+                "run_insert: traditional Insert button absent; using agent edit UI "
+                "with command=%r (bbox=%s)", insert_cmd, _bbox or None
+            )
+            submitted = await submit_via_agent_edit_ui(page, insert_cmd)
+            if submitted:
+                return await finalize_operation(
+                    client, job,
+                    job_type="insert-object",
+                    project_id=project_id,
+                    locale=locale,
+                    download_prefix="ins",
+                )
         message = "Failed to find Insert button"
         message = await message_with_failure_capture(
             client,
