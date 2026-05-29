@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -422,6 +423,7 @@ async def frames_to_video(
     project_id = extract_project_id(project_url_full)
 
     await _wait_for_composer(page)
+    await _reveal_composer_if_collapsed(page)
     await _ensure_video_composer_mode(page)
     await _set_output_count(page, 1)
     await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
@@ -541,6 +543,106 @@ async def _composer_menu_is_open(page) -> bool:
         except Exception:
             continue
     return False
+
+
+# Tokens that identify a real composer chip (count / mode / aspect / model).
+# A project-level toolbar button ("Add Media", "View Settings", overflow
+# more_vert) contains none of these and must NOT be treated as the chip.
+_COMPOSER_CHIP_TOKEN_RE = re.compile(
+    r"x[1-4]|[1-4]x|16\s*:?\s*9|9\s*:?\s*16|landscape|portrait|square"
+    r"|video|frames?|ingredients?|image|veo|omni|imagen|banana",
+    re.IGNORECASE,
+)
+
+# "Add Media" / project-toolbar entry-point button. In the collapsed project
+# view Flow hides the composer chip behind this control; clicking it reveals
+# the composer (and the f2v upload affordances).
+_ADD_MEDIA_BUTTON_SELECTORS = (
+    "button:has(i:text-is('add')):has-text('Add Media')",
+    "button:has(i:text-is('add')):has-text('Add media')",
+    "[role='button']:has(i:text-is('add')):has-text('Add')",
+    "button:has(i:text-is('add'))",
+)
+
+
+async def _composer_chip_present(page) -> bool:
+    """True when a real composer chip (count/mode/aspect/model) is visible.
+
+    Distinguishes the composer chip from project-level toolbar buttons such as
+    `add` (Add Media), `settings_2` (View Settings), `filter_list`, and the
+    `more_vert` overflow menus — none of which carry composer tokens.
+    """
+    try:
+        texts = await page.evaluate(
+            r"""() => {
+                const visible = (el) => {
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden'
+                        && parseFloat(s.opacity || '1') > 0
+                        && r.width > 0 && r.height > 0;
+                };
+                return Array.from(document.querySelectorAll("button[aria-haspopup='menu']"))
+                    .filter(visible)
+                    .map((el) => (el.innerText || el.textContent || '').trim());
+            }"""
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("composer chip probe failed: %s", exc)
+        return False
+    return any(_COMPOSER_CHIP_TOKEN_RE.search(text or "") for text in texts)
+
+
+async def _reveal_composer_if_collapsed(page) -> None:
+    """Click "Add Media" to expose the composer when only the project toolbar shows.
+
+    Newer Flow project views open in a collapsed state where the composer chip
+    (and its Video/Frames tabs) is not yet mounted; the visible menu buttons are
+    project-level only (`more_vert`, `filter_list`, `add`, `settings_2`). The
+    composer is revealed by clicking the `add` / "Add Media" entry point. This is
+    the upstream fix for the
+    "Could not open composer menu for Video mode; visible menu buttons=
+    [more_vert, filter_list, add, settings_2, more_vert]" failure.
+    """
+    if await _composer_chip_present(page):
+        return
+
+    try:
+        visible_buttons = await _collect_visible_menu_button_texts(page)
+    except Exception as exc:  # pragma: no cover - defensive (e.g. detached page)
+        logger.debug("visible menu button probe failed during reveal: %s", exc)
+        visible_buttons = []
+    logger.info(
+        "Composer chip absent (visible menu buttons=%s); attempting Add Media reveal",
+        visible_buttons,
+    )
+
+    for selector in _ADD_MEDIA_BUTTON_SELECTORS:
+        try:
+            button = page.locator(selector).first
+            if not await button.is_visible(timeout=1500):
+                continue
+            await button.click(timeout=3000)
+            logger.info("Clicked Add Media entry point via: %s", selector)
+            await asyncio.sleep(0.6)
+            await _wait_for_composer(page, timeout_sec=8.0)
+            if await _composer_chip_present(page):
+                logger.info("Composer chip revealed after Add Media click")
+                return
+            logger.warning(
+                "Add Media click via %s did not reveal composer chip; trying next selector",
+                selector,
+            )
+        except Exception as exc:
+            logger.debug("Add Media reveal attempt failed for %s: %s", selector, exc)
+            continue
+
+    # Could not reveal the chip — let _ensure_video_composer_mode emit its own
+    # detailed diagnostics rather than masking the failure here.
+    logger.warning(
+        "Add Media reveal exhausted without exposing composer chip; "
+        "downstream composer-mode step will surface diagnostics"
+    )
 
 
 async def _open_composer_menu(page) -> None:
