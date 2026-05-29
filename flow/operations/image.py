@@ -89,11 +89,6 @@ _IMAGE_CHIP_FALLBACK_SELECTORS = (
     "button[aria-haspopup='menu']:has(i:text-is('photo'))",
     "button[aria-haspopup='menu']:has(i:text-is('image_search'))",
     "button[aria-haspopup='menu']:has(i:text-is('auto_awesome'))",
-    "button:has(i.material-icons:text-is('image'))",
-    "button:has(i:text-is('image'))",
-    "[role='button']:has(i:text-is('image'))",
-    "button:has(i:text-is('camera_alt'))",
-    "button:has(i:text-is('auto_awesome'))",
 )
 
 # Selector matching an already-open composer menu (mirrors the toggle guard in
@@ -719,14 +714,19 @@ async def _locate_image_chip(page):
         except Exception:
             continue
 
-    # JS broad fallback: mark the first icon-bearing button in the lower
-    # composer area so a Playwright Locator can resolve to it.
+    # JS broad fallback: mark the first icon-bearing composer chip (aria-haspopup)
+    # in the lower composer area so a Playwright Locator can resolve to it.
+    # Only menu-opening buttons are eligible; submit/delete/close icons are excluded.
     try:
         marked = await page.evaluate(
             """() => {
                 for (const el of document.querySelectorAll('[data-image-chip]')) {
                     el.removeAttribute('data-image-chip');
                 }
+                const DANGER_ICONS = new Set([
+                    'arrow_forward','arrow_upward','send','delete',
+                    'download','close','more_vert',
+                ]);
                 const vh = window.innerHeight;
                 const btns = [...document.querySelectorAll('button,[role="button"]')];
                 for (const btn of btns) {
@@ -734,8 +734,14 @@ async def _locate_image_chip(page):
                     if (r.top < vh * 0.65) continue;
                     if (r.width < 20 || r.height < 20) continue;
                     if (btn.offsetParent === null) continue;
+                    // Only target composer chips that open a menu.
+                    if (!btn.hasAttribute('aria-haspopup') && btn.getAttribute('role') !== 'menu') continue;
                     const icons = btn.querySelectorAll('i, .material-icons');
-                    if (icons.length > 0) { btn.setAttribute('data-image-chip', 'true'); return true; }
+                    if (icons.length === 0) continue;
+                    const iconText = (icons[0].textContent || '').trim();
+                    if (DANGER_ICONS.has(iconText)) continue;
+                    btn.setAttribute('data-image-chip', 'true');
+                    return true;
                 }
                 return false;
             }"""

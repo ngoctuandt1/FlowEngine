@@ -564,11 +564,6 @@ async def select_model(
         "button[aria-haspopup='menu']:has(i:text-is('photo'))",
         "button[aria-haspopup='menu']:has(i:text-is('image_search'))",
         "button[aria-haspopup='menu']:has(i:text-is('auto_awesome'))",
-        "button:has(i.material-icons:text-is('image'))",
-        "button:has(i:text-is('image'))",
-        "[role='button']:has(i:text-is('image'))",
-        "button:has(i:text-is('camera_alt'))",
-        "button:has(i:text-is('auto_awesome'))",
     ]
 
     opened = False
@@ -613,14 +608,25 @@ async def select_model(
         try:
             clicked = await page.evaluate("""() => {
                 const vh = window.innerHeight;
+                const DANGER_ICONS = new Set([
+                    'arrow_forward','arrow_upward','send','delete',
+                    'download','close','more_vert',
+                ]);
                 const btns = [...document.querySelectorAll('button,[role="button"]')];
                 for (const btn of btns) {
                     const r = btn.getBoundingClientRect();
                     if (r.top < vh * 0.65) continue;  // must be in lower portion
                     if (r.width < 20 || r.height < 20) continue;  // skip tiny
                     if (btn.offsetParent === null) continue;
+                    // Only click composer chips that open a menu, not action buttons.
+                    if (!btn.hasAttribute('aria-haspopup') && btn.getAttribute('role') !== 'menu') continue;
                     const icons = btn.querySelectorAll('i, .material-icons');
-                    if (icons.length > 0) { btn.click(); return btn.textContent || '(clicked)'; }
+                    if (icons.length === 0) continue;
+                    // Skip submit, delete, close and other known non-chip icons.
+                    const iconText = (icons[0].textContent || '').trim();
+                    if (DANGER_ICONS.has(iconText)) continue;
+                    btn.click();
+                    return btn.textContent || '(clicked)';
                 }
                 return null;
             }""")
