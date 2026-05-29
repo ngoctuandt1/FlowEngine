@@ -231,3 +231,108 @@ async def test_generate_video_tab_ai_disabled_and_miss_preserve_error(monkeypatc
     with pytest.raises(RuntimeError, match="Composer Video tab not found"):
         await generate_op._ensure_video_composer_mode(page)
     assert ai_spy.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_open_composer_menu_reveals_collapsed_then_succeeds(monkeypatch):
+    """When no chip is scored, reveal fires and a second collect yields a chip."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    monkeypatch.setattr(generate_op, "_composer_menu_is_open", AsyncMock(return_value=False))
+
+    collected = [
+        # First collect: only project-toolbar buttons (score 0).
+        [{"index": 0, "text": "add", "score": 0}],
+        # After reveal: a real composer chip (score > 0).
+        [{"index": 0, "text": "Veo x1 16:9", "score": 75, "dataState": "", "ariaExpanded": ""}],
+    ]
+    collect_spy = AsyncMock(side_effect=collected)
+    monkeypatch.setattr(generate_op, "_collect_composer_menu_button_candidates", collect_spy)
+    monkeypatch.setattr(generate_op, "_collect_visible_menu_button_texts", AsyncMock(return_value=["add"]))
+    reveal_spy = AsyncMock(return_value=True)
+    monkeypatch.setattr(generate_op, "_try_reveal_collapsed_composer", reveal_spy)
+    monkeypatch.setattr(generate_op, "_wait_for_composer_menu_open", AsyncMock(return_value=True))
+
+    chip = _make_locator(visible=True)
+    chip.nth = MagicMock(return_value=chip)
+    page = MagicMock()
+    page.locator = MagicMock(return_value=chip)
+
+    result = await generate_op._open_composer_menu_by_role_text(page, purpose="Video mode")
+
+    reveal_spy.assert_awaited_once()
+    assert collect_spy.await_count == 2
+    assert result is chip
+
+
+@pytest.mark.asyncio
+async def test_open_composer_menu_captures_forensics_on_raise(monkeypatch, tmp_path):
+    """Reveal fails -> raise, and a screenshot + full DOM is captured first."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    monkeypatch.setenv("FLOW_ERROR_CAPTURE_DIR", str(tmp_path))
+    monkeypatch.setenv("FLOW_ERROR_CAPTURE", "1")
+    monkeypatch.setattr(generate_op, "_composer_menu_is_open", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        generate_op,
+        "_collect_composer_menu_button_candidates",
+        AsyncMock(return_value=[{"index": 0, "text": "add", "score": 0}]),
+    )
+    monkeypatch.setattr(generate_op, "_collect_visible_menu_button_texts", AsyncMock(return_value=["add"]))
+    monkeypatch.setattr(generate_op, "_try_reveal_collapsed_composer", AsyncMock(return_value=False))
+
+    page = MagicMock()
+    page.locator = MagicMock(return_value=_make_locator(visible=False))
+    page.screenshot = AsyncMock()
+    page.content = AsyncMock(return_value="<html><body>full dom</body></html>")
+
+    with pytest.raises(RuntimeError, match="Could not open composer menu"):
+        await generate_op._open_composer_menu_by_role_text(page, purpose="Video mode")
+
+    page.screenshot.assert_awaited_once()
+    page.content.assert_awaited_once()
+    html_files = list(tmp_path.glob("*_composer_menu_fail.full.html"))
+    assert len(html_files) == 1
+    assert html_files[0].read_text(encoding="utf-8") == "<html><body>full dom</body></html>"
+
+
+@pytest.mark.asyncio
+async def test_reveal_collapsed_composer_cancels_file_chooser(monkeypatch):
+    """The bare 'add' fallback must cancel a file chooser, not leave it open."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    # All text/aria selectors miss; only the bare-icon selector is visible.
+    bare_sel = "button:has(i:text-is('add'))"
+
+    def _locator(selector):
+        return _make_locator(visible=(selector == bare_sel))
+
+    page = MagicMock()
+    page.locator = MagicMock(side_effect=_locator)
+
+    chooser = MagicMock()
+    chooser.set_files = AsyncMock()
+
+    chooser_info = MagicMock()
+    # Playwright's chooser_info.value is an awaitable that yields the chooser.
+    chooser_info.value = _chooser_awaitable(chooser)
+
+    chooser_ctx = MagicMock()
+    chooser_ctx.__aenter__ = AsyncMock(return_value=chooser_info)
+    chooser_ctx.__aexit__ = AsyncMock(return_value=False)
+    page.expect_file_chooser = MagicMock(return_value=chooser_ctx)
+    # No composer chip ever appears -> reveal returns False.
+    monkeypatch.setattr(
+        generate_op,
+        "_collect_composer_menu_button_candidates",
+        AsyncMock(return_value=[{"index": 0, "text": "add", "score": 0}]),
+    )
+
+    revealed = await generate_op._try_reveal_collapsed_composer(page)
+
+    assert revealed is False
+    chooser.set_files.assert_awaited_once_with([])
+
+
+def _chooser_awaitable(value):
+    async def _coro():
+        return value
+
+    return _coro()

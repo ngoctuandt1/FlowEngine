@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 from flow.navigation import flow_url, extract_project_id
@@ -1137,10 +1138,160 @@ async def _wait_for_composer_menu_open(page, timeout_ms: int = 2500) -> bool:
         return False
 
 
+# Project-level "Add Media" / composer entry-point selectors. In Flow's
+# newer collapsed project view the composer chip (with its Video/Frames
+# tabs) is NOT mounted until the prompt box is revealed — only project
+# toolbar buttons are visible (more_vert, filter_list, add, settings_2).
+# Clicking the "add" / "Add Media" entry point mounts the composer.
+# Text/aria variants are preferred over the bare icon button so we don't
+# accidentally trigger an unrelated overflow control; the bare-icon
+# fallback is last and is file-chooser-guarded by the caller.
+_COMPOSER_REVEAL_BUTTON_SELECTORS = (
+    "button[aria-label*='Add Media' i]",
+    "button:has(i:text-is('add')):has-text('Add Media')",
+    "button:has(i:text-is('add')):has-text('Add media')",
+    "[role='button']:has(i:text-is('add')):has-text('Add')",
+    "button:has(i:text-is('add'))",
+)
+
+
+async def _collect_visible_menu_button_texts(page) -> list[str]:
+    """Return trimmed text of every visible composer/menu button (diagnostics)."""
+    try:
+        return await page.evaluate(
+            r"""(selector) => {
+                const visible = (el) => {
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden'
+                        && parseFloat(s.opacity || '1') > 0
+                        && r.width > 0 && r.height > 0;
+                };
+                return Array.from(document.querySelectorAll(selector))
+                    .filter(visible)
+                    .map((el) => (el.innerText || el.textContent || '').trim())
+                    .filter((text) => text.length > 0);
+            }""",
+            _COMPOSER_MENU_BUTTON_SELECTOR,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("composer menu button text probe failed: %s", exc)
+        return []
+
+
+async def _try_reveal_collapsed_composer(page) -> bool:
+    """Click the project-level "Add Media" entry point to mount the composer.
+
+    Fires ONLY when no scored composer chip candidate exists — i.e. the
+    project view is genuinely collapsed and shows only project-toolbar
+    buttons. This must NOT affect normal flows where the chip is already
+    mounted (the caller gates on an empty scored-candidate list).
+
+    Guards against opening a file chooser: if clicking the bare-icon
+    fallback triggers an OS file picker, we cancel it (set no files) so we
+    don't leave a modal blocking the page. Returns True if a real composer
+    chip appears after the click.
+    """
+    for selector in _COMPOSER_REVEAL_BUTTON_SELECTORS:
+        try:
+            button = page.locator(selector).first
+            if not await button.is_visible(timeout=1000):
+                continue
+        except Exception as exc:
+            logger.debug("composer reveal selector %s not usable: %s", selector, exc)
+            continue
+
+        bare_icon = selector == "button:has(i:text-is('add'))"
+        try:
+            if bare_icon:
+                # The bare "add" button may open a file chooser instead of
+                # mounting the composer. Detect that and cancel it.
+                try:
+                    async with page.expect_file_chooser(timeout=1500) as chooser_info:
+                        await button.click(timeout=3000)
+                    chooser = await chooser_info.value
+                    logger.info(
+                        "composer reveal: bare 'add' button opened a file chooser; "
+                        "cancelling (wrong target for reveal)"
+                    )
+                    try:
+                        await chooser.set_files([])
+                    except Exception:
+                        pass
+                    continue
+                except Exception:
+                    # No file chooser -> the click landed on a non-upload
+                    # control; fall through to the chip re-check below.
+                    pass
+            else:
+                await button.click(timeout=3000)
+            logger.info("composer reveal: clicked entry point via %s", selector)
+        except Exception as exc:
+            logger.debug("composer reveal click failed for %s: %s", selector, exc)
+            continue
+
+        await asyncio.sleep(1.0)
+        revealed = [
+            candidate
+            for candidate in await _collect_composer_menu_button_candidates(page)
+            if candidate.get("score", 0) > 0
+        ]
+        if revealed:
+            logger.info(
+                "composer reveal succeeded via %s; composer chip now present",
+                selector,
+            )
+            return True
+        logger.debug("composer reveal via %s did not expose a chip; trying next", selector)
+
+    return False
+
+
+async def _capture_composer_menu_failure(page) -> None:
+    """Best-effort forensic capture (screenshot + FULL DOM) at the raise site."""
+    capture_dir = os.environ.get("FLOW_ERROR_CAPTURE_DIR", "")
+    if not capture_dir or os.environ.get("FLOW_ERROR_CAPTURE", "1") == "0":
+        return
+    try:
+        os.makedirs(capture_dir, exist_ok=True)
+        ts = int(time.time())
+        await page.screenshot(path=os.path.join(capture_dir, f"{ts}_composer_menu_fail.png"))
+        html = await page.content()
+        with open(
+            os.path.join(capture_dir, f"{ts}_composer_menu_fail.full.html"),
+            "w",
+            encoding="utf-8",
+        ) as fh:
+            fh.write(html)
+        logger.error(
+            "composer-menu fail forensics: %s_composer_menu_fail.{png,full.html}", ts
+        )
+    except Exception as exc:
+        logger.debug("composer-menu forensic capture failed: %s", exc)
+
+
 async def _open_composer_menu_by_role_text(page, *, purpose: str = "composer"):
     already_open = await _composer_menu_is_open(page)
     candidates = await _collect_composer_menu_button_candidates(page)
     scored_candidates = [candidate for candidate in candidates if candidate.get("score", 0) > 0]
+
+    # Reveal-on-collapse: when the project view is collapsed, the composer
+    # chip is not mounted and only project-toolbar buttons are visible. No
+    # candidate scores > 0 in that state. Attempt to reveal the composer by
+    # clicking the "Add Media" entry point, then re-collect. This only fires
+    # when the chip is genuinely absent, so normal (chip-present) flows are
+    # unaffected. See R22 failure: visible buttons=[more_vert, filter_list,
+    # add, settings_2, more_vert] (all project-level, no composer chip).
+    if not scored_candidates and not already_open:
+        logger.info(
+            "composer chip absent for %s (visible menu buttons=%s); attempting reveal",
+            purpose,
+            await _collect_visible_menu_button_texts(page),
+        )
+        if await _try_reveal_collapsed_composer(page):
+            candidates = await _collect_composer_menu_button_candidates(page)
+            scored_candidates = [c for c in candidates if c.get("score", 0) > 0]
+
     scored_candidates.sort(
         key=lambda candidate: (
             candidate.get("dataState") == "open",
@@ -1213,6 +1364,7 @@ async def _open_composer_menu_by_role_text(page, *, purpose: str = "composer"):
         }
         for candidate in candidates
     ]
+    await _capture_composer_menu_failure(page)
     raise RuntimeError(
         f"Could not open composer menu for {purpose}; visible menu buttons={diagnostics}"
     )
