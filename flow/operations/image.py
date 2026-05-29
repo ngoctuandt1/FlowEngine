@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 from playwright.async_api import Locator
@@ -35,6 +36,7 @@ from flow.operations.frames_to_video import (
 from flow.operations.generate import (
     _count_visible_cards,
     _dismiss_overlays,
+    _open_composer_menu_by_role_text,
     _type_prompt,
     _wait_for_composer,
 )
@@ -109,10 +111,46 @@ async def _composer_menu_is_open(page) -> bool:
     return False
 
 
+async def _capture_t2i_chip_failure(page) -> None:
+    """Best-effort screenshot + FULL DOM dump of the t2i chip-open failure state.
+
+    The guarded-only chip selectors can match nothing in newer Flow UIs, so the
+    Image-mode path times out before raising. We have no screenshot of that
+    state, so capture one here (plus the full HTML) to drive the next round of
+    selector work. Capture failures must never mask the original error.
+    """
+    cap_dir = os.environ.get("FLOW_ERROR_CAPTURE_DIR", "")
+    if not cap_dir or os.environ.get("FLOW_ERROR_CAPTURE", "1") == "0":
+        return
+    try:
+        os.makedirs(cap_dir, exist_ok=True)
+        ts = int(time.time())
+        await page.screenshot(path=os.path.join(cap_dir, f"{ts}_t2i_chip_fail.png"))
+        html = await page.content()
+        html_path = os.path.join(cap_dir, f"{ts}_t2i_chip_fail.full.html")
+        with open(html_path, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        logger.error("t2i chip-open forensics: %s_t2i_chip_fail.{png,full.html}", ts)
+    except Exception as exc:
+        logger.debug("t2i forensic capture failed: %s", exc)
+
+
 async def _open_composer_chip_fallback(page) -> bool:
-    """Open the composer chip via image-mode CSS variants, then a JS sweep.
+    """Open the composer chip via image-mode CSS variants, then text/JS sweeps.
 
     Returns True when a chip was clicked (or the menu was already open).
+
+    Strategy (least to most aggressive):
+      1. Guarded ``aria-haspopup='menu'`` icon variants (safe, but newer Flow
+         UIs render the Image chip without that attribute -> matches nothing).
+      2. Role + accessible-text opener (mirrors generate.py's
+         ``_open_composer_menu_by_role_text``): scores composer chips by their
+         visible text (model name / aspect / output count) instead of the icon
+         ligature, so it survives icon renames.
+      3. Tab-excluded broad JS match: re-allow the broad ``i:text-is('image')``
+         style sweep BUT keep the DANGER_ICONS guard, require the candidate to
+         sit in the bottom composer band, and exclude ``[role='tab']`` so we
+         never click an output tab.
     """
     if await _composer_menu_is_open(page):
         return True
@@ -128,30 +166,52 @@ async def _open_composer_chip_fallback(page) -> bool:
         except Exception:
             continue
 
-    # JS broad fallback: click the first icon-bearing button in the lower
-    # portion of the composer.
+    # Text/role fallback: score composer chips by visible text rather than the
+    # icon ligature. Reuses generate.py's scorer so the heuristic stays in sync.
+    try:
+        await _open_composer_menu_by_role_text(page, purpose="image composer")
+        if await _composer_menu_is_open(page):
+            logger.info("composer chip opened via role+text fallback")
+            return True
+    except Exception as exc:
+        logger.debug("composer chip role+text fallback failed: %s", exc)
+
+    # Tab-excluded broad JS sweep: re-allow the broad icon match (incl. the bare
+    # 'image' ligature) but keep the DANGER_ICONS guard, the bottom-band
+    # constraint, and exclude output tabs ([role='tab']). This is the
+    # last-resort path; the forensic capture upstream records the real chip
+    # structure when even this misses.
     try:
         clicked = await page.evaluate(
             """() => {
                 const vh = window.innerHeight;
+                const DANGER_ICONS = new Set([
+                    'arrow_forward','arrow_upward','send','delete',
+                    'download','close','more_vert',
+                ]);
                 const btns = [...document.querySelectorAll('button,[role="button"]')];
                 for (const btn of btns) {
+                    if (btn.getAttribute('role') === 'tab') continue;  // never click output tabs
                     const r = btn.getBoundingClientRect();
-                    if (r.top < vh * 0.65) continue;  // must be in lower portion
+                    if (r.top < vh * 0.65) continue;  // must be in lower composer band
                     if (r.width < 20 || r.height < 20) continue;  // skip tiny
                     if (btn.offsetParent === null) continue;
                     const icons = btn.querySelectorAll('i, .material-icons');
-                    if (icons.length > 0) { btn.click(); return btn.textContent || '(clicked)'; }
+                    if (icons.length === 0) continue;
+                    const iconText = (icons[0].textContent || '').trim();
+                    if (DANGER_ICONS.has(iconText)) continue;
+                    btn.click();
+                    return btn.textContent || '(clicked)';
                 }
                 return null;
             }"""
         )
         if clicked:
-            logger.info("composer chip opened via JS broad fallback, textContent=%r", clicked)
+            logger.info("composer chip opened via tab-excluded JS sweep, textContent=%r", clicked)
             await asyncio.sleep(0.3)
             return True
     except Exception as exc:
-        logger.debug("composer chip JS broad fallback failed: %s", exc)
+        logger.debug("composer chip tab-excluded JS sweep failed: %s", exc)
 
     return False
 
@@ -170,6 +230,9 @@ async def _open_image_composer_menu(page) -> None:
         logger.info("primary composer opener failed (%s); trying image fallbacks", exc)
         if await _open_composer_chip_fallback(page):
             return
+        # Every opener path missed -> the chip structure is unknown. Capture the
+        # full DOM + screenshot before re-raising so the next round has evidence.
+        await _capture_t2i_chip_failure(page)
         raise
 
 
@@ -549,9 +612,15 @@ async def _ensure_image_mode(page) -> None:
     groups in the same menu also use ``data-state='active'``.
     """
     menu_tabs = page.locator("[role='menu'][data-state='open'] button[role='tab']")
-    await page.locator("[role='menu'][data-state='open']").wait_for(
-        state="visible", timeout=3000,
-    )
+    try:
+        await page.locator("[role='menu'][data-state='open']").wait_for(
+            state="visible", timeout=5000,
+        )
+    except Exception:
+        # The chip "click" never opened a Radix menu -> capture the unknown
+        # chip structure before the timeout propagates.
+        await _capture_t2i_chip_failure(page)
+        raise
 
     count = await menu_tabs.count()
     if count == 0:
@@ -730,6 +799,7 @@ async def _locate_image_chip(page):
                 const vh = window.innerHeight;
                 const btns = [...document.querySelectorAll('button,[role="button"]')];
                 for (const btn of btns) {
+                    if (btn.getAttribute('role') === 'tab') continue;  // never mark output tabs
                     const r = btn.getBoundingClientRect();
                     if (r.top < vh * 0.65) continue;
                     if (r.width < 20 || r.height < 20) continue;
@@ -754,6 +824,7 @@ async def _locate_image_chip(page):
     except Exception as exc:
         logger.debug("image chip JS broad fallback failed: %s", exc)
 
+    await _capture_t2i_chip_failure(page)
     raise RuntimeError("Could not locate image composer chip")
 
 
