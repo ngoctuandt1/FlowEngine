@@ -533,6 +533,30 @@ async def _assert_l2_available(page, op_name: str, profile: str | None) -> None:
         current_url = str(getattr(page, "url", "") or "")
         if "/edit/" not in current_url:
             return
+        # Dump visible buttons + screenshot to diagnose what's actually on screen
+        try:
+            eval_fn = getattr(page, "evaluate", None)
+            if callable(eval_fn):
+                buttons = await eval_fn(
+                    "() => Array.from(document.querySelectorAll('button,[role=\"button\"]'))"
+                    ".filter(el => el.offsetParent !== null)"
+                    ".slice(0, 30)"
+                    ".map(el => [el.textContent?.trim().slice(0,40), el.getAttribute('title'), el.getAttribute('aria-label')].filter(Boolean).join('|'))"
+                )
+                logger.warning("_assert_l2: visible-buttons url=%s buttons=%s", current_url[-60:], buttons)
+        except Exception as _dump_exc:
+            logger.warning("_assert_l2: button dump failed: %s", _dump_exc)
+        try:
+            import os as _os, time as _time
+            screenshot_fn = getattr(page, "screenshot", None)
+            if callable(screenshot_fn):
+                _cap_dir = _os.environ.get("FLOW_ERROR_CAPTURE_DIR", "/tmp")
+                _ts = int(_time.time())
+                _path = f"{_cap_dir}/{_ts}_l2_absent_{op_name.replace('/', '_')}.png"
+                await screenshot_fn(path=_path, full_page=False)
+                logger.warning("_assert_l2: screenshot saved %s", _path)
+        except Exception as _sc_exc:
+            logger.warning("_assert_l2: screenshot failed: %s", _sc_exc)
         logger.info(
             "L2 toolbar absent for op=%s profile=%s — treating as paid_tier_required (2026-05 silent-hide variant)",
             op_name,
