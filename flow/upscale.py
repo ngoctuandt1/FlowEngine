@@ -180,11 +180,35 @@ async def _open_edit_download_menu(page, wait_sec: int = 10) -> bool:
         return False
     await asyncio.sleep(0.5)
     try:
-        await page.wait_for_selector('[role="menuitem"]', timeout=10000)
+        # Reduced from 10000 to 3000ms: new 2026-05 Flow UI no longer shows a
+        # quality dropdown — clicking Download triggers a direct browser download.
+        # Fail fast so _try_direct_download_via_button can handle the new path.
+        await page.wait_for_selector('[role="menuitem"]', timeout=3000)
         return True
     except Exception as exc:
         logger.warning("[UPSCALE] Download menu did not open: %s", exc)
         return False
+
+
+async def _try_direct_download_via_button(page, downloads: list, out_dir, prefix: str) -> str | None:
+    """2026-05 new UI: Download button triggers direct download (no quality menu).
+
+    Clicks the Download button inside `expect_download` and captures the file.
+    Returns the saved path or None if no download event fires within 5s.
+    """
+    try:
+        async with page.expect_download(timeout=5000) as dl_info:
+            if not await _click_edit_download_button(page, wait_sec=10):
+                return None
+        download = await dl_info.value
+        if download:
+            path = await _save_download(download, prefix, "dl", out_dir)
+            if path:
+                logger.warning("[UPSCALE] Direct download captured via new UI: %s", path)
+                return path
+    except Exception as exc:
+        logger.info("[UPSCALE] Direct download not triggered (old UI or error): %s", exc)
+    return None
 
 
 async def _log_menuitem_texts(page, *, prefix: str) -> list[str]:
@@ -470,8 +494,16 @@ async def upscale_and_download_1080p(
     page.on("download", _on_download)
 
     try:
+        # 2026-05 new UI: try direct download first (button → immediate browser dl).
+        # If the quality menu no longer exists this captures the download in <5s.
+        # Only run once before the retry loop; old UI won't trigger a download here
+        # so the loop's menu-based path still handles legacy behaviour.
+        direct_path = await _try_direct_download_via_button(page, downloads, out_dir, prefix)
+        if direct_path:
+            return direct_path
+
         for attempt in range(1, max_retries + 1):
-            logger.info("[UPSCALE] Attempt %d/%d", attempt, max_retries)
+            logger.info("[UPSCALE] Attempt %d/%d (menu path)", attempt, max_retries)
 
             if not await _open_edit_download_menu(page):
                 await asyncio.sleep(1.5)
