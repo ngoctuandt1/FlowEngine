@@ -95,32 +95,120 @@ async def ensure_agent_settings(
 # --------------------------------------------------------------------------
 
 async def _open_panel(page) -> bool:
-    """Click ``tune Settings`` and wait for the panel to render."""
+    """Wait for the composer ``tune Settings`` button, click it, wait for panel.
+
+    Robust against slow composer mounts (poll for the button ~10s) and against
+    JS ``.click()`` no-ops (Playwright ``locator.click`` fallback). Emits a
+    diagnostic line (visible button count + tune-match + click result) so the
+    next live run is debuggable without a screenshot.
+    """
+    # 1. Poll for the tune Settings button to exist + be visible (slow mounts).
+    found = await _wait_tune_button(page)
+
+    # 2. Diagnostic snapshot of the composer state.
+    diag = await page.evaluate(
+        _VISIBLE_FN
+        + """
+        () => {
+            const btns = Array.from(document.querySelectorAll('button, [role="button"]'))
+                .filter(__visible);
+            const tuneMatch = btns.some((b) => {
+                const hasTune = Array.from(b.querySelectorAll('i, span, [class*="symbol" i]'))
+                    .some((i) => (i.textContent || '').trim().toLowerCase() === 'tune');
+                return hasTune || /settings/i.test((b.textContent || ''));
+            });
+            return { visibleButtons: btns.length, tuneMatch };
+        }
+        """
+    )
+    logger.info(
+        "agent_settings: composer probe -> visibleButtons=%s tuneMatch=%s (poll-found=%s)",
+        diag.get("visibleButtons"), diag.get("tuneMatch"), found,
+    )
+
+    # 3. Click via JS (targets the real <button> via closest()).
     clicked = await page.evaluate(
         _VISIBLE_FN
         + """
         () => {
-            const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
-            for (const b of btns) {
-                if (!__visible(b)) continue;
-                const hasTune = Array.from(b.querySelectorAll('i, [class*="symbol" i]'))
-                    .some((i) => (i.textContent || '').trim() === 'tune');
-                const txt = (b.textContent || '').trim();
-                if (hasTune || /\\bSettings\\b/.test(txt)) {
-                    if (hasTune || /Settings/.test(txt)) { b.click(); return true; }
-                }
-            }
-            return false;
+            const cand = Array.from(document.querySelectorAll('button, [role="button"]'))
+                .filter(__visible)
+                .find((b) => {
+                    const hasTune = Array.from(b.querySelectorAll('i, span, [class*="symbol" i]'))
+                        .some((i) => (i.textContent || '').trim().toLowerCase() === 'tune');
+                    return hasTune || /settings/i.test((b.textContent || ''));
+                });
+            if (!cand) return false;
+            const target = cand.closest('button') || cand;
+            try { target.scrollIntoView({ block: 'center' }); } catch (e) {}
+            target.click();
+            return true;
         }
         """
     )
-    if not clicked:
-        logger.warning("agent_settings: tune Settings button not found")
-        return False
-    return await _wait_panel_visible(page)
+    logger.info("agent_settings: tune click (js) -> %s", clicked)
+
+    if clicked and await _wait_panel_visible(page):
+        return True
+
+    # 4. Playwright locator fallback — handles cases where JS .click() is a no-op
+    #    (e.g. React handler bound to a pointer event, or overlay capture).
+    if await _click_tune_via_locator(page):
+        logger.info("agent_settings: tune click (locator fallback) dispatched")
+        if await _wait_panel_visible(page):
+            return True
+
+    logger.warning("agent_settings: tune Settings button not found / panel did not open")
+    return False
 
 
-async def _wait_panel_visible(page, timeout_ms: int = 5000) -> bool:
+async def _wait_tune_button(page, timeout_ms: int = 10000) -> bool:
+    """Poll until a visible tune/Settings composer button exists."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        try:
+            found = await page.evaluate(
+                _VISIBLE_FN
+                + """
+                () => Array.from(document.querySelectorAll('button, [role="button"]'))
+                    .filter(__visible)
+                    .some((b) => {
+                        const hasTune = Array.from(b.querySelectorAll('i, span, [class*="symbol" i]'))
+                            .some((i) => (i.textContent || '').trim().toLowerCase() === 'tune');
+                        return hasTune || /settings/i.test((b.textContent || ''));
+                    })
+                """
+            )
+            if found:
+                return True
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("agent_settings: tune-button probe failed: %s", exc)
+        await _sleep(0.3)
+    return False
+
+
+async def _click_tune_via_locator(page) -> bool:
+    """Playwright-native click fallback (real pointer events, auto-scroll)."""
+    try:
+        # Button whose accessible text contains "Settings" (renders "tuneSettings").
+        loc = page.locator("button", has_text="Settings")
+        n = await loc.count()
+        for i in range(n):
+            cand = loc.nth(i)
+            try:
+                if await cand.is_visible():
+                    await cand.scroll_into_view_if_needed(timeout=2000)
+                    await cand.click(timeout=3000)
+                    return True
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.debug("agent_settings: locator fallback failed: %s", exc)
+    return False
+
+
+async def _wait_panel_visible(page, timeout_ms: int = 6000) -> bool:
+    """Poll for the panel heading text (case-insensitive, allows animate-in)."""
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
         try:
@@ -128,10 +216,10 @@ async def _wait_panel_visible(page, timeout_ms: int = 5000) -> bool:
                 _VISIBLE_FN
                 + """
                 () => {
-                    const wanted = ['Agent settings', 'Confirm before generating'];
+                    const wanted = ['agent settings', 'confirm before generating'];
                     const els = Array.from(document.querySelectorAll('h1,h2,h3,h4,div,span,p'));
                     return els.some((el) => __visible(el)
-                        && wanted.some((w) => (el.textContent || '').includes(w)));
+                        && wanted.some((w) => (el.textContent || '').toLowerCase().includes(w)));
                 }
                 """
             )

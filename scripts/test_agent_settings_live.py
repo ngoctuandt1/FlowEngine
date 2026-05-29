@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Live smoke test for flow.agent_settings.ensure_agent_settings.
 
-Opens a FlowClient, creates a fresh project, opens the Agent settings panel,
-applies confirm=Never + count=1, and screenshots before/after. NO generation
-or submit happens — this is a zero-credit UI probe.
+Opens a FlowClient on an EXISTING project (the redesigned Flow UI dropped the
+homepage "+ New project" button), opens the Agent settings panel, applies
+confirm=Never + count=1, and screenshots before/after. NO generation or submit
+happens — this is a zero-credit UI probe.
 
 Usage::
 
-    python scripts/test_agent_settings_live.py <profile>
+    python scripts/test_agent_settings_live.py <profile> [project_url]
+
+If ``project_url`` is given, navigate straight to it. Otherwise navigate to the
+Flow root and click the first existing project tile (``a[href*='/project/']``).
 
 Requires a real Chrome + logged-in Google session (debian worker host). On a
 headless/Windows dev box it will likely fail at login; that is expected.
@@ -23,8 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flow.client import FlowClient
 from flow.agent_settings import ensure_agent_settings
-from flow.operations.frames_to_video import _click_new_project
-from flow.operations.generate import _dismiss_overlays, _wait_for_composer
+from flow.operations.generate import _dismiss_overlays
 from flow.navigation import flow_url
 
 logging.basicConfig(
@@ -65,16 +68,31 @@ async def _never_radio_checked(page) -> bool:
         return False
 
 
-async def main(profile: str) -> int:
+async def _open_existing_project(page) -> None:
+    """Go to Flow root and click the first existing project tile."""
+    await page.goto(flow_url(""), wait_until="domcontentloaded", timeout=30000)
+    await _dismiss_overlays(page)
+    await asyncio.sleep(2)
+    tile = page.locator("a[href*='/project/']").first
+    await tile.wait_for(state="visible", timeout=20000)
+    logger.info("clicking first existing project tile...")
+    await tile.click()
+    await page.wait_for_url("**/project/**", timeout=20000)
+
+
+async def main(profile: str, project_url: str | None) -> int:
     async with FlowClient(profile) as client:
         page = client.page
-        await page.goto(flow_url(""), wait_until="domcontentloaded", timeout=30000)
-        await _dismiss_overlays(page)
 
-        logger.info("creating new project...")
-        await _click_new_project(page)
-        await page.wait_for_url("**/project/**", timeout=20000)
-        await _wait_for_composer(page)
+        if project_url:
+            logger.info("navigating to existing project: %s", project_url)
+            await page.goto(project_url, wait_until="domcontentloaded", timeout=30000)
+            await _dismiss_overlays(page)
+        else:
+            await _open_existing_project(page)
+
+        # Give the composer time to mount; ensure_agent_settings also polls.
+        await asyncio.sleep(4)
         await _shot(page, "before")
 
         ok = await ensure_agent_settings(page, confirm_never=True, count=1)
@@ -88,7 +106,12 @@ async def main(profile: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("usage: python scripts/test_agent_settings_live.py <profile>", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print(
+            "usage: python scripts/test_agent_settings_live.py <profile> [project_url]",
+            file=sys.stderr,
+        )
         sys.exit(2)
-    sys.exit(asyncio.run(main(sys.argv[1])))
+    _profile = sys.argv[1]
+    _url = sys.argv[2] if len(sys.argv) == 3 else None
+    sys.exit(asyncio.run(main(_profile, _url)))
