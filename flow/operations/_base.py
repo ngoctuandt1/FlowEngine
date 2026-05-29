@@ -638,90 +638,199 @@ async def agent_edit_ui_present(page, *, timeout_ms: int = 2000) -> bool:
     return False
 
 
+# Generate API endpoints that confirm a real agent-edit submission fired.
+# After pressing Enter we wait for one of these to be requested; if none
+# fires the Enter went nowhere (or only opened the asset picker) and we
+# must fail fast instead of waiting out the 180s no_signal_timeout.
+_AGENT_SUBMIT_REQUEST_TOKENS = (
+    "batchasync",
+    "generatecontent",
+    ":generate",
+    "/generate",
+    "generatevideo",
+    "runagent",
+)
+
+# Visible markers that an asset picker / media-search modal is open over
+# the composer (R22: "No results found" + "Search assets" + asset tabs).
+# Used to decide whether an Escape press is warranted — Escape would
+# otherwise close the editor dialog entirely.
+_AGENT_ASSET_PICKER_TEXT_MARKERS = (
+    "No results found",
+    "Search assets",
+    "Upload media",
+)
+
+
+async def _agent_asset_picker_open(page, *, timeout_ms: int = 400) -> bool:
+    """Return True when an asset-picker / media-search modal is visible.
+
+    Detected via either a visible ``[role='dialog']`` or one of the
+    distinctive asset-picker text markers (R22 forensic). Only when this
+    is True should the caller press Escape to recover; a blind Escape
+    can close the whole editor.
+    """
+    if await _role_is_visible(page, "dialog", name="", timeout_ms=timeout_ms):
+        return True
+    for marker in _AGENT_ASSET_PICKER_TEXT_MARKERS:
+        if await _text_is_visible(page, marker, exact=False, timeout_ms=timeout_ms):
+            return True
+    return False
+
+
+async def _wait_for_generate_request(page, *, timeout_ms: int) -> bool:
+    """Wait up to *timeout_ms* for a generate/batchAsync request to fire.
+
+    Returns True once a request whose URL matches one of
+    ``_AGENT_SUBMIT_REQUEST_TOKENS`` is observed. Returns False on timeout
+    or when the page lacks a usable ``wait_for_event`` (test doubles).
+    """
+    waiter = getattr(page, "wait_for_event", None)
+    if not callable(waiter):
+        return False
+
+    def _is_generate(request) -> bool:
+        try:
+            url = str(getattr(request, "url", "") or "").lower()
+        except Exception:
+            return False
+        return any(token in url for token in _AGENT_SUBMIT_REQUEST_TOKENS)
+
+    try:
+        result = waiter("request", predicate=_is_generate, timeout=timeout_ms)
+        if inspect.isawaitable(result):
+            await result
+        return True
+    except Exception:
+        return False
+
+
+async def _press_editor_enter(page, editor) -> None:
+    """Focus the agent composer editor and press Enter to submit."""
+    await editor.click(timeout=3000)
+    await asyncio.sleep(0.2)
+    keyboard = getattr(page, "keyboard", None)
+    if keyboard is None:
+        raise RuntimeError("page.keyboard unavailable")
+    await keyboard.press("Enter")
+
+
+async def _capture_submit_failure(page) -> None:
+    """Screenshot the page on submit failure (timestamp-based, env-gated)."""
+    _cap_dir = os.environ.get("FLOW_ERROR_CAPTURE_DIR", "")
+    if not _cap_dir or os.environ.get("FLOW_ERROR_CAPTURE", "1") == "0":
+        return
+    try:
+        os.makedirs(_cap_dir, exist_ok=True)
+        _fname = os.path.join(_cap_dir, f"{int(time.time())}_submit_fail.png")
+        await page.screenshot(path=_fname)
+        logger.error("submit_via_agent_edit_ui: submit failed, screenshot: %s", _fname)
+    except Exception as _e:
+        logger.debug("submit_via_agent_edit_ui: screenshot failed: %s", _e)
+
+
 async def submit_via_agent_edit_ui(page, command: str) -> bool:
-    """Type *command* into the 'Describe your edit(s)' input and click Submit.
+    """Type *command* into the 'Describe your edit(s)' input and submit it.
 
-    Returns True if the submit button was successfully clicked.
+    The 2026-05 Flow agent composer is a standard chat-style input that
+    submits on the Enter key — NOT via a toolbar button. R22 forensic
+    capture showed the previous button-based submit was clicking the
+    ``add_2`` add-media button, which opens an asset picker and fires zero
+    generate API calls (the job then died on a 180s no_signal_timeout).
+
+    Submit flow:
+      1. Type the command into ``[contenteditable='true']``.
+      2. Focus the editor and press Enter (primary submit path).
+      3. If an asset picker opened (Enter hit the wrong target), press
+         Escape once, refocus, and retry Enter.
+      4. Verify a generate/batchAsync request actually fired within ~4s.
+         If none did, log a warning and return False so the caller fails
+         fast with an accurate signal.
+
+    Returns True only when a generate request was observed after Enter.
     The caller is responsible for waiting for the generation result.
-
-    Slate contenteditable approach: click → select-all → type via keyboard.
     """
     locator = getattr(page, "locator", None)
     if not callable(locator):
         return False
 
-    # Find the single contenteditable editor
+    # Find the single contenteditable editor.
     editor = locator("[contenteditable='true']").first
     if not await _locator_is_visible(editor, timeout_ms=3000):
         logger.warning("submit_via_agent_edit_ui: contenteditable not visible")
         return False
 
+    # Type the command (keep existing select-all + keyboard typing logic).
     try:
         await editor.click(timeout=3000)
         await asyncio.sleep(0.3)
-        # Select all existing content and replace
         keyboard = getattr(page, "keyboard", None)
         if keyboard:
             await keyboard.press("Control+a")
             await asyncio.sleep(0.1)
         await editor.type(command, delay=30)
         logger.info("submit_via_agent_edit_ui: typed command=%r", command[:60])
-        await asyncio.sleep(0.5)  # allow submit button to become enabled
+        await asyncio.sleep(0.3)
     except Exception as exc:
         logger.warning("submit_via_agent_edit_ui: typing failed: %s", exc)
         return False
 
-    # Click the submit button: button containing arrow_forward icon
-    submit_selectors = (
-        "button:has(i:text-is('arrow_forward'))",
-        "[role='button']:has(i:text-is('arrow_forward'))",
-        "button:has-text('arrow_forwardCreate')",
-        "button[type='submit']",
-        "button:has(span:text-is('arrow_forward'))",
-        "button:has-text('Create')",
-        "[role='button']:has-text('Create')",
-    )
-    for sel in submit_selectors:
+    # Primary submit: Enter key. Retry once if an asset picker pops open.
+    submitted_via_enter = False
+    for attempt in range(2):
         try:
-            btn = locator(sel).last  # last = rightmost in bottom bar
-            if await _locator_is_visible(btn, timeout_ms=3000):
-                await btn.click(timeout=3000)
-                logger.info("submit_via_agent_edit_ui: clicked submit via %r", sel)
-                return True
-        except Exception:
+            await _press_editor_enter(page, editor)
+        except Exception as exc:
+            logger.warning(
+                "submit_via_agent_edit_ui: Enter press failed (attempt %d): %s",
+                attempt + 1,
+                exc,
+            )
+            break
+
+        await asyncio.sleep(0.3)
+
+        # Only press Escape when an asset picker is actually open — a blind
+        # Escape would otherwise close the editor dialog entirely.
+        if await _agent_asset_picker_open(page):
+            logger.warning(
+                "submit_via_agent_edit_ui: asset picker opened after Enter "
+                "(attempt %d) — pressing Escape and retrying",
+                attempt + 1,
+            )
+            kb = getattr(page, "keyboard", None)
+            if kb is not None:
+                try:
+                    await kb.press("Escape")
+                    await asyncio.sleep(0.3)
+                except Exception as exc:
+                    logger.debug(
+                        "submit_via_agent_edit_ui: Escape press failed: %s", exc
+                    )
             continue
 
-    # JS fallback: find last visible button containing arrow_forward or Create text
-    try:
-        clicked = await page.evaluate("""() => {
-            const btns = [...document.querySelectorAll('button,[role="button"]')];
-            for (const btn of btns.reverse()) {
-                if (btn.offsetParent === null) continue;
-                const t = btn.textContent || '';
-                if (t.includes('arrow_forward') || (t.includes('Create') && !t.includes('add_2'))) {
-                    btn.click();
-                    return true;
-                }
-            }
-            return false;
-        }""")
-        if clicked:
-            logger.info("submit_via_agent_edit_ui: submitted via JS fallback")
-            return True
-    except Exception as exc:
-        logger.warning("submit_via_agent_edit_ui: JS fallback failed: %s", exc)
+        submitted_via_enter = True
+        break
 
-    logger.warning("submit_via_agent_edit_ui: submit button not found after typing")
-    # Screenshot on failure using project's capture convention
-    _cap_dir = os.environ.get("FLOW_ERROR_CAPTURE_DIR", "")
-    if _cap_dir and os.environ.get("FLOW_ERROR_CAPTURE", "1") != "0":
-        try:
-            os.makedirs(_cap_dir, exist_ok=True)
-            _fname = os.path.join(_cap_dir, f"{int(time.time())}_submit_fail.png")
-            await page.screenshot(path=_fname)
-            logger.error("submit_via_agent_edit_ui: no submit button found, screenshot: %s", _fname)
-        except Exception as _e:
-            logger.debug("submit_via_agent_edit_ui: screenshot failed: %s", _e)
+    if not submitted_via_enter:
+        logger.warning(
+            "submit_via_agent_edit_ui: could not submit via Enter (asset "
+            "picker kept reopening or Enter failed)"
+        )
+        await _capture_submit_failure(page)
+        return False
+
+    # Verify generation actually started — a generate/batchAsync request
+    # must fire. Without this, an Enter that silently did nothing would
+    # leave the caller to wait out the full 180s no_signal_timeout.
+    if await _wait_for_generate_request(page, timeout_ms=4000):
+        logger.info("submit_via_agent_edit_ui: generate request observed after Enter")
+        return True
+
+    logger.warning(
+        "submit_via_agent_edit_ui: no generate request observed after Enter"
+    )
+    await _capture_submit_failure(page)
     return False
 
 
