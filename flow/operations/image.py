@@ -22,7 +22,9 @@ from flow.download import download_video
 from flow.login import handle_login_redirect, is_login_page
 from flow.model_selector import _close_model_panel
 from flow.navigation import extract_project_id, flow_url
-from flow.submit import submit_with_confirmation
+# Retained import: the active t2i path now submits via submit_l1_prompt, but
+# tests (and any external callers) still reference this symbol on the module.
+from flow.submit import submit_with_confirmation  # noqa: F401
 from flow.wait import wait_for_completion
 from flow.operations._base import resolve_final_media_id
 from flow.operations._l1_status_poll import download_via_url
@@ -39,7 +41,22 @@ from flow.operations.generate import (
     _open_composer_menu_by_role_text,
     _type_prompt,
     _wait_for_composer,
+    submit_l1_prompt,
 )
+
+# 2026-05 Flow redesign: no Image/Video mode tabs. Output type = image model
+# selected in the global "Agent settings" panel (image default = Nano Banana).
+# The chip/mode-switch helpers below are retained for the reverse-API path and
+# existing tests but are no longer on the active UI path. Guarded import so this
+# module loads before the sibling agent_settings PR lands.
+try:
+    from flow.agent_settings import ensure_agent_settings
+except ImportError:  # pragma: no cover - exercised before sibling PR merges
+    ensure_agent_settings = None
+
+# Default image model label matched against the Agent settings dropdown.
+# Probe 2026-05-29: image generation default dropdown shows "🍌 Nano Banana 2".
+_DEFAULT_IMAGE_MODEL_LABEL = "Nano Banana"
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +426,19 @@ async def _try_image_replay_from_template(
         return None
 
 
+def _agent_settings_image_model(model: str | None) -> str:
+    """Resolve the Agent-settings image-model dropdown substring for a model key.
+
+    The Agent settings panel matches the image model by substring against the
+    live dropdown items (e.g. "Nano Banana 2", "Imagen 4"). We translate the
+    requested model into its display label; unknown input falls back to the
+    Nano Banana default rather than skipping the dropdown, because t2i depends
+    on an image model being selected to produce image (not video) output.
+    """
+    normalized = _normalize_image_model(model)
+    return IMAGE_MODEL_MAP.get(normalized, _DEFAULT_IMAGE_MODEL_LABEL)
+
+
 async def text_to_image(
     client,
     prompt: str,
@@ -490,18 +520,36 @@ async def text_to_image(
     project_id = extract_project_id(project_url_full)
 
     await _wait_for_composer(page)
-    await _switch_to_image_output(page)
-    await _close_composer_menu(page)
+
+    # 2026-05 Flow redesign: no Image-mode tab to switch to. Output type is set
+    # by the image default MODEL in the global Agent settings panel (default
+    # "Nano Banana"). We resolve the requested model to its display label and
+    # configure aspect + count there too. confirm_never is required so the agent
+    # auto-generates instead of waiting for a manual confirm click.
+    image_model_label = _agent_settings_image_model(model)
+    if ensure_agent_settings is None:
+        raise RuntimeError(
+            "Agent settings module unavailable - flow.agent_settings import "
+            "failed; cannot configure the single-composer t2i path"
+        )
+    settings_ok = await ensure_agent_settings(
+        page,
+        confirm_never=True,
+        image_model=image_model_label,
+        aspect=aspect_ratio,
+        count=1,
+    )
+    if not settings_ok:
+        raise RuntimeError("Agent settings panel did not open - cannot configure t2i")
 
     if ref_image_path:
         await _upload_reference_image(page, ref_image_path)
 
-    await _type_prompt(page, prompt)
-    await _select_image_model(page, model)
-    await _set_image_aspect_ratio(page, aspect_ratio)
-    await _set_image_output_count(page, 1)
-
     if capture_ready:
+        # The reverse-API replay still wants the prompt typed into the composer
+        # (its capture template is keyed off a real submit attempt). Type it
+        # first, attempt replay, and return on success.
+        await _type_prompt(page, prompt)
         replay_result = await _try_image_replay_from_template(
             client,
             prompt=prompt,
@@ -512,16 +560,10 @@ async def text_to_image(
         if replay_result is not None:
             return replay_result
 
-    before_cards = await _count_visible_cards(page)
     client.clear_captures()
-    confirmed = await submit_with_confirmation(
-        client,
-        before_card_count=before_cards,
-        timeout_sec=15.0,
-        prompt_text=prompt,
-    )
+    confirmed = await submit_l1_prompt(page, prompt)
     if not confirmed:
-        raise RuntimeError("Submit not confirmed - generation may not have started")
+        raise RuntimeError("Submit not confirmed - no generate request fired after Create")
 
     result = await wait_for_completion(client, job_type="text-to-image")
     if not result.get("done"):

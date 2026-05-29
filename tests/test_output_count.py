@@ -168,18 +168,23 @@ def test_set_output_count_rejects_out_of_range():
         asyncio.run(_set_output_count(page, 5))
 
 
-def test_text_to_video_calls_set_output_count():
-    """B35 source trip-wire: `text_to_video` MUST call `_set_output_count`
-    in its body. Prevents silent regression where someone removes the
-    Step 4.5 call and engine reverts to account-default (often x2 =
-    credit leak).
+def test_text_to_video_pins_output_count_x1():
+    """B35 source trip-wire: `text_to_video` MUST pin the output count to x1
+    before submit. Prevents silent regression where engine reverts to the
+    Flow account default (often x2 = credit leak).
+
+    2026-05 Flow redesign: the composer-chip `_set_output_count` call is gone
+    (no mode tabs / composer chip). The x1 count is now pinned through the
+    global Agent settings panel via `ensure_agent_settings(... count=1)`. The
+    credit-leak guard is preserved — only the mechanism changed.
 
     Evidence for the trip-wire: Run 10 + Run 12 + earlier Tier 2 runs
     all submitted x2 (per user screenshot 2026-04-19) because the
     pre-B35 pipeline relied on the Flow account default — burned
     ~2× LP across every run without being caught."""
     src = inspect.getsource(text_to_video)
-    assert "_set_output_count(" in src, (
-        "B35: text_to_video must call _set_output_count before submit. "
-        "Removing this call re-opens the x2 credit leak."
+    assert "ensure_agent_settings(" in src and "count=1" in src, (
+        "B35: text_to_video must pin output count to x1 before submit "
+        "(now via ensure_agent_settings(... count=1)). Removing this re-opens "
+        "the x2 credit leak."
     )

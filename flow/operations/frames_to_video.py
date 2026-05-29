@@ -26,6 +26,7 @@ from flow.operations._base import resolve_final_media_id
 from flow.operations._l1_status_poll import download_via_url, poll_status_via_api
 from flow.operations.generate import (
     NEW_PROJECT_SELECTORS,
+    _agent_settings_video_model,
     _count_visible_cards,
     _dismiss_overlays,
     _ensure_video_composer_mode,
@@ -36,7 +37,19 @@ from flow.operations.generate import (
     _type_prompt,
     _verify_frames_upload_affordances,
     _wait_for_composer,
+    submit_l1_prompt,
 )
+
+# 2026-05 Flow redesign: no Video/Frames mode tabs. Frames are supplied by
+# uploading start/end images through the "add Add Media" entry point; output
+# type + model + aspect + count live in the global "Agent settings" panel. The
+# mode-tab/composer-chip helpers (still imported above) remain for the
+# reverse-API path and existing tests but are no longer on the active UI path.
+# Guarded import so this module loads before the sibling agent_settings PR lands.
+try:
+    from flow.agent_settings import ensure_agent_settings
+except ImportError:  # pragma: no cover - exercised before sibling PR merges
+    ensure_agent_settings = None
 
 try:  # Wave-1 reverse API helper; guarded so default UI path is independent.
     from flow.operations.frames_api import (
@@ -423,34 +436,38 @@ async def frames_to_video(
     project_id = extract_project_id(project_url_full)
 
     await _wait_for_composer(page)
+
+    # 2026-05 Flow redesign: no Video/Frames mode tabs. Configure model/aspect/
+    # count once via the global Agent settings panel (confirm_never required so
+    # the agent auto-generates), then supply the frames by uploading start/end
+    # images through the "add Add Media" entry point.
+    video_model_label = _agent_settings_video_model(model, free_mode=free_mode)
+    if ensure_agent_settings is None:
+        raise RuntimeError(
+            "Agent settings module unavailable - flow.agent_settings import "
+            "failed; cannot configure the single-composer f2v path"
+        )
+    settings_ok = await ensure_agent_settings(
+        page,
+        confirm_never=True,
+        video_model=video_model_label,
+        aspect=aspect_ratio,
+        count=1,
+    )
+    if not settings_ok:
+        raise RuntimeError("Agent settings panel did not open - cannot configure f2v")
+
+    # Reveal the composer / Add Media entry point, then upload the frames.
     await _reveal_composer_if_collapsed(page)
-    await _ensure_video_composer_mode(page)
-    await _set_output_count(page, 1)
-    await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
-    await _ensure_video_composer_mode(page)
-    await _set_aspect_ratio(page, aspect_ratio)
-    await _set_output_count(page, 1)
-    await _ensure_frames_mode(page)
-    await _close_composer_menu(page)
-    await _verify_frames_mode(page)
     await _verify_frames_upload_affordances(page)
     await _upload_frame(page, "Start", start_image_path)
     if end_image_path:
         await _upload_frame(page, "End", end_image_path)
 
-    await _type_prompt(page, prompt)
-
-    await _guard_l1_submit(page)
-    before_cards = await _count_visible_cards(page)
     client.clear_captures()
-    confirmed = await submit_with_confirmation(
-        client,
-        before_card_count=before_cards,
-        timeout_sec=15.0,
-        prompt_text=prompt,
-    )
+    confirmed = await submit_l1_prompt(page, prompt)
     if not confirmed:
-        raise RuntimeError("Submit not confirmed - generation may not have started")
+        raise RuntimeError("Submit not confirmed - no generate request fired after Create")
 
     result = await wait_for_completion(client, job_type="frames-to-video")
     if not result.get("done"):

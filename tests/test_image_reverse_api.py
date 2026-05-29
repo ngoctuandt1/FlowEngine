@@ -314,7 +314,7 @@ async def test_reverse_env_template_replay_skips_ui_submit(monkeypatch):
     install_capture.assert_called_once_with(client)
     get_template.assert_called_once_with(client)
     replay.assert_awaited_once_with(client, "a dog", count=1)
-    mocks["submit_with_confirmation"].assert_not_awaited()
+    mocks["submit_l1_prompt"].assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -336,7 +336,7 @@ async def test_reverse_env_off_no_replay(monkeypatch):
     install_capture.assert_not_called()
     get_template.assert_not_called()
     replay.assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
 
 
 def _patch_image_ui_path(monkeypatch):
@@ -353,6 +353,9 @@ def _patch_image_ui_path(monkeypatch):
         "_select_image_model": AsyncMock(return_value=None),
         "_set_image_aspect_ratio": AsyncMock(return_value=None),
         "_set_image_output_count": AsyncMock(return_value=None),
+        # 2026-05 single agent composer path (see image.text_to_image).
+        "ensure_agent_settings": AsyncMock(return_value=True),
+        "submit_l1_prompt": AsyncMock(return_value=True),
         "_count_visible_cards": AsyncMock(return_value=0),
         "submit_with_confirmation": AsyncMock(return_value=True),
         "wait_for_completion": AsyncMock(return_value={"done": True, "media_ids": ["media/ui"]}),

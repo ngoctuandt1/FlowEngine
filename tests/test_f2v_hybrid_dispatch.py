@@ -63,6 +63,11 @@ def _patch_common(monkeypatch, tmp_path):
         "_set_aspect_ratio": AsyncMock(),
         "_set_output_count": AsyncMock(),
         "_guard_l1_submit": AsyncMock(),
+        # 2026-05 single agent composer path: configure Agent settings, reveal
+        # the Add-Media composer, upload frames, then submit via submit_l1_prompt.
+        "ensure_agent_settings": AsyncMock(return_value=True),
+        "_reveal_composer_if_collapsed": AsyncMock(),
+        "submit_l1_prompt": AsyncMock(return_value=True),
         "_count_visible_cards": AsyncMock(return_value=0),
         "submit_with_confirmation": AsyncMock(return_value=True),
         "wait_for_completion": AsyncMock(return_value={"done": True, "media_ids": [FINAL_MEDIA_ID]}),
@@ -104,7 +109,7 @@ async def test_default_env_uses_ui_path_without_capture(monkeypatch, tmp_path):
     install.assert_not_called()
     get_template.assert_not_called()
     replay.assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
     mocks["wait_for_completion"].assert_awaited_once()
     mocks["download_video"].assert_awaited_once()
     mocks["poll_status_via_api"].assert_not_awaited()
@@ -130,7 +135,7 @@ async def test_env_on_no_template_uses_ui_path_with_capture(monkeypatch, tmp_pat
     install.assert_called_once_with(client)
     get_template.assert_called_once_with(client)
     replay.assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
     mocks["poll_status_via_api"].assert_not_awaited()
 
 
@@ -159,7 +164,7 @@ async def test_env_on_template_replays_and_finalizes_via_status_api(monkeypatch,
         "profile": "profile-a",
     }
     replay.assert_awaited_once_with(client, "prompt", start, end)
-    mocks["submit_with_confirmation"].assert_not_awaited()
+    mocks["submit_l1_prompt"].assert_not_awaited()
     mocks["wait_for_completion"].assert_not_awaited()
     mocks["download_video"].assert_not_awaited()
     mocks["poll_status_via_api"].assert_awaited_once()
@@ -184,7 +189,7 @@ async def test_env_on_replay_error_falls_back_to_ui(monkeypatch, tmp_path):
 
     assert result == _expected_ui_result()
     replay.assert_awaited_once()
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
     mocks["wait_for_completion"].assert_awaited_once()
     mocks["poll_status_via_api"].assert_not_awaited()
     mocks["download_via_url"].assert_not_awaited()
@@ -213,7 +218,7 @@ async def test_env_on_replay_status_failed_falls_back_to_ui(monkeypatch, tmp_pat
     assert result == _expected_ui_result()
     mocks["poll_status_via_api"].assert_awaited_once()
     mocks["download_via_url"].assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
     mocks["download_video"].assert_awaited_once()
 
 
@@ -235,5 +240,5 @@ async def test_env_on_missing_end_frame_skips_replay_and_uses_ui(monkeypatch, tm
     install.assert_called_once_with(client)
     get_template.assert_called_once_with(client)
     replay.assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
     mocks["poll_status_via_api"].assert_not_awaited()

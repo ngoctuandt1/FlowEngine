@@ -50,6 +50,11 @@ def _patch_ui_path(monkeypatch):
         "_select_image_model": AsyncMock(),
         "_set_image_aspect_ratio": AsyncMock(),
         "_set_image_output_count": AsyncMock(),
+        # 2026-05 single agent composer path: configure Agent settings (image
+        # model = Nano Banana default) then submit via submit_l1_prompt
+        # (replaces the Image-mode chip switch + submit_with_confirmation).
+        "ensure_agent_settings": AsyncMock(return_value=True),
+        "submit_l1_prompt": AsyncMock(return_value=True),
         "_count_visible_cards": AsyncMock(return_value=0),
         "submit_with_confirmation": AsyncMock(return_value=True),
         "wait_for_completion": AsyncMock(
@@ -84,7 +89,7 @@ async def test_env_off_uses_ui_path_without_capture(monkeypatch):
     install.assert_not_called()
     get_template.assert_not_called()
     replay.assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
 
 
 async def test_env_on_module_unavailable_logs_and_uses_ui(monkeypatch, caplog):
@@ -101,7 +106,7 @@ async def test_env_on_module_unavailable_logs_and_uses_ui(monkeypatch, caplog):
 
     assert result["media_id"] == "ui-mid"
     assert "image_api unavailable" in caplog.text
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
 
 
 async def test_env_on_no_template_uses_ui_after_capture(monkeypatch):
@@ -121,7 +126,7 @@ async def test_env_on_no_template_uses_ui_after_capture(monkeypatch):
     install.assert_called_once_with(client)
     get_template.assert_called_once_with(client)
     replay.assert_not_awaited()
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
 
 
 async def test_env_on_template_replay_success_skips_ui_submit(monkeypatch):
@@ -148,7 +153,7 @@ async def test_env_on_template_replay_success_skips_ui_submit(monkeypatch):
         "profile": "profile-a",
     }
     replay.assert_awaited_once_with(client, "a cat", count=1)
-    mocks["submit_with_confirmation"].assert_not_awaited()
+    mocks["submit_l1_prompt"].assert_not_awaited()
     mocks["wait_for_completion"].assert_not_awaited()
     mocks["download_video"].assert_not_awaited()
     mocks["download_via_url"].assert_awaited_once()
@@ -171,7 +176,7 @@ async def test_env_on_replay_failure_falls_back_to_ui(monkeypatch):
 
     assert result["media_id"] == "ui-mid"
     replay.assert_awaited_once_with(client, "a cat", count=1)
-    mocks["submit_with_confirmation"].assert_awaited_once()
+    mocks["submit_l1_prompt"].assert_awaited_once()
     mocks["download_via_url"].assert_not_awaited()
 
 
@@ -194,4 +199,4 @@ async def test_i2i_uploads_reference_before_replay(monkeypatch):
     mocks["_resolve_image_input_path"].assert_called_once_with("ref.png", label="Reference")
     mocks["_upload_reference_image"].assert_awaited_once_with(client.page, "ref.png")
     replay.assert_awaited_once_with(client, "a cat", count=1)
-    mocks["submit_with_confirmation"].assert_not_awaited()
+    mocks["submit_l1_prompt"].assert_not_awaited()

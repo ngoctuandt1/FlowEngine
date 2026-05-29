@@ -16,7 +16,12 @@ from flow.landing import (
     dismiss_pointer_intercepting_overlays,
     recover_from_flow_canvas_page,
 )
-from flow.model_selector import canonicalize_video_model_key, select_model, DEFAULT_MODEL
+from flow.model_selector import (
+    MODEL_MAP,
+    canonicalize_video_model_key,
+    select_model,
+    DEFAULT_MODEL,
+)
 from flow.selector_chain import click_first_visible
 from flow.submit import submit_with_confirmation
 from flow.wait import wait_for_completion
@@ -24,6 +29,18 @@ from flow.download import download_video
 from flow.failure_capture import message_with_failure_capture
 from flow.operations._base import failure_kind_from_error, resolve_final_media_id
 from flow.operations._l1_status_poll import download_via_url, poll_status_via_api
+
+# 2026-05 Flow redesign: the Video/Image/Frames/Ingredients composer mode tabs
+# are gone. Flow is now a single agent composer whose output type/model/aspect/
+# count live in a global "Agent settings" panel (tune Settings button). The
+# mode-tab + composer-chip helpers below are retained only because the
+# (forbidden-to-edit) ingredients path and existing tests still import them; the
+# ACTIVE t2v/t2i/f2v paths drive `ensure_agent_settings` instead. Guarded import
+# so this module loads even before the sibling agent_settings PR lands.
+try:
+    from flow.agent_settings import ensure_agent_settings
+except ImportError:  # pragma: no cover - exercised before sibling PR merges
+    ensure_agent_settings = None
 
 try:
     from flow.operations._base import CreditBudgetExceeded
@@ -622,20 +639,11 @@ async def text_to_video(
         logger.warning("No project_id from URL: %s", project_url_full[:100])
     logger.info(f"New project created: {project_url_full}")
 
-    # Flow auto-starts Agent mode on new projects if the account has agent
-    # settings enabled. The Agent UI hides the standard Video/Image/Frames
-    # composer mode selector. Disable it before waiting for the composer so
-    # _ensure_video_composer_mode sees the normal chip layout.
-    if project_id:
-        try:
-            await disable_agent_mode_if_active(
-                page,
-                profile_name=client.profile_name,
-                target_url=project_url_full,
-                log=logger,
-            )
-        except Exception as _agent_exc:
-            logger.warning("generate: agent disable non-fatal: %s", _agent_exc)
+    # 2026-05 Flow redesign: the project view IS the single agent composer now
+    # (no Video/Image/Frames mode selector to reveal). We deliberately do NOT
+    # call disable_agent_mode_if_active here — the agent composer is the path we
+    # drive via ensure_agent_settings + submit_l1_prompt below. Disabling agent
+    # mode would hide the very UI we need.
 
     # Wait for project editor (Slate composer) to fully render
     # The Slate.js editor can take a few seconds to initialize after page load
@@ -643,61 +651,64 @@ async def text_to_video(
     await _wait_for_composer(page)
     await dismiss_pointer_intercepting_overlays(page, logger)
 
-    # === Step 3: Select model ===
+    # === Step 3: Configure Agent settings (model / aspect / count / confirm) ===
+    # 2026-05 Flow redesign: no Video/Image/Frames mode tabs and no composer
+    # chip. Output type + model + aspect + output-count are set once in the
+    # global "Agent settings" panel (tune Settings button). confirm_never is
+    # REQUIRED — with "Always" the agent waits for a manual confirm click and
+    # never auto-generates (root cause of the R22 no_signal_timeout). The x1
+    # output count keeps the B35 credit-leak guard (memory
+    # feedback_output_count_x1.md): the panel pins count=1 instead of the old
+    # composer-chip _set_output_count call.
     canonical_model = canonicalize_video_model_key(model, free_mode=free_mode)
-    logger.info("Step 2.5: Force composer Video mode before model selection")
-    await _ensure_video_composer_mode(page)
-    logger.info("Step 2.6: Force output count = x1 before model credit preview")
-    await _set_output_count(page, 1)
-    logger.info(f"Step 3: Select model ({canonical_model})")
-    await select_model(page, model=canonical_model, free_mode=free_mode, profile=client.profile_name)
-
-    # === Step 4: Aspect ratio ===
-    # The aspect ratio is typically set in the model options panel
-    # For now, we set it during model selection or skip if not critical
-    logger.info(f"Step 4: Aspect ratio = {aspect_ratio}")
-    await _set_aspect_ratio(page, aspect_ratio)
-
-    # === Step 4.5: Force output count to x1 ===
-    # B35 (2026-04-19): Flow account default may be x2/x3/x4 → multiplies
-    # LP credit cost AND mints multiple clips per submit (ambiguous
-    # media_id extraction). Engine always pins x1. See
-    # memory/feedback_output_count_x1.md + SPEC §D.4 B35.
-    logger.info("Step 4.5: Force output count = x1")
-    try:
-        await _set_output_count(page, 1)
-    except Exception as e:
-        logger.warning(
-            "Failed to force output count x1: %s — submit may use account default (potential credit leak)",
-            e,
+    video_model_label = _agent_settings_video_model(model, free_mode=free_mode)
+    logger.info(
+        "Step 3: Agent settings (video_model=%s aspect=%s count=1 confirm=Never)",
+        video_model_label or canonical_model,
+        aspect_ratio,
+    )
+    if ensure_agent_settings is None:
+        message = (
+            "Agent settings module unavailable — flow.agent_settings import "
+            "failed; cannot configure the single-composer L1 path"
         )
+        message = await message_with_failure_capture(
+            client,
+            "agent_settings_unavailable",
+            message,
+        )
+        raise RuntimeError(message)
+    settings_ok = await ensure_agent_settings(
+        page,
+        confirm_never=True,
+        video_model=video_model_label,
+        aspect=aspect_ratio,
+        count=1,
+    )
+    if not settings_ok:
+        message = "Agent settings panel did not open — cannot configure generation"
+        message = await message_with_failure_capture(
+            client,
+            "agent_settings_not_opened",
+            message,
+        )
+        raise RuntimeError(message)
 
-    # === Step 5: Type prompt ===
-    logger.info(f"Step 5: Type prompt ({len(prompt)} chars)")
+    # === Step 4: Type prompt + submit via the single agent composer ===
+    logger.info("Step 4: Type prompt (%d chars) + submit", len(prompt))
     await dismiss_pointer_intercepting_overlays(page, logger)
-    await _type_prompt(page, prompt)
 
     if voice_asset_id:
-        logger.info("Step 5.5: Attach voice asset %s via composer UI", voice_asset_id)
+        # Voice attach uses the composer Add-Media picker; type the prompt
+        # first (without submitting) so the asset picker has a draft to attach.
+        await _type_prompt(page, prompt)
+        logger.info("Step 4.5: Attach voice asset %s via composer UI", voice_asset_id)
         await _select_voice_asset(page, voice_asset_id)
 
-    # === Step 6: Verify count/credits, count baseline cards, clear captures, submit ===
-    logger.info("Step 6: Verify L1 count and credit preview before submit")
-    await _guard_l1_submit(page)
-    logger.info("Step 6.1: Submit generation")
-    before_cards = await _count_visible_cards(page)
     client.clear_captures()
-
-    confirmed = await submit_with_confirmation(
-        client,
-        before_card_count=before_cards,
-        timeout_sec=15.0,
-        prompt_text=prompt,
-        failure_kind="submit_not_confirmed",
-    )
-
+    confirmed = await submit_l1_prompt(page, prompt)
     if not confirmed:
-        message = "Submit not confirmed — generation may not have started"
+        message = "Submit not confirmed — no generate request fired after Create"
         message = await message_with_failure_capture(
             client,
             "submit_not_confirmed",
@@ -1013,6 +1024,145 @@ async def _type_prompt(page, prompt: str):
         logger.error("Failed to save screenshot: %s", e)
 
     raise RuntimeError("Failed to find prompt editor after %d rounds" % MAX_ROUNDS)
+
+
+# Generate API endpoints that confirm a real L1 agent submission fired.
+# After clicking "arrow_forward Create" (or pressing Enter) we wait for one of
+# these URLs to be requested; if none fires the submit hit the wrong target
+# (e.g. opened the asset picker) and we fail fast instead of waiting out the
+# full no_signal_timeout. Mirrors _base._AGENT_SUBMIT_REQUEST_TOKENS.
+_L1_SUBMIT_REQUEST_TOKENS = (
+    "batchasync",
+    "generatecontent",
+    ":generate",
+    "/generate",
+    "generatevideo",
+    "runagent",
+)
+
+# The single agent composer submit button: an <i> ligature "arrow_forward"
+# plus visible text "Create". Probe 2026-05-29 (findings doc §Project composer).
+_L1_CREATE_BUTTON_SELECTORS = (
+    "button:has(i:text-is('arrow_forward')):has-text('Create')",
+    "button:has(i:text-is('arrow_forward'))",
+    "button:has-text('arrow_forward')",
+)
+
+
+def _agent_settings_video_model(model: str, *, free_mode: bool) -> str | None:
+    """Resolve the Agent-settings video-model dropdown substring for a model key.
+
+    The Agent settings panel matches the requested model by substring against
+    the live dropdown items (e.g. "Veo 3.1 - Lite", "Omni Flash"). We translate
+    the canonical/alias model key into its display label so the right default is
+    selected; unknown keys return None (skip the dropdown, keep Flow's default).
+    """
+    canonical = canonicalize_video_model_key(model, free_mode=free_mode)
+    return MODEL_MAP.get(canonical)
+
+
+async def _wait_for_l1_generate_request(page, *, timeout_ms: int) -> bool:
+    """Wait up to *timeout_ms* for a generate/batchAsync request to fire."""
+    waiter = getattr(page, "wait_for_event", None)
+    if not callable(waiter):
+        return False
+
+    def _is_generate(request) -> bool:
+        try:
+            url = str(getattr(request, "url", "") or "").lower()
+        except Exception:
+            return False
+        return any(token in url for token in _L1_SUBMIT_REQUEST_TOKENS)
+
+    try:
+        result = waiter("request", predicate=_is_generate, timeout=timeout_ms)
+        if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+            await result
+        return True
+    except Exception:
+        return False
+
+
+async def submit_l1_prompt(page, prompt_text: str) -> bool:
+    """Type *prompt_text* into the single agent composer and submit it.
+
+    2026-05 Flow redesign: there is exactly one ``[contenteditable=true]``
+    composer (placeholder "What do you want to create?"). Submission is via the
+    ``arrow_forward Create`` button, falling back to the Enter key. Mirrors the
+    L2 ``_base.submit_via_agent_edit_ui`` contract: success is confirmed only
+    when a generate/batchAsync network request actually fires within ~5s — if
+    none does we return False (fail-fast) so the caller does not stall on the
+    full no_signal_timeout.
+
+    Returns True only when a generate request was observed after submit.
+    """
+    locator = getattr(page, "locator", None)
+    if not callable(locator):
+        return False
+
+    editor = locator("[contenteditable='true']").first
+    try:
+        if not await editor.is_visible(timeout=3000):
+            logger.warning("submit_l1_prompt: composer contenteditable not visible")
+            return False
+    except Exception as exc:
+        logger.warning("submit_l1_prompt: composer visibility check failed: %s", exc)
+        return False
+
+    # Type the prompt (select-all guards against any pre-existing draft text).
+    try:
+        await editor.click(timeout=3000)
+        await asyncio.sleep(0.3)
+        keyboard = getattr(page, "keyboard", None)
+        if keyboard is not None:
+            await keyboard.press("Control+a")
+            await asyncio.sleep(0.1)
+        await editor.type(prompt_text, delay=15)
+        logger.info("submit_l1_prompt: typed prompt (%d chars)", len(prompt_text))
+        await asyncio.sleep(0.3)
+    except Exception as exc:
+        logger.warning("submit_l1_prompt: typing failed: %s", exc)
+        return False
+
+    # Primary submit: click the arrow_forward Create button.
+    submitted = False
+    for selector in _L1_CREATE_BUTTON_SELECTORS:
+        try:
+            button = locator(selector).first
+            if not await button.is_visible(timeout=1000):
+                continue
+            await button.click(timeout=3000)
+            logger.info("submit_l1_prompt: clicked Create via %s", selector)
+            submitted = True
+            break
+        except Exception as exc:
+            logger.debug("submit_l1_prompt: Create selector %s failed: %s", selector, exc)
+            continue
+
+    # Fallback submit: Enter key.
+    if not submitted:
+        keyboard = getattr(page, "keyboard", None)
+        if keyboard is not None:
+            try:
+                await editor.click(timeout=2000)
+                await asyncio.sleep(0.1)
+                await keyboard.press("Enter")
+                logger.info("submit_l1_prompt: submitted via Enter fallback")
+                submitted = True
+            except Exception as exc:
+                logger.warning("submit_l1_prompt: Enter fallback failed: %s", exc)
+
+    if not submitted:
+        logger.warning("submit_l1_prompt: no submit affordance worked")
+        return False
+
+    # Confirm a generate request actually fired (fail-fast contract).
+    if await _wait_for_l1_generate_request(page, timeout_ms=5000):
+        logger.info("submit_l1_prompt: generate request observed after submit")
+        return True
+
+    logger.warning("submit_l1_prompt: no generate request observed within 5s after submit")
+    return False
 
 
 _COMPOSER_MENU_BUTTON_SELECTOR = 'button[aria-haspopup="menu"]'
