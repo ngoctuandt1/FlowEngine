@@ -56,6 +56,35 @@ INSERT_BUTTONS = ["Insert", "Chen"]
 INSERT_ICON_SELECTOR = "button:has(span:has-text('add_box'))"
 
 
+def _bbox_region_phrase(bbox: dict | None) -> str:
+    """Translate a normalized bbox into a coarse positional phrase.
+
+    The 2026-05 agent edit UI has no bbox-drawing canvas — it takes a text
+    command. We map the bbox center to a 3x3-ish region label so the agent
+    targets roughly the right part of the frame. Returns a phrase suitable
+    to append to a command (e.g. ``"at the top-left of the frame"``), or
+    ``"in the video"`` when no bbox is supplied.
+    """
+    if not bbox:
+        return "in the video"
+    cx = bbox.get("x", 0) + bbox.get("w", 0) / 2
+    cy = bbox.get("y", 0) + bbox.get("h", 0) / 2
+    region = (
+        "top-left" if cx < 0.4 and cy < 0.4 else
+        "top-right" if cx >= 0.6 and cy < 0.4 else
+        "bottom-left" if cx < 0.4 and cy >= 0.6 else
+        "bottom-right" if cx >= 0.6 and cy >= 0.6 else
+        "center"
+    )
+    return f"at the {region} of the frame"
+
+
+def _build_insert_command(prompt: str, bbox: dict | None) -> str:
+    """Compose the agent text command for an insert-object op."""
+    desc = prompt or "object"
+    return f"Insert {desc} {_bbox_region_phrase(bbox)}"
+
+
 def _reverse_insert_enabled() -> bool:
     return l2_reverse_api_enabled("FLOW_INSERT_VIA_REVERSE")
 
@@ -371,7 +400,32 @@ async def insert_object(
             reverse_outcome.error,
         )
 
-    # Step 3: Click Insert button
+    # Step 3 (PRIMARY, 2026-05 redesign): the edit page exposes a single
+    # "Describe your edits" agent box, not the Insert toolbar button. When
+    # present, translate the bbox into a positional phrase and issue a text
+    # command (the toolbar button is gone — hunting for it raised R23
+    # "Failed to find Insert button").
+    if await agent_edit_ui_present(page, timeout_ms=2000):
+        insert_cmd = _build_insert_command(prompt, bbox)
+        logger.info(
+            "run_insert: agent edit UI present — using text command=%r (bbox=%s)",
+            insert_cmd, bbox or None,
+        )
+        submitted = await submit_via_agent_edit_ui(page, insert_cmd)
+        if submitted:
+            return await finalize_operation(
+                client, job,
+                job_type="insert-object",
+                project_id=project_id,
+                locale=locale,
+                download_prefix="ins",
+            )
+        logger.warning(
+            "run_insert: agent edit UI submit did not fire a generate request; "
+            "falling through to legacy toolbar path"
+        )
+
+    # Step 3 (LEGACY fallback): pre-2026-05 toolbar. Click Insert button.
     clicked = await click_action_button(page, INSERT_BUTTONS, client=client)
     if not clicked:
         try:
@@ -385,39 +439,9 @@ async def insert_object(
             pass
 
     if not clicked:
-        # 2026-05: traditional toolbar replaced by "Describe your edit(s)" UI.
-        # Fall back to agent text-command path if that interface is present.
-        # bbox converted to a rough positional description for the AI.
-        if await agent_edit_ui_present(page, timeout_ms=2000):
-            _bbox = bbox or {}
-            _cx = _bbox.get("x", 0) + _bbox.get("w", 0) / 2
-            _cy = _bbox.get("y", 0) + _bbox.get("h", 0) / 2
-            if _bbox:
-                _region = (
-                    "top-left" if _cx < 0.4 and _cy < 0.4 else
-                    "top-right" if _cx >= 0.6 and _cy < 0.4 else
-                    "bottom-left" if _cx < 0.4 and _cy >= 0.6 else
-                    "bottom-right" if _cx >= 0.6 and _cy >= 0.6 else
-                    "center"
-                )
-                region_phrase = f"at the {_region} of the frame"
-            else:
-                region_phrase = "in the video"
-            _desc = prompt or "object"
-            insert_cmd = f"Insert {_desc} {region_phrase}"
-            logger.info(
-                "run_insert: traditional Insert button absent; using agent edit UI "
-                "with command=%r (bbox=%s)", insert_cmd, _bbox or None
-            )
-            submitted = await submit_via_agent_edit_ui(page, insert_cmd)
-            if submitted:
-                return await finalize_operation(
-                    client, job,
-                    job_type="insert-object",
-                    project_id=project_id,
-                    locale=locale,
-                    download_prefix="ins",
-                )
+        # 2026-05: the agent edit UI was already tried as the primary path
+        # above. Reaching here means neither it nor the legacy toolbar button
+        # was usable.
         message = "Failed to find Insert button"
         message = await message_with_failure_capture(
             client,

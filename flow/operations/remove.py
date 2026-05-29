@@ -55,6 +55,26 @@ REMOVE_BUTTONS = ["Remove", "Xoá"]
 REMOVE_ICON_SELECTOR = "button:has(span:has-text('ink_eraser'))"
 
 
+def _build_remove_command(bbox: dict | None) -> str:
+    """Compose the agent text command for a remove-object op.
+
+    The 2026-05 agent edit UI takes a text command rather than a drawn
+    bbox, so the bbox center is mapped to a coarse region label. Remove
+    always has a region (a default-center bbox is applied upstream).
+    """
+    b = bbox or {"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5}
+    cx = b.get("x", 0) + b.get("w", 0) / 2
+    cy = b.get("y", 0) + b.get("h", 0) / 2
+    region = (
+        "top-left" if cx < 0.4 and cy < 0.4 else
+        "top-right" if cx >= 0.6 and cy < 0.4 else
+        "bottom-left" if cx < 0.4 and cy >= 0.6 else
+        "bottom-right" if cx >= 0.6 and cy >= 0.6 else
+        "center"
+    )
+    return f"Remove the object in the {region} of the frame"
+
+
 def _reverse_remove_enabled() -> bool:
     return l2_reverse_api_enabled("FLOW_REMOVE_VIA_REVERSE")
 
@@ -358,7 +378,32 @@ async def remove_object(
             reverse_outcome.error,
         )
 
-    # Step 3: Click Remove button
+    # Step 3 (PRIMARY, 2026-05 redesign): the edit page exposes a single
+    # "Describe your edits" agent box, not the Remove toolbar button. When
+    # present, translate the bbox into a positional phrase and issue a text
+    # command (the toolbar button is gone — hunting for it raised R23
+    # "Failed to find Remove button").
+    if await agent_edit_ui_present(page, timeout_ms=2000):
+        remove_cmd = _build_remove_command(bbox)
+        logger.info(
+            "run_remove: agent edit UI present — using text command=%r (bbox=%s)",
+            remove_cmd, bbox or None,
+        )
+        submitted = await submit_via_agent_edit_ui(page, remove_cmd)
+        if submitted:
+            return await finalize_operation(
+                client, job,
+                job_type="remove-object",
+                project_id=project_id,
+                locale=locale,
+                download_prefix="rem",
+            )
+        logger.warning(
+            "run_remove: agent edit UI submit did not fire a generate request; "
+            "falling through to legacy toolbar path"
+        )
+
+    # Step 3 (LEGACY fallback): pre-2026-05 toolbar. Click Remove button.
     clicked = await click_action_button(page, REMOVE_BUTTONS, client=client)
     if not clicked:
         try:
@@ -372,34 +417,9 @@ async def remove_object(
             pass
 
     if not clicked:
-        # 2026-05: traditional toolbar replaced by "Describe your edit(s)" UI.
-        # Fall back to agent text-command path if that interface is present.
-        # bbox converted to a rough positional description for the AI.
-        if await agent_edit_ui_present(page, timeout_ms=2000):
-            _b = bbox or {"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5}
-            _cx = _b.get("x", 0) + _b.get("w", 0) / 2
-            _cy = _b.get("y", 0) + _b.get("h", 0) / 2
-            _region = (
-                "top-left" if _cx < 0.4 and _cy < 0.4 else
-                "top-right" if _cx >= 0.6 and _cy < 0.4 else
-                "bottom-left" if _cx < 0.4 and _cy >= 0.6 else
-                "bottom-right" if _cx >= 0.6 and _cy >= 0.6 else
-                "center"
-            )
-            remove_cmd = f"Remove the object in the {_region} of the frame"
-            logger.info(
-                "run_remove: traditional Remove button absent; using agent edit UI "
-                "with command=%r (bbox=%s)", remove_cmd, _b
-            )
-            submitted = await submit_via_agent_edit_ui(page, remove_cmd)
-            if submitted:
-                return await finalize_operation(
-                    client, job,
-                    job_type="remove-object",
-                    project_id=project_id,
-                    locale=locale,
-                    download_prefix="rem",
-                )
+        # 2026-05: the agent edit UI was already tried as the primary path
+        # above. Reaching here means neither it nor the legacy toolbar button
+        # was usable.
         message = "Failed to find Remove button"
         message = await message_with_failure_capture(
             client,

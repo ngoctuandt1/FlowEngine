@@ -38,6 +38,14 @@ from flow.reverse_api import (
     run_reverse_api_first,
 )
 
+try:  # Sibling PR builds flow/agent_settings.py; guard so this lands first.
+    from flow.agent_settings import ensure_agent_settings
+except ImportError as _agent_settings_exc:  # pragma: no cover - guarded fallback
+    ensure_agent_settings = None
+    _AGENT_SETTINGS_IMPORT_ERROR = _agent_settings_exc
+else:
+    _AGENT_SETTINGS_IMPORT_ERROR = None
+
 
 class LeafLockoutError(RuntimeError):
     """Raised when Flow's SPA auto-navigates to a leaf extend-output clip.
@@ -104,10 +112,16 @@ _L2_SILENT_HIDE_OPERATIONS = {
     "camera-move",
 }
 # 2026-05 Flow redesign: traditional toolbar replaced by AI agent editing panel.
-# Detected by a visible "Describe your edit(s)" contenteditable input.  When
+# Detected by a visible "Describe your edits" contenteditable input.  When
 # this UI is present the editing operations ARE available — just via text
 # command instead of toolbar buttons.  We must NOT raise L2PaywallError here.
-_AGENT_EDIT_UI_TOKENS = ("Describe your edit", "Describe your edits")
+#
+# 2026-05-29 probe (findings-260529-flow-agent-ui-redesign.md): the live
+# placeholder is the PLURAL "Describe your edits" — list it first so substring
+# detection prefers the exact current string. "Describe your edit" (singular)
+# is kept as a forward/backward-compat prefix that also substring-matches the
+# plural form.
+_AGENT_EDIT_UI_TOKENS = ("Describe your edits", "Describe your edit")
 
 
 class L2PaywallError(RuntimeError):
@@ -729,8 +743,43 @@ async def _capture_submit_failure(page) -> None:
         logger.debug("submit_via_agent_edit_ui: screenshot failed: %s", _e)
 
 
+async def _ensure_confirm_never(page) -> None:
+    """Best-effort: force Agent settings Confirm=Never before submitting.
+
+    With Confirm=Always the Flow agent waits for a manual confirmation
+    click and never auto-generates — this was the R22 ``no_signal_timeout``
+    root cause (findings-260529-flow-agent-ui-redesign.md §Agent settings).
+    Calling ``ensure_agent_settings(page, confirm_never=True)`` once before
+    submit makes the agent spend credits and emit a generate request
+    automatically.
+
+    Non-fatal: the helper is idempotent and the submit's own
+    generate-request verification is the load-bearing gate, so any failure
+    here (panel not found, import missing) is logged and swallowed rather
+    than aborting the submit.
+    """
+    if ensure_agent_settings is None:
+        logger.debug(
+            "submit_via_agent_edit_ui: ensure_agent_settings unavailable (%s); "
+            "submitting without Confirm=Never enforcement",
+            _AGENT_SETTINGS_IMPORT_ERROR,
+        )
+        return
+    try:
+        applied = await ensure_agent_settings(page, confirm_never=True)
+        logger.info(
+            "submit_via_agent_edit_ui: ensure_agent_settings(confirm_never=True) -> %s",
+            applied,
+        )
+    except Exception as exc:
+        logger.warning(
+            "submit_via_agent_edit_ui: ensure_agent_settings failed (non-fatal): %s",
+            exc,
+        )
+
+
 async def submit_via_agent_edit_ui(page, command: str) -> bool:
-    """Type *command* into the 'Describe your edit(s)' input and submit it.
+    """Type *command* into the 'Describe your edits' input and submit it.
 
     The 2026-05 Flow agent composer is a standard chat-style input that
     submits on the Enter key — NOT via a toolbar button. R22 forensic
@@ -739,6 +788,8 @@ async def submit_via_agent_edit_ui(page, command: str) -> bool:
     generate API calls (the job then died on a 180s no_signal_timeout).
 
     Submit flow:
+      0. Force Agent settings Confirm=Never (R22 root cause: Confirm=Always
+         makes the agent await a manual click and never auto-generate).
       1. Type the command into ``[contenteditable='true']``.
       2. Focus the editor and press Enter (primary submit path).
       3. If an asset picker opened (Enter hit the wrong target), press
@@ -753,6 +804,9 @@ async def submit_via_agent_edit_ui(page, command: str) -> bool:
     locator = getattr(page, "locator", None)
     if not callable(locator):
         return False
+
+    # Step 0: enforce Confirm=Never so the agent auto-generates on submit.
+    await _ensure_confirm_never(page)
 
     # Find the single contenteditable editor.
     editor = locator("[contenteditable='true']").first

@@ -395,7 +395,33 @@ async def extend_video(
             reverse_outcome.error,
         )
 
-    # Step 3: Ensure Extend panel open.
+    # Step 3 (PRIMARY, 2026-05 redesign): the edit page now exposes a single
+    # "Describe your edits" agent box instead of the Extend/Camera/Insert/
+    # Remove toolbar. When that box is present, drive the op via a text
+    # command — do NOT hunt for a toolbar Extend button that no longer
+    # exists (that was the R23 "Failed to find Extend button" regression).
+    if await agent_edit_ui_present(page, timeout_ms=2000):
+        extend_cmd = "Extend this video"
+        if prompt:
+            extend_cmd = f"Extend this video: {prompt}"
+        logger.info(
+            "run_extend: agent edit UI present — using text command=%r", extend_cmd
+        )
+        submitted = await submit_via_agent_edit_ui(page, extend_cmd)
+        if submitted:
+            return await finalize_operation(
+                client, job,
+                job_type="extend-video",
+                project_id=project_id,
+                locale=locale,
+                download_prefix="ext",
+            )
+        logger.warning(
+            "run_extend: agent edit UI submit did not fire a generate request; "
+            "falling through to legacy toolbar path"
+        )
+
+    # Step 3 (LEGACY fallback): pre-2026-05 toolbar. Ensure Extend panel open.
     #
     # Flow UI opens an edit URL with one of the 4 modes already selected
     # (usually Extend for videos with remaining extend budget). In that
@@ -448,25 +474,9 @@ async def extend_video(
                 pass
 
         if not clicked:
-            # 2026-05: traditional toolbar replaced by "Describe your edit(s)" UI.
-            # Fall back to agent text-command path if that interface is present.
-            if await agent_edit_ui_present(page, timeout_ms=2000):
-                extend_cmd = "Extend this video"
-                if prompt:
-                    extend_cmd = f"Extend this video: {prompt}"
-                logger.info(
-                    "run_extend: traditional Extend button absent; using agent edit UI "
-                    "with command=%r", extend_cmd
-                )
-                submitted = await submit_via_agent_edit_ui(page, extend_cmd)
-                if submitted:
-                    return await finalize_operation(
-                        client, job,
-                        job_type="extend-video",
-                        project_id=project_id,
-                        locale=locale,
-                        download_prefix="ext",
-                    )
+            # 2026-05: the agent edit UI was already tried as the primary path
+            # above. Reaching here means neither the agent box nor any legacy
+            # toolbar button was usable — surface a diagnostic and fail.
             # Debug: log visible buttons to help diagnose
             try:
                 buttons = await page.evaluate("""() => {

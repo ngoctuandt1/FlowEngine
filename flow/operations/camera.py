@@ -543,7 +543,30 @@ async def camera_move(
             reverse_outcome.error,
         )
 
-    # Step 3: Click Camera button
+    # Step 3 (PRIMARY, 2026-05 redesign): drive camera-move via the single
+    # "Describe your edits" agent box when present. The Camera toolbar button
+    # is gone in the new UI; hunting for it raised "Failed to find Camera
+    # button" (R23). Issue a plain-language camera command instead.
+    if await agent_edit_ui_present(page, timeout_ms=2000):
+        camera_cmd = f"Apply {direction} camera movement"
+        logger.info(
+            "run_camera: agent edit UI present — using text command=%r", camera_cmd
+        )
+        submitted = await submit_via_agent_edit_ui(page, camera_cmd)
+        if submitted:
+            return await finalize_operation(
+                client, job,
+                job_type="camera-move",
+                project_id=project_id,
+                locale=locale,
+                download_prefix="cam",
+            )
+        logger.warning(
+            "run_camera: agent edit UI submit did not fire a generate request; "
+            "falling through to legacy toolbar path"
+        )
+
+    # Step 3 (LEGACY fallback): pre-2026-05 toolbar. Click Camera button.
     clicked = await click_action_button(page, CAMERA_BUTTONS, client=client)
     if not clicked:
         try:
@@ -557,23 +580,9 @@ async def camera_move(
             pass
 
     if not clicked:
-        # 2026-05: traditional toolbar replaced by "Describe your edit(s)" UI.
-        # Fall back to agent text-command path if that interface is present.
-        if await agent_edit_ui_present(page, timeout_ms=2000):
-            camera_cmd = f"Apply {direction} camera movement"
-            logger.info(
-                "run_camera: traditional Camera button absent; using agent edit UI "
-                "with command=%r", camera_cmd
-            )
-            submitted = await submit_via_agent_edit_ui(page, camera_cmd)
-            if submitted:
-                return await finalize_operation(
-                    client, job,
-                    job_type="camera-move",
-                    project_id=project_id,
-                    locale=locale,
-                    download_prefix="cam",
-                )
+        # 2026-05: the agent edit UI was already tried as the primary path
+        # above. Reaching here means neither it nor the legacy toolbar button
+        # was usable.
         message = "Failed to find Camera button"
         message = await message_with_failure_capture(
             client,
