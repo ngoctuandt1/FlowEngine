@@ -824,6 +824,7 @@ async def uninstall_agent_session_blocker(page: Any) -> None:
     unroute_fn = getattr(page, "unroute", None)
     if not callable(unroute_fn):
         return
+    removed = 0
     for pattern in (
         "**/flowCreationAgent/sessions**",
         "**/v1/projects/*/agentInfo**",
@@ -833,9 +834,13 @@ async def uninstall_agent_session_blocker(page: Any) -> None:
     ):
         try:
             await unroute_fn(pattern)
+            removed += 1
         except Exception:
-            pass
-    logger.info("uninstall_agent_session_blocker: route blockers removed")
+            pass  # unroute raises if no handler was registered for this pattern
+    if removed:
+        logger.info("uninstall_agent_session_blocker: route blockers removed (%d patterns)", removed)
+    else:
+        logger.debug("uninstall_agent_session_blocker: no active blockers to remove")
 
 
 _AGENT_INFO_DISABLED_RESPONSE = json.dumps(

@@ -10,6 +10,7 @@ import os
 import time
 from pathlib import Path
 
+from flow.agent import uninstall_agent_session_blocker
 from flow.failure_capture import message_with_failure_capture
 from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.navigation import edit_url as build_edit_url, project_url as build_project_url
@@ -484,7 +485,6 @@ async def extend_video(
                         "run_extend: agent edit UI submit failed; trying project "
                         "page main composer for project=%s", proj_url[:60]
                     )
-                    from flow.agent import uninstall_agent_session_blocker
                     await uninstall_agent_session_blocker(page)  # remove all residual blockers
                     await page.goto(proj_url, wait_until="domcontentloaded", timeout=30000)
                     await asyncio.sleep(6)  # longer wait for project page SPA to fully load

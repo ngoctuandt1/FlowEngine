@@ -168,7 +168,7 @@ async def build_synthetic_extend_template(client, *, project_id: str) -> dict | 
         "clientContext": {
             "projectId": project_id,
             "tool": "PINHOLE",
-            "userPaygateTier": "PAYGATE_TIER_TWO",
+            "userPaygateTier": "PAYGATE_TIER_TWO",  # assumption: ngoctuandt20 is tier two; if wrong the API may return 403
         },
         "requests": [
             {
