@@ -76,6 +76,102 @@ IMAGE_RATIO_IDS = {
     "9:16": "PORTRAIT",
 }
 
+# Post-2026-05 image-mode chip fallbacks. After a t2i run, Flow may render the
+# composer settings chip with a generic media icon instead of the crop
+# ligatures covered by COMPOSER_MENU_SELECTORS, which raises
+# "Could not open composer chip (tried N icon variants)". These extra variants
+# (plus the JS broad fallback below) keep the Image path resilient without
+# touching the shared frames_to_video selector list.
+_IMAGE_CHIP_FALLBACK_SELECTORS = (
+    "button[aria-haspopup='menu']:has(i:text-is('image'))",
+    "button[aria-haspopup='menu']:has(i:text-is('photo_camera'))",
+    "button[aria-haspopup='menu']:has(i:text-is('camera_alt'))",
+    "button[aria-haspopup='menu']:has(i:text-is('photo'))",
+    "button[aria-haspopup='menu']:has(i:text-is('image_search'))",
+    "button[aria-haspopup='menu']:has(i:text-is('auto_awesome'))",
+)
+
+# Selector matching an already-open composer menu (mirrors the toggle guard in
+# frames_to_video._open_composer_menu so the fallback path is also re-entrant).
+_COMPOSER_MENU_OPEN_SELECTORS = (
+    "button[aria-haspopup='menu'][data-state='open']",
+    "[role='menu'][data-state='open']",
+)
+
+
+async def _composer_menu_is_open(page) -> bool:
+    for sel in _COMPOSER_MENU_OPEN_SELECTORS:
+        try:
+            if await page.locator(sel).first.is_visible(timeout=500):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _open_composer_chip_fallback(page) -> bool:
+    """Open the composer chip via image-mode CSS variants, then a JS sweep.
+
+    Returns True when a chip was clicked (or the menu was already open).
+    """
+    if await _composer_menu_is_open(page):
+        return True
+
+    for sel in _IMAGE_CHIP_FALLBACK_SELECTORS:
+        try:
+            chip = page.locator(sel).first
+            if await chip.is_visible(timeout=1000):
+                await chip.click(timeout=3000)
+                await asyncio.sleep(0.5)
+                logger.info("composer chip opened via image fallback selector: %s", sel)
+                return True
+        except Exception:
+            continue
+
+    # JS broad fallback: click the first icon-bearing button in the lower
+    # portion of the composer.
+    try:
+        clicked = await page.evaluate(
+            """() => {
+                const vh = window.innerHeight;
+                const btns = [...document.querySelectorAll('button,[role="button"]')];
+                for (const btn of btns) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.top < vh * 0.65) continue;  // must be in lower portion
+                    if (r.width < 20 || r.height < 20) continue;  // skip tiny
+                    if (btn.offsetParent === null) continue;
+                    const icons = btn.querySelectorAll('i, .material-icons');
+                    if (icons.length > 0) { btn.click(); return btn.textContent || '(clicked)'; }
+                }
+                return null;
+            }"""
+        )
+        if clicked:
+            logger.info("composer chip opened via JS broad fallback, textContent=%r", clicked)
+            await asyncio.sleep(0.3)
+            return True
+    except Exception as exc:
+        logger.debug("composer chip JS broad fallback failed: %s", exc)
+
+    return False
+
+
+async def _open_image_composer_menu(page) -> None:
+    """Resilient composer-menu open for the Image path.
+
+    Tries the shared frames_to_video opener first (covers the crop-ligature
+    chips), then falls back to image-mode icon variants and a JS sweep before
+    re-raising the original error.
+    """
+    try:
+        await _open_composer_menu(page)
+        return
+    except RuntimeError as exc:
+        logger.info("primary composer opener failed (%s); trying image fallbacks", exc)
+        if await _open_composer_chip_fallback(page):
+            return
+        raise
+
 
 def _reverse_t2i_enabled() -> bool:
     return os.getenv("FLOW_T2I_VIA_REVERSE", "0") == "1"
@@ -424,7 +520,7 @@ async def _switch_to_image_output(page) -> None:
         return
 
     logger.info("_switch_to_image_output: opening composer chip to reveal Image tab")
-    await _open_composer_menu(page)
+    await _open_image_composer_menu(page)
     await _ensure_image_mode(page)
 
 
@@ -492,7 +588,7 @@ async def _ensure_image_mode(page) -> None:
 async def _select_image_model(page, model: str) -> None:
     normalized_model = _normalize_image_model(model)
     target_text = IMAGE_MODEL_MAP[normalized_model]
-    await _open_composer_menu(page)
+    await _open_image_composer_menu(page)
     await _switch_to_image_output(page)
 
     item = await _find_model_option(page, target_text)
@@ -610,13 +706,54 @@ async def _set_image_output_count(page, count: int) -> None:
 
 
 async def _locate_image_chip(page):
-    for sel in COMPOSER_MENU_SELECTORS:
+    for sel in (*COMPOSER_MENU_SELECTORS, *_IMAGE_CHIP_FALLBACK_SELECTORS):
         chip = page.locator(sel).first
         try:
             if await chip.is_visible(timeout=1000):
                 return chip
         except Exception:
             continue
+
+    # JS broad fallback: mark the first icon-bearing composer chip (aria-haspopup)
+    # in the lower composer area so a Playwright Locator can resolve to it.
+    # Only menu-opening buttons are eligible; submit/delete/close icons are excluded.
+    try:
+        marked = await page.evaluate(
+            """() => {
+                for (const el of document.querySelectorAll('[data-image-chip]')) {
+                    el.removeAttribute('data-image-chip');
+                }
+                const DANGER_ICONS = new Set([
+                    'arrow_forward','arrow_upward','send','delete',
+                    'download','close','more_vert',
+                ]);
+                const vh = window.innerHeight;
+                const btns = [...document.querySelectorAll('button,[role="button"]')];
+                for (const btn of btns) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.top < vh * 0.65) continue;
+                    if (r.width < 20 || r.height < 20) continue;
+                    if (btn.offsetParent === null) continue;
+                    // Only target composer chips that open a menu.
+                    if (!btn.hasAttribute('aria-haspopup') && btn.getAttribute('role') !== 'menu') continue;
+                    const icons = btn.querySelectorAll('i, .material-icons');
+                    if (icons.length === 0) continue;
+                    const iconText = (icons[0].textContent || '').trim();
+                    if (DANGER_ICONS.has(iconText)) continue;
+                    btn.setAttribute('data-image-chip', 'true');
+                    return true;
+                }
+                return false;
+            }"""
+        )
+        if marked:
+            chip = page.locator("[data-image-chip='true']").first
+            if await chip.is_visible(timeout=1000):
+                logger.info("located image composer chip via JS broad fallback")
+                return chip
+    except Exception as exc:
+        logger.debug("image chip JS broad fallback failed: %s", exc)
+
     raise RuntimeError("Could not locate image composer chip")
 
 
