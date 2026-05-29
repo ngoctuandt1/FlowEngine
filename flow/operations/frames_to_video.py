@@ -548,10 +548,26 @@ async def _composer_menu_is_open(page) -> bool:
 # Tokens that identify a real composer chip (count / mode / aspect / model).
 # A project-level toolbar button ("Add Media", "View Settings", overflow
 # more_vert) contains none of these and must NOT be treated as the chip.
+#
+# Tightened to avoid false-positives on Material icon ligatures:
+# - bare "image" matches the image-icon toolbar button
+# - "video" matches the video_library ligature
+# - "frames?" matches the filter_frames ligature
+# - "portrait" / "landscape" / "square" match crop_portrait / crop_landscape / crop_square icons
+# Only tokens that NEVER appear in toolbar icon text are kept:
+# - output-count chips: x1, x2, 1x, 2x, etc.
+# - aspect ratios: 16:9, 9:16, 1:1 (colon-separated digit pairs)
+# - versioned model names: Veo, Imagen, Lyria, Omni (not generic icon words)
 _COMPOSER_CHIP_TOKEN_RE = re.compile(
-    r"x[1-4]|[1-4]x|16\s*:?\s*9|9\s*:?\s*16|landscape|portrait|square"
-    r"|video|frames?|ingredients?|image|veo|omni|imagen|banana",
-    re.IGNORECASE,
+    r"""
+    \b(?:
+        x[1-4] | [1-4]x |               # output count chips: x1, x2, 1x, 2x
+        \d+\s*:\s*\d+ |                  # aspect ratio: 16:9, 9:16, 1:1
+        Veo | Imagen | Lyria | Omni |    # model names (title-case — icon ligatures are lowercase)
+        Veo\s+\d | Imagen\s+\d           # versioned: Veo 2, Imagen 3
+    )\b
+    """,
+    re.VERBOSE | re.IGNORECASE,
 )
 
 # "Add Media" / project-toolbar entry-point button. In the collapsed project
