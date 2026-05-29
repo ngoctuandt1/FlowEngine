@@ -190,6 +190,8 @@ async def build_synthetic_extend_template(client, *, project_id: str) -> dict | 
         project_id[:20],
         bearer[-10:],
     )
+    # Store into client so get_extend_request_template() returns it
+    client._extend_request_template = template
     return template
 
 
