@@ -650,6 +650,9 @@ _AGENT_SUBMIT_REQUEST_TOKENS = (
     "/generate",
     "generatevideo",
     "runagent",
+    # 2026-05 agent chat path: flowCreationAgent:streamChat on aisandbox-pa
+    "streamchat",
+    "aisandbox-pa.googleapis.com",
 )
 
 # Visible markers that an asset picker / media-search modal is open over
