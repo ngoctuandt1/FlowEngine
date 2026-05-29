@@ -7,6 +7,8 @@ wait, download, and return metadata.
 import asyncio
 import inspect
 import logging
+import os
+import time
 from types import SimpleNamespace
 
 from flow.failure_capture import message_with_failure_capture
@@ -710,16 +712,16 @@ async def submit_via_agent_edit_ui(page, command: str) -> bool:
         logger.warning("submit_via_agent_edit_ui: JS fallback failed: %s", exc)
 
     logger.warning("submit_via_agent_edit_ui: submit button not found after typing")
-    # Best-effort screenshot to aid diagnosis
-    try:
-        import os as _os
-        _cap_dir = _os.environ.get("FLOW_ERROR_CAPTURE_DIR", "/tmp")
-        _job_id = getattr(page, "_job_id", "unknown")
-        _path = f"{_cap_dir}/flow-submit-fail-{_job_id}.png"
-        await page.screenshot(path=_path)
-        logger.error("submit_via_agent_edit_ui: screenshot saved %s", _path)
-    except Exception:
-        pass
+    # Screenshot on failure using project's capture convention
+    _cap_dir = os.environ.get("FLOW_ERROR_CAPTURE_DIR", "")
+    if _cap_dir and os.environ.get("FLOW_ERROR_CAPTURE", "1") != "0":
+        try:
+            os.makedirs(_cap_dir, exist_ok=True)
+            _fname = os.path.join(_cap_dir, f"{int(time.time())}_submit_fail.png")
+            await page.screenshot(path=_fname)
+            logger.error("submit_via_agent_edit_ui: no submit button found, screenshot: %s", _fname)
+        except Exception as _e:
+            logger.debug("submit_via_agent_edit_ui: screenshot failed: %s", _e)
     return False
 
 
