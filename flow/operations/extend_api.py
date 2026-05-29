@@ -134,6 +134,65 @@ def get_extend_request_template(client) -> dict | None:
     return template if isinstance(template, dict) else None
 
 
+_EXTEND_API_BASE = "https://aisandbox-pa.googleapis.com"
+_EXTEND_API_URL = f"{_EXTEND_API_BASE}/v1/video:batchAsyncGenerateVideoExtendVideo"
+_EXTEND_DEFAULT_MODEL_KEY = "veo_3_1_t2v_lite_low_priority"
+
+
+async def build_synthetic_extend_template(client, *, project_id: str) -> dict | None:
+    """Build a synthetic extend template from the page's captured Bearer token.
+
+    Used when no real extend template was captured (first extend in the 2026-05
+    agent-UI redesign where the toolbar extend button no longer exists).
+    Requires install_agent_auth_probe to have been called on the page first.
+    """
+    from flow.agent import _latest_bearer_token
+    page = getattr(client, "page", None)
+    if page is None:
+        return None
+    bearer = await _latest_bearer_token(page)
+    if not bearer:
+        logger.info("build_synthetic_extend_template: no Bearer token captured")
+        return None
+    post_data = {
+        "mediaGenerationContext": {
+            "batchId": str(uuid.uuid4()),
+            "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
+        },
+        "clientContext": {
+            "projectId": project_id,
+            "tool": "PINHOLE",
+            "userPaygateTier": "PAYGATE_TIER_TWO",
+        },
+        "requests": [
+            {
+                "videoExtendInput": {
+                    "sourceMedia": {"name": "_PLACEHOLDER_"},
+                    "prompt": {"text": ""},
+                },
+                "videoModelKey": _EXTEND_DEFAULT_MODEL_KEY,
+                "metadata": {},
+            }
+        ],
+        "useV2ModelConfig": True,
+    }
+    template = {
+        "url": _EXTEND_API_URL,
+        "headers": {
+            "authorization": bearer,
+            "content-type": "text/plain;charset=UTF-8",
+        },
+        "post_data": post_data,
+        "anchored_parent": ("videoExtendInput", "sourceMedia", "name"),
+    }
+    logger.info(
+        "build_synthetic_extend_template: built template for project=%s bearer=...%s",
+        project_id[:20],
+        bearer[-10:],
+    )
+    return template
+
+
 async def replay_extend_via_api(
     client,
     parent_media_id: str,

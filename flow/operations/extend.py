@@ -34,11 +34,13 @@ from flow.operations._l1_status_poll import (
 
 try:  # C3 sibling PR; guarded so this branch lands independently.
     from flow.operations.extend_api import (
+        build_synthetic_extend_template,
         get_extend_request_template,
         install_extend_request_capture,
         replay_extend_via_api,
     )
 except Exception as exc:  # pragma: no cover - exercised via guarded fallback
+    build_synthetic_extend_template = None
     get_extend_request_template = None
     install_extend_request_capture = None
     replay_extend_via_api = None
@@ -351,6 +353,12 @@ async def extend_video(
     await wait_for_video_loaded(page)
 
     template = _current_extend_template(client) if reverse_enabled else None
+    # Synthetic fallback: build template from captured Bearer token when no real
+    # extend request has been captured yet (2026-05 agent-UI redesign).
+    if reverse_enabled and template is None and build_synthetic_extend_template is not None:
+        template = await build_synthetic_extend_template(client, project_id=project_id)
+        if template is not None:
+            logger.info("extend_video: using synthetic extend template (no captured template)")
     if not reverse_enabled:
         reverse_unavailable_reason = "operation reverse API disabled"
     elif replay_extend_via_api is None:
