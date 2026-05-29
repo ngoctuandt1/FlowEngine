@@ -897,12 +897,10 @@ async def navigate_to_edit(
     # Install auth probe BEFORE navigation so it captures agent session Bearer
     # tokens during page load (add_init_script runs before page scripts).
     await install_agent_auth_probe(page)
-    # Install the session blocker BEFORE page.goto so the Playwright route
-    # handler is registered before JS fires its initial GET sessions request.
-    # This prevents Flow from loading an agent session on the edit page, keeping
-    # the L2 toolbar (Extend/Insert/Remove/Camera) visible immediately on load.
-    # The route handler persists across navigations on the same page object.
-    await install_agent_session_blocker(page)
+    # NOTE: session blocker intentionally NOT installed here (2026-05 redesign).
+    # The old L2 toolbar (Extend/Insert/Remove/Camera) no longer exists; blocking
+    # agent sessions prevents the new "Describe your edits" agent-edit UI from
+    # submitting commands.  Blocking was only needed to keep the toolbar visible.
     await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(3)
 
