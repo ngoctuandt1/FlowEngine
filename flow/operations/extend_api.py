@@ -168,7 +168,11 @@ async def build_synthetic_extend_template(client, *, project_id: str) -> dict | 
             {
                 "videoExtendInput": {
                     "sourceMedia": {"name": "_PLACEHOLDER_"},
-                    "prompt": {"text": ""},
+                },
+                "textInput": {
+                    "structuredPrompt": {
+                        "parts": [{"text": ""}],
+                    },
                 },
                 "videoModelKey": _EXTEND_DEFAULT_MODEL_KEY,
                 "metadata": {},
