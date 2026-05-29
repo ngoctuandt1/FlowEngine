@@ -172,9 +172,7 @@ async def build_synthetic_extend_template(client, *, project_id: str) -> dict | 
         },
         "requests": [
             {
-                "extendVideoInput": {
-                    "sourceMedia": {"name": "_PLACEHOLDER_"},
-                },
+                "sourceMedia": {"name": "_PLACEHOLDER_"},
                 "textInput": {
                     "structuredPrompt": {
                         "parts": [{"text": ""}],
@@ -193,7 +191,7 @@ async def build_synthetic_extend_template(client, *, project_id: str) -> dict | 
             "content-type": "text/plain;charset=UTF-8",
         },
         "post_data": post_data,
-        "anchored_parent": ("extendVideoInput", "sourceMedia", "name"),
+        "anchored_parent": ("sourceMedia", "name"),
     }
     logger.info(
         "build_synthetic_extend_template: built template for project=%s bearer=...%s",
