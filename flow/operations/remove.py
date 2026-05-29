@@ -24,6 +24,8 @@ from flow.operations._base import (
     l2_reverse_api_enabled,
     l2_reverse_api_template_has_auth,
     run_l2_reverse_api_first,
+    agent_edit_ui_present,
+    submit_via_agent_edit_ui,
 )
 from flow.operations._l1_status_poll import (
     poll_status_via_api,
@@ -370,6 +372,34 @@ async def remove_object(
             pass
 
     if not clicked:
+        # 2026-05: traditional toolbar replaced by "Describe your edit(s)" UI.
+        # Fall back to agent text-command path if that interface is present.
+        # bbox converted to a rough positional description for the AI.
+        if await agent_edit_ui_present(page, timeout_ms=2000):
+            _b = bbox or {"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5}
+            _cx = _b.get("x", 0) + _b.get("w", 0) / 2
+            _cy = _b.get("y", 0) + _b.get("h", 0) / 2
+            _region = (
+                "top-left" if _cx < 0.4 and _cy < 0.4 else
+                "top-right" if _cx >= 0.6 and _cy < 0.4 else
+                "bottom-left" if _cx < 0.4 and _cy >= 0.6 else
+                "bottom-right" if _cx >= 0.6 and _cy >= 0.6 else
+                "center"
+            )
+            remove_cmd = f"Remove the object in the {_region} of the frame"
+            logger.info(
+                "run_remove: traditional Remove button absent; using agent edit UI "
+                "with command=%r (bbox=%s)", remove_cmd, _b
+            )
+            submitted = await submit_via_agent_edit_ui(page, remove_cmd)
+            if submitted:
+                return await finalize_operation(
+                    client, job,
+                    job_type="remove-object",
+                    project_id=project_id,
+                    locale=locale,
+                    download_prefix="rem",
+                )
         message = "Failed to find Remove button"
         message = await message_with_failure_capture(
             client,

@@ -101,6 +101,11 @@ _L2_SILENT_HIDE_OPERATIONS = {
     "remove-object",
     "camera-move",
 }
+# 2026-05 Flow redesign: traditional toolbar replaced by AI agent editing panel.
+# Detected by a visible "Describe your edit(s)" contenteditable input.  When
+# this UI is present the editing operations ARE available — just via text
+# command instead of toolbar buttons.  We must NOT raise L2PaywallError here.
+_AGENT_EDIT_UI_TOKENS = ("Describe your edit", "Describe your edits")
 
 
 class L2PaywallError(RuntimeError):
@@ -533,6 +538,17 @@ async def _assert_l2_available(page, op_name: str, profile: str | None) -> None:
         current_url = str(getattr(page, "url", "") or "")
         if "/edit/" not in current_url:
             return
+        # 2026-05 UI: check for new agent editing panel ("Describe your edit/edits").
+        # If present, editing is available via text command — not a paywall block.
+        for _agent_token in _AGENT_EDIT_UI_TOKENS:
+            if await _text_is_visible(page, _agent_token, exact=False, timeout_ms=1000):
+                logger.info(
+                    "_assert_l2: new agent edit UI detected (token=%r) for op=%s — "
+                    "editing available via 'Describe your edit' interface",
+                    _agent_token,
+                    op_name,
+                )
+                return
         # Dump visible buttons + screenshot to diagnose what's actually on screen
         try:
             eval_fn = getattr(page, "evaluate", None)
@@ -600,6 +616,76 @@ async def _l2_toolbar_token_visible(page, token: str, *, timeout_ms: int) -> boo
                 return True
         except Exception:
             continue
+    return False
+
+
+async def agent_edit_ui_present(page, *, timeout_ms: int = 2000) -> bool:
+    """Return True if the 2026-05 'Describe your edit(s)' agent interface is visible."""
+    for token in _AGENT_EDIT_UI_TOKENS:
+        if await _text_is_visible(page, token, exact=False, timeout_ms=timeout_ms):
+            return True
+    # Also check for the contenteditable div without relying on placeholder text
+    locator = getattr(page, "locator", None)
+    if callable(locator):
+        try:
+            ce = locator("[contenteditable='true']").first
+            if await _locator_is_visible(ce, timeout_ms=500):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+async def submit_via_agent_edit_ui(page, command: str) -> bool:
+    """Type *command* into the 'Describe your edit(s)' input and click Submit.
+
+    Returns True if the submit button was successfully clicked.
+    The caller is responsible for waiting for the generation result.
+
+    Slate contenteditable approach: click → select-all → type via keyboard.
+    """
+    locator = getattr(page, "locator", None)
+    if not callable(locator):
+        return False
+
+    # Find the single contenteditable editor
+    editor = locator("[contenteditable='true']").first
+    if not await _locator_is_visible(editor, timeout_ms=3000):
+        logger.warning("submit_via_agent_edit_ui: contenteditable not visible")
+        return False
+
+    try:
+        await editor.click(timeout=3000)
+        await asyncio.sleep(0.3)
+        # Select all existing content and replace
+        keyboard = getattr(page, "keyboard", None)
+        if keyboard:
+            await keyboard.press("Control+a")
+            await asyncio.sleep(0.1)
+        await editor.type(command, delay=30)
+        logger.info("submit_via_agent_edit_ui: typed command=%r", command[:60])
+    except Exception as exc:
+        logger.warning("submit_via_agent_edit_ui: typing failed: %s", exc)
+        return False
+
+    # Click the submit button: button containing arrow_forward icon
+    submit_selectors = (
+        "button:has(i:text-is('arrow_forward'))",
+        "[role='button']:has(i:text-is('arrow_forward'))",
+        "button:has-text('arrow_forwardCreate')",
+        "button[type='submit']",
+    )
+    for sel in submit_selectors:
+        try:
+            btn = locator(sel).last  # last = rightmost in bottom bar
+            if await _locator_is_visible(btn, timeout_ms=1000):
+                await btn.click(timeout=3000)
+                logger.info("submit_via_agent_edit_ui: clicked submit via %r", sel)
+                return True
+        except Exception:
+            continue
+
+    logger.warning("submit_via_agent_edit_ui: submit button not found after typing")
     return False
 
 

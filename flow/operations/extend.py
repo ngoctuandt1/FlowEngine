@@ -24,6 +24,8 @@ from flow.operations._base import (
     l2_reverse_api_enabled,
     l2_reverse_api_template_has_auth,
     run_l2_reverse_api_first,
+    agent_edit_ui_present,
+    submit_via_agent_edit_ui,
 )
 from flow.operations._l1_status_poll import (
     poll_status_via_api,
@@ -446,6 +448,25 @@ async def extend_video(
                 pass
 
         if not clicked:
+            # 2026-05: traditional toolbar replaced by "Describe your edit(s)" UI.
+            # Fall back to agent text-command path if that interface is present.
+            if await agent_edit_ui_present(page, timeout_ms=2000):
+                extend_cmd = "Extend this video"
+                if prompt:
+                    extend_cmd = f"Extend this video: {prompt}"
+                logger.info(
+                    "run_extend: traditional Extend button absent; using agent edit UI "
+                    "with command=%r", extend_cmd
+                )
+                submitted = await submit_via_agent_edit_ui(page, extend_cmd)
+                if submitted:
+                    return await finalize_operation(
+                        client, job,
+                        job_type="extend-video",
+                        project_id=project_id,
+                        locale=locale,
+                        download_prefix="ext",
+                    )
             # Debug: log visible buttons to help diagnose
             try:
                 buttons = await page.evaluate("""() => {
