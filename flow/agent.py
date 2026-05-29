@@ -794,15 +794,21 @@ _AGENT_INFO_DISABLED_RESPONSE = json.dumps(
 
 
 async def _install_agent_info_blocker(page: Any) -> None:
-    """Intercept aisandbox-pa.googleapis.com requests to suppress agent mode.
+    """Intercept aisandbox-pa.googleapis.com requests to suppress agent-mode UI.
 
-    Two intercepts:
-    1. GET **/agentInfo** → returns agentToggleState=DISABLED
-    2. GET/POST **/aisandbox-pa.googleapis.com/** diagnostic log (pass-through)
-       so we can see all API URLs Flow calls during page load.
+    R17 diagnostic revealed the actual agent-mode trigger is NOT agentInfo GET
+    (no such GET is made) but rather:
+      GET /v1/flowAgent/applets           → returns editing applets list
+      GET /v1/flowAgent/savedSharedApplets → returns saved shared applets
 
-    PATCH requests are passed through so our own _patch_agent_state calls still
-    update the server state.
+    When either returns a non-empty list the Flow SPA renders the "agent editing
+    panel" which REPLACES the traditional L2 toolbar (Extend/Remove/Camera/Insert).
+    Returning empty lists prevents that panel from loading.
+
+    We also keep the agentInfo GET intercept for forward-compat in case Flow adds
+    a GET-based toggle check later.  PATCH requests always pass through so our own
+    _patch_agent_state / disable_agent_mode_if_active PATCH calls still reach the
+    server.
     """
     async def _agentinfo_handler(route, request):
         if request.method == "GET":
@@ -818,21 +824,42 @@ async def _install_agent_info_blocker(page: Any) -> None:
         else:
             await route.continue_()
 
-    async def _diagnostic_handler(route, request):
-        logger.warning(
-            "_aisandbox_diag: %s %s",
-            request.method,
-            request.url[:120],
-        )
-        await route.continue_()
+    async def _applets_handler(route, request):
+        if request.method == "GET":
+            logger.warning(
+                "_agent_applets_blocker: intercepted GET %s → returning empty list",
+                request.url[request.url.rfind("/") + 1:request.url.rfind("/") + 40],
+            )
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"applets": []}',
+            )
+        else:
+            await route.continue_()
+
+    async def _saved_applets_handler(route, request):
+        if request.method == "GET":
+            logger.warning(
+                "_agent_applets_blocker: intercepted GET savedSharedApplets → returning empty",
+            )
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"savedSharedApplets": []}',
+            )
+        else:
+            await route.continue_()
 
     try:
         route_fn = getattr(page, "route", None)
         if callable(route_fn):
             await route_fn("**/agentInfo**", _agentinfo_handler)
             logger.warning("_install_agent_info_blocker: agentInfo route handler registered OK")
-            await route_fn("**/aisandbox-pa.googleapis.com/**", _diagnostic_handler)
-            logger.warning("_install_agent_info_blocker: aisandbox diagnostic handler registered OK")
+            await route_fn("**/flowAgent/applets**", _applets_handler)
+            logger.warning("_install_agent_info_blocker: flowAgent/applets handler registered OK")
+            await route_fn("**/flowAgent/savedSharedApplets**", _saved_applets_handler)
+            logger.warning("_install_agent_info_blocker: flowAgent/savedSharedApplets handler registered OK")
     except Exception as exc:
         logger.warning("_install_agent_info_blocker: route install failed (non-fatal): %s", exc)
 
