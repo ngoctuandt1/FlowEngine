@@ -23,6 +23,7 @@ from flow.agent import (
     disable_agent_mode_if_active,
     install_agent_auth_probe,
     install_agent_session_blocker,
+    uninstall_agent_session_blocker,
 )
 from flow.landing import recover_from_flow_landing
 from flow.login import is_login_page, handle_login_redirect
@@ -897,10 +898,11 @@ async def navigate_to_edit(
     # Install auth probe BEFORE navigation so it captures agent session Bearer
     # tokens during page load (add_init_script runs before page scripts).
     await install_agent_auth_probe(page)
-    # NOTE: session blocker intentionally NOT installed here (2026-05 redesign).
-    # The old L2 toolbar (Extend/Insert/Remove/Camera) no longer exists; blocking
-    # agent sessions prevents the new "Describe your edits" agent-edit UI from
-    # submitting commands.  Blocking was only needed to keep the toolbar visible.
+    # Remove any existing session blockers (may have been installed by L1
+    # generate/upscale) so the agent "Describe your edits" UI can submit.
+    # The old L2 toolbar no longer exists; sessions must be unblocked for
+    # submit_via_agent_edit_ui to fire a generate request.
+    await uninstall_agent_session_blocker(page)
     await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(3)
 
