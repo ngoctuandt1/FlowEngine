@@ -475,6 +475,26 @@ async def extend_video(
                         locale=locale,
                         download_prefix="ext",
                     )
+                # /edit/ page submit failed (e.g. session blocked). Fall back to
+                # the project page's main composer which fires batchAsyncGenerateVideoText
+                # directly from the browser (2026-05 agent-UI path).
+                proj_url = job.get("project_url") or ""
+                if proj_url:
+                    logger.info(
+                        "run_extend: agent edit UI submit failed; trying project "
+                        "page main composer for project=%s", proj_url[:60]
+                    )
+                    await page.goto(proj_url, wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(4)
+                    submitted2 = await submit_via_agent_edit_ui(page, extend_cmd)
+                    if submitted2:
+                        return await finalize_operation(
+                            client, job,
+                            job_type="extend-video",
+                            project_id=project_id,
+                            locale=locale,
+                            download_prefix="ext",
+                        )
             # Debug: log visible buttons to help diagnose
             try:
                 buttons = await page.evaluate("""() => {
