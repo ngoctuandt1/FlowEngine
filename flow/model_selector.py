@@ -614,6 +614,7 @@ async def select_model(
                 ]);
                 const btns = [...document.querySelectorAll('button,[role="button"]')];
                 for (const btn of btns) {
+                    if (btn.getAttribute('role') === 'tab') continue;  // never click output tabs
                     const r = btn.getBoundingClientRect();
                     if (r.top < vh * 0.65) continue;  // must be in lower portion
                     if (r.width < 20 || r.height < 20) continue;  // skip tiny
