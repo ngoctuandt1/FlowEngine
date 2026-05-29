@@ -53,6 +53,12 @@ _EXTEND_HEADER_ALLOWLIST = frozenset(
     {"authorization", "content-type", "x-goog-api-key", "x-recaptcha-token"}
 )
 _PARENT_FIELD_CANDIDATES: tuple[tuple[str, ...], ...] = (
+    # 2026-05 API shape (batchAsyncGenerateVideoExtendVideo)
+    ("extendVideoInput", "sourceMedia", "name"),
+    ("extendVideoInput", "sourceMediaName"),
+    ("extendVideoInput", "sourceMediaId"),
+    ("extendVideoInput", "parentMediaId"),
+    # Legacy field names kept for backward compat
     ("videoExtendInput", "sourceMedia", "name"),
     ("videoExtendInput", "sourceMediaName"),
     ("videoExtendInput", "sourceMediaId"),
@@ -166,7 +172,7 @@ async def build_synthetic_extend_template(client, *, project_id: str) -> dict | 
         },
         "requests": [
             {
-                "videoExtendInput": {
+                "extendVideoInput": {
                     "sourceMedia": {"name": "_PLACEHOLDER_"},
                 },
                 "textInput": {
@@ -187,7 +193,7 @@ async def build_synthetic_extend_template(client, *, project_id: str) -> dict | 
             "content-type": "text/plain;charset=UTF-8",
         },
         "post_data": post_data,
-        "anchored_parent": ("videoExtendInput", "sourceMedia", "name"),
+        "anchored_parent": ("extendVideoInput", "sourceMedia", "name"),
     }
     logger.info(
         "build_synthetic_extend_template: built template for project=%s bearer=...%s",
