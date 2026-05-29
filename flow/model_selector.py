@@ -554,6 +554,21 @@ async def select_model(
         # /edit/ composer: the model chip shows "Veo 3.1 - <variant>" + <i>arrow_drop_down</i>.
         # Verified unique live 2026-04-19 (sole aria-haspopup=menu button with that icon).
         "button[aria-haspopup='menu']:has(i:text-is('arrow_drop_down'))",
+        # Post-2026-05 fallbacks: Flow began rendering image-mode chips with
+        # generic media icons instead of the crop ligatures. Keep the
+        # aria-haspopup filter where possible to avoid grabbing unrelated icon
+        # buttons, then fall back to looser variants.
+        "button[aria-haspopup='menu']:has(i:text-is('image'))",
+        "button[aria-haspopup='menu']:has(i:text-is('photo_camera'))",
+        "button[aria-haspopup='menu']:has(i:text-is('camera_alt'))",
+        "button[aria-haspopup='menu']:has(i:text-is('photo'))",
+        "button[aria-haspopup='menu']:has(i:text-is('image_search'))",
+        "button[aria-haspopup='menu']:has(i:text-is('auto_awesome'))",
+        "button:has(i.material-icons:text-is('image'))",
+        "button:has(i:text-is('image'))",
+        "[role='button']:has(i:text-is('image'))",
+        "button:has(i:text-is('camera_alt'))",
+        "button:has(i:text-is('auto_awesome'))",
     ]
 
     opened = False
@@ -590,6 +605,31 @@ async def select_model(
                 logger.info("Opened model dropdown via JS fallback")
         except Exception:
             pass
+
+    if not opened:
+        # Broad JS fallback: click the first icon-bearing button in the lower
+        # portion of the composer. Post-2026-05 Flow occasionally renders the
+        # chip with an icon ligature none of the CSS variants cover.
+        try:
+            clicked = await page.evaluate("""() => {
+                const vh = window.innerHeight;
+                const btns = [...document.querySelectorAll('button,[role="button"]')];
+                for (const btn of btns) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.top < vh * 0.65) continue;  // must be in lower portion
+                    if (r.width < 20 || r.height < 20) continue;  // skip tiny
+                    if (btn.offsetParent === null) continue;
+                    const icons = btn.querySelectorAll('i, .material-icons');
+                    if (icons.length > 0) { btn.click(); return btn.textContent || '(clicked)'; }
+                }
+                return null;
+            }""")
+            if clicked:
+                opened = True
+                logger.info("Opened model dropdown via JS broad icon fallback, textContent=%r", clicked)
+                await asyncio.sleep(0.3)
+        except Exception as exc:
+            logger.debug("JS broad icon fallback failed: %s", exc)
 
     if not opened and _ai_locator_enabled():
         result = await ai_locate(
