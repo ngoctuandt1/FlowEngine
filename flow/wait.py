@@ -1,7 +1,45 @@
 """Wait for Flow generation to complete.
 
-Polls three independent signal sources (reverse-API, network video
-captures, DOM observer) to detect when a generation finishes or fails.
+Polls four independent signal sources (reverse-API, network video
+captures, DOM observer, agent-flow media events) to detect when a
+generation finishes or fails.
+
+Agent-flow changes (2026-05):
+  Google Flow switched to a single "Agent" composer that routes
+  generation through ``generatecontent``/``runagent``-style endpoints
+  instead of the old ``batchAsyncGenerateVideo`` + ``operations/`` LRO
+  pair.  The new signals are:
+
+  * Any new entry in ``client._media_id_events`` after submit — the
+    client's ``_on_response`` handler already records media IDs from
+    ``/pq/api`` (``getMediaUrlRedirect``) network events.  A new ID
+    appearing post-submit = generation produced output.
+  * URL families that count as "active generation" for the no-signal
+    watchdog (prevents false ``no_signal_timeout`` while the agent is
+    busy but hasn't finished):
+      - ``generatecontent``      (Gemini-style agent generate)
+      - ``:generate``            (gRPC-transcoded generate)
+      - ``/generate``            (REST generate suffix)
+      - ``generatevideo``        (direct video generation)
+      - ``runagent``             (agent execution)
+      - ``aisandbox-pa.googleapis.com``  (all Flow agent APIs)
+      - ``batchasync``           (existing batch async submit)
+
+  Method 4 (new-media-ID permissive fallback) fires when a new media_id
+  appears in ``_media_id_events`` but no LRO ``done:true`` was seen.
+  It obeys the same chain-child strict guard as Methods 1-3.
+
+  What needs live confirmation (cannot determine from code alone):
+    - Exact JSON shape of the agent ``generatecontent`` / ``runagent``
+      response (whether it contains ``progressPercentage`` or a
+      ``done``-equivalent field).
+    - Whether the agent finish writes a new video tile that fires
+      ``_flowNewVideo`` in the DOM observer (most likely yes — the
+      observer just counts ``<video>`` elements).
+    - Whether ``/pq/api getMediaUrlRedirect`` fires for agent-generated
+      clips the same way it does for toolbar-generated ones (assumed yes
+      based on findings-260529 probe showing ``a[href*='/edit/']`` tiles
+      still appear in the project view).
 """
 
 import asyncio
@@ -230,6 +268,11 @@ async def wait_for_completion(
         if api["progress"] > last_progress:
             last_progress = api["progress"]
             last_signal_time = time.monotonic()
+        # Agent-flow calls count as "signal" even without progressPercentage.
+        # This prevents the no-signal watchdog from firing while the agent is
+        # busy on generatecontent / runagent endpoints.
+        if api.get("agent_api_calls", 0) > 0:
+            last_signal_time = time.monotonic()
 
         # --- reCAPTCHA check (throttled to every ~10s) ---
         now = time.monotonic()
@@ -378,17 +421,86 @@ async def wait_for_completion(
                     media_ids=media_ids,
                 )
 
+        # --- Method 4: new media_id permissive fallback (agent-flow) ---
+        # When the agent generation flow does not emit an LRO done:true or a
+        # new <video> DOM element within the normal window, check whether a
+        # brand-new media_id appeared in _media_id_events since submit.
+        # This is the most permissive signal: the client's _on_response
+        # handler records IDs from getMediaUrlRedirect responses, which fire
+        # whenever a new media is created regardless of which Flow pathway
+        # triggered it (toolbar or agent).
+        #
+        # Guard: only fire after at least 5s have elapsed (avoid false positive
+        # on L2 submit-time capture of the parent's existing media_id) and when
+        # at least one agent-API call has been seen (i.e. generation was
+        # actually triggered via the agent path).
+        #
+        # Chain-child strict guard still applies: the new media_id must have
+        # appeared AFTER the submit baseline.
+        #
+        # NEEDS LIVE CONFIRMATION: verify that getMediaUrlRedirect fires for
+        # agent-generated clips at roughly the same timing as toolbar clips.
+        new_agent_media = _collect_media_ids(client, start_index=strict_media_count_baseline)
+        n_agent_api = api.get("agent_api_calls", 0)
+        if (
+            new_agent_media
+            and elapsed > 5
+            and n_agent_api > 0
+        ):
+            logger.info(
+                "Completion via new media_id event (agent-flow permissive path, "
+                "agent_api_calls=%d) after %.0fs — media_ids=%s",
+                n_agent_api,
+                elapsed,
+                new_agent_media,
+            )
+            await asyncio.sleep(3)  # let any further events settle
+            method_name = "agent_media_id"
+            is_chain_child = job_type in CHAIN_CHILD_JOB_TYPES
+            # Re-read after settle
+            new_media_count = len(
+                _collect_media_ids(client, start_index=strict_media_count_baseline)
+            )
+            if is_chain_child and new_media_count == 0:
+                logger.error(
+                    "wait_for_completion: %s signaled done but no new media event "
+                    "captured since submit; treating as failure",
+                    method_name,
+                )
+                return await _result_with_capture(
+                    client,
+                    "no_new_media_event_at_chain_child",
+                    kind="no_new_media_event_at_chain_child",
+                    extra={
+                        "job_type": job_type,
+                        "method": method_name,
+                        "elapsed_sec": round(elapsed, 1),
+                    },
+                )
+            return _result(
+                True,
+                media_ids=_collect_media_ids(client, start_index=initial_media_count),
+                video_urls=getattr(client, "_video_urls", [])[initial_video_count:],
+            )
+
         # --- No-signal watchdog ---
         silence = time.monotonic() - last_signal_time
         if silence > no_signal_timeout:
-            # Debug: log what signals were captured before aborting
+            # Debug: log all signal counters before aborting to aid diagnosis.
             n_calls = len(getattr(client, "_calls", []))
             n_videos = len(getattr(client, "_video_urls", []))
             n_media = len(getattr(client, "_media_id_events", []))
+            n_agent_api_calls = api.get("agent_api_calls", 0)
             logger.error(
                 "No signal for %ds, aborting  "
-                "(api_calls=%d, video_urls=%d, media_ids=%d, dom_progress=%d%%)",
-                no_signal_timeout, n_calls, n_videos, n_media, last_progress,
+                "(api_calls=%d, agent_api_calls=%d, video_urls=%d, "
+                "media_ids=%d, dom_progress=%d%%)",
+                no_signal_timeout,
+                n_calls,
+                n_agent_api_calls,
+                n_videos,
+                n_media,
+                last_progress,
             )
             return await _result_with_capture(
                 client,
@@ -400,10 +512,11 @@ async def wait_for_completion(
         if silence > 60 and int(elapsed) % 60 == 0 and elapsed > 0:
             n_calls = len(getattr(client, "_calls", []))
             n_videos = len(getattr(client, "_video_urls", []))
+            n_agent_api_calls = api.get("agent_api_calls", 0)
             logger.info(
                 "Stalled debug: %.0fs elapsed, %ds silent, "
-                "api_calls=%d, video_urls=%d, dom=%s",
-                elapsed, int(silence), n_calls, n_videos, dom,
+                "api_calls=%d, agent_api_calls=%d, video_urls=%d, dom=%s",
+                elapsed, int(silence), n_calls, n_agent_api_calls, n_videos, dom,
             )
 
         # Periodic progress log (every ~30s)
@@ -442,24 +555,69 @@ def _build_network_recaptcha_error(client, kind: str) -> RecaptchaError:
 # Signal readers
 # ------------------------------------------------------------------
 
+def _is_agent_api_url(url_l: str) -> bool:
+    """Return True for URL patterns belonging to the 2026-05 agent generation flow.
+
+    These calls are made while the agent is actively generating but may not
+    carry a ``progressPercentage`` or ``done`` field in the body — they still
+    count as "signal" so the no-signal watchdog is not tripped prematurely.
+
+    Patterns (case-insensitive, already lowercased by caller):
+      - ``generatecontent``  — Gemini-style content generation
+      - ``:generate``        — gRPC-transcoded REST suffix
+      - ``/generate``        — REST generate path
+      - ``generatevideo``    — direct video generation endpoint
+                              (EXCLUDES ``batchasyncgeneratevideo`` which is
+                              the legacy Labs API and starts with "batchasync")
+      - ``runagent``         — agent execution endpoint
+      - ``aisandbox-pa.googleapis.com`` — all Flow sandbox agent APIs
+
+    NOTE: needs live confirmation that these are the actual URL fragments
+    used by the agent flow. Treat as best-effort based on
+    _base.py::_AGENT_SUBMIT_REQUEST_TOKENS + agent.py auth probe scope.
+    """
+    if "generatecontent" in url_l:
+        return True
+    if ":generate" in url_l:
+        return True
+    if "/generate" in url_l:
+        return True
+    # "generatevideo" matches the agent path but must NOT match the legacy
+    # "batchasyncgeneratevideo" endpoint which is handled by the legacy path.
+    if "generatevideo" in url_l and "batchasync" not in url_l:
+        return True
+    if "runagent" in url_l:
+        return True
+    if "aisandbox-pa.googleapis.com" in url_l:
+        return True
+    return False
+
+
 async def _check_api_signals(client) -> dict:
     """Scan ``client._calls`` for operation status.
 
-    Checks two URL families:
+    Checks three URL families:
     - ``operations/`` — LRO polling responses (``done``, ``progressPercentage``)
     - ``batchasyncgeneratevideo`` / ``batchcheckasyncvideogenerationstatus`` —
       video submit/poll responses.  Media names are collected for the caller
       but these URLs alone do NOT signal done (they return media[] from the
       first poll, before generation completes).
+    - Agent-flow URLs (see :func:`_is_agent_api_url`) — these count as
+      progress signal for the no-signal watchdog; ``done`` is signalled via
+      the same ``operations/ done:true`` path if the agent wraps an LRO, or
+      via Method 4 (new media_id permissive fallback) if not.
 
-    Completion for video is always determined by Method 3 (DOM new-video).
-    Method 1 only fires for explicit ``done: true`` from operations/ responses.
+    Completion for video is always determined by Method 3 (DOM new-video) or
+    Method 4 (new media_id event).  Method 1 only fires for explicit
+    ``done: true`` from operations/ responses.
     """
     result: dict = {
         "progress": 0,
         "done": False,
         "error": None,
         "media_ids": [],
+        # Count of agent-flow API calls seen (for diagnostics).
+        "agent_api_calls": 0,
     }
 
     calls = getattr(client, "_calls", [])
@@ -481,11 +639,19 @@ async def _check_api_signals(client) -> dict:
             return result
 
         url_l = url.lower()
-        is_api = (
+
+        # Count agent-flow API hits regardless of body shape (diagnostic).
+        if _is_agent_api_url(url_l):
+            result["agent_api_calls"] += 1
+
+        is_legacy_api = (
             "operations/" in url_l
             or "batchasyncgeneratevideo" in url_l
             or "batchcheckasyncvideogenerationstatus" in url_l
         )
+        is_agent_api = _is_agent_api_url(url_l)
+        is_api = is_legacy_api or is_agent_api
+
         if not is_api or not isinstance(body, dict):
             continue
 
@@ -494,6 +660,8 @@ async def _check_api_signals(client) -> dict:
             result["progress"] = int(progress)
 
         # Collect media_ids so callers can pass them to the download pipeline.
+        # The agent response shape is unconfirmed — cover both the legacy
+        # ``media[]`` and a potential top-level ``mediaId``/``name`` field.
         for top in (body, *body.get("responses", [])):
             if not isinstance(top, dict):
                 continue
@@ -502,6 +670,16 @@ async def _check_api_signals(client) -> dict:
                     name = m.get("name")
                     if name and name not in result["media_ids"]:
                         result["media_ids"].append(name)
+            # Agent flow may surface media name at the top level.
+            # NEEDS LIVE CONFIRMATION of exact field name.
+            for field in ("name", "mediaId", "media_id", "outputName"):
+                candidate = top.get(field)
+                if (
+                    isinstance(candidate, str)
+                    and looks_like_media_id(normalize_media_id(candidate))
+                    and candidate not in result["media_ids"]
+                ):
+                    result["media_ids"].append(candidate)
 
         # Only signal done on an explicit operations/ LRO done flag.
         # batchCheckAsyncVideoGenerationStatus returns media[] from the
