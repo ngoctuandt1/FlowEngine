@@ -664,6 +664,7 @@ async def submit_via_agent_edit_ui(page, command: str) -> bool:
             await asyncio.sleep(0.1)
         await editor.type(command, delay=30)
         logger.info("submit_via_agent_edit_ui: typed command=%r", command[:60])
+        await asyncio.sleep(0.5)  # allow submit button to become enabled
     except Exception as exc:
         logger.warning("submit_via_agent_edit_ui: typing failed: %s", exc)
         return False
@@ -674,18 +675,51 @@ async def submit_via_agent_edit_ui(page, command: str) -> bool:
         "[role='button']:has(i:text-is('arrow_forward'))",
         "button:has-text('arrow_forwardCreate')",
         "button[type='submit']",
+        "button:has(span:text-is('arrow_forward'))",
+        "button:has-text('Create')",
+        "[role='button']:has-text('Create')",
     )
     for sel in submit_selectors:
         try:
             btn = locator(sel).last  # last = rightmost in bottom bar
-            if await _locator_is_visible(btn, timeout_ms=1000):
+            if await _locator_is_visible(btn, timeout_ms=3000):
                 await btn.click(timeout=3000)
                 logger.info("submit_via_agent_edit_ui: clicked submit via %r", sel)
                 return True
         except Exception:
             continue
 
+    # JS fallback: find last visible button containing arrow_forward or Create text
+    try:
+        clicked = await page.evaluate("""() => {
+            const btns = [...document.querySelectorAll('button,[role="button"]')];
+            for (const btn of btns.reverse()) {
+                if (btn.offsetParent === null) continue;
+                const t = btn.textContent || '';
+                if (t.includes('arrow_forward') || (t.includes('Create') && !t.includes('add_2'))) {
+                    btn.click();
+                    return true;
+                }
+            }
+            return false;
+        }""")
+        if clicked:
+            logger.info("submit_via_agent_edit_ui: submitted via JS fallback")
+            return True
+    except Exception as exc:
+        logger.warning("submit_via_agent_edit_ui: JS fallback failed: %s", exc)
+
     logger.warning("submit_via_agent_edit_ui: submit button not found after typing")
+    # Best-effort screenshot to aid diagnosis
+    try:
+        import os as _os
+        _cap_dir = _os.environ.get("FLOW_ERROR_CAPTURE_DIR", "/tmp")
+        _job_id = getattr(page, "_job_id", "unknown")
+        _path = f"{_cap_dir}/flow-submit-fail-{_job_id}.png"
+        await page.screenshot(path=_path)
+        logger.error("submit_via_agent_edit_ui: screenshot saved %s", _path)
+    except Exception:
+        pass
     return False
 
 
