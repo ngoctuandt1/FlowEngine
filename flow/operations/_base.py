@@ -733,7 +733,7 @@ async def _capture_submit_failure(page) -> None:
         logger.debug("submit_via_agent_edit_ui: screenshot failed: %s", _e)
 
 
-async def submit_via_agent_edit_ui(page, command: str) -> bool:
+async def submit_via_agent_edit_ui(page, command: str, *, generate_timeout_ms: int = 4000) -> bool:
     """Type *command* into the 'Describe your edit(s)' input and submit it.
 
     The 2026-05 Flow agent composer is a standard chat-style input that
@@ -827,7 +827,7 @@ async def submit_via_agent_edit_ui(page, command: str) -> bool:
     # Verify generation actually started — a generate/batchAsync request
     # must fire. Without this, an Enter that silently did nothing would
     # leave the caller to wait out the full 180s no_signal_timeout.
-    if await _wait_for_generate_request(page, timeout_ms=4000):
+    if await _wait_for_generate_request(page, timeout_ms=generate_timeout_ms):
         logger.info("submit_via_agent_edit_ui: generate request observed after Enter")
         return True
 

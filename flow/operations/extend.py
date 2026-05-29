@@ -484,9 +484,11 @@ async def extend_video(
                         "run_extend: agent edit UI submit failed; trying project "
                         "page main composer for project=%s", proj_url[:60]
                     )
+                    from flow.agent import uninstall_agent_session_blocker
+                    await uninstall_agent_session_blocker(page)  # remove all residual blockers
                     await page.goto(proj_url, wait_until="domcontentloaded", timeout=30000)
-                    await asyncio.sleep(4)
-                    submitted2 = await submit_via_agent_edit_ui(page, extend_cmd)
+                    await asyncio.sleep(6)  # longer wait for project page SPA to fully load
+                    submitted2 = await submit_via_agent_edit_ui(page, extend_cmd, generate_timeout_ms=10000)
                     if submitted2:
                         return await finalize_operation(
                             client, job,

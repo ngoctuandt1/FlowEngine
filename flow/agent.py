@@ -827,6 +827,7 @@ async def uninstall_agent_session_blocker(page: Any) -> None:
     for pattern in (
         "**/flowCreationAgent/sessions**",
         "**/v1/projects/*/agentInfo**",
+        "**/agentInfo**",           # actual pattern used by _install_agent_info_blocker
         "**/flowAgent/applets**",
         "**/flowAgent/savedSharedApplets**",
     ):
