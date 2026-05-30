@@ -1084,6 +1084,12 @@ class FlowClient:
                                 self._record_media_id(
                                     mname, source="api_response", url=url
                                 )
+                                # Use the first captured media_id as generation_id
+                                # fallback when the LRO "name" field is absent from
+                                # the response (Flow batch endpoints return media
+                                # directly, not an LRO operation name).
+                                if not self._gen_id:
+                                    self._gen_id = mname
                                 logger.debug(
                                     "Captured video media_id from API: %s", mname[:20]
                                 )
