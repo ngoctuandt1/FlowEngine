@@ -427,42 +427,39 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
             logger.warning("[UPSCALE] Not on a Flow project URL: %s", page.url[:100])
             return
 
+    # 2026-05 Flow redesign: after generation the project page is in a
+    # "post-generation" SPA state where tile <a> links render lazily (or not
+    # at all). A fresh page.goto() of the project URL forces a clean render
+    # so the /edit/ links appear. Use the project URL (strip any /edit/ suffix
+    # if we somehow landed there).
+    project_root = page.url.split("/edit/")[0].rstrip("/")
+    if "/project/" in project_root:
+        logger.info("[UPSCALE] Fresh-loading project page to get /edit/ links: %s", project_root[:80])
+        try:
+            await page.goto(project_root, wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(3)  # wait for SPA tiles + <a> links to render
+        except Exception as exc:
+            logger.warning("[UPSCALE] Project reload failed (%s); continuing", exc)
+
+    # After fresh load, find and click a link whose computed href contains /edit/.
+    # Use a.href (absolute URL) not the CSS attribute selector — Flow stores
+    # relative hrefs like 'edit/{slug}' (no leading slash) which the CSS selector
+    # a[href*='/edit/'] does NOT match but the absolute a.href property does.
     tile = page.locator('[data-tile-id^="fe_id_"]').first
     try:
         await tile.wait_for(state="attached", timeout=5000)
     except Exception:
-        logger.warning("[UPSCALE] No tile with data-tile-id^=fe_id_ on project view")
-        return
+        logger.warning("[UPSCALE] No tile with data-tile-id^=fe_id_ after fresh load")
 
-    # 2026-05 Flow redesign: direct /edit/ URL navigation redirects to project
-    # root; we must click a link whose href contains /edit/ to trigger the SPA
-    # router. Try link-based navigation first (most reliable in new UI), fall
-    # back to the data-tile-id click as a secondary path.
-    #
-    # IMPORTANT: use computed `a.href` (absolute URL), NOT the CSS attribute
-    # selector `[href*="/edit/"]` — Flow stores relative hrefs like
-    # `edit/{routing_slug}` (no leading slash), which the attribute selector
-    # does NOT match but the absolute `a.href` property does.
-    # Poll for an <a> link whose computed href contains /edit/.
-    # Use a.href (absolute URL property) not the CSS attribute selector —
-    # Flow stores relative hrefs like 'edit/{slug}' (no leading slash) which
-    # the CSS selector a[href*='/edit/'] does NOT match.
-    # The <a> renders asynchronously after the tile DIV attaches; poll up to 4s.
-    link_deadline = time.time() + 4
-    clicked_link = None
-    while time.time() < link_deadline:
-        clicked_link = await page.evaluate(
-            """() => {
-                const links = Array.from(document.querySelectorAll('a')).filter(
-                    (a) => a.href && a.href.includes('/edit/')
-                );
-                if (links.length) { links[0].click(); return links[0].href.slice(-40); }
-                return null;
-            }"""
-        )
-        if clicked_link:
-            break
-        await asyncio.sleep(0.3)
+    clicked_link = await page.evaluate(
+        """() => {
+            const links = Array.from(document.querySelectorAll('a')).filter(
+                (a) => a.href && a.href.includes('/edit/')
+            );
+            if (links.length) { links[0].click(); return links[0].href.slice(-40); }
+            return null;
+        }"""
+    )
     if clicked_link:
         logger.info("[UPSCALE] Clicked /edit/ link: ...%s", clicked_link)
         deadline = time.time() + 8
@@ -474,7 +471,7 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
             await asyncio.sleep(0.2)
         logger.warning("[UPSCALE] Link click didn't reach /edit/ after 8s; trying tile click")
     else:
-        logger.warning("[UPSCALE] No a[href*/edit/] link found after 4s; trying tile click")
+        logger.warning("[UPSCALE] No a[href*/edit/] link after fresh load; trying tile click")
 
     # Block agent session creation before tile navigation so the /edit/ view
     # loads with the normal toolbar (including the Download button accessible).
