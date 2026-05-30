@@ -336,3 +336,102 @@ def _chooser_awaitable(value):
         return value
 
     return _coro()
+
+
+# ---------------------------------------------------------------------------
+# _select_video_composer_subtab — id-based selector path (2026-05-30 fix)
+# FRAMES = id$='-trigger-VIDEO_FRAMES'; INGREDIENTS = id$='-trigger-VIDEO_REFERENCES'
+# Sub-tabs only render AFTER VIDEO tab is active; we wait ~1 s before looking.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_select_subtab_frames_uses_id_selector(monkeypatch):
+    """Frames sub-tab is found via the id-suffix selector without text scan."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    chip = MagicMock()
+    monkeypatch.setattr(generate_op, "_ensure_video_composer_mode", AsyncMock(return_value=chip))
+    monkeypatch.setattr(generate_op, "_close_composer_menu_by_click_outside", AsyncMock())
+    text_scan_spy = AsyncMock(return_value=(MagicMock(), "active", []))
+    monkeypatch.setattr(generate_op, "_find_open_composer_tab", text_scan_spy)
+
+    frames_tab = MagicMock()
+    frames_tab.first = frames_tab
+    frames_tab.get_attribute = AsyncMock(return_value="active")
+    frames_tab.click = AsyncMock()
+
+    page = MagicMock()
+
+    def _locator(selector):
+        if selector == '[id$="-trigger-VIDEO_FRAMES"]':
+            return frames_tab
+        return _make_locator(visible=False)
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    await generate_op._select_video_composer_subtab(page, "Frames")
+
+    # Already active → no click needed
+    frames_tab.click.assert_not_awaited()
+    # Text scan should not be used when id-lookup succeeds
+    text_scan_spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_select_subtab_ingredients_uses_id_selector_and_clicks_when_inactive(monkeypatch):
+    """Ingredients sub-tab found via id, clicked when inactive, re-verified."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    monkeypatch.setattr(generate_op, "_ensure_video_composer_mode", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(generate_op, "_close_composer_menu_by_click_outside", AsyncMock())
+    monkeypatch.setattr(generate_op, "_find_open_composer_tab", AsyncMock(return_value=(MagicMock(), "active", [])))
+
+    # First call returns "inactive"; second (re-check after click) returns "active".
+    ingr_tab = MagicMock()
+    ingr_tab.first = ingr_tab
+    ingr_tab.get_attribute = AsyncMock(side_effect=["inactive", "active"])
+    ingr_tab.click = AsyncMock()
+
+    page = MagicMock()
+
+    def _locator(selector):
+        if selector == '[id$="-trigger-VIDEO_REFERENCES"]':
+            return ingr_tab
+        return _make_locator(visible=False)
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    await generate_op._select_video_composer_subtab(page, "Ingredients")
+
+    ingr_tab.click.assert_awaited_once_with(timeout=3000)
+
+
+@pytest.mark.asyncio
+async def test_select_subtab_falls_back_to_text_scan_when_id_lookup_fails(monkeypatch):
+    """When id-based get_attribute raises, text scan is used as fallback."""
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    monkeypatch.setattr(generate_op, "_ensure_video_composer_mode", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr(generate_op, "_close_composer_menu_by_click_outside", AsyncMock())
+
+    fallback_tab = MagicMock()
+    fallback_tab.click = AsyncMock()
+    text_scan_spy = AsyncMock(return_value=(fallback_tab, "active", ["'Frames'=active"]))
+    monkeypatch.setattr(generate_op, "_find_open_composer_tab", text_scan_spy)
+
+    broken_tab = MagicMock()
+    broken_tab.first = broken_tab
+    broken_tab.get_attribute = AsyncMock(side_effect=RuntimeError("element gone"))
+
+    page = MagicMock()
+
+    def _locator(selector):
+        if selector == '[id$="-trigger-VIDEO_FRAMES"]':
+            return broken_tab
+        return _make_locator(visible=False)
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    await generate_op._select_video_composer_subtab(page, "Frames")
+
+    text_scan_spy.assert_awaited_once_with(page, "Frames")

@@ -1502,19 +1502,84 @@ async def _ensure_video_composer_mode(page, *, keep_open: bool = False):
     return chip_btn
 
 
+
+# Radix id-suffix map for VIDEO sub-mode tabs.
+# FRAMES and INGREDIENTS are NOT top-level tabs — they only render after the
+# VIDEO top-level tab becomes active. Live-verified 2026-05-30:
+#   Frames:      button[role='tab'][id$='-trigger-VIDEO_FRAMES']
+#   Ingredients: button[role='tab'][id$='-trigger-VIDEO_REFERENCES']
+_VIDEO_SUBTAB_ID_SUFFIX: dict[str, str] = {
+    "frames": "VIDEO_FRAMES",
+    "ingredients": "VIDEO_REFERENCES",
+}
+
+
 async def _select_video_composer_subtab(page, label: str) -> None:
+    """Activate a VIDEO sub-mode tab (Frames or Ingredients) in the composer.
+
+    Flow's Frames and Ingredients modes are VIDEO sub-tabs — they only appear
+    after the VIDEO top-level tab is active.  We therefore:
+      1. Ensure VIDEO is active (keep_open=True so the menu stays open).
+      2. Wait ~1 s for the sub-tab DOM nodes to render.
+      3. Try the known Radix id-suffix first (most reliable).
+      4. Fall back to text-based scan if the id-based locator misses.
+    """
     await _ensure_video_composer_mode(page, keep_open=True)
-    tab, state, observed_tabs = await _find_open_composer_tab(page, label)
+
+    # Sub-tabs render after VIDEO becomes active — give them time.
+    await asyncio.sleep(1.0)
+
+    id_suffix = _VIDEO_SUBTAB_ID_SUFFIX.get(label.lower())
+    tab = None
+    state = None
+    observed_tabs: list[str] = []
+
+    if id_suffix:
+        id_selector = f'[id$="-trigger-{id_suffix}"]'
+        try:
+            loc = page.locator(id_selector).first
+            state = await loc.get_attribute("data-state", timeout=2000)
+            if state is not None:
+                tab = loc
+                logger.debug(
+                    "Composer sub-tab %r found via id selector %s (state=%s)",
+                    label, id_selector, state,
+                )
+        except Exception as exc:
+            logger.debug(
+                "Composer sub-tab id-selector %s lookup failed: %s; falling back to text scan",
+                id_selector, exc,
+            )
+
+    if tab is None:
+        tab, state, observed_tabs = await _find_open_composer_tab(page, label)
+
     if tab is None:
         await _close_composer_menu_by_click_outside(page)
-        raise RuntimeError(f"Composer sub-tab not found: {label}; observed tabs={observed_tabs}")
+        raise RuntimeError(
+            f"Composer sub-tab not found: {label!r}; observed tabs={observed_tabs}"
+        )
+
     if state != "active":
         await tab.click(timeout=3000)
         await asyncio.sleep(0.3)
-        tab, state, observed_tabs = await _find_open_composer_tab(page, label)
+        # Re-check state: prefer id-based re-read when available.
+        if id_suffix:
+            try:
+                state = await page.locator(f'[id$="-trigger-{id_suffix}"]').first.get_attribute(
+                    "data-state", timeout=1500
+                )
+            except Exception:
+                _, state, observed_tabs = await _find_open_composer_tab(page, label)
+        else:
+            _, state, observed_tabs = await _find_open_composer_tab(page, label)
+
         if state != "active":
             await _close_composer_menu_by_click_outside(page)
-            raise RuntimeError(f"Composer sub-tab did not become active: {label}; observed tabs={observed_tabs}")
+            raise RuntimeError(
+                f"Composer sub-tab did not become active: {label!r}; observed tabs={observed_tabs}"
+            )
+
     logger.info("Composer sub-tab active: %s", label)
 
 
