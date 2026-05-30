@@ -39,6 +39,7 @@ from flow.operations.generate import (
     _open_composer_menu_by_role_text,
     _type_prompt,
     _wait_for_composer,
+    select_composer_mode,
 )
 
 logger = logging.getLogger(__name__)
@@ -490,7 +491,12 @@ async def text_to_image(
     project_id = extract_project_id(project_url_full)
 
     await _wait_for_composer(page)
-    await _switch_to_image_output(page)
+    # 2026-05 Flow redesign: select Image mode via the Radix chip dropdown
+    # (button[role='tab'][id$='-trigger-IMAGE']). Fall back to the legacy
+    # inline-tab / chip opener only when the new gesture cannot find the chip.
+    if not await select_composer_mode(page, "IMAGE"):
+        logger.info("text_to_image: select_composer_mode(IMAGE) no-op; using legacy switch")
+        await _switch_to_image_output(page)
     await _close_composer_menu(page)
 
     if ref_image_path:

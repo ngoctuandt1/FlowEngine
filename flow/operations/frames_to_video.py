@@ -36,6 +36,7 @@ from flow.operations.generate import (
     _type_prompt,
     _verify_frames_upload_affordances,
     _wait_for_composer,
+    select_composer_mode,
 )
 
 try:  # Wave-1 reverse API helper; guarded so default UI path is independent.
@@ -424,13 +425,18 @@ async def frames_to_video(
 
     await _wait_for_composer(page)
     await _reveal_composer_if_collapsed(page)
-    await _ensure_video_composer_mode(page)
+    # 2026-05 Flow redesign: Frames is a top-level composer mode selected via the
+    # Radix chip dropdown (button[role='tab'][id$='-trigger-FRAMES']). Select it
+    # first; fall back to the legacy Video-mode + Frames-subtab path only when the
+    # new gesture cannot find the chip (older UI / test doubles).
+    if not await select_composer_mode(page, "FRAMES"):
+        logger.info("frames_to_video: select_composer_mode(FRAMES) no-op; using legacy subtab path")
+        await _ensure_video_composer_mode(page)
+        await _ensure_frames_mode(page)
     await _set_output_count(page, 1)
     await select_model(page, model=model, free_mode=free_mode, profile=client.profile_name)
-    await _ensure_video_composer_mode(page)
     await _set_aspect_ratio(page, aspect_ratio)
     await _set_output_count(page, 1)
-    await _ensure_frames_mode(page)
     await _close_composer_menu(page)
     await _verify_frames_mode(page)
     await _verify_frames_upload_affordances(page)
