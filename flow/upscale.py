@@ -438,18 +438,20 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
     # root; we must click a link whose href contains /edit/ to trigger the SPA
     # router. Try link-based navigation first (most reliable in new UI), fall
     # back to the data-tile-id click as a secondary path.
+    #
+    # IMPORTANT: use computed `a.href` (absolute URL), NOT the CSS attribute
+    # selector `[href*="/edit/"]` — Flow stores relative hrefs like
+    # `edit/{routing_slug}` (no leading slash), which the attribute selector
+    # does NOT match but the absolute `a.href` property does.
+    await asyncio.sleep(0.5)  # let SPA finish rendering tile's <a> children
     clicked_link = await page.evaluate(
         """(targetId) => {
-            // Prefer link matching the specific media_id when provided.
-            if (targetId) {
-                const links = Array.from(document.querySelectorAll('a[href*="/edit/"]'));
-                for (const a of links) {
-                    if (a.href.includes(targetId)) { a.click(); return 'link:match'; }
-                }
-            }
-            // Otherwise click the first /edit/ link on the page.
-            const first = document.querySelector('a[href*="/edit/"]');
-            if (first) { first.click(); return 'link:first'; }
+            const links = Array.from(document.querySelectorAll('a')).filter(
+                (a) => a.href && a.href.includes('/edit/')
+            );
+            // routing slug != media_id in new Flow UI; skip targetId match,
+            // just click the first /edit/ link (only one tile on fresh project).
+            if (links.length) { links[0].click(); return 'link:first'; }
             return null;
         }""",
         media_id or "",
