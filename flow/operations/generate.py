@@ -1524,6 +1524,48 @@ def _chip_text_indicates_mode(chip_text: str, mode: str) -> bool:
     return False
 
 
+async def _ensure_agent_toggle_off(page) -> bool:
+    """Turn the composer 'Agent' toggle OFF so the classic mode chip renders.
+
+    Fresh Flow projects default to the agent composer (Agent toggle aria-pressed
+    ='true', shows 'tune Settings' instead of the mode chip). Live-verified: a
+    single click on the 'Agent' button flips to the classic composer exposing the
+    'Video · 8s · 9:16 · 1x' mode chip. Idempotent: no-op when already off / absent.
+    """
+    evaluate = getattr(page, "evaluate", None)
+    locator = getattr(page, "locator", None)
+    if not callable(evaluate) or not callable(locator):
+        return False
+    try:
+        pressed = await evaluate(
+            r"""() => {
+                const vis = (e) => { const r = e.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0 && e.offsetParent !== null; };
+                for (const b of document.querySelectorAll('button')) {
+                    if (!vis(b)) continue;
+                    if ((b.textContent || '').trim() === 'Agent') {
+                        b.setAttribute('data-flow-agent-toggle', '1');
+                        return b.getAttribute('aria-pressed');
+                    }
+                }
+                return 'absent';
+            }"""
+        )
+    except Exception:
+        return False
+    if pressed != "true":
+        logger.info("_ensure_agent_toggle_off: Agent toggle already off/absent (pressed=%r)", pressed)
+        return False
+    try:
+        await locator("[data-flow-agent-toggle='1']").first.click(timeout=3000)
+        await asyncio.sleep(1.0)
+        logger.info("_ensure_agent_toggle_off: clicked Agent toggle OFF (classic composer)")
+        return True
+    except Exception as exc:
+        logger.warning("_ensure_agent_toggle_off: click failed: %s", exc)
+        return False
+
+
 async def select_composer_mode(page, mode: str) -> bool:
     """Select the L1 composer mode via the 2026-05 Radix chip dropdown.
 
@@ -1555,7 +1597,26 @@ async def select_composer_mode(page, mode: str) -> bool:
         logger.debug("select_composer_mode: page.locator unavailable; skipping")
         return False
 
-    if not await _mark_composer_mode_chip(page):
+    # Poll for the composer chip: in fresh-project flows the bottom composer
+    # (and its settings chip) mounts a beat after navigation, so a single probe
+    # races the render. Wait for the composer first, then retry the mark.
+    try:
+        await _wait_for_composer(page, timeout_sec=12.0)
+    except Exception:
+        pass
+
+    # CRITICAL: fresh projects default to the AGENT composer (Agent toggle ON →
+    # tune Settings + no mode chip). The classic composer with the mode chip only
+    # appears when the Agent toggle is OFF. disable_agent_mode_if_active mutates
+    # the API state but does NOT flip the UI toggle, so flip it here.
+    await _ensure_agent_toggle_off(page)
+    chip_found = False
+    for _attempt in range(12):
+        if await _mark_composer_mode_chip(page):
+            chip_found = True
+            break
+        await asyncio.sleep(0.5)
+    if not chip_found:
         logger.warning("select_composer_mode: composer chip not found for %s", target)
         return False
 
@@ -1571,16 +1632,29 @@ async def select_composer_mode(page, mode: str) -> bool:
     logger.info("select_composer_mode: opened composer menu for %s", target)
 
     # Step 2: click the mode tab and verify aria-selected flips to true.
-    tab = locator(f"button[role='tab'][id$='-trigger-{target}']").first
+    # FRAMES / INGREDIENTS are VIDEO sub-modes (Radix ids -trigger-VIDEO_FRAMES /
+    # -trigger-VIDEO_REFERENCES) that only render AFTER the VIDEO tab is active.
+    _SUBMODE = {"FRAMES": "VIDEO_FRAMES", "INGREDIENTS": "VIDEO_REFERENCES"}
+    tab_suffix = _SUBMODE.get(target, target)
+    if target in _SUBMODE:
+        # ensure parent VIDEO tab first so the sub-tabs mount
+        video_tab = locator("button[role='tab'][id$='-trigger-VIDEO']").first
+        try:
+            await video_tab.click(timeout=3000)
+            await asyncio.sleep(0.6)
+        except Exception:
+            pass
+
+    tab = locator(f"button[role='tab'][id$='-trigger-{tab_suffix}']").first
     try:
         await tab.click(timeout=3000)
     except Exception as exc:
         await _toggle_close_composer_chip(page, chip)
         raise RuntimeError(
-            f"select_composer_mode: could not click {target} tab: {exc}"
+            f"select_composer_mode: could not click {target} tab ({tab_suffix}): {exc}"
         ) from exc
 
-    selected = await _wait_for_tab_selected(page, target, timeout_ms=3000)
+    selected = await _wait_for_tab_selected(page, tab_suffix, timeout_ms=3000)
 
     # Step 3: toggle the menu closed by re-clicking the same chip (force).
     await _toggle_close_composer_chip(page, chip)
