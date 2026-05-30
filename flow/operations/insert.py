@@ -10,6 +10,7 @@ import os
 import time
 from pathlib import Path
 
+from flow.agent import uninstall_agent_session_blocker
 from flow.failure_capture import message_with_failure_capture
 from flow.model_selector import select_model
 from flow.navigation import edit_url as build_edit_url, project_url as build_project_url
@@ -409,7 +410,11 @@ async def insert_object(
                 "run_insert: traditional Insert button absent; using agent edit UI "
                 "with command=%r (bbox=%s)", insert_cmd, _bbox or None
             )
-            submitted = await submit_via_agent_edit_ui(page, insert_cmd)
+            await uninstall_agent_session_blocker(page)
+            if edit_url_val and "/edit/" in edit_url_val:
+                await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(4)
+            submitted = await submit_via_agent_edit_ui(page, insert_cmd, generate_timeout_ms=8000)
             if submitted:
                 return await finalize_operation(
                     client, job,
