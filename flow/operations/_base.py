@@ -23,6 +23,7 @@ from flow.agent import (
     disable_agent_mode_if_active,
     install_agent_auth_probe,
     install_agent_session_blocker,
+    uninstall_agent_session_blocker,
 )
 from flow.landing import recover_from_flow_landing
 from flow.login import is_login_page, handle_login_redirect
@@ -649,6 +650,9 @@ _AGENT_SUBMIT_REQUEST_TOKENS = (
     "/generate",
     "generatevideo",
     "runagent",
+    # 2026-05 agent chat path: flowCreationAgent:streamChat on aisandbox-pa
+    "streamchat",
+    "aisandbox-pa.googleapis.com",
 )
 
 # Visible markers that an asset picker / media-search modal is open over
@@ -729,7 +733,7 @@ async def _capture_submit_failure(page) -> None:
         logger.debug("submit_via_agent_edit_ui: screenshot failed: %s", _e)
 
 
-async def submit_via_agent_edit_ui(page, command: str) -> bool:
+async def submit_via_agent_edit_ui(page, command: str, *, generate_timeout_ms: int = 4000) -> bool:
     """Type *command* into the 'Describe your edit(s)' input and submit it.
 
     The 2026-05 Flow agent composer is a standard chat-style input that
@@ -776,41 +780,67 @@ async def submit_via_agent_edit_ui(page, command: str) -> bool:
         return False
 
     # Primary submit: Enter key. Retry once if an asset picker pops open.
+    # Start listening for generate requests BEFORE pressing Enter — the
+    # batchAsyncGenerateVideoText can fire within 0.1s of Enter (faster than
+    # the post-Enter async checks), so the listener must be armed first.
     submitted_via_enter = False
-    for attempt in range(2):
-        try:
-            await _press_editor_enter(page, editor)
-        except Exception as exc:
-            logger.warning(
-                "submit_via_agent_edit_ui: Enter press failed (attempt %d): %s",
-                attempt + 1,
-                exc,
-            )
-            break
+    generate_seen = False
 
-        await asyncio.sleep(0.3)
-
-        # Only press Escape when an asset picker is actually open — a blind
-        # Escape would otherwise close the editor dialog entirely.
-        if await _agent_asset_picker_open(page):
-            logger.warning(
-                "submit_via_agent_edit_ui: asset picker opened after Enter "
-                "(attempt %d) — pressing Escape and retrying",
-                attempt + 1,
-            )
-            kb = getattr(page, "keyboard", None)
-            if kb is not None:
-                try:
-                    await kb.press("Escape")
-                    await asyncio.sleep(0.3)
-                except Exception as exc:
-                    logger.debug(
-                        "submit_via_agent_edit_ui: Escape press failed: %s", exc
+    def _on_request_for_generate(req):
+        nonlocal generate_seen
+        if not generate_seen:
+            try:
+                url = str(getattr(req, "url", "") or "").lower()
+                if any(t in url for t in _AGENT_SUBMIT_REQUEST_TOKENS):
+                    generate_seen = True
+                    logger.info(
+                        "submit_via_agent_edit_ui: generate request fired: %s",
+                        url[:80],
                     )
-            continue
+            except Exception:
+                pass
 
-        submitted_via_enter = True
-        break
+    page.on("request", _on_request_for_generate)
+    try:
+        for attempt in range(2):
+            try:
+                await _press_editor_enter(page, editor)
+            except Exception as exc:
+                logger.warning(
+                    "submit_via_agent_edit_ui: Enter press failed (attempt %d): %s",
+                    attempt + 1,
+                    exc,
+                )
+                break
+
+            await asyncio.sleep(0.3)
+
+            # Only press Escape when an asset picker is actually open — a blind
+            # Escape would otherwise close the editor dialog entirely.
+            if await _agent_asset_picker_open(page):
+                logger.warning(
+                    "submit_via_agent_edit_ui: asset picker opened after Enter "
+                    "(attempt %d) — pressing Escape and retrying",
+                    attempt + 1,
+                )
+                kb = getattr(page, "keyboard", None)
+                if kb is not None:
+                    try:
+                        await kb.press("Escape")
+                        await asyncio.sleep(0.3)
+                    except Exception as exc:
+                        logger.debug(
+                            "submit_via_agent_edit_ui: Escape press failed: %s", exc
+                        )
+                continue
+
+            submitted_via_enter = True
+            break
+    finally:
+        try:
+            page.remove_listener("request", _on_request_for_generate)
+        except Exception:
+            pass
 
     if not submitted_via_enter:
         logger.warning(
@@ -820,10 +850,15 @@ async def submit_via_agent_edit_ui(page, command: str) -> bool:
         await _capture_submit_failure(page)
         return False
 
+    # If we already saw the request fire during/right after Enter, return True.
+    if generate_seen:
+        logger.info("submit_via_agent_edit_ui: generate request observed (pre-check)")
+        return True
+
     # Verify generation actually started — a generate/batchAsync request
     # must fire. Without this, an Enter that silently did nothing would
     # leave the caller to wait out the full 180s no_signal_timeout.
-    if await _wait_for_generate_request(page, timeout_ms=4000):
+    if await _wait_for_generate_request(page, timeout_ms=generate_timeout_ms):
         logger.info("submit_via_agent_edit_ui: generate request observed after Enter")
         return True
 
@@ -897,12 +932,11 @@ async def navigate_to_edit(
     # Install auth probe BEFORE navigation so it captures agent session Bearer
     # tokens during page load (add_init_script runs before page scripts).
     await install_agent_auth_probe(page)
-    # Install the session blocker BEFORE page.goto so the Playwright route
-    # handler is registered before JS fires its initial GET sessions request.
-    # This prevents Flow from loading an agent session on the edit page, keeping
-    # the L2 toolbar (Extend/Insert/Remove/Camera) visible immediately on load.
-    # The route handler persists across navigations on the same page object.
-    await install_agent_session_blocker(page)
+    # Remove any existing session blockers (may have been installed by L1
+    # generate/upscale) so the agent "Describe your edits" UI can submit.
+    # The old L2 toolbar no longer exists; sessions must be unblocked for
+    # submit_via_agent_edit_ui to fire a generate request.
+    await uninstall_agent_session_blocker(page)
     await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(3)
 

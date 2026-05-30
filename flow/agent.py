@@ -5,9 +5,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Literal
+
+
+def _keep_agent() -> bool:
+    """When set, FlowEngine does NOT disable/sabotage Flow's agent mode.
+
+    The 2026-05 Flow redesign made the agent composer the ONLY generation path:
+    generation flows through `flowCreationAgent:streamChat`. The legacy
+    agent-disable + session-blocker logic (built to preserve the old toolbar)
+    actively breaks generation now, so it must be skipped in the new flow.
+    """
+    return os.environ.get("FLOW_KEEP_AGENT", "0") == "1"
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -239,6 +251,16 @@ async def disable_agent_mode_if_active(
     """Disable Agent mode for the current Flow project if it is active."""
 
     active_logger = log or logger
+    if _keep_agent():
+        active_logger.info("disable_agent_mode_if_active: skipped (FLOW_KEEP_AGENT=1)")
+        return AgentDisableResult(
+            status="unavailable",
+            profile=profile_name,
+            project_id=project_id,
+            previous_detection_state="unknown",
+            method="none",
+            message="Agent kept active (FLOW_KEEP_AGENT=1)",
+        )
     resolved_project_id = project_id or extract_agent_project_id(target_url or page.url)
     if not resolved_project_id:
         result = AgentDisableResult(
@@ -780,12 +802,45 @@ async def install_agent_session_blocker(page: Any) -> None:
     page.goto() calls on the same page object so one install covers all subsequent
     navigations on this FlowClient page.
     """
+    if _keep_agent():
+        logger.info("install_agent_session_blocker: skipped (FLOW_KEEP_AGENT=1)")
+        return
     logger.warning(
         "install_agent_session_blocker: installing route blockers on page %s",
         getattr(page, "url", "<unknown>")[:80],
     )
     await _install_agent_info_blocker(page)
     await _install_agent_session_blocker(page)
+
+
+async def uninstall_agent_session_blocker(page: Any) -> None:
+    """Remove agent session/info route blockers so the agent edit UI can work.
+
+    2026-05 redesign: the old L2 toolbar is gone; agent sessions must be
+    allowed for 'Describe your edits' submissions to reach the server.
+    Call this before navigating to any /edit/ URL where agent editing is
+    needed (e.g. L2 operations via submit_via_agent_edit_ui).
+    """
+    unroute_fn = getattr(page, "unroute", None)
+    if not callable(unroute_fn):
+        return
+    removed = 0
+    for pattern in (
+        "**/flowCreationAgent/sessions**",
+        "**/v1/projects/*/agentInfo**",
+        "**/agentInfo**",           # actual pattern used by _install_agent_info_blocker
+        "**/flowAgent/applets**",
+        "**/flowAgent/savedSharedApplets**",
+    ):
+        try:
+            await unroute_fn(pattern)
+            removed += 1
+        except Exception:
+            pass  # unroute raises if no handler was registered for this pattern
+    if removed:
+        logger.info("uninstall_agent_session_blocker: route blockers removed (%d patterns)", removed)
+    else:
+        logger.debug("uninstall_agent_session_blocker: no active blockers to remove")
 
 
 _AGENT_INFO_DISABLED_RESPONSE = json.dumps(

@@ -10,6 +10,7 @@ import os
 import time
 from pathlib import Path
 
+from flow.agent import uninstall_agent_session_blocker
 from flow.failure_capture import message_with_failure_capture
 from flow.model_selector import select_model, DEFAULT_MODEL
 from flow.navigation import edit_url as build_edit_url, project_url as build_project_url
@@ -34,11 +35,13 @@ from flow.operations._l1_status_poll import (
 
 try:  # C3 sibling PR; guarded so this branch lands independently.
     from flow.operations.extend_api import (
+        build_synthetic_extend_template,
         get_extend_request_template,
         install_extend_request_capture,
         replay_extend_via_api,
     )
 except Exception as exc:  # pragma: no cover - exercised via guarded fallback
+    build_synthetic_extend_template = None
     get_extend_request_template = None
     install_extend_request_capture = None
     replay_extend_via_api = None
@@ -351,6 +354,12 @@ async def extend_video(
     await wait_for_video_loaded(page)
 
     template = _current_extend_template(client) if reverse_enabled else None
+    # Synthetic fallback: build template from captured Bearer token when no real
+    # extend request has been captured yet (2026-05 agent-UI redesign).
+    if reverse_enabled and template is None and build_synthetic_extend_template is not None:
+        template = await build_synthetic_extend_template(client, project_id=project_id)
+        if template is not None:
+            logger.info("extend_video: using synthetic extend template (no captured template)")
     if not reverse_enabled:
         reverse_unavailable_reason = "operation reverse API disabled"
     elif replay_extend_via_api is None:
@@ -467,6 +476,27 @@ async def extend_video(
                         locale=locale,
                         download_prefix="ext",
                     )
+                # /edit/ page submit failed (e.g. session blocked). Fall back to
+                # the project page's main composer which fires batchAsyncGenerateVideoText
+                # directly from the browser (2026-05 agent-UI path).
+                proj_url = job.get("project_url") or ""
+                if proj_url:
+                    logger.info(
+                        "run_extend: agent edit UI submit failed; trying project "
+                        "page main composer for project=%s", proj_url[:60]
+                    )
+                    await uninstall_agent_session_blocker(page)  # remove all residual blockers
+                    await page.goto(proj_url, wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(6)  # longer wait for project page SPA to fully load
+                    submitted2 = await submit_via_agent_edit_ui(page, extend_cmd, generate_timeout_ms=10000)
+                    if submitted2:
+                        return await finalize_operation(
+                            client, job,
+                            job_type="extend-video",
+                            project_id=project_id,
+                            locale=locale,
+                            download_prefix="ext",
+                        )
             # Debug: log visible buttons to help diagnose
             try:
                 buttons = await page.evaluate("""() => {
