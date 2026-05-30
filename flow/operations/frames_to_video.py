@@ -424,13 +424,14 @@ async def frames_to_video(
     project_id = extract_project_id(project_url_full)
 
     await _wait_for_composer(page)
-    await _reveal_composer_if_collapsed(page)
-    # 2026-05 Flow redesign: Frames is a top-level composer mode selected via the
-    # Radix chip dropdown (button[role='tab'][id$='-trigger-FRAMES']). Select it
-    # first; fall back to the legacy Video-mode + Frames-subtab path only when the
-    # new gesture cannot find the chip (older UI / test doubles).
+    # 2026-05 Flow redesign: select_composer_mode handles agent-toggle-OFF
+    # internally and must run FIRST. _reveal_composer_if_collapsed is legacy-only
+    # (pre-2026-05 collapsed project state) and must NOT run before the agent
+    # toggle is flipped — clicking Add Media while Agent is ON opens the agent
+    # composer interface, not the classic chip, corrupting subsequent selectors.
     if not await select_composer_mode(page, "FRAMES"):
         logger.info("frames_to_video: select_composer_mode(FRAMES) no-op; using legacy subtab path")
+        await _reveal_composer_if_collapsed(page)
         await _ensure_video_composer_mode(page)
         await _ensure_frames_mode(page)
     await _set_output_count(page, 1)
@@ -817,14 +818,23 @@ async def _click_slot_then_upload_file(page, slot: dict, image_path: str, *, lab
 
 
 async def _click_picker_upload_media(page, image_path: str, *, label: str) -> None:
-    selectors = [
+    """Upload a frame image via the Flow media-picker dialog.
+
+    Flow FRAMES mode opens a two-step picker when the slot is clicked:
+      1. Dialog with "Images / Uploads / Upload media" tabs.
+      2. Click "Upload media" → native file chooser → set_files.
+      3. After upload the file appears as a thumbnail in the Uploads tab.
+      4. Click that thumbnail to insert it into the composer slot.
+      5. Dialog closes and the slot shows the frame preview.
+    """
+    upload_btn_selectors = [
         "button:has(i:text-is('upload')):has-text('Upload media')",
         "button:has-text('Upload media')",
         "[role='button']:has-text('Upload media')",
         "button:has(i:text-is('upload'))",
     ]
     last_error: Exception | None = None
-    for selector in selectors:
+    for selector in upload_btn_selectors:
         button = page.locator(selector).last
         try:
             if not await button.is_visible(timeout=3000):
@@ -833,12 +843,16 @@ async def _click_picker_upload_media(page, image_path: str, *, label: str) -> No
                 await button.click(timeout=3000)
             chooser = await chooser_info.value
             await chooser.set_files(image_path)
-            await asyncio.sleep(1)
-            logger.info("%s upload used media-picker Upload media action", label)
-            # Picker dialogs may need a confirmation click ("Add", "Done", "Insert",
-            # "Select") to actually apply the chosen file to the slot. Try to find
-            # and click one if the dialog is still open.
-            await _confirm_picker_if_open(page, label)
+            logger.info("%s: set_files done, waiting for thumbnail in picker", label)
+            # After set_files the picker dialog may auto-close (file inserted
+            # directly) or stay open showing the uploaded thumbnail that must be
+            # clicked to insert into the slot.
+            await asyncio.sleep(2)
+            closed = await _is_picker_dialog_closed(page)
+            if closed:
+                logger.info("%s: picker closed after set_files — file auto-inserted", label)
+                return
+            await _click_uploaded_thumbnail_in_picker(page, label)
             return
         except Exception as exc:
             last_error = exc
@@ -846,13 +860,94 @@ async def _click_picker_upload_media(page, image_path: str, *, label: str) -> No
     raise RuntimeError(f"Could not locate Upload media action for {label}") from last_error
 
 
-async def _confirm_picker_if_open(page, label: str) -> None:
-    """Click the picker confirmation button if a media-picker dialog is still open.
+async def _is_picker_dialog_closed(page) -> bool:
+    """Return True if no media-picker dialog is currently visible."""
+    try:
+        return await page.evaluate(
+            """() => !Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'))
+                .some((el) => {
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden'
+                        && r.width > 0 && r.height > 0
+                        && /images|uploads|upload media/i.test(el.innerText || '');
+                })"""
+        )
+    except Exception:
+        return False
 
-    Some Flow variants keep the picker panel open after file selection until the
-    user clicks a confirmation action ("Add", "Done", "Insert", "Select", "Use").
-    Without this click the file is selected in the picker but never applied to the
-    composer slot.
+
+async def _click_uploaded_thumbnail_in_picker(page, label: str, timeout_sec: float = 20.0) -> None:
+    """Click the first uploaded-file thumbnail inside the open media-picker dialog.
+
+    After set_files the chosen file is uploaded and rendered as a selectable
+    thumbnail inside the picker (Uploads tab). Clicking it inserts the file into
+    the composer slot and closes the dialog.
+    """
+    # Switch to the Uploads tab so the just-uploaded file is visible.
+    try:
+        uploads_tab = page.locator(
+            "button:has(i:text-is('drive_folder_upload')):has-text('Uploads')"
+        ).last
+        if await uploads_tab.is_visible(timeout=2000):
+            await uploads_tab.click(timeout=2000)
+            await asyncio.sleep(0.8)
+            logger.info("%s: switched picker to Uploads tab", label)
+    except Exception:
+        pass  # might already be on Uploads tab or tab unavailable
+
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        clicked = await page.evaluate(
+            """() => {
+                const visible = (el) => {
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden'
+                        && Number(s.opacity || 1) > 0 && r.width > 0 && r.height > 0;
+                };
+                const dialogs = Array.from(document.querySelectorAll(
+                    '[role="dialog"], [aria-modal="true"]'
+                )).filter(visible);
+                if (!dialogs.length) return 'no-dialog';
+                const dialog = dialogs[dialogs.length - 1];
+                // Prefer buttons that contain an img child (file thumbnail).
+                const thumbBtns = Array.from(dialog.querySelectorAll('button, [role="button"]'))
+                    .filter(visible)
+                    .filter((el) => el.querySelector('img'));
+                if (thumbBtns.length) {
+                    thumbBtns[0].click();
+                    return 'thumb-btn';
+                }
+                // Fallback: any visible img inside the dialog that is reasonably sized.
+                const imgs = Array.from(dialog.querySelectorAll('img'))
+                    .filter(visible)
+                    .filter((el) => {
+                        const r = el.getBoundingClientRect();
+                        return r.width >= 40 && r.height >= 40;
+                    });
+                if (imgs.length) {
+                    imgs[0].click();
+                    return 'img-direct';
+                }
+                return null;
+            }"""
+        )
+        if clicked and clicked != "null":
+            logger.info("%s: clicked picker thumbnail (%s)", label, clicked)
+            await asyncio.sleep(1)
+            return
+        await asyncio.sleep(0.8)
+    raise RuntimeError(
+        f"Picker thumbnail not found for {label} after {timeout_sec:.0f}s — "
+        "file may still be uploading"
+    )
+
+
+async def _confirm_picker_if_open(page, label: str) -> None:
+    """Legacy: attempt a confirmation click if the picker dialog is still open.
+
+    Kept for callers that may have bypassed the new thumbnail-click path.
     """
     confirm_selectors = [
         "button:has-text('Add')",
@@ -865,7 +960,6 @@ async def _confirm_picker_if_open(page, label: str) -> None:
         "[role='button']:has-text('Done')",
     ]
     try:
-        # Only act when a picker/modal dialog is visible.
         dialog_open = await page.evaluate(
             """() => Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'))
                 .some((el) => {
