@@ -467,6 +467,12 @@ async def extend_video(
                     "run_extend: traditional Extend button absent; using agent edit UI "
                     "with command=%r", extend_cmd
                 )
+                # The session blocker was installed during navigate_to_edit to
+                # prevent the agent session from auto-starting on navigation.
+                # On the /edit/ page the agent IS the only editing interface, so
+                # its session requests must be allowed through for the submit to
+                # trigger a generate request.
+                await uninstall_agent_session_blocker(page)
                 submitted = await submit_via_agent_edit_ui(page, extend_cmd)
                 if submitted:
                     return await finalize_operation(
