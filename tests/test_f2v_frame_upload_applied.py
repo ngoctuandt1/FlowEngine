@@ -137,3 +137,31 @@ async def test_wait_for_end_upload_rejects_start_thumbnail_only_dom(monkeypatch)
         await f2v_mod._wait_for_frame_upload_applied(page, "End", timeout_sec=0.5)
 
     page.evaluate.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["canvas", "video", "bg-image", "delete-btn", "media-in-view"],
+)
+@pytest.mark.asyncio
+async def test_wait_for_frame_upload_accepts_new_ui_signals(reason, monkeypatch):
+    """_wait_for_frame_upload_applied must accept canvas/video/bg-image/delete-btn
+    as valid upload-success signals (new Flow UI after Agent toggle OFF)."""
+    page = Mock()
+    page.evaluate = AsyncMock(return_value={"ok": True, "reason": reason, "count": 1})
+    monkeypatch.setattr(f2v_mod, "_accept_upload_rights_notice", AsyncMock())
+    monkeypatch.setattr(f2v_mod.asyncio, "sleep", AsyncMock())
+
+    # Should return without raising.
+    await f2v_mod._wait_for_frame_upload_applied(page, "Start", timeout_sec=5.0)
+    page.evaluate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_confirm_picker_if_open_no_dialog(monkeypatch):
+    """_confirm_picker_if_open is a no-op when no dialog is open."""
+    page = Mock()
+    page.evaluate = AsyncMock(return_value=False)
+    await f2v_mod._confirm_picker_if_open(page, "Start")
+    # Should not interact with any buttons.
+    page.locator.assert_not_called()

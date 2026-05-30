@@ -835,11 +835,57 @@ async def _click_picker_upload_media(page, image_path: str, *, label: str) -> No
             await chooser.set_files(image_path)
             await asyncio.sleep(1)
             logger.info("%s upload used media-picker Upload media action", label)
+            # Picker dialogs may need a confirmation click ("Add", "Done", "Insert",
+            # "Select") to actually apply the chosen file to the slot. Try to find
+            # and click one if the dialog is still open.
+            await _confirm_picker_if_open(page, label)
             return
         except Exception as exc:
             last_error = exc
             continue
     raise RuntimeError(f"Could not locate Upload media action for {label}") from last_error
+
+
+async def _confirm_picker_if_open(page, label: str) -> None:
+    """Click the picker confirmation button if a media-picker dialog is still open.
+
+    Some Flow variants keep the picker panel open after file selection until the
+    user clicks a confirmation action ("Add", "Done", "Insert", "Select", "Use").
+    Without this click the file is selected in the picker but never applied to the
+    composer slot.
+    """
+    confirm_selectors = [
+        "button:has-text('Add')",
+        "button:has-text('Done')",
+        "button:has-text('Insert')",
+        "button:has-text('Select')",
+        "button:has-text('Use')",
+        "button:has-text('Apply')",
+        "[role='button']:has-text('Add')",
+        "[role='button']:has-text('Done')",
+    ]
+    try:
+        # Only act when a picker/modal dialog is visible.
+        dialog_open = await page.evaluate(
+            """() => Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"]'))
+                .some((el) => {
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden'
+                        && r.width > 0 && r.height > 0;
+                })"""
+        )
+        if not dialog_open:
+            return
+        for sel in confirm_selectors:
+            btn = page.locator(sel).last
+            if await btn.is_visible(timeout=800):
+                await btn.click(timeout=2000)
+                await asyncio.sleep(0.8)
+                logger.info("%s picker confirmed via: %s", label, sel)
+                return
+    except Exception as exc:
+        logger.debug("_confirm_picker_if_open: %s (%s)", label, exc)
 
 
 async def _accept_upload_rights_notice(page) -> None:
@@ -902,25 +948,46 @@ async def _wait_for_frame_upload_applied(page, label: str, timeout_sec: float = 
                             if (lengthDelta !== 0) return lengthDelta;
                             return (aRect.width * aRect.height) - (bRect.width * bRect.height);
                         });
-                    let matchedTargetLabel = false;
+                    const hasBgImage = (el) => {
+                        const bg = getComputedStyle(el).backgroundImage;
+                        return bg && bg !== 'none' && bg.startsWith('url(');
+                    };
                     for (const {el: labelEl} of labelCandidates) {
-                        matchedTargetLabel = true;
                         let current = labelEl;
                         for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
                             const currentText = textOf(current);
                             if (includesAny(currentText, oppositeTerms)) break;
-                            const thumbnails = Array.from(current.querySelectorAll('img')).filter(visible);
-                            if (thumbnails.length > 0) {
-                                return {
-                                    ok: true,
-                                    reason: 'target-slot-thumbnail',
-                                    count: thumbnails.length,
-                                    label: (labelEl.innerText || labelEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
-                                };
-                            }
+                            // img thumbnail (classic)
+                            const imgs = Array.from(current.querySelectorAll('img')).filter(visible);
+                            if (imgs.length > 0) return {ok: true, reason: 'img', count: imgs.length};
+                            // canvas preview (new Flow UI may use canvas)
+                            const canvases = Array.from(current.querySelectorAll('canvas')).filter(visible);
+                            if (canvases.length > 0) return {ok: true, reason: 'canvas', count: canvases.length};
+                            // video preview
+                            const videos = Array.from(current.querySelectorAll('video')).filter(visible);
+                            if (videos.length > 0) return {ok: true, reason: 'video', count: videos.length};
+                            // background-image CSS preview
+                            const bgEls = Array.from(current.querySelectorAll('*')).filter((el) => visible(el) && hasBgImage(el));
+                            if (bgEls.length > 0) return {ok: true, reason: 'bg-image', count: bgEls.length};
+                            // delete/remove button signals upload success
+                            const delBtn = Array.from(current.querySelectorAll('button')).filter((el) => {
+                                if (!visible(el)) return false;
+                                const lbl = (el.getAttribute('aria-label') || '').toLowerCase();
+                                const txt = textOf(el);
+                                return lbl.includes('remove') || lbl.includes('delete') || lbl.includes('clear')
+                                    || txt === 'close' || txt === 'delete' || txt === 'cancel';
+                            });
+                            if (delBtn.length > 0) return {ok: true, reason: 'delete-btn', count: delBtn.length};
                         }
                     }
-                    if (matchedTargetLabel) return {ok: false, reason: 'target-slot-no-thumbnail'};
+                    if (labelCandidates.length > 0) return {ok: false, reason: 'slot-no-media'};
+                    // Label text gone — slot may have been replaced by the uploaded preview.
+                    const mediaInView = Array.from(document.querySelectorAll('img, canvas, video')).filter((el) => {
+                        if (!visible(el)) return false;
+                        const r = el.getBoundingClientRect();
+                        return r.y < window.innerHeight * 0.65 && r.width >= 60 && r.height >= 60;
+                    });
+                    if (mediaInView.length > 0) return {ok: true, reason: 'media-in-view', count: mediaInView.length};
                     const noticeOpen = Array.from(document.querySelectorAll('[role="dialog"]'))
                         .some((el) => visible(el) && /notice/i.test(el.innerText || el.textContent || ''));
                     if (noticeOpen) return {ok: false, reason: 'notice-open'};
