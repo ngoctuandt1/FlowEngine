@@ -467,13 +467,22 @@ async def extend_video(
                     "run_extend: traditional Extend button absent; using agent edit UI "
                     "with command=%r", extend_cmd
                 )
-                # The session blocker was installed during navigate_to_edit to
-                # prevent the agent session from auto-starting on navigation.
-                # On the /edit/ page the agent IS the only editing interface, so
-                # its session requests must be allowed through for the submit to
-                # trigger a generate request.
+                # The session blocker blocks POST /flowCreationAgent/sessions
+                # during navigation to prevent agent auto-start. On the /edit/
+                # page the agent IS the only editing interface — its session must
+                # be created for "Describe your edits" to route a generate request.
+                # Unblock routes first, then reload the edit URL so the agent can
+                # create its session; without the reload the agent was never
+                # initialized and Enter does nothing.
                 await uninstall_agent_session_blocker(page)
-                submitted = await submit_via_agent_edit_ui(page, extend_cmd)
+                if edit_url_val and "/edit/" in edit_url_val:
+                    logger.info(
+                        "run_extend: reloading edit URL to let agent session init: %s",
+                        edit_url_val[:80],
+                    )
+                    await page.goto(edit_url_val, wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(4)  # wait for agent session POST to complete
+                submitted = await submit_via_agent_edit_ui(page, extend_cmd, generate_timeout_ms=8000)
                 if submitted:
                     return await finalize_operation(
                         client, job,
