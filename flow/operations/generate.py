@@ -1,6 +1,7 @@
 """Text-to-Video generation — Level 1 operation."""
 
 import asyncio
+import inspect
 import logging
 import os
 import re
@@ -646,7 +647,7 @@ async def text_to_video(
     # === Step 3: Select model ===
     canonical_model = canonicalize_video_model_key(model, free_mode=free_mode)
     logger.info("Step 2.5: Force composer Video mode before model selection")
-    await _ensure_video_composer_mode(page)
+    await select_composer_mode(page, "VIDEO")
     logger.info("Step 2.6: Force output count = x1 before model credit preview")
     await _set_output_count(page, 1)
     logger.info(f"Step 3: Select model ({canonical_model})")
@@ -1031,6 +1032,24 @@ _MODE_OR_MODEL_RE = re.compile(
 )
 _ASPECT_TEXT_RE = re.compile(r"16\s*:?\s*9|9\s*:?\s*16|landscape|portrait|square", re.IGNORECASE)
 
+# 2026-05 Flow composer redesign (classic / Agent-OFF path).
+#
+# The composer mode is selected through a single Radix dropdown anchored on the
+# bottom settings chip (boundingRect.y > _COMPOSER_CHIP_MIN_Y). The chip's text
+# reflects the current mode (e.g. "Video · 8scrop_9_161x"). Clicking it opens a
+# Radix tablist whose mode triggers carry id suffixes "-trigger-{MODE}" with
+# MODE in {IMAGE, VIDEO, FRAMES, INGREDIENTS}; the active tab has
+# aria-selected='true'. Re-clicking the same chip (force) toggles the menu shut
+# — pressing Escape is forbidden because it closes the whole editor dialog.
+#
+# Live-verified 2026-05 on ngoctuandt20 (profile): VIDEO fires
+# video:batchAsyncGenerateVideoText, IMAGE fires flowMedia:batchGenerateImages.
+_COMPOSER_MODES = ("IMAGE", "VIDEO", "FRAMES", "INGREDIENTS")
+_COMPOSER_CHIP_MIN_Y = 360
+_COMPOSER_MENU_OPEN_WAIT_MS = 1200
+_COMPOSER_MODE_DATA_ATTR = "data-flow-mode-chip"
+_COMPOSER_SUBMIT_ICON = "arrow_forward"
+
 
 def _max_credits_per_job() -> int:
     return int(os.environ.get("FLOW_MAX_CREDITS_PER_JOB", "10"))
@@ -1402,6 +1421,315 @@ async def _find_open_composer_tab(page, label: str):
         except Exception as exc:
             observed_tabs.append(f"<unreadable:{exc}>")
     return None, None, observed_tabs
+
+
+def _normalize_mode(mode: str) -> str:
+    normalized = str(mode or "").strip().upper()
+    if normalized not in _COMPOSER_MODES:
+        raise ValueError(f"mode must be one of {_COMPOSER_MODES}, got {mode!r}")
+    return normalized
+
+
+async def _mark_composer_mode_chip(page) -> bool:
+    """Tag the bottom composer settings chip with ``_COMPOSER_MODE_DATA_ATTR``.
+
+    The chip is the ``button[aria-haspopup='menu']`` in the lower composer band
+    (boundingRect.y > _COMPOSER_CHIP_MIN_Y) whose text reflects the current mode
+    (contains "Video"/"Image"/"Frames"/"crop_"/output-count/aspect tokens). We
+    mark it via JS so a Playwright ``Locator`` can resolve to the exact node and
+    issue real pointer events (Radix needs trusted pointerdown).
+
+    Returns True when a chip was marked, False otherwise (e.g. test doubles
+    without a usable ``evaluate``).
+    """
+    evaluate = getattr(page, "evaluate", None)
+    if not callable(evaluate):
+        return False
+    try:
+        result = evaluate(
+            r"""(cfg) => {
+                const { selector, attr, minY } = cfg;
+                for (const el of document.querySelectorAll(`[${attr}]`)) {
+                    el.removeAttribute(attr);
+                }
+                const visible = (el) => {
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden'
+                        && parseFloat(s.opacity || '1') > 0
+                        && r.width > 0 && r.height > 0;
+                };
+                const MODE_RE = /Video|Image|Frames|Ingredients|crop_|x[1-4]|[1-4]x|9:16|16:9|\d+\s*s/i;
+                let best = null;
+                let bestY = -1;
+                for (const el of document.querySelectorAll(selector)) {
+                    if (!visible(el)) continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.top <= minY) continue;
+                    const text = (el.innerText || el.textContent || '').trim();
+                    if (!MODE_RE.test(text)) continue;
+                    // Prefer the lowest chip (closest to the composer footer).
+                    if (r.top > bestY) {
+                        best = el;
+                        bestY = r.top;
+                    }
+                }
+                if (!best) return false;
+                best.setAttribute(attr, 'true');
+                return true;
+            }""",
+            {
+                "selector": _COMPOSER_MENU_BUTTON_SELECTOR,
+                "attr": _COMPOSER_MODE_DATA_ATTR,
+                "minY": _COMPOSER_CHIP_MIN_Y,
+            },
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+    except Exception as exc:
+        logger.debug("composer mode-chip mark failed: %s", exc)
+        return False
+
+
+async def _composer_mode_chip_text(page) -> str:
+    """Return the current composer chip text (empty string if unavailable)."""
+    if not await _mark_composer_mode_chip(page):
+        return ""
+    locator = getattr(page, "locator", None)
+    if not callable(locator):
+        return ""
+    try:
+        chip = locator(f"[{_COMPOSER_MODE_DATA_ATTR}='true']").first
+        text = await chip.inner_text(timeout=1000)
+        return _normalize_composer_text(text)
+    except Exception:
+        return ""
+
+
+def _chip_text_indicates_mode(chip_text: str, mode: str) -> bool:
+    """True when the composer chip text already reflects the target ``mode``.
+
+    Only VIDEO and IMAGE leave an unambiguous token in the chip label
+    (the FRAMES/INGREDIENTS chips reuse the video crop/aspect tokens), so the
+    idempotent no-op fast path is limited to those two modes.
+    """
+    normalized = _normalize_composer_text(chip_text).lower()
+    if not normalized:
+        return False
+    if mode == "VIDEO":
+        return "video" in normalized
+    if mode == "IMAGE":
+        return "image" in normalized
+    return False
+
+
+async def select_composer_mode(page, mode: str) -> bool:
+    """Select the L1 composer mode via the 2026-05 Radix chip dropdown.
+
+    ``mode`` must be one of ``IMAGE`` / ``VIDEO`` / ``FRAMES`` / ``INGREDIENTS``.
+
+    Gesture (live-verified, Agent mode OFF):
+      1. Mark + click the bottom composer settings chip to open the Radix menu.
+      2. Click ``button[role='tab'][id$='-trigger-{mode}']`` and verify its
+         ``aria-selected`` flips to ``true``.
+      3. Toggle the menu closed by re-clicking the SAME chip with ``force=True``
+         (never Escape — that closes the editor dialog).
+
+    Idempotent: when the chip text already indicates ``mode`` (VIDEO/IMAGE) the
+    menu is not opened and the call no-ops to ``True``.
+
+    Returns True when the target tab reports ``aria-selected='true'`` (or the
+    fast-path no-op fired). Raises ``RuntimeError`` when the tab cannot be
+    activated. Degrades to ``False`` on test doubles lacking a real composer.
+    """
+    target = _normalize_mode(mode)
+
+    chip_text = await _composer_mode_chip_text(page)
+    if _chip_text_indicates_mode(chip_text, target):
+        logger.info("select_composer_mode: already in %s (chip=%r) — no-op", target, chip_text)
+        return True
+
+    locator = getattr(page, "locator", None)
+    if not callable(locator):
+        logger.debug("select_composer_mode: page.locator unavailable; skipping")
+        return False
+
+    if not await _mark_composer_mode_chip(page):
+        logger.warning("select_composer_mode: composer chip not found for %s", target)
+        return False
+
+    chip = locator(f"[{_COMPOSER_MODE_DATA_ATTR}='true']").first
+
+    # Step 1: open the Radix menu.
+    try:
+        await chip.click(timeout=3000)
+    except Exception as exc:
+        logger.warning("select_composer_mode: chip open click failed for %s: %s", target, exc)
+        return False
+    await asyncio.sleep(_COMPOSER_MENU_OPEN_WAIT_MS / 1000)
+    logger.info("select_composer_mode: opened composer menu for %s", target)
+
+    # Step 2: click the mode tab and verify aria-selected flips to true.
+    tab = locator(f"button[role='tab'][id$='-trigger-{target}']").first
+    try:
+        await tab.click(timeout=3000)
+    except Exception as exc:
+        await _toggle_close_composer_chip(page, chip)
+        raise RuntimeError(
+            f"select_composer_mode: could not click {target} tab: {exc}"
+        ) from exc
+
+    selected = await _wait_for_tab_selected(page, target, timeout_ms=3000)
+
+    # Step 3: toggle the menu closed by re-clicking the same chip (force).
+    await _toggle_close_composer_chip(page, chip)
+
+    if not selected:
+        raise RuntimeError(
+            f"select_composer_mode: {target} tab did not report aria-selected='true'"
+        )
+    logger.info("select_composer_mode: %s tab active", target)
+    return True
+
+
+async def _wait_for_tab_selected(page, mode: str, *, timeout_ms: int) -> bool:
+    """Poll the ``-trigger-{mode}`` tab until ``aria-selected='true'`` or timeout."""
+    wait_for_function = getattr(page, "wait_for_function", None)
+    if callable(wait_for_function):
+        try:
+            result = wait_for_function(
+                "(suffix) => document.querySelector("
+                "`button[role='tab'][id$='-trigger-${suffix}']`"
+                ")?.getAttribute('aria-selected') === 'true'",
+                arg=mode,
+                timeout=timeout_ms,
+            )
+            if inspect.isawaitable(result):
+                await result
+            return True
+        except Exception:
+            return False
+
+    # Fallback poll for test doubles / pages without wait_for_function.
+    locator = getattr(page, "locator", None)
+    if not callable(locator):
+        return False
+    deadline = asyncio.get_event_loop().time() + timeout_ms / 1000
+    tab = locator(f"button[role='tab'][id$='-trigger-{mode}']").first
+    while True:
+        try:
+            if await tab.get_attribute("aria-selected") == "true":
+                return True
+        except Exception:
+            pass
+        if asyncio.get_event_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.2)
+
+
+async def _toggle_close_composer_chip(page, chip) -> None:
+    """Close the composer menu by re-clicking the SAME chip (force=True).
+
+    Pressing Escape would close the whole editor dialog, so the menu is toggled
+    shut via the chip itself. Best-effort: a failed close must not mask the
+    caller's success/failure decision.
+    """
+    try:
+        await chip.click(timeout=3000, force=True)
+        await asyncio.sleep(0.3)
+    except Exception as exc:
+        logger.debug("composer chip toggle-close failed: %s", exc)
+
+
+async def submit_composer(page, prompt: str) -> bool:
+    """Type ``prompt`` into the composer box and click the Create button.
+
+    Gesture (live-verified):
+      1. Click the LAST ``[contenteditable='true']`` (the first contenteditable
+         is the project-title input; the composer box is later in DOM).
+      2. Select-all + type the prompt with real key events (Slate ignores
+         ``fill()`` — it needs ``page.keyboard.type``).
+      3. Mark + click the ``arrow_forward`` Create button in the composer.
+
+    Returns True when the Create button was clicked, False otherwise. The caller
+    is responsible for confirming the generate request fired.
+    """
+    locator = getattr(page, "locator", None)
+    keyboard = getattr(page, "keyboard", None)
+    if not callable(locator) or keyboard is None:
+        logger.debug("submit_composer: page.locator/keyboard unavailable; skipping")
+        return False
+
+    editor = locator("[contenteditable='true']").last
+    try:
+        await editor.click(timeout=3000)
+        await asyncio.sleep(0.2)
+        await keyboard.press("Control+a")
+        await asyncio.sleep(0.1)
+        await keyboard.type(prompt, delay=15)
+        logger.info("submit_composer: typed prompt (%d chars)", len(prompt))
+    except Exception as exc:
+        logger.warning("submit_composer: typing prompt failed: %s", exc)
+        return False
+
+    if not await _click_create_button(page):
+        logger.warning("submit_composer: Create (arrow_forward) button not found")
+        return False
+    logger.info("submit_composer: clicked Create button")
+    return True
+
+
+async def _click_create_button(page) -> bool:
+    """Mark + click the composer Create button (icon ligature ``arrow_forward``)."""
+    evaluate = getattr(page, "evaluate", None)
+    locator = getattr(page, "locator", None)
+    if not callable(evaluate) or not callable(locator):
+        return False
+    try:
+        result = evaluate(
+            r"""(cfg) => {
+                const { icon, attr } = cfg;
+                for (const el of document.querySelectorAll(`[${attr}]`)) {
+                    el.removeAttribute(attr);
+                }
+                const visible = (el) => {
+                    const s = getComputedStyle(el);
+                    const r = el.getBoundingClientRect();
+                    return s.display !== 'none' && s.visibility !== 'hidden'
+                        && parseFloat(s.opacity || '1') > 0
+                        && r.width > 0 && r.height > 0;
+                };
+                const btns = document.querySelectorAll('button, [role="button"]');
+                for (const btn of btns) {
+                    if (!visible(btn)) continue;
+                    const text = (btn.innerText || btn.textContent || '').trim();
+                    const hasIcon = Array.from(btn.querySelectorAll('i, .material-icons, .google-symbols'))
+                        .some((node) => (node.textContent || '').trim() === icon);
+                    if (hasIcon || text.includes(icon)) {
+                        btn.setAttribute(attr, 'true');
+                        return true;
+                    }
+                }
+                return false;
+            }""",
+            {"icon": _COMPOSER_SUBMIT_ICON, "attr": "data-flow-create-btn"},
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        if not result:
+            return False
+    except Exception as exc:
+        logger.debug("submit_composer: Create button mark failed: %s", exc)
+        return False
+
+    try:
+        button = locator("[data-flow-create-btn='true']").first
+        await button.click(timeout=3000)
+        return True
+    except Exception as exc:
+        logger.warning("submit_composer: Create button click failed: %s", exc)
+        return False
 
 
 async def _ensure_video_composer_mode(page, *, keep_open: bool = False):
