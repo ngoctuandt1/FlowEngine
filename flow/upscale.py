@@ -434,6 +434,36 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
         logger.warning("[UPSCALE] No tile with data-tile-id^=fe_id_ on project view")
         return
 
+    # 2026-05 Flow redesign: direct /edit/ URL navigation redirects to project
+    # root; we must click a link whose href contains /edit/ to trigger the SPA
+    # router. Try link-based navigation first (most reliable in new UI), fall
+    # back to the data-tile-id click as a secondary path.
+    clicked_link = await page.evaluate(
+        """(targetId) => {
+            // Prefer link matching the specific media_id when provided.
+            if (targetId) {
+                const links = Array.from(document.querySelectorAll('a[href*="/edit/"]'));
+                for (const a of links) {
+                    if (a.href.includes(targetId)) { a.click(); return 'link:match'; }
+                }
+            }
+            // Otherwise click the first /edit/ link on the page.
+            const first = document.querySelector('a[href*="/edit/"]');
+            if (first) { first.click(); return 'link:first'; }
+            return null;
+        }""",
+        media_id or "",
+    )
+    if clicked_link:
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if "/edit/" in page.url:
+                logger.info("[UPSCALE] SPA landed on /edit/ via link: %s", page.url[:120])
+                await asyncio.sleep(1.5)
+                return
+            await asyncio.sleep(0.2)
+        logger.warning("[UPSCALE] Link click didn't reach /edit/ after 8s; trying tile click")
+
     # Block agent session creation before tile navigation so the /edit/ view
     # loads with the normal toolbar (including the Download button accessible).
     await install_agent_session_blocker(page)
