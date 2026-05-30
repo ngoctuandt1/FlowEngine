@@ -443,20 +443,28 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
     # selector `[href*="/edit/"]` — Flow stores relative hrefs like
     # `edit/{routing_slug}` (no leading slash), which the attribute selector
     # does NOT match but the absolute `a.href` property does.
-    await asyncio.sleep(0.5)  # let SPA finish rendering tile's <a> children
-    clicked_link = await page.evaluate(
-        """(targetId) => {
-            const links = Array.from(document.querySelectorAll('a')).filter(
-                (a) => a.href && a.href.includes('/edit/')
-            );
-            // routing slug != media_id in new Flow UI; skip targetId match,
-            // just click the first /edit/ link (only one tile on fresh project).
-            if (links.length) { links[0].click(); return 'link:first'; }
-            return null;
-        }""",
-        media_id or "",
-    )
+    # Poll for an <a> link whose computed href contains /edit/.
+    # Use a.href (absolute URL property) not the CSS attribute selector —
+    # Flow stores relative hrefs like 'edit/{slug}' (no leading slash) which
+    # the CSS selector a[href*='/edit/'] does NOT match.
+    # The <a> renders asynchronously after the tile DIV attaches; poll up to 4s.
+    link_deadline = time.time() + 4
+    clicked_link = None
+    while time.time() < link_deadline:
+        clicked_link = await page.evaluate(
+            """() => {
+                const links = Array.from(document.querySelectorAll('a')).filter(
+                    (a) => a.href && a.href.includes('/edit/')
+                );
+                if (links.length) { links[0].click(); return links[0].href.slice(-40); }
+                return null;
+            }"""
+        )
+        if clicked_link:
+            break
+        await asyncio.sleep(0.3)
     if clicked_link:
+        logger.info("[UPSCALE] Clicked /edit/ link: ...%s", clicked_link)
         deadline = time.time() + 8
         while time.time() < deadline:
             if "/edit/" in page.url:
@@ -465,6 +473,8 @@ async def _ensure_edit_view(page, media_id: str | None = None) -> None:
                 return
             await asyncio.sleep(0.2)
         logger.warning("[UPSCALE] Link click didn't reach /edit/ after 8s; trying tile click")
+    else:
+        logger.warning("[UPSCALE] No a[href*/edit/] link found after 4s; trying tile click")
 
     # Block agent session creation before tile navigation so the /edit/ view
     # loads with the normal toolbar (including the Download button accessible).
